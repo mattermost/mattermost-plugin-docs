@@ -1,10 +1,10 @@
 {
-    "id": "com.mattermost.plugin-starter-template",
-    "name": "Plugin Starter Template",
-    "description": "This plugin serves as a starting point for writing a Mattermost plugin.",
-    "homepage_url": "https://github.com/mattermost/mattermost-plugin-starter-template",
-    "support_url": "https://github.com/mattermost/mattermost-plugin-starter-template/issues",
-    "icon_path": "assets/starter-template-icon.svg",
+    "id": "com.mattermost.docs",
+    "name": "Docs",
+    "description": "Docs for Mattermost — hierarchical pages, rich-text editing, comments, versioning, and Confluence import, as a self-contained plugin.",
+    "homepage_url": "https://github.com/mattermost/mattermost-plugin-docs",
+    "support_url": "https://github.com/mattermost/mattermost-plugin-docs/issues",
+    "icon_path": "assets/icon.svg",
     "min_server_version": "6.2.1",
     "server": {
         "executables": {
