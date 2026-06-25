@@ -10,6 +10,7 @@ linters:
     - bidichk
     - bodyclose
     - errcheck
+    - forbidigo
     - gocritic
     - gosec
     - govet
@@ -25,6 +26,15 @@ linters:
     - unused
     - whitespace
   settings:
+    forbidigo:
+      # Tests must never pass by skipping. Ban every skip mechanism so the no-skip
+      # rule cannot be reintroduced per-test; a missing test DB must fail, not skip.
+      forbid:
+        - pattern: '\.Skip(f|Now)?$'
+          msg: 'tests must never skip; provide a Postgres DSN (TEST_DATABASE_DSN) so the test runs'
+        - pattern: '^testing\.Short$'
+          msg: 'do not gate tests on -short; tests must always run'
+      analyze-types: true
     govet:
       enable-all: true
       disable:
@@ -61,4 +71,4 @@ formatters:
           replacement: any
     goimports:
       local-prefixes:
-        - github.com/mattermost/mattermost-plugin-starter-template
+        - github.com/mattermost/mattermost-plugin-docs

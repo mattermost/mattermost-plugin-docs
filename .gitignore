@@ -12,8 +12,11 @@ server/manifest.go
 # VS Code
 .vscode
 
-# Claude Code local settings (personal, not shared)
-.claude/settings.local.json
+# Claude Code config and local tooling (personal, not shared)
+.claude/
 
 # Local deploy/dev scripts
 /scripts/
+
+# Implementation plans (local, not shared)
+/plans/
