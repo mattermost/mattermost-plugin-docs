@@ -187,17 +187,12 @@ func TestPageGetProps(t *testing.T) {
 func TestPageCloneDeepCopy(t *testing.T) {
 	p := validPage()
 	p.Props = mmmodel.StringInterface{"k": "v"}
-	reparent := "parent-id"
-	p.ReparentedParentOnDelete = &reparent
 
 	cp := p.Clone()
 	require.Equal(t, p.Id, cp.Id)
 
 	cp.Props["k"] = "changed"
 	require.Equal(t, "v", p.Props["k"], "Props must be deep-copied")
-
-	*cp.ReparentedParentOnDelete = "other"
-	require.Equal(t, "parent-id", *p.ReparentedParentOnDelete, "pointer field must be deep-copied")
 }
 
 func TestPageCloneDeepCopyNested(t *testing.T) {

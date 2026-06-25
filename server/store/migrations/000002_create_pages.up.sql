@@ -16,8 +16,6 @@ CREATE TABLE IF NOT EXISTS DOCS_Page (
     EditAt                      BIGINT NOT NULL DEFAULT 0,
     OriginalId                  VARCHAR(26) NOT NULL DEFAULT '',
     Props                       jsonb NOT NULL DEFAULT '{}'::jsonb,
-    ReparentedParentOnDelete    VARCHAR(26),
-    ReparentedChildrenOnDelete  TEXT,
 
     -- A version snapshot (OriginalId<>'') is always soft-deleted. DeleteSpace's
     -- cascade and every live-page query rely on this, so enforce it at the DB level

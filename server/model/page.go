@@ -51,10 +51,6 @@ type Page struct {
 	OriginalId string `json:"original_id"`
 
 	Props mmmodel.StringInterface `json:"props"`
-
-	// sparse delete-bookkeeping (NULL except on a soft-deleted row)
-	ReparentedParentOnDelete   *string `json:"-"`
-	ReparentedChildrenOnDelete *string `json:"-"`
 }
 
 func (p *Page) PreSave() {
@@ -211,16 +207,6 @@ func (p *Page) Clone() *Page {
 
 	if p.Props != nil {
 		cp.Props = deepCloneStringInterface(p.Props)
-	}
-
-	if p.ReparentedParentOnDelete != nil {
-		v := *p.ReparentedParentOnDelete
-		cp.ReparentedParentOnDelete = &v
-	}
-
-	if p.ReparentedChildrenOnDelete != nil {
-		v := *p.ReparentedChildrenOnDelete
-		cp.ReparentedChildrenOnDelete = &v
 	}
 
 	return &cp

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/lib/pq"
@@ -105,6 +106,23 @@ func newPage(spaceID, channelID, userID, parentID string) *model.Page {
 		Title:     "Test Page",
 		Body:      `{"type":"doc","content":[]}`,
 	}
+}
+
+// mustChildren returns a page's live children, failing the test on error.
+func mustChildren(t *testing.T, s *store.Store, pageID string) []*model.Page {
+	t.Helper()
+	children, err := s.GetPageChildren(pageID, 0, 0)
+	require.NoError(t, err)
+	return children
+}
+
+// idsOf extracts the ids of a page slice, preserving order.
+func idsOf(pages []*model.Page) []string {
+	ids := make([]string, len(pages))
+	for i, p := range pages {
+		ids[i] = p.Id
+	}
+	return ids
 }
 
 // --- Space tests ---
@@ -741,4 +759,375 @@ func TestUpdatePageWritesProps(t *testing.T) {
 	persisted, err := s.GetPage(created.Id, false)
 	require.NoError(t, err)
 	require.Equal(t, "myValue", persisted.Props["myKey"], "Props must be persisted to DB via UpdatePage")
+}
+
+// TestDeletePage verifies a soft-delete: the row leaves the live view but is fetchable with
+// includeDeleted, its live children are promoted to the page's parent, and bad ids are rejected.
+func TestDeletePage(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+
+	t.Run("soft-deletes a page: hidden from the live view, visible with includeDeleted", func(t *testing.T) {
+		created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		require.NoError(t, err)
+
+		require.NoError(t, s.DeletePage(created.Id))
+
+		_, err = s.GetPage(created.Id, false)
+		require.True(t, store.IsErrNotFound(err), "expected not-found after delete")
+
+		got, err := s.GetPage(created.Id, true)
+		require.NoError(t, err)
+		require.NotZero(t, got.DeleteAt)
+	})
+
+	t.Run("reparents live children to the deleted page's parent", func(t *testing.T) {
+		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		require.NoError(t, err)
+		child, err := s.CreatePage(newPage(space.Id, channelID, userID, parent.Id))
+		require.NoError(t, err)
+
+		require.NoError(t, s.DeletePage(parent.Id))
+
+		gotChild, err := s.GetPage(child.Id, false)
+		require.NoError(t, err)
+		require.Equal(t, parent.ParentId, gotChild.ParentId, "child must be reparented to the deleted page's parent")
+	})
+
+	t.Run("missing page returns not-found", func(t *testing.T) {
+		require.True(t, store.IsErrNotFound(s.DeletePage(mmmodel.NewId())))
+	})
+
+	t.Run("empty id returns invalid-input", func(t *testing.T) {
+		require.True(t, store.IsErrInvalidInput(s.DeletePage("")))
+	})
+}
+
+// TestRestorePage verifies restore: the page becomes live again, children promoted at delete
+// time stay put, and a live page is not restorable.
+func TestRestorePage(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+
+	t.Run("restores a soft-deleted page", func(t *testing.T) {
+		created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		require.NoError(t, err)
+
+		require.NoError(t, s.DeletePage(created.Id))
+		require.NoError(t, s.RestorePage(created.Id))
+
+		got, err := s.GetPage(created.Id, false)
+		require.NoError(t, err)
+		require.Zero(t, got.DeleteAt)
+	})
+
+	t.Run("leaves promoted children under the grandparent on restore", func(t *testing.T) {
+		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		require.NoError(t, err)
+		child, err := s.CreatePage(newPage(space.Id, channelID, userID, parent.Id))
+		require.NoError(t, err)
+
+		require.NoError(t, s.DeletePage(parent.Id))
+		promoted, err := s.GetPage(child.Id, false)
+		require.NoError(t, err)
+		require.Equal(t, parent.ParentId, promoted.ParentId)
+
+		require.NoError(t, s.RestorePage(parent.Id))
+
+		restored, err := s.GetPage(parent.Id, false)
+		require.NoError(t, err)
+		require.Zero(t, restored.DeleteAt)
+
+		// Matching Confluence: restore does not pull the child back; it stays promoted.
+		stillPromoted, err := s.GetPage(child.Id, false)
+		require.NoError(t, err)
+		require.Equal(t, parent.ParentId, stillPromoted.ParentId, "promoted child must stay under the grandparent after restore")
+	})
+
+	t.Run("a live page is not restorable", func(t *testing.T) {
+		live, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		require.NoError(t, err)
+		require.True(t, store.IsErrNotFound(s.RestorePage(live.Id)))
+	})
+}
+
+// TestRestorePageRejectsDeletedSpace verifies a page cannot be restored once its space is
+// deleted — there is nowhere live to restore it into.
+func TestRestorePageRejectsDeletedSpace(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+	page, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeletePage(page.Id))
+	require.NoError(t, s.DeleteSpace(space.Id))
+
+	require.True(t, store.IsErrNotFound(s.RestorePage(page.Id)), "must not restore into a deleted space")
+}
+
+// TestRestorePageFallsBackToRootWhenParentDeleted verifies that if the original parent is
+// gone, restore lands the page at the space root instead of failing (matching Confluence).
+func TestRestorePageFallsBackToRootWhenParentDeleted(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+	parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	require.NoError(t, err)
+	child, err := s.CreatePage(newPage(space.Id, channelID, userID, parent.Id))
+	require.NoError(t, err)
+
+	// Delete the child, then the parent; restoring the child now falls back to root.
+	require.NoError(t, s.DeletePage(child.Id))
+	require.NoError(t, s.DeletePage(parent.Id))
+
+	require.NoError(t, s.RestorePage(child.Id), "restore must succeed by falling back to root")
+
+	restored, err := s.GetPage(child.Id, false)
+	require.NoError(t, err)
+	require.Zero(t, restored.DeleteAt)
+	require.Empty(t, restored.ParentId, "child must be restored at the space root when its parent is gone")
+}
+
+// TestRestorePageAppendsAtEndOfSiblingGroup verifies a restored page is appended at the end of
+// its destination group, not given back its stale pre-delete SortOrder (now held by a promoted child).
+func TestRestorePageAppendsAtEndOfSiblingGroup(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+
+	// Grandparent g with children a, p (SortOrder 1, 2). p has children c1, c2.
+	g, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	require.NoError(t, err)
+	a, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id))
+	require.NoError(t, err)
+	p, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id))
+	require.NoError(t, err)
+	c1, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id))
+	require.NoError(t, err)
+	c2, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id))
+	require.NoError(t, err)
+
+	// Delete p: c1, c2 are promoted into p's old slot, so g's children become a, c1, c2.
+	require.NoError(t, s.DeletePage(p.Id))
+	require.Equal(t, []string{a.Id, c1.Id, c2.Id}, idsOf(mustChildren(t, s, g.Id)),
+		"sanity: promoted children take the deleted page's slot")
+
+	// Restore p: it must append at the end (a, c1, c2, p), not reclaim its stale slot 2.
+	require.NoError(t, s.RestorePage(p.Id))
+	children := mustChildren(t, s, g.Id)
+	require.Equal(t, []string{a.Id, c1.Id, c2.Id, p.Id}, idsOf(children),
+		"restored page must be appended at the end of the sibling group")
+
+	// No two live siblings may share a SortOrder, or the listing order would be unstable.
+	seen := make(map[int64]bool, len(children))
+	for _, c := range children {
+		require.False(t, seen[c.SortOrder], "SortOrder %d reused across live siblings", c.SortOrder)
+		seen[c.SortOrder] = true
+	}
+}
+
+// TestDeleteRestoreAdvancesEditAt verifies the CAS token (EditAt) advances across a delete+restore
+// cycle, so a client holding the pre-delete token still hits a conflict instead of clobbering state.
+func TestDeleteRestoreAdvancesEditAt(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+
+	created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeletePage(created.Id))
+	require.NoError(t, s.RestorePage(created.Id))
+
+	restored, err := s.GetPage(created.Id, false)
+	require.NoError(t, err)
+	require.Greater(t, restored.EditAt, created.EditAt, "EditAt must advance across delete+restore")
+
+	// A write carrying the pre-delete EditAt is now stale and must conflict.
+	stale := created.Clone()
+	stale.Title = "Stale Through Restore"
+	stale.LastModifiedBy = userID
+	_, conflictErr := s.UpdatePage(stale)
+	require.True(t, store.IsErrConflict(conflictErr),
+		"update with pre-delete EditAt must return ErrConflict; got %v", conflictErr)
+}
+
+// TestDeletePageCreateChildConcurrency stresses the create-vs-delete race: a page is deleted
+// while a child is concurrently created under it. The FOR UPDATE lock on the target row holds
+// the "no live page under a deleted parent" invariant — the create either loses or is promoted.
+func TestDeletePageCreateChildConcurrency(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+
+	for i := range 25 {
+		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		require.NoError(t, err)
+
+		var wg sync.WaitGroup
+		var delErr, createErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			delErr = s.DeletePage(parent.Id)
+		}()
+		go func() {
+			defer wg.Done()
+			_, createErr = s.CreatePage(newPage(space.Id, channelID, userID, parent.Id))
+		}()
+		wg.Wait()
+
+		// The delete must always succeed, else the invariant check passes trivially.
+		require.NoError(t, delErr, "delete must succeed (iteration %d)", i)
+		// The create either won the race or lost it (parent already gone → invalid input).
+		if createErr != nil {
+			require.True(t, store.IsErrInvalidInput(createErr),
+				"losing create must return invalid-parent; got %v (iteration %d)", createErr, i)
+		}
+
+		children, err := s.GetPageChildren(parent.Id, 0, 100)
+		require.NoError(t, err)
+		require.Empty(t, children, "a live child must never remain under a deleted parent (iteration %d)", i)
+	}
+}
+
+// TestDeletePagePromotedChildrenTakeDeletedPosition verifies promoted children take the deleted
+// page's slot (in their original order), not their old SortOrder from the removed sibling group.
+func TestDeletePagePromotedChildrenTakeDeletedPosition(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+
+	// Grandparent with three children created in order a, b, p (SortOrder 1, 2, 3).
+	g, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	require.NoError(t, err)
+	a, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id))
+	require.NoError(t, err)
+	b, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id))
+	require.NoError(t, err)
+	p, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id))
+	require.NoError(t, err)
+
+	// p's own children (SortOrder 1, 2). Their low order is exactly what would hoist them
+	// above b if it leaked into g's sibling group.
+	c1, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id))
+	require.NoError(t, err)
+	c2, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id))
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeletePage(p.Id))
+
+	children, err := s.GetPageChildren(g.Id, 0, 100)
+	require.NoError(t, err)
+	got := make([]string, len(children))
+	for i, c := range children {
+		got[i] = c.Id
+	}
+	// Expect a, b, then c1, c2 at p's old position — not a, c1, c2, b.
+	require.Equal(t, []string{a.Id, b.Id, c1.Id, c2.Id}, got,
+		"promoted children must take the deleted page's position in their original relative order")
+}
+
+// TestDeletePagePreservesReorderedChildBlock verifies a manual child reordering survives the
+// parent's deletion: the promoted children land as a block at the deleted slot in that order.
+func TestDeletePagePreservesReorderedChildBlock(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+
+	// Grandparent with children a, p, d (SortOrder 1, 2, 3); d sits after the page to be
+	// deleted, so it must shift to make room for p's child block.
+	g, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	require.NoError(t, err)
+	a, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id))
+	require.NoError(t, err)
+	p, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id))
+	require.NoError(t, err)
+	d, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id))
+	require.NoError(t, err)
+
+	// p's children c1, c2 created in order, then manually reordered so c2 precedes c1.
+	c1, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id))
+	require.NoError(t, err)
+	c2, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id))
+	require.NoError(t, err)
+
+	pChildren, err := s.GetPageChildren(p.Id, 0, 0)
+	require.NoError(t, err)
+	require.Equal(t, []string{c1.Id, c2.Id}, idsOf(pChildren), "sanity: creation order before reorder")
+	// Move c1 after c2 by raising its SortOrder, leaving CreateAt untouched.
+	pChildren[0].SortOrder = pChildren[1].SortOrder + 1
+	_, err = s.UpdatePage(pChildren[0])
+	require.NoError(t, err)
+	require.Equal(t, []string{c2.Id, c1.Id}, idsOf(mustChildren(t, s, p.Id)), "sanity: reordered to c2, c1")
+
+	require.NoError(t, s.DeletePage(p.Id))
+
+	// The reordered block (c2, c1) lands at p's old slot, and d is shifted after it.
+	require.Equal(t, []string{a.Id, c2.Id, c1.Id, d.Id}, idsOf(mustChildren(t, s, g.Id)),
+		"reordered children must keep their order as a block at the deleted page's position")
+}
+
+// TestDeletePageDeleteSpaceNoDeadlock runs DeletePage and DeleteSpace concurrently many times.
+// Both lock space-before-page, so neither should ever deadlock; the only outcomes are success
+// or not-found. A lock-order regression would surface as a "deadlock detected" error.
+func TestDeletePageDeleteSpaceNoDeadlock(t *testing.T) {
+	s := openTestDB(t)
+	userID := mmmodel.NewId()
+
+	for i := range 25 {
+		channelID := mmmodel.NewId()
+		space, err := s.CreateSpace(newSpace(channelID))
+		require.NoError(t, err)
+		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		require.NoError(t, err)
+		// Load-bearing: the child makes DeletePage lock child rows — the same rows
+		// DeleteSpace's cascade locks, the precise contention a regression would deadlock on.
+		// Do not remove it.
+		_, err = s.CreatePage(newPage(space.Id, channelID, userID, parent.Id))
+		require.NoError(t, err)
+
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		wg.Add(2)
+		go func() { defer wg.Done(); errs[0] = s.DeletePage(parent.Id) }()
+		go func() { defer wg.Done(); errs[1] = s.DeleteSpace(space.Id) }()
+		wg.Wait()
+
+		for idx, e := range errs {
+			if e != nil {
+				require.Truef(t, store.IsErrNotFound(e), "iteration %d op %d: expected nil or not-found (no deadlock), got %v", i, idx, e)
+			}
+		}
+	}
 }

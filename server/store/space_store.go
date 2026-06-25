@@ -177,6 +177,8 @@ func (s *Store) DeleteSpace(id string) (err error) {
 	}
 	defer s.finalizeTransaction(tx, &err)
 
+	// Lock the space before its pages (space-before-page order) so page ops never deadlock
+	// with this cascade.
 	spaceQuery := s.getQueryBuilder().
 		Update("DOCS_Space").
 		Set("DeleteAt", now).

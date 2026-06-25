@@ -205,3 +205,50 @@ func (s *Service) UpdatePageWithOptimisticLocking(pageID string, patch *model.Pa
 		return nil, mmmodel.NewAppError("UpdatePageWithOptimisticLocking", "app.page.update.store_error.app_error", nil, "", http.StatusInternalServerError).Wrap(storeErr)
 	}
 }
+
+// GetPageWithDeleted fetches a page including soft-deleted rows, for restore flows.
+func (s *Service) GetPageWithDeleted(pageID string) (*model.Page, *mmmodel.AppError) {
+	if !mmmodel.IsValidId(pageID) {
+		return nil, mmmodel.NewAppError("GetPageWithDeleted", "app.page.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	page, err := s.store.GetPage(pageID, true)
+	if err != nil {
+		return nil, storeAppError("GetPageWithDeleted", "app.page.get", err)
+	}
+	// Version snapshots (OriginalId != "") are soft-deleted but not restorable; treat as not found.
+	if page.OriginalId != "" {
+		return nil, mmmodel.NewAppError("GetPageWithDeleted", "app.page.get.not_found.app_error", nil, "", http.StatusNotFound)
+	}
+	return page, nil
+}
+
+// DeletePage soft-deletes a page; the store promotes its live children to the page's parent
+// (not undone on restore, matching Confluence).
+func (s *Service) DeletePage(pageID string) *mmmodel.AppError {
+	if !mmmodel.IsValidId(pageID) {
+		return mmmodel.NewAppError("DeletePage", "app.page.delete.invalid_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	if delErr := s.store.DeletePage(pageID); delErr != nil {
+		return storeAppError("DeletePage", "app.page.delete", delErr)
+	}
+	return nil
+}
+
+// RestorePage un-deletes a soft-deleted page; promoted children stay put (matching
+// Confluence), and the page returns under its original parent or the space root if it's gone.
+func (s *Service) RestorePage(pageID string) *mmmodel.AppError {
+	if !mmmodel.IsValidId(pageID) {
+		return mmmodel.NewAppError("RestorePage", "app.page.restore.invalid_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	page, err := s.store.GetPage(pageID, true)
+	if err != nil {
+		return storeAppError("RestorePage", "app.page.restore", err)
+	}
+	if page.DeleteAt == 0 {
+		return mmmodel.NewAppError("RestorePage", "app.page.restore.not_deleted.app_error", nil, "", http.StatusBadRequest)
+	}
+	if restoreErr := s.store.RestorePage(page.Id); restoreErr != nil {
+		return storeAppError("RestorePage", "app.page.restore", restoreErr)
+	}
+	return nil
+}
