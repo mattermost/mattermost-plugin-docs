@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -61,8 +61,16 @@ func openTestService(t *testing.T) *testHarness {
 	require.NoError(t, err, "open base postgres")
 	t.Cleanup(func() { _ = baseDB.Close() })
 	require.NoError(t, baseDB.Ping(), "ping base postgres")
-	_, err = baseDB.Exec("CREATE SCHEMA " + schema)
+	_, err = baseDB.Exec("CREATE SCHEMA " + pq.QuoteIdentifier(schema))
 	require.NoError(t, err, "create test schema")
+	// Register schema teardown immediately so it still runs if a later setup step fails.
+	t.Cleanup(func() {
+		dropDB, dropErr := sql.Open("postgres", dsn)
+		if dropErr == nil {
+			_, _ = dropDB.Exec("DROP SCHEMA IF EXISTS " + pq.QuoteIdentifier(schema) + " CASCADE")
+			_ = dropDB.Close()
+		}
+	})
 
 	schemaDSN := addSearchPath(dsn, schema)
 
@@ -72,21 +80,13 @@ func openTestService(t *testing.T) *testHarness {
 
 	s, err := store.New(db, "postgres")
 	require.NoError(t, err, "create store")
+	t.Cleanup(func() { _ = s.Close() })
 	require.NoError(t, s.RunMigrations(), "run migrations")
 
 	// Service is created without a pluginapi client: all tests that need
 	// pluginapi (e.g. CreateChannel for Type='W') mock via the service's
 	// channel-creation path. For store-only tests nil client is fine.
 	svc := app.New(s, nil)
-
-	t.Cleanup(func() {
-		_ = s.Close()
-		dropDB, dropErr := sql.Open("postgres", dsn)
-		if dropErr == nil {
-			_, _ = dropDB.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE")
-			_ = dropDB.Close()
-		}
-	})
 
 	return &testHarness{svc: svc, store: s}
 }

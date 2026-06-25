@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -45,8 +45,17 @@ func openTestDB(t *testing.T) *store.Store {
 	require.NoError(t, err, "open base postgres")
 	t.Cleanup(func() { _ = baseDB.Close() })
 	require.NoError(t, baseDB.Ping(), "ping base postgres")
-	_, err = baseDB.Exec("CREATE SCHEMA " + schema)
+	_, err = baseDB.Exec("CREATE SCHEMA " + pq.QuoteIdentifier(schema))
 	require.NoError(t, err, "create test schema")
+	// Register schema teardown immediately so it still runs if a later setup step fails.
+	t.Cleanup(func() {
+		// Drop the isolated schema using a fresh connection so it always runs.
+		dropDB, dropErr := sql.Open("postgres", dsn)
+		if dropErr == nil {
+			_, _ = dropDB.Exec("DROP SCHEMA IF EXISTS " + pq.QuoteIdentifier(schema) + " CASCADE")
+			_ = dropDB.Close()
+		}
+	})
 
 	// Rebuild DSN with search_path set so every pooled connection uses the schema.
 	schemaDSN := addSearchPath(dsn, schema)
@@ -57,17 +66,8 @@ func openTestDB(t *testing.T) *store.Store {
 
 	s, err := store.New(db, "postgres")
 	require.NoError(t, err, "create store")
+	t.Cleanup(func() { _ = s.Close() })
 	require.NoError(t, s.RunMigrations(), "run migrations")
-
-	t.Cleanup(func() {
-		_ = s.Close()
-		// Drop the isolated schema using a fresh connection so it always runs.
-		dropDB, dropErr := sql.Open("postgres", dsn)
-		if dropErr == nil {
-			_, _ = dropDB.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE")
-			_ = dropDB.Close()
-		}
-	})
 
 	return s
 }

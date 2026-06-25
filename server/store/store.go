@@ -8,7 +8,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
-	"path/filepath"
+	"path"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -98,7 +98,7 @@ func (s *Store) RunMigrations() error {
 	}
 
 	src, err := embedded.WithInstance(embedded.Resource(names, func(name string) ([]byte, error) {
-		return migrations.ReadFile(filepath.Join("migrations", name))
+		return migrations.ReadFile(path.Join("migrations", name))
 	}))
 	if err != nil {
 		return errors.Wrap(err, "failed to create morph embedded source")

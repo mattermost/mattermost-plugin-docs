@@ -14,8 +14,6 @@ func (p *Plugin) initRouter() *mux.Router {
 	// Middleware to require that the user is logged in
 	router.Use(p.MattermostAuthorizationRequired)
 
-	router.PathPrefix("/api/v1").Subrouter()
-
 	return router
 }
 

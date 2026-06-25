@@ -52,6 +52,12 @@ func deepCloneAny(v any) any {
 			out[k] = deepCloneAny(vv)
 		}
 		return out
+	case mmmodel.StringInterface:
+		out := make(mmmodel.StringInterface, len(x))
+		for k, vv := range x {
+			out[k] = deepCloneAny(vv)
+		}
+		return out
 	case []any:
 		out := make([]any, len(x))
 		for i, vv := range x {

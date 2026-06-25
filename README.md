@@ -6,7 +6,7 @@ Docs for Mattermost — hierarchical pages, rich-text editing, comments, version
 
 ### Build
 
-```
+```bash
 make dist
 ```
 
@@ -14,7 +14,7 @@ This builds the server binaries and the webapp bundle and packages them into a `
 
 ### Deploy to a local server
 
-```
+```bash
 make deploy
 ```
 
@@ -22,7 +22,7 @@ Builds and uploads the plugin to a local Mattermost server via `pluginctl`. Conf
 
 ### Test and lint
 
-```
+```bash
 make test
 make check-style
 ```
