@@ -331,9 +331,10 @@ func (s *Store) DeletePage(pageID string) (err error) {
 		ParentID  string
 		SortOrder int64
 		ChannelID string
+		CreateAt  int64
 	}
 	pageLockQuery := s.getQueryBuilder().
-		Select("ParentId", "SortOrder", "ChannelId").
+		Select("ParentId", "SortOrder", "ChannelId", "CreateAt").
 		From("DOCS_Page").
 		Where(sq.And{
 			sq.Eq{"Id": pageID},
@@ -375,7 +376,14 @@ func (s *Store) DeletePage(pageID string) (err error) {
 				Set("EditAt", sq.Expr("GREATEST(EditAt + 1, ?)", now)).
 				Where(sq.And{
 					sq.Eq{"ChannelId": deleted.ChannelID, "ParentId": deleted.ParentID, "DeleteAt": 0},
-					sq.Gt{"SortOrder": deleted.SortOrder},
+					// Match GetPageChildren's (SortOrder, CreateAt, Id) order: SortOrder is
+					// non-unique, so also shift siblings that tie on SortOrder but sort after
+					// the deleted page on the CreateAt/Id tie-breakers.
+					sq.Or{
+						sq.Gt{"SortOrder": deleted.SortOrder},
+						sq.Expr("(SortOrder = ? AND (CreateAt > ? OR (CreateAt = ? AND Id > ?)))",
+							deleted.SortOrder, deleted.CreateAt, deleted.CreateAt, pageID),
+					},
 				})
 			if _, txErr := s.execBuilder(tx, shiftQuery); txErr != nil {
 				return errors.Wrap(txErr, "failed to make room for child block")
