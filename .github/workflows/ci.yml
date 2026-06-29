@@ -11,12 +11,13 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   lint:
     if: ${{ github.repository_owner == 'mattermost' || github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -28,7 +29,6 @@ jobs:
         uses: mattermost/actions/plugin-ci/setup@0256d363493a1e6b9e361ea788c62a0a73bc00be
         with:
           go-version-file: go.mod
-          golangci-lint-version: "v1.55.2"
 
       - name: ci/lint
         uses: mattermost/actions/plugin-ci/lint@0256d363493a1e6b9e361ea788c62a0a73bc00be
@@ -36,6 +36,8 @@ jobs:
   test:
     if: ${{ github.repository_owner == 'mattermost' || github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # The store and service tests require a real Postgres (PG14+ for the
     # hierarchy CYCLE clause) and never skip; the default test DSN is
     # postgres://mmuser:mostest@localhost:5432/mattermost_test.
@@ -72,6 +74,8 @@ jobs:
   build:
     if: ${{ github.repository_owner == 'mattermost' || github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -91,6 +95,9 @@ jobs:
     if: ${{ github.repository_owner == 'mattermost' && github.event_name != 'schedule' && (github.ref_name == 'master' || github.ref_name == 'main') }}
     runs-on: ubuntu-latest
     needs: [lint, test, build]
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: ci/download-artifact
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
