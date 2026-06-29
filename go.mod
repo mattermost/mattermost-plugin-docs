@@ -11,6 +11,7 @@ require (
 	github.com/mattermost/squirrel v0.5.0
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.11.1
+	github.com/wiggin77/merror v1.0.5
 )
 
 require (
@@ -55,7 +56,6 @@ require (
 	github.com/tinylib/msgp v1.4.0 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
-	github.com/wiggin77/merror v1.0.5 // indirect
 	github.com/wiggin77/srslog v1.0.1 // indirect
 	golang.org/x/crypto v0.43.0 // indirect
 	golang.org/x/exp v0.0.0-20250506013437-ce4c2cf36ca6 // indirect

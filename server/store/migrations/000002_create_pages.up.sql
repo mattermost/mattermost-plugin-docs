@@ -50,3 +50,9 @@ CREATE INDEX IF NOT EXISTS idx_docs_page_originalid ON DOCS_Page (OriginalId) WH
 -- OriginalId='' AND DeleteAt=0, ordered by (CreateAt DESC, Id DESC). The trailing sort
 -- columns make the paginated listing an index scan with limit (no filesort).
 CREATE INDEX IF NOT EXISTS idx_docs_page_spaceid ON DOCS_Page (SpaceId, CreateAt DESC, Id DESC) WHERE OriginalId = '' AND DeleteAt = 0;
+
+-- Restore/cascade bookkeeping over soft-deleted, non-snapshot pages: DeleteSpace reads
+-- MAX(DeleteAt) per space to pick a unique cascade stamp, and RestoreSpace updates pages by
+-- (SpaceId, OriginalId='', DeleteAt=<stamp>). idx_docs_page_spaceid is partial on DeleteAt=0
+-- so it cannot serve either; this partial index covers the soft-deleted rows they touch.
+CREATE INDEX IF NOT EXISTS idx_docs_page_spaceid_deleted ON DOCS_Page (SpaceId, DeleteAt) WHERE OriginalId = '' AND DeleteAt > 0;

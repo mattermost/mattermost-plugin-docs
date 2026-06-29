@@ -13,6 +13,9 @@ import (
 
 // GetPageChildren fetches direct live children of a page.
 func (s *Service) GetPageChildren(pageID string, page, perPage int) ([]*model.Page, *mmmodel.AppError) {
+	if !mmmodel.IsValidId(pageID) {
+		return nil, mmmodel.NewAppError("GetPageChildren", "app.page.get_children.invalid_id.app_error", nil, "", http.StatusBadRequest)
+	}
 	if _, err := s.GetPage(pageID); err != nil {
 		return nil, err
 	}
@@ -26,6 +29,9 @@ func (s *Service) GetPageChildren(pageID string, page, perPage int) ([]*model.Pa
 
 // GetPageAncestors fetches all ancestors of a page up to the root.
 func (s *Service) GetPageAncestors(pageID string) ([]*model.Page, *mmmodel.AppError) {
+	if !mmmodel.IsValidId(pageID) {
+		return nil, mmmodel.NewAppError("GetPageAncestors", "app.page.get_ancestors.invalid_id.app_error", nil, "", http.StatusBadRequest)
+	}
 	if _, err := s.GetPage(pageID); err != nil {
 		return nil, err
 	}
@@ -38,6 +44,9 @@ func (s *Service) GetPageAncestors(pageID string) ([]*model.Page, *mmmodel.AppEr
 
 // GetPageDescendants fetches all descendants of a page (entire subtree).
 func (s *Service) GetPageDescendants(pageID string) ([]*model.Page, *mmmodel.AppError) {
+	if !mmmodel.IsValidId(pageID) {
+		return nil, mmmodel.NewAppError("GetPageDescendants", "app.page.get_descendants.invalid_id.app_error", nil, "", http.StatusBadRequest)
+	}
 	if _, err := s.GetPage(pageID); err != nil {
 		return nil, err
 	}
@@ -46,18 +55,4 @@ func (s *Service) GetPageDescendants(pageID string) ([]*model.Page, *mmmodel.App
 		return nil, storeAppError("GetPageDescendants", "app.page.get_descendants", err)
 	}
 	return pages, nil
-}
-
-// GetSpaceIdForPage returns a page's space ID. An empty SpaceId means corrupt data, not a
-// recoverable case: resolving via the channel could return the wrong (current) space when
-// the page predates a soft-deleted-and-recreated space on that channel.
-func (s *Service) GetSpaceIdForPage(pageID string) (string, *mmmodel.AppError) {
-	page, err := s.GetPage(pageID)
-	if err != nil {
-		return "", err
-	}
-	if page.SpaceId == "" {
-		return "", mmmodel.NewAppError("GetSpaceIdForPage", "app.page.get_space_id.missing_space_id.app_error", nil, "page_id="+pageID, http.StatusInternalServerError)
-	}
-	return page.SpaceId, nil
 }

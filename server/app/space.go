@@ -5,6 +5,7 @@ package app
 
 import (
 	"net/http"
+	"unicode/utf8"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
@@ -41,7 +42,7 @@ func (s *Service) GetSpacesForTeam(teamID string, page, perPage int) ([]*model.S
 		return nil, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.invalid_team_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	offset, limit := paginationOffsetLimit(page, perPage)
-	spaces, err := s.store.GetSpacesForTeam(teamID, false, offset, limit)
+	spaces, err := s.store.GetSpacesForTeam(teamID, offset, limit)
 	if err != nil {
 		return nil, storeAppError("GetSpacesForTeam", "app.space.get_for_team", err)
 	}
@@ -51,7 +52,8 @@ func (s *Service) GetSpacesForTeam(teamID string, page, perPage int) ([]*model.S
 // UpdateSpace replaces a space's mutable fields (Title, Description, Icon, Props) —
 // full replacement, not partial merge. Callers must pass a complete space (typically
 // from GetSpace) with only the intended fields changed; zero values clear stored values.
-func (s *Service) UpdateSpace(space *model.Space) (*model.Space, *mmmodel.AppError) {
+// space.UpdateAt is the optimistic-lock baseline; force skips the check (last-write-wins).
+func (s *Service) UpdateSpace(space *model.Space, force bool) (*model.Space, *mmmodel.AppError) {
 	if space == nil {
 		return nil, mmmodel.NewAppError("UpdateSpace", "app.space.update.nil_input.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -64,7 +66,14 @@ func (s *Service) UpdateSpace(space *model.Space) (*model.Space, *mmmodel.AppErr
 	}
 	space.Title = title
 
-	updated, err := s.store.UpdateSpace(space)
+	if utf8.RuneCountInString(space.Description) > model.SpaceDescriptionMaxRunes {
+		return nil, mmmodel.NewAppError("UpdateSpace", "app.space.update.description_too_long.app_error", map[string]any{"MaxLength": model.SpaceDescriptionMaxRunes}, "", http.StatusBadRequest)
+	}
+	if len(space.Icon) > model.SpaceIconMaxBytes {
+		return nil, mmmodel.NewAppError("UpdateSpace", "app.space.update.icon_too_large.app_error", map[string]any{"MaxBytes": model.SpaceIconMaxBytes}, "", http.StatusBadRequest)
+	}
+
+	updated, err := s.store.UpdateSpace(space, force)
 	if err != nil {
 		return nil, storeAppError("UpdateSpace", "app.space.update", err)
 	}
@@ -83,8 +92,33 @@ func (s *Service) DeleteSpace(spaceID string) *mmmodel.AppError {
 	return nil
 }
 
+// RestoreSpace un-deletes a soft-deleted space and the pages its deletion cascaded. Returns
+// 409 if another live space now owns the backing channel. Backing-channel un-archive is not
+// wired yet (mirrors DeleteSpace).
+func (s *Service) RestoreSpace(spaceID string) *mmmodel.AppError {
+	if !mmmodel.IsValidId(spaceID) {
+		return mmmodel.NewAppError("RestoreSpace", "app.space.restore.invalid_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	// A live space cannot be restored. GetSpace filters DeleteAt=0, so a nil error means the
+	// space is already live: return 400 not_deleted (mirroring RestorePage) instead of letting
+	// the store's DeleteAt!=0 filter surface as a misleading 404. A real lookup failure (not a
+	// plain "not live") is surfaced as-is rather than masked by the restore.
+	if _, liveErr := s.GetSpace(spaceID); liveErr == nil {
+		return mmmodel.NewAppError("RestoreSpace", "app.space.restore.not_deleted.app_error", nil, "", http.StatusBadRequest)
+	} else if liveErr.StatusCode != http.StatusNotFound {
+		return liveErr
+	}
+	if err := s.store.RestoreSpace(spaceID); err != nil {
+		return storeAppError("RestoreSpace", "app.space.restore", err)
+	}
+	return nil
+}
+
 // GetSpacePages returns paginated pages for a space. perPage <= 0 returns all pages.
 func (s *Service) GetSpacePages(spaceID string, page, perPage int) ([]*model.Page, *mmmodel.AppError) {
+	if !mmmodel.IsValidId(spaceID) {
+		return nil, mmmodel.NewAppError("GetSpacePages", "app.space.get_pages.invalid_space_id.app_error", nil, "", http.StatusBadRequest)
+	}
 	if _, err := s.GetSpace(spaceID); err != nil {
 		return nil, err
 	}

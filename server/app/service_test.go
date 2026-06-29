@@ -10,17 +10,15 @@ package app_test
 import (
 	"database/sql"
 	"net/http"
-	"net/url"
-	"os"
 	"strings"
 	"testing"
 
-	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/app"
+	"github.com/mattermost/mattermost-plugin-docs/server/internal/testutil"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
@@ -32,77 +30,28 @@ import (
 type testHarness struct {
 	svc   *app.Service
 	store *store.Store
+	// db is the schema-scoped handle, exposed so tests can seed states the public
+	// store API forbids (e.g. version snapshots: OriginalId set + soft-deleted).
+	db *sql.DB
 }
-
-// defaultTestDSN matches the Mattermost convention (storetest.MakeSqlSettings):
-// the standard local dev Postgres. Tests default to it rather than skipping.
-const defaultTestDSN = "postgres://mmuser:mostest@localhost:5432/mattermost_test?sslmode=disable" //nolint:gosec // G101: well-known local test DSN (same as MM-core storetest), not a secret
 
 // openTestService opens an isolated Postgres schema, runs migrations, and returns
 // the harness. The schema is dropped by t.Cleanup.
 func openTestService(t *testing.T) *testHarness {
 	t.Helper()
 
-	dsn := os.Getenv("MM_SQLSETTINGS_DATASOURCE")
-	if dsn == "" {
-		dsn = os.Getenv("TEST_DATABASE_DSN")
-	}
-	if dsn == "" {
-		// No env override: fall back to the standard local dev Postgres. These tests
-		// must never pass by skipping — a green run that exercised nothing is worse than
-		// a red one — so a missing DB fails the connection checks below, it never skips.
-		dsn = defaultTestDSN
-	}
-
-	schema := "docs_svc_" + mmmodel.NewId()
-
-	// Create the schema in the base DB.
-	baseDB, err := sql.Open("postgres", dsn)
-	require.NoError(t, err, "open base postgres")
-	t.Cleanup(func() { _ = baseDB.Close() })
-	require.NoError(t, baseDB.Ping(), "ping base postgres")
-	_, err = baseDB.Exec("CREATE SCHEMA " + pq.QuoteIdentifier(schema))
-	require.NoError(t, err, "create test schema")
-	// Register schema teardown immediately so it still runs if a later setup step fails.
-	t.Cleanup(func() {
-		dropDB, dropErr := sql.Open("postgres", dsn)
-		if dropErr == nil {
-			_, _ = dropDB.Exec("DROP SCHEMA IF EXISTS " + pq.QuoteIdentifier(schema) + " CASCADE")
-			_ = dropDB.Close()
-		}
-	})
-
-	schemaDSN := addSearchPath(dsn, schema)
-
-	db, err := sql.Open("postgres", schemaDSN)
-	require.NoError(t, err, "open schema-scoped postgres")
-	require.NoError(t, db.Ping(), "ping schema-scoped postgres")
+	db := testutil.OpenSchemaDB(t, "docs_svc_")
 
 	s, err := store.New(db, "postgres")
 	require.NoError(t, err, "create store")
 	t.Cleanup(func() { _ = s.Close() })
 	require.NoError(t, s.RunMigrations(), "run migrations")
 
-	// Service is created without a pluginapi client: all tests that need
-	// pluginapi (e.g. CreateChannel for Type='W') mock via the service's
-	// channel-creation path. For store-only tests nil client is fine.
+	// nil pluginapi client: these tests seed data directly through the store and
+	// never exercise the client, so no mock is needed.
 	svc := app.New(s, nil)
 
-	return &testHarness{svc: svc, store: s}
-}
-
-// addSearchPath appends (or replaces) the search_path query parameter in a
-// postgres DSN so that every connection in the pool uses the given schema.
-// Handles both URL-form DSNs (postgres://…) and libpq key=value DSNs.
-func addSearchPath(dsn, schema string) string {
-	u, err := url.Parse(dsn)
-	if err != nil || u.Scheme == "" {
-		return dsn + " options='-c search_path=" + schema + "'"
-	}
-	q := u.Query()
-	q.Set("search_path", schema)
-	u.RawQuery = q.Encode()
-	return u.String()
+	return &testHarness{svc: svc, store: s, db: db}
 }
 
 // helpers to create test data directly on the store (bypassing business logic where the
@@ -173,19 +122,19 @@ func TestServiceUpdateSpace(t *testing.T) {
 	t.Run("successful update", func(t *testing.T) {
 		space := mustCreateSpace(t, h.store, mmmodel.NewId())
 		space.Title = "Updated"
-		updated, err := h.svc.UpdateSpace(space)
+		updated, err := h.svc.UpdateSpace(space, false)
 		require.Nil(t, err)
 		require.Equal(t, "Updated", updated.Title)
 	})
 
 	t.Run("nil space rejected with 400", func(t *testing.T) {
-		_, err := h.svc.UpdateSpace(nil)
+		_, err := h.svc.UpdateSpace(nil, false)
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	})
 
 	t.Run("invalid id rejected with 400", func(t *testing.T) {
-		_, err := h.svc.UpdateSpace(&model.Space{Id: "not-an-id", Title: "x"})
+		_, err := h.svc.UpdateSpace(&model.Space{Id: "not-an-id", Title: "x"}, false)
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	})
@@ -194,7 +143,7 @@ func TestServiceUpdateSpace(t *testing.T) {
 		space := mustCreateSpace(t, h.store, mmmodel.NewId())
 		clone := *space
 		clone.Title = "   "
-		_, err := h.svc.UpdateSpace(&clone)
+		_, err := h.svc.UpdateSpace(&clone, false)
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	})
@@ -203,9 +152,29 @@ func TestServiceUpdateSpace(t *testing.T) {
 		space := mustCreateSpace(t, h.store, mmmodel.NewId())
 		clone := *space
 		clone.Title = strings.Repeat("a", model.SpaceTitleMaxRunes+1)
-		_, err := h.svc.UpdateSpace(&clone)
+		_, err := h.svc.UpdateSpace(&clone, false)
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
+	})
+
+	t.Run("description over max runes rejected with 400", func(t *testing.T) {
+		space := mustCreateSpace(t, h.store, mmmodel.NewId())
+		clone := *space
+		clone.Description = strings.Repeat("a", model.SpaceDescriptionMaxRunes+1)
+		_, err := h.svc.UpdateSpace(&clone, false)
+		require.NotNil(t, err)
+		require.Equal(t, http.StatusBadRequest, err.StatusCode)
+		require.Equal(t, "app.space.update.description_too_long.app_error", err.Id)
+	})
+
+	t.Run("icon over max bytes rejected with 400", func(t *testing.T) {
+		space := mustCreateSpace(t, h.store, mmmodel.NewId())
+		clone := *space
+		clone.Icon = strings.Repeat("a", model.SpaceIconMaxBytes+1)
+		_, err := h.svc.UpdateSpace(&clone, false)
+		require.NotNil(t, err)
+		require.Equal(t, http.StatusBadRequest, err.StatusCode)
+		require.Equal(t, "app.space.update.icon_too_large.app_error", err.Id)
 	})
 }
 
@@ -237,7 +206,7 @@ func TestServiceCreatePageParentDifferentSpace(t *testing.T) {
 func TestServiceUpdatePageNotFound(t *testing.T) {
 	h := openTestService(t)
 
-	_, err := h.svc.UpdatePageWithOptimisticLocking(mmmodel.NewId(), &model.PagePatch{Title: mmmodel.NewPointer("Title")}, 0, false, mmmodel.NewId())
+	_, err := h.svc.UpdatePage(mmmodel.NewId(), &model.PagePatch{Title: mmmodel.NewPointer("Title")}, 0, false, mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusNotFound, err.StatusCode)
 }
@@ -245,7 +214,7 @@ func TestServiceUpdatePageNotFound(t *testing.T) {
 func TestServiceUpdatePageInvalidID(t *testing.T) {
 	h := openTestService(t)
 
-	_, err := h.svc.UpdatePageWithOptimisticLocking("not-an-id", &model.PagePatch{Title: mmmodel.NewPointer("Title")}, 0, false, mmmodel.NewId())
+	_, err := h.svc.UpdatePage("not-an-id", &model.PagePatch{Title: mmmodel.NewPointer("Title")}, 0, false, mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 }
@@ -283,7 +252,7 @@ func TestServiceGetPage(t *testing.T) {
 	})
 }
 
-func TestServiceUpdatePageWithOptimisticLocking(t *testing.T) {
+func TestServiceUpdatePage(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
@@ -293,22 +262,102 @@ func TestServiceUpdatePageWithOptimisticLocking(t *testing.T) {
 
 	t.Run("first update succeeds", func(t *testing.T) {
 		// First update — baseEditAt matches (0 since freshly created)
-		updated, err := h.svc.UpdatePageWithOptimisticLocking(
-			created.Id, &model.PagePatch{Title: mmmodel.NewPointer("Locked Title"), Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`)}, created.EditAt, false, userID,
+		updated, err := h.svc.UpdatePage(
+			created.Id, &model.PagePatch{Title: mmmodel.NewPointer("Locked Title"), Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`), SearchText: mmmodel.NewPointer("")}, created.EditAt, false, userID,
 		)
 		require.Nil(t, err)
 		require.Equal(t, "Locked Title", updated.Title)
 
 		// Second update with stale baseEditAt — must conflict
-		_, err2 := h.svc.UpdatePageWithOptimisticLocking(
-			updated.Id, &model.PagePatch{Title: mmmodel.NewPointer("Conflict Title"), Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`)}, created.EditAt, false, userID,
+		_, err2 := h.svc.UpdatePage(
+			updated.Id, &model.PagePatch{Title: mmmodel.NewPointer("Conflict Title"), Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`), SearchText: mmmodel.NewPointer("")}, created.EditAt, false, userID,
 		)
 		require.NotNil(t, err2)
 		require.Equal(t, 409, err2.StatusCode)
 	})
 }
 
-func TestServiceUpdatePageWithOptimisticLockingForce(t *testing.T) {
+// TestServiceUpdatePageSearchTextWithoutBody covers the update-path guard rejecting a
+// SearchText change with no accompanying Body change: SearchText is the body's plain-text
+// projection, so the two must be patched together (both or neither).
+func TestServiceUpdatePageSearchTextWithoutBody(t *testing.T) {
+	h := openTestService(t)
+
+	channelID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+	userID := mmmodel.NewId()
+	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
+
+	_, err := h.svc.UpdatePage(
+		created.Id, &model.PagePatch{SearchText: mmmodel.NewPointer("some text")}, created.EditAt, false, userID,
+	)
+	require.NotNil(t, err)
+	require.Equal(t, http.StatusBadRequest, err.StatusCode)
+	require.Equal(t, "model.page.patch.search_text_body_mismatch.app_error", err.Id)
+}
+
+// TestServiceUpdatePageBodyWithoutSearchText covers the inverse: a Body change with no
+// accompanying SearchText would strand the GIN index on the page's old content, so the
+// update-path guard rejects it too (both or neither).
+func TestServiceUpdatePageBodyWithoutSearchText(t *testing.T) {
+	h := openTestService(t)
+
+	channelID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+	userID := mmmodel.NewId()
+	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
+
+	_, err := h.svc.UpdatePage(
+		created.Id, &model.PagePatch{Body: mmmodel.NewPointer("new body")}, created.EditAt, false, userID,
+	)
+	require.NotNil(t, err)
+	require.Equal(t, http.StatusBadRequest, err.StatusCode)
+	require.Equal(t, "model.page.patch.search_text_body_mismatch.app_error", err.Id)
+}
+
+// TestServiceUpdatePageSearchTextWithBodyCleared verifies that clearing Body to "" while
+// setting a non-empty SearchText is rejected: SearchText is the body's plain-text projection
+// and must not survive an emptied body (mirrors the create-path rule).
+func TestServiceUpdatePageSearchTextWithBodyCleared(t *testing.T) {
+	h := openTestService(t)
+
+	channelID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+	userID := mmmodel.NewId()
+	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
+
+	_, err := h.svc.UpdatePage(
+		created.Id,
+		&model.PagePatch{Body: mmmodel.NewPointer(""), SearchText: mmmodel.NewPointer("some text")},
+		created.EditAt, false, userID,
+	)
+	require.NotNil(t, err)
+	require.Equal(t, http.StatusBadRequest, err.StatusCode)
+	require.Equal(t, "model.page.patch.search_text_without_content.app_error", err.Id)
+}
+
+// TestServiceUpdatePageClearSearchTextAlone verifies the coupling rule: clearing SearchText
+// (to "") with no Body in the same patch is rejected, because SearchText and Body must move
+// together. Clearing both (Body="" and SearchText="") is the supported way to empty a page.
+func TestServiceUpdatePageClearSearchTextAlone(t *testing.T) {
+	h := openTestService(t)
+
+	channelID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+	userID := mmmodel.NewId()
+	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
+
+	_, err := h.svc.UpdatePage(
+		created.Id,
+		&model.PagePatch{SearchText: mmmodel.NewPointer("")},
+		created.EditAt, false, userID,
+	)
+	require.NotNil(t, err)
+	require.Equal(t, http.StatusBadRequest, err.StatusCode)
+	require.Equal(t, "model.page.patch.search_text_body_mismatch.app_error", err.Id)
+}
+
+func TestServiceUpdatePageForce(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
@@ -319,15 +368,15 @@ func TestServiceUpdatePageWithOptimisticLockingForce(t *testing.T) {
 	// First update to advance EditAt. Assert it succeeds: if it silently failed,
 	// EditAt would stay at created.EditAt and the force path below would pass
 	// trivially (nothing to override), proving nothing.
-	first, firstErr := h.svc.UpdatePageWithOptimisticLocking(
-		created.Id, &model.PagePatch{Title: mmmodel.NewPointer("First"), Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`)}, created.EditAt, false, userID,
+	first, firstErr := h.svc.UpdatePage(
+		created.Id, &model.PagePatch{Title: mmmodel.NewPointer("First"), Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`), SearchText: mmmodel.NewPointer("")}, created.EditAt, false, userID,
 	)
 	require.Nil(t, firstErr, "first update must succeed to establish a stale baseEditAt")
 	require.Greater(t, first.EditAt, created.EditAt, "EditAt must advance after the first update")
 
 	// Force update with the now-stale baseEditAt must still succeed.
-	forced, err := h.svc.UpdatePageWithOptimisticLocking(
-		created.Id, &model.PagePatch{Title: mmmodel.NewPointer("Forced"), Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`)}, created.EditAt, true, userID,
+	forced, err := h.svc.UpdatePage(
+		created.Id, &model.PagePatch{Title: mmmodel.NewPointer("Forced"), Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`), SearchText: mmmodel.NewPointer("")}, created.EditAt, true, userID,
 	)
 	require.Nil(t, err)
 	require.Equal(t, "Forced", forced.Title)
@@ -356,8 +405,8 @@ func TestServiceUpdatePageInvalidUserID(t *testing.T) {
 	space := mustCreateSpace(t, h.store, channelID)
 	created := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
-	t.Run("UpdatePageWithOptimisticLocking rejects malformed userID", func(t *testing.T) {
-		_, err := h.svc.UpdatePageWithOptimisticLocking(created.Id, &model.PagePatch{Title: mmmodel.NewPointer("Title")}, created.EditAt, false, "not-an-id")
+	t.Run("UpdatePage rejects malformed userID", func(t *testing.T) {
+		_, err := h.svc.UpdatePage(created.Id, &model.PagePatch{Title: mmmodel.NewPointer("Title")}, created.EditAt, false, "not-an-id")
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	})
@@ -425,18 +474,6 @@ func TestServiceGetPageDescendants(t *testing.T) {
 	require.Len(t, descendants, 2)
 }
 
-func TestServiceGetSpaceIdForPage(t *testing.T) {
-	h := openTestService(t)
-
-	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
-	created := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
-
-	spaceID, err := h.svc.GetSpaceIdForPage(created.Id)
-	require.Nil(t, err)
-	require.Equal(t, space.Id, spaceID)
-}
-
 func TestServiceGetSpacePages(t *testing.T) {
 	h := openTestService(t)
 
@@ -467,6 +504,17 @@ func TestServiceGetSpacePages(t *testing.T) {
 	})
 }
 
+// TestServiceGetSpacePagesInvalidID verifies that GetSpacePages with a malformed space ID
+// returns 400 with the expected error key.
+func TestServiceGetSpacePagesInvalidID(t *testing.T) {
+	h := openTestService(t)
+
+	_, err := h.svc.GetSpacePages("not-a-valid-id", 0, 0)
+	require.NotNil(t, err)
+	require.Equal(t, http.StatusBadRequest, err.StatusCode)
+	require.Equal(t, "app.space.get_pages.invalid_space_id.app_error", err.Id)
+}
+
 func TestServiceGetTeamSpaces(t *testing.T) {
 	h := openTestService(t)
 
@@ -480,6 +528,37 @@ func TestServiceGetTeamSpaces(t *testing.T) {
 	spaces, err := h.svc.GetSpacesForTeam(teamID, 0, 0)
 	require.Nil(t, err)
 	require.Len(t, spaces, 2)
+}
+
+// TestServiceGetTeamSpacesInvalidID verifies a malformed team id is rejected with 400.
+func TestServiceGetTeamSpacesInvalidID(t *testing.T) {
+	h := openTestService(t)
+	_, err := h.svc.GetSpacesForTeam("not-a-valid-id", 0, 0)
+	require.NotNil(t, err)
+	require.Equal(t, http.StatusBadRequest, err.StatusCode)
+	require.Equal(t, "app.space.get_for_team.invalid_team_id.app_error", err.Id)
+}
+
+// TestServiceGetPageAncestorsLimitExceeded verifies the store's ErrLimitExceeded for an
+// over-deep ancestor chain maps to HTTP 422 at the service layer. The chain is seeded
+// directly through the store, since the app-layer CreatePage depth cap is far lower.
+func TestServiceGetPageAncestorsLimitExceeded(t *testing.T) {
+	h := openTestService(t)
+
+	channelID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+	userID := mmmodel.NewId()
+
+	parentID := ""
+	var leaf *model.Page
+	for range store.MaxPageHierarchyDepth + 2 {
+		leaf = mustCreatePage(t, h.store, space.Id, channelID, userID, parentID)
+		parentID = leaf.Id
+	}
+
+	_, err := h.svc.GetPageAncestors(leaf.Id)
+	require.NotNil(t, err)
+	require.Equal(t, http.StatusUnprocessableEntity, err.StatusCode)
 }
 
 // TestServiceCreatePageDerivesChannelFromSpace verifies the page's ChannelId is
@@ -508,6 +587,20 @@ func TestServiceCreatePage(t *testing.T) {
 		_, err := h.svc.CreatePage(space.Id, "", "Title", "", "", userID, "not-a-valid-id")
 		require.NotNil(t, err)
 		require.Equal(t, 400, err.StatusCode)
+	})
+
+	t.Run("rejects invalid space id", func(t *testing.T) {
+		_, err := h.svc.CreatePage("not-a-valid-id", "", "Title", "", "", userID, "")
+		require.NotNil(t, err)
+		require.Equal(t, http.StatusBadRequest, err.StatusCode)
+		require.Equal(t, "app.page.create.invalid_space_id.app_error", err.Id)
+	})
+
+	t.Run("rejects invalid user id", func(t *testing.T) {
+		_, err := h.svc.CreatePage(space.Id, "", "Title", "", "", "not-a-valid-id", "")
+		require.NotNil(t, err)
+		require.Equal(t, http.StatusBadRequest, err.StatusCode)
+		require.Equal(t, "app.page.create.invalid_user_id.app_error", err.Id)
 	})
 
 	t.Run("rejects empty title", func(t *testing.T) {
@@ -601,20 +694,20 @@ func TestServiceGetPageEmptyID(t *testing.T) {
 	require.Equal(t, "app.page.get.invalid_id.app_error", err.Id)
 }
 
-// TestServiceUpdatePageWithOptimisticLockingNothingToUpdate verifies that the optimistic
+// TestServiceUpdatePageNothingToUpdate verifies that the optimistic
 // path rejects an empty-title + empty-content write with 400, rather than advancing edit
 // metadata for a no-op.
-func TestServiceUpdatePageWithOptimisticLockingNothingToUpdate(t *testing.T) {
+func TestServiceUpdatePageNothingToUpdate(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, channelID)
 	created := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
-	_, err := h.svc.UpdatePageWithOptimisticLocking(created.Id, &model.PagePatch{}, created.EditAt, false, mmmodel.NewId())
+	_, err := h.svc.UpdatePage(created.Id, &model.PagePatch{}, created.EditAt, false, mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	require.Equal(t, "app.page.update.nothing_to_update.app_error", err.Id)
+	require.Equal(t, "model.page.patch.nothing_to_update.app_error", err.Id)
 }
 
 // TestServiceUpdatePageOversizedBody verifies that the update path rejects a body that
@@ -627,7 +720,7 @@ func TestServiceUpdatePageOversizedBody(t *testing.T) {
 	created := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 	oversized := strings.Repeat("x", model.PageBodyMaxBytes+1)
-	_, err := h.svc.UpdatePageWithOptimisticLocking(created.Id, &model.PagePatch{Body: mmmodel.NewPointer(oversized)}, created.EditAt, false, mmmodel.NewId())
+	_, err := h.svc.UpdatePage(created.Id, &model.PagePatch{Body: mmmodel.NewPointer(oversized), SearchText: mmmodel.NewPointer("")}, created.EditAt, false, mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	require.Contains(t, err.Id, "body_too_long")
@@ -643,7 +736,7 @@ func TestServiceUpdatePageOversizedSearchText(t *testing.T) {
 	created := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 	oversized := strings.Repeat("x", model.PageSearchTextMaxBytes+1)
-	_, err := h.svc.UpdatePageWithOptimisticLocking(created.Id, &model.PagePatch{Title: mmmodel.NewPointer("Title"), Body: mmmodel.NewPointer("body"), SearchText: mmmodel.NewPointer(oversized)}, created.EditAt, false, mmmodel.NewId())
+	_, err := h.svc.UpdatePage(created.Id, &model.PagePatch{Title: mmmodel.NewPointer("Title"), Body: mmmodel.NewPointer("body"), SearchText: mmmodel.NewPointer(oversized)}, created.EditAt, false, mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	require.Equal(t, "app.page.update.search_text_too_long.app_error", err.Id)
@@ -664,25 +757,6 @@ func TestServiceCreatePageOversizedBody(t *testing.T) {
 	require.Contains(t, err.Id, "body_too_long")
 }
 
-// TestServiceUpdatePageWithOptimisticLockingSearchTextTooLong verifies the same
-// searchText cap on the optimistic-locking update path.
-func TestServiceUpdatePageWithOptimisticLockingSearchTextTooLong(t *testing.T) {
-	h := openTestService(t)
-
-	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
-	userID := mmmodel.NewId()
-	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
-
-	oversized := strings.Repeat("x", model.PageSearchTextMaxBytes+1)
-	_, err := h.svc.UpdatePageWithOptimisticLocking(
-		created.Id, &model.PagePatch{Title: mmmodel.NewPointer("Title"), Body: mmmodel.NewPointer("body"), SearchText: mmmodel.NewPointer(oversized)}, created.EditAt, false, userID,
-	)
-	require.NotNil(t, err)
-	require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	require.Equal(t, "app.page.update.search_text_too_long.app_error", err.Id)
-}
-
 // TestServiceUpdatePageCanSetEmptyBody verifies the patch contract: a non-nil empty Body
 // explicitly clears the body, which the old ""-sentinel API could not express.
 func TestServiceUpdatePageCanSetEmptyBody(t *testing.T) {
@@ -693,13 +767,13 @@ func TestServiceUpdatePageCanSetEmptyBody(t *testing.T) {
 	userID := mmmodel.NewId()
 	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
-	withBody, err := h.svc.UpdatePageWithOptimisticLocking(
+	withBody, err := h.svc.UpdatePage(
 		created.Id, &model.PagePatch{Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`), SearchText: mmmodel.NewPointer("text")}, created.EditAt, false, userID,
 	)
 	require.Nil(t, err)
 	require.NotEqual(t, "", withBody.Body)
 
-	emptied, err := h.svc.UpdatePageWithOptimisticLocking(
+	emptied, err := h.svc.UpdatePage(
 		created.Id, &model.PagePatch{Body: mmmodel.NewPointer(""), SearchText: mmmodel.NewPointer("")}, withBody.EditAt, false, userID,
 	)
 	require.Nil(t, err)
@@ -745,6 +819,19 @@ func TestServiceGetPageWithDeleted(t *testing.T) {
 		_, err := h.svc.GetPageWithDeleted("not-an-id")
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
+	})
+
+	t.Run("version snapshot is treated as not found", func(t *testing.T) {
+		snap := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
+		// Turn it into a version snapshot: OriginalId set, soft-deleted (chk_docs_page_snapshot_deleted).
+		_, rawErr := h.db.Exec(
+			"UPDATE DOCS_Page SET OriginalId = $2, DeleteAt = $3 WHERE Id = $1",
+			snap.Id, mmmodel.NewId(), mmmodel.GetMillis())
+		require.NoError(t, rawErr)
+
+		_, err := h.svc.GetPageWithDeleted(snap.Id)
+		require.NotNil(t, err)
+		require.Equal(t, http.StatusNotFound, err.StatusCode)
 	})
 }
 
@@ -832,9 +919,69 @@ func TestServiceRestorePage(t *testing.T) {
 		require.Equal(t, "app.page.restore.not_deleted.app_error", err.Id)
 	})
 
+	t.Run("a version snapshot is not restorable", func(t *testing.T) {
+		snap := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
+		_, rawErr := h.db.Exec(
+			"UPDATE DOCS_Page SET OriginalId = $2, DeleteAt = $3 WHERE Id = $1",
+			snap.Id, mmmodel.NewId(), mmmodel.GetMillis())
+		require.NoError(t, rawErr)
+
+		err := h.svc.RestorePage(snap.Id)
+		require.NotNil(t, err)
+		require.Equal(t, http.StatusBadRequest, err.StatusCode)
+		require.Equal(t, "app.page.restore.not_restorable.app_error", err.Id)
+	})
+
 	t.Run("invalid id returns 400", func(t *testing.T) {
 		err := h.svc.RestorePage("not-an-id")
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
+	})
+}
+
+// TestServiceRestoreSpace verifies the app restore path: a soft-deleted space becomes live, a
+// live (not-deleted) space → 400, an invalid id → 400, and restoring over a backing channel a
+// new live space now owns → 409.
+func TestServiceRestoreSpace(t *testing.T) {
+	h := openTestService(t)
+
+	t.Run("restores a soft-deleted space", func(t *testing.T) {
+		space := mustCreateSpace(t, h.store, mmmodel.NewId())
+		require.Nil(t, h.svc.DeleteSpace(space.Id))
+
+		require.Nil(t, h.svc.RestoreSpace(space.Id))
+
+		got, err := h.svc.GetSpace(space.Id)
+		require.Nil(t, err)
+		require.Zero(t, got.DeleteAt)
+	})
+
+	t.Run("a non-deleted space returns 400", func(t *testing.T) {
+		space := mustCreateSpace(t, h.store, mmmodel.NewId())
+		err := h.svc.RestoreSpace(space.Id)
+		require.NotNil(t, err)
+		require.Equal(t, http.StatusBadRequest, err.StatusCode)
+		require.Equal(t, "app.space.restore.not_deleted.app_error", err.Id)
+	})
+
+	t.Run("invalid id returns 400", func(t *testing.T) {
+		err := h.svc.RestoreSpace("not-an-id")
+		require.NotNil(t, err)
+		require.Equal(t, http.StatusBadRequest, err.StatusCode)
+		require.Equal(t, "app.space.restore.invalid_id.app_error", err.Id)
+	})
+
+	t.Run("restoring over a channel a new live space owns returns 409", func(t *testing.T) {
+		channelID := mmmodel.NewId()
+		original := mustCreateSpace(t, h.store, channelID)
+		require.Nil(t, h.svc.DeleteSpace(original.Id))
+
+		// A new live space now owns the backing channel; restoring the original would breach
+		// the partial unique index uq_docs_space_channel_id.
+		mustCreateSpace(t, h.store, channelID)
+
+		err := h.svc.RestoreSpace(original.Id)
+		require.NotNil(t, err)
+		require.Equal(t, http.StatusConflict, err.StatusCode)
 	})
 }

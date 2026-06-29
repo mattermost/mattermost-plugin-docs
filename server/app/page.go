@@ -16,10 +16,6 @@ import (
 // The store CTE uses a separate safety bound (store.MaxPageHierarchyDepth = 50).
 const MaxPageDepth = 10
 
-// maxForceUpdateAttempts bounds how many times a forced update re-reads and retries the
-// store CAS when a concurrent writer keeps winning, so force overwrites instead of 409ing.
-const maxForceUpdateAttempts = 3
-
 // modifierID returns the user who last modified the page, falling back to the
 // original author when LastModifiedBy is unset.
 func modifierID(p *model.Page) string {
@@ -42,6 +38,9 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 	if !mmmodel.IsValidId(userID) {
 		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
+	if parentID != "" && !mmmodel.IsValidId(parentID) {
+		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.invalid_parent_id.app_error", nil, "", http.StatusBadRequest)
+	}
 	title, titleErr := validateTitle("CreatePage", "app.page.create", title, model.PageTitleMaxRunes)
 	if titleErr != nil {
 		return nil, titleErr
@@ -58,18 +57,14 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.search_text_without_content.app_error", nil, "", http.StatusBadRequest)
 	}
 
-	// Derive ChannelId from the space (one channel per space) and denormalize it onto
-	// the page for the read-path advisory lock and channel-scoped listings.
-	space, spaceErr := s.GetSpace(spaceID)
-	if spaceErr != nil {
+	// Guard against a missing or soft-deleted space here for a clean 404 (a parent in a
+	// gone space would otherwise mis-report as parent_different_space). The store re-checks
+	// under lock and is the source of truth for the page's ChannelId.
+	if _, spaceErr := s.GetSpace(spaceID); spaceErr != nil {
 		return nil, spaceErr
 	}
-	channelID := space.ChannelId
 
 	if parentID != "" {
-		if !mmmodel.IsValidId(parentID) {
-			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.invalid_parent_id.app_error", nil, "", http.StatusBadRequest)
-		}
 		parentPage, err := s.GetPage(parentID)
 		if err != nil {
 			// Only a missing parent is a 400; other GetPage failures carry their own status.
@@ -100,7 +95,6 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 	page := &model.Page{
 		Id:         pageID,
 		SpaceId:    spaceID,
-		ChannelId:  channelID,
 		ParentId:   parentID,
 		Type:       model.PageTypePage,
 		Title:      title,
@@ -116,7 +110,7 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.space_not_found.app_error", nil, "", http.StatusNotFound).Wrap(storeErr)
 		}
 		if store.IsErrInvalidInput(storeErr) {
-			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.invalid_input.app_error", nil, "", http.StatusBadRequest).Wrap(storeErr)
+			return nil, invalidInputAppError("CreatePage", "app.page.create.invalid_input.app_error", storeErr)
 		}
 		if store.IsErrConflict(storeErr) {
 			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.conflict.app_error", nil, "", http.StatusConflict).Wrap(storeErr)
@@ -136,74 +130,48 @@ func (s *Service) GetPage(pageID string) (*model.Page, *mmmodel.AppError) {
 	}
 	page, err := s.store.GetPage(pageID, false)
 	if err != nil {
-		if store.IsErrNotFound(err) {
-			return nil, mmmodel.NewAppError("GetPage", "app.page.get.not_found.app_error", nil, "", http.StatusNotFound).Wrap(err)
-		}
-		if store.IsErrInvalidInput(err) {
-			return nil, mmmodel.NewAppError("GetPage", "app.page.get.invalid_input.app_error", nil, "", http.StatusBadRequest).Wrap(err)
-		}
-		return nil, mmmodel.NewAppError("GetPage", "app.page.get.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+		return nil, storeAppError("GetPage", "app.page.get", err)
 	}
 	return page, nil
 }
 
-// UpdatePageWithOptimisticLocking applies a partial patch to a page with first-one-wins
+// UpdatePage applies a partial patch to a page with first-one-wins
 // concurrency control. baseEditAt is the EditAt the client last saw. Returns 409 on conflict.
-func (s *Service) UpdatePageWithOptimisticLocking(pageID string, patch *model.PagePatch, baseEditAt int64, force bool, userID string) (*model.Page, *mmmodel.AppError) {
+func (s *Service) UpdatePage(pageID string, patch *model.PagePatch, baseEditAt int64, force bool, userID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
-		return nil, mmmodel.NewAppError("UpdatePageWithOptimisticLocking", "app.page.update.invalid_id.app_error", nil, "", http.StatusBadRequest)
+		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	if !mmmodel.IsValidId(userID) {
-		return nil, mmmodel.NewAppError("UpdatePageWithOptimisticLocking", "app.page.update.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
+		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	if validErr := validatePagePatch("UpdatePageWithOptimisticLocking", patch); validErr != nil {
+	if validErr := normalizeAndValidatePagePatch("UpdatePage", patch); validErr != nil {
 		return nil, validErr
 	}
-	currentPage, err := s.GetPage(pageID)
-	if err != nil {
-		return nil, err
-	}
 
-	if !force && currentPage.EditAt != baseEditAt {
-		return nil, mmmodel.NewAppError("UpdatePageWithOptimisticLocking", "app.page.update.conflict.app_error",
-			map[string]any{"ModifiedBy": modifierID(currentPage), "ModifiedAt": currentPage.EditAt},
-			"conflict", http.StatusConflict)
+	// The store merges the patch into the row under a FOR UPDATE lock: on the CAS path it
+	// rejects a stale baseEditAt with ErrConflict; on the force path it still merges only the
+	// patched fields, so a concurrent edit to untouched fields survives.
+	updatedPage, storeErr := s.store.UpdatePage(pageID, patch, baseEditAt, force, userID)
+	if storeErr == nil {
+		return updatedPage, nil
 	}
-
-	// store.UpdatePage CAS on EditAt; a concurrent writer between the read and the CAS
-	// returns ErrConflict. For force updates, re-read and retry rather than failing.
-	for attempt := 0; ; attempt++ {
-		updated := currentPage.Clone()
-		updated.Patch(patch)
-		updated.LastModifiedBy = userID
-
-		updatedPage, storeErr := s.store.UpdatePage(updated)
-		if storeErr == nil {
-			return updatedPage, nil
-		}
-		if store.IsErrNotFound(storeErr) {
-			return nil, mmmodel.NewAppError("UpdatePageWithOptimisticLocking", "app.page.update.not_found.app_error", nil, "", http.StatusNotFound).Wrap(storeErr)
-		}
-		if store.IsErrInvalidInput(storeErr) {
-			return nil, mmmodel.NewAppError("UpdatePageWithOptimisticLocking", "app.page.update.invalid_content.app_error", nil, "", http.StatusBadRequest).Wrap(storeErr)
-		}
-		if store.IsErrConflict(storeErr) {
-			// currentPage is stale after a lost CAS; re-fetch for accurate retry / conflict metadata.
-			fresh, freshErr := s.GetPage(pageID)
-			if freshErr != nil {
-				// Re-fetch failed (deleted mid-retry or DB error); surface directly.
-				return nil, freshErr
-			}
-			if force && attempt < maxForceUpdateAttempts-1 {
-				currentPage = fresh
-				continue
-			}
-			return nil, mmmodel.NewAppError("UpdatePageWithOptimisticLocking", "app.page.update.conflict.app_error",
-				map[string]any{"ModifiedBy": modifierID(fresh), "ModifiedAt": fresh.EditAt},
-				"conflict", http.StatusConflict).Wrap(storeErr)
-		}
-		return nil, mmmodel.NewAppError("UpdatePageWithOptimisticLocking", "app.page.update.store_error.app_error", nil, "", http.StatusInternalServerError).Wrap(storeErr)
+	if store.IsErrNotFound(storeErr) {
+		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.not_found.app_error", nil, "", http.StatusNotFound).Wrap(storeErr)
 	}
+	if store.IsErrInvalidInput(storeErr) {
+		return nil, invalidInputAppError("UpdatePage", "app.page.update.invalid_content.app_error", storeErr)
+	}
+	if store.IsErrConflict(storeErr) {
+		// currentPage is stale after the lost CAS; re-fetch for accurate conflict metadata.
+		fresh, freshErr := s.GetPage(pageID)
+		if freshErr != nil {
+			return nil, freshErr
+		}
+		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.conflict.app_error",
+			map[string]any{"ModifiedBy": modifierID(fresh), "ModifiedAt": fresh.EditAt},
+			"conflict", http.StatusConflict).Wrap(storeErr)
+	}
+	return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.store_error.app_error", nil, "", http.StatusInternalServerError).Wrap(storeErr)
 }
 
 // GetPageWithDeleted fetches a page including soft-deleted rows, for restore flows.
@@ -244,10 +212,15 @@ func (s *Service) RestorePage(pageID string) *mmmodel.AppError {
 	if err != nil {
 		return storeAppError("RestorePage", "app.page.restore", err)
 	}
+	// Version snapshots (OriginalId != "") are soft-deleted by design and are not restorable;
+	// reject them explicitly so the store's OriginalId="" filter doesn't surface as a 404.
+	if page.OriginalId != "" {
+		return mmmodel.NewAppError("RestorePage", "app.page.restore.not_restorable.app_error", nil, "", http.StatusBadRequest)
+	}
 	if page.DeleteAt == 0 {
 		return mmmodel.NewAppError("RestorePage", "app.page.restore.not_deleted.app_error", nil, "", http.StatusBadRequest)
 	}
-	if restoreErr := s.store.RestorePage(page.Id); restoreErr != nil {
+	if restoreErr := s.store.RestorePage(pageID); restoreErr != nil {
 		return storeAppError("RestorePage", "app.page.restore", restoreErr)
 	}
 	return nil

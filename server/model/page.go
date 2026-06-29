@@ -68,10 +68,11 @@ func (p *Page) PreSave() {
 		p.Props = make(mmmodel.StringInterface)
 	}
 
+	now := mmmodel.GetMillis()
 	if p.CreateAt == 0 {
-		p.CreateAt = mmmodel.GetMillis()
+		p.CreateAt = now
 	}
-	p.UpdateAt = p.CreateAt
+	p.UpdateAt = now
 }
 
 func (p *Page) PreUpdate() {
@@ -87,10 +88,14 @@ func (p *Page) PreUpdate() {
 // PagePatch is a partial update to a Page: a nil field is left unchanged, a non-nil
 // field (including an empty string) is applied. This avoids overloading "" to mean
 // both "set to empty" and "leave unchanged". Mirrors MM core's *Patch convention.
+// SortOrder is deliberately not patchable here: changing a page's position is a sibling-group
+// reorder/move concern (group locking, renumbering, duplicate/negative prevention), not a
+// generic field edit, and belongs in a dedicated operation.
 type PagePatch struct {
-	Title      *string `json:"title"`
-	Body       *string `json:"body"`
-	SearchText *string `json:"search_text"`
+	Title      *string                  `json:"title"`
+	Body       *string                  `json:"body"`
+	SearchText *string                  `json:"search_text"`
+	Props      *mmmodel.StringInterface `json:"props"`
 }
 
 // Patch applies the non-nil fields of patch to the page. Normalization (title trim,
@@ -105,6 +110,32 @@ func (p *Page) Patch(patch *PagePatch) {
 	if patch.SearchText != nil {
 		p.SearchText = *patch.SearchText
 	}
+	if patch.Props != nil {
+		p.Props = *patch.Props
+	}
+}
+
+// IsValid enforces patch-level invariants that Page.IsValid cannot see, because they depend on
+// which fields the patch carries rather than on the merged page's final values. SearchText is
+// Body's plain-text projection backing the search index (Body is opaque rich-text, so it can't
+// be tokenized directly), so the two must be patched together: a Body change that left
+// SearchText stale would desync the index, and a SearchText change without a Body change would
+// desync the projection. A non-empty SearchText additionally requires a non-empty Body. This
+// lives on the patch (not only in the service) so every store.UpdatePage caller upholds it.
+func (p *PagePatch) IsValid() *mmmodel.AppError {
+	// A nil or all-nil patch is a no-op: rejecting it here (not only in the service) keeps a
+	// direct store.UpdatePage caller from panicking on nil or bumping UpdateAt/EditAt/
+	// LastModifiedBy without a content change.
+	if p == nil || (p.Title == nil && p.Body == nil && p.SearchText == nil && p.Props == nil) {
+		return mmmodel.NewAppError("PagePatch.IsValid", "model.page.patch.nothing_to_update.app_error", nil, "", http.StatusBadRequest)
+	}
+	if (p.Body == nil) != (p.SearchText == nil) {
+		return mmmodel.NewAppError("PagePatch.IsValid", "model.page.patch.search_text_body_mismatch.app_error", nil, "", http.StatusBadRequest)
+	}
+	if p.SearchText != nil && *p.SearchText != "" && *p.Body == "" {
+		return mmmodel.NewAppError("PagePatch.IsValid", "model.page.patch.search_text_without_content.app_error", nil, "", http.StatusBadRequest)
+	}
+	return nil
 }
 
 func (p *Page) IsValid() *mmmodel.AppError {
@@ -162,6 +193,12 @@ func (p *Page) IsValid() *mmmodel.AppError {
 
 	if p.OriginalId != "" && !mmmodel.IsValidId(p.OriginalId) {
 		return mmmodel.NewAppError("Page.IsValid", "model.page.is_valid.original_id.app_error", nil, "id="+p.Id, http.StatusBadRequest)
+	}
+
+	// A version snapshot (OriginalId set) is always soft-deleted; enforce the invariant the
+	// chk_docs_page_snapshot_deleted DB constraint also guards, for an early, specific error.
+	if p.OriginalId != "" && p.DeleteAt == 0 {
+		return mmmodel.NewAppError("Page.IsValid", "model.page.is_valid.snapshot_not_deleted.app_error", nil, "id="+p.Id, http.StatusBadRequest)
 	}
 
 	if !mmmodel.IsValidId(p.SpaceId) {

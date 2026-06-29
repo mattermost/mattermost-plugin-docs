@@ -19,6 +19,7 @@ import (
 	"github.com/mattermost/morph/sources/embedded"
 	sq "github.com/mattermost/squirrel"
 	"github.com/pkg/errors"
+	"github.com/wiggin77/merror"
 )
 
 // pgUniqueViolationCode is the PostgreSQL SQLSTATE for a unique_violation.
@@ -137,17 +138,27 @@ func (s *Store) getQueryBuilder() sq.StatementBuilderType {
 	return s.builder
 }
 
+// columnsWithAlias returns the given columns prefixed with a table alias, used when
+// joining tables to avoid ambiguous column references.
+func columnsWithAlias(alias string, cols []string) []string {
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		out[i] = alias + "." + c
+	}
+	return out
+}
+
 // finalizeTransaction rolls tx back unless already committed. Callers defer this
 // immediately after Beginx and commit explicitly on the success path (Rollback then
 // returns sql.ErrTxDone and is ignored). When the body failed (*perr != nil) the
-// original typed error is preserved so the app layer can classify it with errors.As;
-// any rollback failure is logged instead of wrapped to avoid obscuring the root cause.
+// original typed error stays at the head of a merror chain so the app layer can still
+// classify it with errors.As, while a rollback failure is appended rather than dropped.
 func (s *Store) finalizeTransaction(tx *sqlx.Tx, perr *error) {
 	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
 		if *perr == nil {
 			*perr = errors.Wrap(err, "failed to rollback transaction")
-		} else if s.log != nil {
-			s.log.Warn("failed to rollback transaction after a prior error", "rollback_err", err.Error())
+		} else {
+			*perr = merror.Append(*perr, errors.Wrap(err, "failed to rollback transaction"))
 		}
 	}
 }
@@ -212,6 +223,20 @@ func nextMonotonic(now, prev int64) int64 {
 	return now
 }
 
+// applyLimitOffset paginates a select query. When limit > 0 it applies the limit and a
+// non-negative offset; otherwise it caps an unpaginated "return all" query at
+// MaxRowsPerQuery+1 so an oversized result can be detected and rejected rather than loading
+// an unbounded number of rows.
+func applyLimitOffset(builder sq.SelectBuilder, offset, limit int) sq.SelectBuilder {
+	if limit > 0 {
+		if offset < 0 {
+			offset = 0
+		}
+		return builder.Limit(uint64(limit)).Offset(uint64(offset)) //nolint:gosec // limit>0 and offset>=0 enforced above
+	}
+	return builder.Limit(uint64(MaxRowsPerQuery + 1))
+}
+
 // checkRowsAffected returns ErrNotFound when the result reports zero rows affected.
 func checkRowsAffected(result sql.Result, entityType, entityID string) error {
 	rows, err := result.RowsAffected()
@@ -247,6 +272,9 @@ type ErrInvalidInput struct {
 	Entity string
 	Field  string
 	Value  any
+	// Reason optionally carries the originating AppError.Id (e.g. from a model IsValid check)
+	// so the app layer can surface the specific validation key instead of a generic one.
+	Reason string
 }
 
 func (e *ErrInvalidInput) Error() string {

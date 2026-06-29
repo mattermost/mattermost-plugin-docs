@@ -25,15 +25,6 @@ var pageColumnList = []string{
 	"Props",
 }
 
-// pageColumnsWithAlias returns columns prefixed with the given alias.
-func pageColumnsWithAlias(alias string) []string {
-	out := make([]string, len(pageColumnList))
-	for i, c := range pageColumnList {
-		out[i] = alias + "." + c
-	}
-	return out
-}
-
 // pageToSlice converts a Page struct to an ordered value slice for INSERT.
 func pageToSlice(p *model.Page) []any {
 	return []any{
@@ -46,7 +37,7 @@ func pageToSlice(p *model.Page) []any {
 }
 
 // pageColumnsP is pageColumnList prefixed with "p.", precomputed.
-var pageColumnsP = pageColumnsWithAlias("p")
+var pageColumnsP = columnsWithAlias("p", pageColumnList)
 
 // CreatePage inserts a new page and assigns its sort order under a transaction-scoped
 // advisory lock keyed on (channelId, parentId) that serializes concurrent creates.
@@ -78,46 +69,21 @@ func (s *Store) CreatePage(page *model.Page) (_ *model.Page, err error) {
 
 	// Re-verify the parent is still live under the same transaction.
 	if page.ParentId != "" {
-		parentLockQuery := s.getQueryBuilder().
-			Select("1").
-			From("DOCS_Page").
-			Where(sq.Eq{"Id": page.ParentId, "SpaceId": page.SpaceId, "DeleteAt": 0}).
-			Suffix("FOR UPDATE")
-		var parentExists int
-		if pErr := s.getBuilder(tx, &parentExists, parentLockQuery); pErr != nil {
-			if errors.Is(pErr, sql.ErrNoRows) {
-				return nil, &ErrInvalidInput{Entity: "Page", Field: "ParentId", Value: page.ParentId}
-			}
-			return nil, errors.Wrap(pErr, "failed to lock parent page for create")
+		if pErr := s.lockLiveParent(tx, page.ParentId, page.SpaceId, "Page"); pErr != nil {
+			return nil, pErr
 		}
 	}
 
-	// Acquire an advisory lock keyed on (channelId, parentId).
-	lockKey := page.ChannelId + ":" + page.ParentId
-	if _, lockErr := s.exec(tx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); lockErr != nil {
-		return nil, errors.Wrap(lockErr, "failed to acquire advisory lock for page create")
+	// Take the next sort slot for this (channelId, parentId) sibling group.
+	sortOrder, sortErr := s.nextSortOrder(tx, page.ChannelId, page.ParentId)
+	if sortErr != nil {
+		return nil, sortErr
 	}
-
-	// The advisory lock serializes concurrent creates for this (channelId, parentId),
-	// so a single MAX is safe.
-	maxOrderQuery := s.getQueryBuilder().
-		Select("COALESCE(MAX(SortOrder), 0)").
-		From("DOCS_Page").
-		Where(sq.Eq{
-			"ChannelId": page.ChannelId,
-			"ParentId":  page.ParentId,
-			"DeleteAt":  0,
-		})
-
-	var maxOrder int64
-	if maxErr := s.getBuilder(tx, &maxOrder, maxOrderQuery); maxErr != nil {
-		return nil, errors.Wrap(maxErr, "failed to get max sort order for page create")
-	}
-	page.SortOrder = maxOrder + 1
+	page.SortOrder = sortOrder
 
 	page.PreSave()
 	if validErr := page.IsValid(); validErr != nil {
-		return nil, &ErrInvalidInput{Entity: "Page", Field: "IsValid", Value: validErr.Error()}
+		return nil, &ErrInvalidInput{Entity: "Page", Field: "IsValid", Value: validErr.Error(), Reason: validErr.Id}
 	}
 
 	insertQuery := s.getQueryBuilder().
@@ -165,15 +131,22 @@ func (s *Store) GetPage(pageID string, includeDeleted bool) (*model.Page, error)
 	return &page, nil
 }
 
-// UpdatePage updates a page with optimistic locking using EditAt for compare-and-swap.
-func (s *Store) UpdatePage(page *model.Page) (_ *model.Page, err error) {
-	if page.Id == "" {
-		return nil, &ErrInvalidInput{Entity: "Page", Field: "Id", Value: page.Id}
+// UpdatePage applies patch to a live page under a row lock. baseEditAt is the EditAt the
+// caller last saw. When force is false it compare-and-swaps on EditAt, returning ErrConflict
+// if a concurrent writer has advanced it. When force is true the CAS is skipped, but the
+// patch is still merged into the freshly-locked row, so fields the patch leaves untouched
+// keep any concurrent edit rather than being clobbered by a stale snapshot. lastModifiedBy
+// records the editor.
+func (s *Store) UpdatePage(pageID string, patch *model.PagePatch, baseEditAt int64, force bool, lastModifiedBy string) (_ *model.Page, err error) {
+	if pageID == "" {
+		return nil, &ErrInvalidInput{Entity: "Page", Field: "Id", Value: pageID}
 	}
-	// Normalize and validate before touching the DB; UpdateAt is recomputed below.
-	page.PreUpdate()
-	if validErr := page.IsValid(); validErr != nil {
-		return nil, &ErrInvalidInput{Entity: "Page", Field: "IsValid", Value: validErr.Error()}
+	// Validate the patch (nil-safe; rejects a no-op patch and the Body/SearchText mismatch)
+	// before opening the transaction, so an invalid or empty patch never locks the row or bumps
+	// UpdateAt/EditAt/LastModifiedBy. Enforced here, not only in the service, so any store caller
+	// upholds the contract.
+	if validErr := patch.IsValid(); validErr != nil {
+		return nil, &ErrInvalidInput{Entity: "Page", Field: "Patch", Value: validErr.Error(), Reason: validErr.Id}
 	}
 
 	tx, err := s.db.Beginx()
@@ -182,88 +155,76 @@ func (s *Store) UpdatePage(page *model.Page) (_ *model.Page, err error) {
 	}
 	defer s.finalizeTransaction(tx, &err)
 
+	// Lock the live row so the read-modify-write is atomic. The lock (not an EditAt
+	// predicate) is what makes the write safe, so both paths merge the patch into the value
+	// read here; no concurrent writer can slip between this read and the UPDATE below.
 	selectQuery := s.getQueryBuilder().
 		Select(pageColumnList...).
 		From("DOCS_Page").
 		Where(sq.And{
-			sq.Eq{"Id": page.Id},
+			sq.Eq{"Id": pageID},
 			sq.Eq{"DeleteAt": 0},
 			sq.Eq{"OriginalId": ""},
-		})
+		}).
+		Suffix("FOR UPDATE")
 
-	var currentPage model.Page
-	if txErr := s.getBuilder(tx, &currentPage, selectQuery); txErr != nil {
+	var page model.Page
+	if txErr := s.getBuilder(tx, &page, selectQuery); txErr != nil {
 		if errors.Is(txErr, sql.ErrNoRows) {
-			return nil, &ErrNotFound{EntityName: "Page", ID: page.Id}
+			return nil, &ErrNotFound{EntityName: "Page", ID: pageID}
 		}
 		return nil, errors.Wrap(txErr, "failed to get current page")
 	}
 
-	// Keep EditAt strictly monotonic (it is the CAS token).
-	now := nextMonotonic(mmmodel.GetMillis(), currentPage.EditAt)
+	if !force && page.EditAt != baseEditAt {
+		return nil, &ErrConflict{Resource: "Page id=" + pageID + " (concurrent edit)"}
+	}
 
+	page.Patch(patch)
+	page.LastModifiedBy = lastModifiedBy
+	page.PreUpdate()
+	if validErr := page.IsValid(); validErr != nil {
+		return nil, &ErrInvalidInput{Entity: "Page", Field: "IsValid", Value: validErr.Error(), Reason: validErr.Id}
+	}
+
+	// Keep EditAt strictly monotonic (it is the CAS token).
+	now := nextMonotonic(mmmodel.GetMillis(), page.EditAt)
+
+	// SortOrder is intentionally not written here: generic edits never move a page within its
+	// sibling group (that is a dedicated reorder concern), so the column keeps its value.
 	updateQuery := s.getQueryBuilder().
 		Update("DOCS_Page").
 		Set("Title", page.Title).
 		Set("Body", page.Body).
 		Set("SearchText", page.SearchText).
-		Set("SortOrder", page.SortOrder).
 		Set("LastModifiedBy", page.LastModifiedBy).
 		Set("Props", page.GetProps()).
 		Set("UpdateAt", now).
 		Set("EditAt", now).
 		Where(sq.And{
-			sq.Eq{"Id": page.Id},
+			sq.Eq{"Id": pageID},
 			sq.Eq{"DeleteAt": 0},
 			sq.Eq{"OriginalId": ""},
-			sq.Eq{"EditAt": page.EditAt},
 		})
 
 	result, execErr := s.execBuilder(tx, updateQuery)
 	if execErr != nil {
 		return nil, errors.Wrap(execErr, "failed to update page")
 	}
-
-	rowsAffected, rowsErr := result.RowsAffected()
-	if rowsErr != nil {
-		return nil, errors.Wrap(rowsErr, "failed to get rows affected")
-	}
-	if rowsAffected == 0 {
-		// Row existed at the SELECT, so zero means a concurrent delete (→ 404) or
-		// stale EditAt (→ 409). Check which.
-		existsQuery := s.getQueryBuilder().
-			Select("1").
-			From("DOCS_Page").
-			Where(sq.And{
-				sq.Eq{"Id": page.Id},
-				sq.Eq{"DeleteAt": 0},
-				sq.Eq{"OriginalId": ""},
-			})
-		var stillExists int
-		if existsErr := s.getBuilder(tx, &stillExists, existsQuery); existsErr != nil {
-			if errors.Is(existsErr, sql.ErrNoRows) {
-				return nil, &ErrNotFound{EntityName: "Page", ID: page.Id}
-			}
-			return nil, errors.Wrap(existsErr, "failed to check page existence after zero rows affected")
-		}
-		return nil, &ErrConflict{Resource: "Page id=" + page.Id + " (concurrent edit)"}
+	// The row is held by the lock above, so this only guards against an impossible
+	// disappearance (e.g. a concurrent hard delete with no FK).
+	if raErr := checkRowsAffected(result, "Page", pageID); raErr != nil {
+		return nil, raErr
 	}
 
-	// Build the return value from the pre-update snapshot without an extra round-trip.
-	currentPage.Title = page.Title
-	currentPage.Body = page.Body
-	currentPage.SearchText = page.SearchText
-	currentPage.SortOrder = page.SortOrder
-	currentPage.LastModifiedBy = page.LastModifiedBy
-	currentPage.Props = page.GetProps()
-	currentPage.UpdateAt = now
-	currentPage.EditAt = now
+	page.UpdateAt = now
+	page.EditAt = now
 
 	if err = tx.Commit(); err != nil {
 		return nil, errors.Wrap(err, "commit_transaction")
 	}
 
-	return &currentPage, nil
+	return &page, nil
 }
 
 // lockLiveSpace FOR UPDATE-locks the live space row to hold the space-before-page lock
@@ -282,6 +243,47 @@ func (s *Store) lockLiveSpace(tx *sqlx.Tx, spaceID string) error {
 		return errors.Wrap(err, "failed to lock space")
 	}
 	return nil
+}
+
+// lockLiveParent FOR UPDATE-locks the prospective parent page, requiring it to be live and
+// non-snapshot (DeleteAt=0 excludes snapshots) in the given space. A cross-space or missing
+// parent finds no row and yields ErrInvalidInput (Field "ParentId"); entity names the calling
+// resource for the error. Shared by CreatePage and UpsertDraft.
+func (s *Store) lockLiveParent(tx *sqlx.Tx, parentID, spaceID, entity string) error {
+	query := s.getQueryBuilder().
+		Select("1").
+		From("DOCS_Page").
+		Where(sq.Eq{"Id": parentID, "SpaceId": spaceID, "DeleteAt": 0}).
+		Suffix("FOR UPDATE")
+	var exists int
+	if err := s.getBuilder(tx, &exists, query); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return &ErrInvalidInput{Entity: entity, Field: "ParentId", Value: parentID}
+		}
+		return errors.Wrap(err, "failed to lock parent page")
+	}
+	return nil
+}
+
+// nextSortOrder acquires the advisory lock for the (channelID, parentID) sibling group and
+// returns the next SortOrder (MAX+1). hashtextextended maps the key to a single bigint, so a
+// hash collision only over-serializes two unrelated sibling groups — added contention (each
+// group still computes its own MAX), never corruption, with negligible probability. Must be
+// called inside tx; the lock is held until the transaction ends.
+func (s *Store) nextSortOrder(tx *sqlx.Tx, channelID, parentID string) (int64, error) {
+	lockKey := channelID + ":" + parentID
+	if _, lockErr := s.exec(tx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); lockErr != nil {
+		return 0, errors.Wrap(lockErr, "failed to acquire advisory lock for sort order")
+	}
+	maxOrderQuery := s.getQueryBuilder().
+		Select("COALESCE(MAX(SortOrder), 0)").
+		From("DOCS_Page").
+		Where(sq.Eq{"ChannelId": channelID, "ParentId": parentID, "DeleteAt": 0})
+	var maxOrder int64
+	if maxErr := s.getBuilder(tx, &maxOrder, maxOrderQuery); maxErr != nil {
+		return 0, errors.Wrap(maxErr, "failed to get max sort order")
+	}
+	return maxOrder + 1, nil
 }
 
 // DeletePage soft-deletes a live page and promotes its live children to the page's own
@@ -388,8 +390,19 @@ func (s *Store) DeletePage(pageID string) (err error) {
 				Set("UpdateAt", now).
 				Set("EditAt", sq.Expr("GREATEST(EditAt + 1, ?)", now)).
 				Where(sq.Eq{"Id": childID, "ParentId": pageID, "DeleteAt": 0})
-			if _, txErr := s.execBuilder(tx, blockQuery); txErr != nil {
+			result, txErr := s.execBuilder(tx, blockQuery)
+			if txErr != nil {
 				return errors.Wrap(txErr, "failed to reparent child into block")
+			}
+			// The children were locked FOR UPDATE, so a 0-row update means inconsistent state
+			// (the child no longer matches) rather than benign contention. Fail loudly with a
+			// plain error so the app layer maps it to 500, not the 404 a sentinel would yield.
+			rows, rowsErr := result.RowsAffected()
+			if rowsErr != nil {
+				return errors.Wrap(rowsErr, "failed to read rows affected for child reparent")
+			}
+			if rows == 0 {
+				return errors.Errorf("child page %s vanished after FOR UPDATE lock during reparent", childID)
 			}
 		}
 	}
@@ -410,6 +423,30 @@ func (s *Store) DeletePage(pageID string) (err error) {
 	}
 	if rowsErr := checkRowsAffected(result, "Page", pageID); rowsErr != nil {
 		return rowsErr
+	}
+
+	// Hard-delete every user's draft for this page. A draft is unpublished work on the page,
+	// so deleting the page ends its life (mirrors core deleting drafts associated with a
+	// deleted post). Drafts are hard rows with no soft-delete.
+	deleteDraftsQuery := s.getQueryBuilder().
+		Delete("DOCS_Draft").
+		Where(sq.Eq{"PageId": pageID})
+	if _, draftErr := s.execBuilder(tx, deleteDraftsQuery); draftErr != nil {
+		return errors.Wrap(draftErr, "failed to delete page drafts")
+	}
+
+	// A new-page draft parented under this page is a pending child of it. Mirror the live-child
+	// promotion above and reparent it to this page's parent, so it stays publishable instead of
+	// dangling under a soft-deleted parent — the read gates filter on a draft's own page, not its
+	// parent, so without this the draft would survive pointing at a dead parent. The deleted
+	// page's parent is live (or root) by the "no live page under a deleted parent" invariant.
+	reparentDraftsQuery := s.getQueryBuilder().
+		Update("DOCS_Draft").
+		Set("ParentId", deleted.ParentID).
+		Set("UpdateAt", now).
+		Where(sq.Eq{"ParentId": pageID})
+	if _, draftErr := s.execBuilder(tx, reparentDraftsQuery); draftErr != nil {
+		return errors.Wrap(draftErr, "failed to reparent page drafts")
 	}
 
 	if err = tx.Commit(); err != nil {
@@ -488,17 +525,9 @@ func (s *Store) RestorePage(pageID string) (err error) {
 	// The pre-delete SortOrder is stale (its slot was reused; siblings may have changed), so
 	// append at the end of the destination group under CreatePage's advisory lock to avoid
 	// collisions.
-	lockKey := target.ChannelID + ":" + restoreParentID
-	if _, lockErr := s.exec(tx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); lockErr != nil {
-		return errors.Wrap(lockErr, "failed to acquire advisory lock for restore")
-	}
-	maxOrderQuery := s.getQueryBuilder().
-		Select("COALESCE(MAX(SortOrder), 0)").
-		From("DOCS_Page").
-		Where(sq.Eq{"ChannelId": target.ChannelID, "ParentId": restoreParentID, "DeleteAt": 0})
-	var maxOrder int64
-	if maxErr := s.getBuilder(tx, &maxOrder, maxOrderQuery); maxErr != nil {
-		return errors.Wrap(maxErr, "failed to get max sort order for restore")
+	sortOrder, sortErr := s.nextSortOrder(tx, target.ChannelID, restoreParentID)
+	if sortErr != nil {
+		return sortErr
 	}
 
 	restoreQuery := s.getQueryBuilder().
@@ -507,7 +536,7 @@ func (s *Store) RestorePage(pageID string) (err error) {
 		Set("UpdateAt", now).
 		Set("EditAt", sq.Expr("GREATEST(EditAt + 1, ?)", now)).
 		Set("ParentId", restoreParentID).
-		Set("SortOrder", maxOrder+1)
+		Set("SortOrder", sortOrder)
 
 	restoreQuery = restoreQuery.Where(sq.And{
 		sq.Eq{"Id": pageID},
@@ -546,23 +575,24 @@ func (s *Store) GetPageChildren(pageID string, offset, limit int) ([]*model.Page
 		}).
 		OrderBy("p.SortOrder ASC", "p.CreateAt ASC", "p.Id ASC")
 
-	if limit > 0 {
-		if offset < 0 {
-			offset = 0
-		}
-		query = query.Limit(uint64(limit)).Offset(uint64(offset)) //nolint:gosec // limit>0 and offset>=0 enforced above
-	}
+	query = applyLimitOffset(query, offset, limit)
 
 	pages := []*model.Page{}
 	if err := s.selectBuilder(s.db, &pages, query); err != nil {
 		return nil, errors.Wrapf(err, "failed to find children for page_id=%s", pageID)
 	}
+	if limit <= 0 && len(pages) > MaxRowsPerQuery {
+		return nil, &ErrLimitExceeded{Resource: "Page children for page_id=" + pageID, Limit: MaxRowsPerQuery}
+	}
 
 	return pages, nil
 }
 
-// GetPageDescendants fetches all live descendants. Returns ErrLimitExceeded rather
-// than silently truncating when the subtree exceeds MaxPageDescendantsLimit.
+// GetPageDescendants fetches all live descendants. Returns ErrLimitExceeded rather than
+// silently truncating when the subtree exceeds MaxPageDescendantsLimit (too many rows) or
+// extends more than MaxPageHierarchyDepth levels below the requested page (too deep — depth
+// counts edges below the page, so a direct child is depth 1; the CTE recurses one level past
+// the cap so an over-deep subtree surfaces a depth > MaxPageHierarchyDepth row, not a drop).
 func (s *Store) GetPageDescendants(pageID string) ([]*model.Page, error) {
 	if pageID == "" {
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
@@ -571,12 +601,24 @@ func (s *Store) GetPageDescendants(pageID string) ([]*model.Page, error) {
 	query := pageDescendantsCTE +
 		fmt.Sprintf(" LIMIT %d", MaxPageDescendantsLimit+1)
 
-	pages := []*model.Page{}
-	if err := s.selectAll(s.db, &pages, query, pageID); err != nil {
+	var rows []struct {
+		model.Page
+		Depth int `db:"depth"`
+	}
+	if err := s.selectAll(s.db, &rows, query, pageID); err != nil {
 		return nil, errors.Wrapf(err, "failed to find descendants for page_id=%s", pageID)
 	}
-	if len(pages) > MaxPageDescendantsLimit {
+	if len(rows) > MaxPageDescendantsLimit {
 		return nil, &ErrLimitExceeded{Resource: "Page descendants for page_id=" + pageID, Limit: MaxPageDescendantsLimit}
+	}
+
+	pages := make([]*model.Page, len(rows))
+	for i := range rows {
+		if rows[i].Depth > MaxPageHierarchyDepth {
+			return nil, &ErrLimitExceeded{Resource: "Page descendants for page_id=" + pageID + " (depth)", Limit: MaxPageHierarchyDepth}
+		}
+		page := rows[i].Page
+		pages[i] = &page
 	}
 
 	return pages, nil
@@ -600,16 +642,14 @@ func (s *Store) GetSpacePages(spaceID string, offset, limit int) ([]*model.Page,
 		}).
 		OrderBy("p.CreateAt DESC, p.Id DESC")
 
-	if limit > 0 {
-		if offset < 0 {
-			offset = 0
-		}
-		query = query.Limit(uint64(limit)).Offset(uint64(offset)) //nolint:gosec // limit>0 and offset>=0 enforced above
-	}
+	query = applyLimitOffset(query, offset, limit)
 
 	pages := []*model.Page{}
 	if err := s.selectBuilder(s.db, &pages, query); err != nil {
 		return nil, errors.Wrapf(err, "failed to find pages for space_id=%s", spaceID)
+	}
+	if limit <= 0 && len(pages) > MaxRowsPerQuery {
+		return nil, &ErrLimitExceeded{Resource: "Pages for space_id=" + spaceID, Limit: MaxRowsPerQuery}
 	}
 
 	return pages, nil

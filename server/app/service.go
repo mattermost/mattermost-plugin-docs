@@ -47,20 +47,22 @@ func validateTitle(where, keyPrefix, title string, maxRunes int) (string, *mmmod
 	return title, nil
 }
 
-// validatePagePatch enforces the title/body/searchText caps on a page update patch. A
-// nil field means "leave unchanged". Rejects an all-nil patch (no-op) and a searchText
-// supplied without a body change (searchText is the body's plain-text projection).
-func validatePagePatch(where string, patch *model.PagePatch) *mmmodel.AppError {
-	if patch == nil || (patch.Title == nil && patch.Body == nil && patch.SearchText == nil) {
-		return mmmodel.NewAppError(where, "app.page.update.nothing_to_update.app_error", nil, "", http.StatusBadRequest)
+// normalizeAndValidatePagePatch enforces the title/body/searchText caps on a page update
+// patch and writes the normalized title back into the patch. A nil field means "leave
+// unchanged". The model's PagePatch.IsValid owns the nil/no-op and Body/SearchText-coupling
+// invariants (shared with store.UpdatePage); this adds the app-layer caps.
+func normalizeAndValidatePagePatch(where string, patch *model.PagePatch) *mmmodel.AppError {
+	// Run the shared patch invariant first: it is nil-safe and rejects an all-nil patch, so the
+	// title deref below is safe, and it enforces the Body/SearchText coupling before a DB round trip.
+	if validErr := patch.IsValid(); validErr != nil {
+		return validErr
 	}
 	if patch.Title != nil {
-		if _, titleErr := validateTitle(where, "app.page.update", *patch.Title, model.PageTitleMaxRunes); titleErr != nil {
+		normalized, titleErr := validateTitle(where, "app.page.update", *patch.Title, model.PageTitleMaxRunes)
+		if titleErr != nil {
 			return titleErr
 		}
-	}
-	if patch.SearchText != nil && patch.Body == nil {
-		return mmmodel.NewAppError(where, "app.page.update.search_text_without_content.app_error", nil, "", http.StatusBadRequest)
+		patch.Title = &normalized
 	}
 	if patch.Body != nil && len(*patch.Body) > model.PageBodyMaxBytes {
 		return mmmodel.NewAppError(where, "app.page.update.body_too_long.app_error", map[string]any{"MaxBytes": model.PageBodyMaxBytes}, "", http.StatusBadRequest)
@@ -85,24 +87,34 @@ func paginationOffsetLimit(page, perPage int) (offset, limit int) {
 
 // storeAppError maps a store sentinel error to an *AppError with the conventional status
 // code and a message key under keyPrefix (e.g. "app.space.get" -> "app.space.get.not_found.app_error").
-// Methods needing bespoke handling (distinct keys, conflict metadata) build their own instead.
+// This is the default for translating store errors; hand-roll an inline switch only when a case
+// needs a message key or metadata this can't produce (e.g. CreatePage's space-not-found, or
+// UpdatePage's conflict carrying ModifiedBy/ModifiedAt).
 func storeAppError(where, keyPrefix string, err error) *mmmodel.AppError {
 	switch {
 	case store.IsErrNotFound(err):
 		return mmmodel.NewAppError(where, keyPrefix+".not_found.app_error", nil, "", http.StatusNotFound).Wrap(err)
 	case store.IsErrInvalidInput(err):
-		return mmmodel.NewAppError(where, keyPrefix+".invalid_input.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+		return invalidInputAppError(where, keyPrefix+".invalid_input.app_error", err)
 	case store.IsErrConflict(err):
 		return mmmodel.NewAppError(where, keyPrefix+".conflict.app_error", nil, "", http.StatusConflict).Wrap(err)
 	case store.IsErrLimitExceeded(err):
 		// Use the limit the error carries; different store methods have different bounds.
-		limit := store.MaxPageDescendantsLimit
 		var limitErr *store.ErrLimitExceeded
-		if errors.As(err, &limitErr) {
-			limit = limitErr.Limit
-		}
-		return mmmodel.NewAppError(where, keyPrefix+".too_large.app_error", map[string]any{"Limit": limit}, "", http.StatusUnprocessableEntity).Wrap(err)
+		errors.As(err, &limitErr)
+		return mmmodel.NewAppError(where, keyPrefix+".too_large.app_error", map[string]any{"Limit": limitErr.Limit}, "", http.StatusUnprocessableEntity).Wrap(err)
 	default:
 		return mmmodel.NewAppError(where, keyPrefix+".app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
+}
+
+// invalidInputAppError maps a store ErrInvalidInput to a 400 *AppError, preferring the
+// specific validation key the store carried (from a model IsValid check) over fallbackKey.
+// Used by the hand-rolled error switches that need their own fallback message key.
+func invalidInputAppError(where, fallbackKey string, err error) *mmmodel.AppError {
+	var invErr *store.ErrInvalidInput
+	if errors.As(err, &invErr) && invErr.Reason != "" {
+		return mmmodel.NewAppError(where, invErr.Reason, nil, "", http.StatusBadRequest).Wrap(err)
+	}
+	return mmmodel.NewAppError(where, fallbackKey, nil, "", http.StatusBadRequest).Wrap(err)
 }

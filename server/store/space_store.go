@@ -28,7 +28,7 @@ func (s *Store) spaceSelectQuery() sq.SelectBuilder {
 func (s *Store) CreateSpace(space *model.Space) (*model.Space, error) {
 	space.PreSave()
 	if validErr := space.IsValid(); validErr != nil {
-		return nil, &ErrInvalidInput{Entity: "Space", Field: "IsValid", Value: validErr.Error()}
+		return nil, &ErrInvalidInput{Entity: "Space", Field: "IsValid", Value: validErr.Error(), Reason: validErr.Id}
 	}
 
 	builder := s.getQueryBuilder().
@@ -52,6 +52,10 @@ func (s *Store) CreateSpace(space *model.Space) (*model.Space, error) {
 
 // GetSpace returns the space with the given ID, returning ErrNotFound if not found or deleted.
 func (s *Store) GetSpace(id string) (*model.Space, error) {
+	if id == "" {
+		return nil, &ErrInvalidInput{Entity: "Space", Field: "id", Value: id}
+	}
+
 	builder := s.spaceSelectQuery().Where(sq.Eq{"Id": id, "DeleteAt": 0})
 
 	var space model.Space
@@ -66,12 +70,16 @@ func (s *Store) GetSpace(id string) (*model.Space, error) {
 
 // GetSpaceForChannel returns the active space for the given channel, or ErrNotFound.
 func (s *Store) GetSpaceForChannel(channelID string) (*model.Space, error) {
+	if channelID == "" {
+		return nil, &ErrInvalidInput{Entity: "Space", Field: "channelID", Value: channelID}
+	}
+
 	builder := s.spaceSelectQuery().Where(sq.Eq{"ChannelId": channelID, "DeleteAt": 0})
 
 	var space model.Space
 	if err := s.getBuilder(s.db, &space, builder); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, &ErrNotFound{EntityName: "Space", ID: channelID}
+			return nil, &ErrNotFound{EntityName: "Space for channel", ID: channelID}
 		}
 		return nil, errors.Wrap(err, "unable_to_get_space_for_channel")
 	}
@@ -79,35 +87,37 @@ func (s *Store) GetSpaceForChannel(channelID string) (*model.Space, error) {
 }
 
 // GetSpacesForTeam returns spaces for the given team, ordered by SortOrder.
-// limit <= 0 returns all rows.
-func (s *Store) GetSpacesForTeam(teamID string, includeDeleted bool, offset, limit int) ([]*model.Space, error) {
-	builder := s.spaceSelectQuery().Where(sq.Eq{"TeamId": teamID})
-
-	if !includeDeleted {
-		builder = builder.Where(sq.Eq{"DeleteAt": 0})
+// limit <= 0 returns all rows up to MaxRowsPerQuery (ErrLimitExceeded beyond that).
+func (s *Store) GetSpacesForTeam(teamID string, offset, limit int) ([]*model.Space, error) {
+	if teamID == "" {
+		return nil, &ErrInvalidInput{Entity: "Space", Field: "teamID", Value: teamID}
 	}
 
-	builder = builder.OrderBy("SortOrder ASC", "CreateAt DESC", "Id ASC")
+	builder := s.spaceSelectQuery().
+		Where(sq.Eq{"TeamId": teamID, "DeleteAt": 0}).
+		OrderBy("SortOrder ASC", "CreateAt DESC", "Id ASC")
 
-	if limit > 0 {
-		if offset < 0 {
-			offset = 0
-		}
-		builder = builder.Limit(uint64(limit)).Offset(uint64(offset)) //nolint:gosec // limit>0 and offset>=0 enforced above
-	}
+	builder = applyLimitOffset(builder, offset, limit)
 
 	spaces := []*model.Space{}
 	if err := s.selectBuilder(s.db, &spaces, builder); err != nil {
 		return nil, errors.Wrap(err, "unable_to_get_spaces_for_team")
+	}
+	if limit <= 0 && len(spaces) > MaxRowsPerQuery {
+		return nil, &ErrLimitExceeded{Resource: "Spaces for team_id=" + teamID, Limit: MaxRowsPerQuery}
 	}
 	return spaces, nil
 }
 
 // UpdateSpace replaces a space's mutable fields (Title, Description, Icon, Props).
 // Full-replacement: zero-valued fields overwrite stored values, so callers must supply
-// a complete row. A non-zero space.UpdateAt is treated as the optimistic-lock baseline
-// (first-one-wins); zero opts out (last-write-wins).
-func (s *Store) UpdateSpace(space *model.Space) (_ *model.Space, err error) {
+// a complete row. space.UpdateAt is the optimistic-lock baseline (first-one-wins): a
+// mismatch returns ErrConflict. Passing force skips the check (last-write-wins).
+func (s *Store) UpdateSpace(space *model.Space, force bool) (_ *model.Space, err error) {
+	if space.Id == "" {
+		return nil, &ErrInvalidInput{Entity: "Space", Field: "Id", Value: space.Id}
+	}
+
 	tx, err := s.db.Beginx()
 	if err != nil {
 		return nil, errors.Wrap(err, "begin_transaction")
@@ -125,7 +135,7 @@ func (s *Store) UpdateSpace(space *model.Space) (_ *model.Space, err error) {
 		return nil, errors.Wrap(txErr, "failed to get space for update")
 	}
 
-	if space.UpdateAt != 0 && space.UpdateAt != existing.UpdateAt {
+	if !force && space.UpdateAt != existing.UpdateAt {
 		return nil, &ErrConflict{Resource: "Space id=" + space.Id}
 	}
 
@@ -139,7 +149,7 @@ func (s *Store) UpdateSpace(space *model.Space) (_ *model.Space, err error) {
 	// Keep UpdateAt strictly monotonic (same-millisecond writes still advance the CAS token).
 	existing.UpdateAt = nextMonotonic(existing.UpdateAt, oldUpdateAt)
 	if validErr := existing.IsValid(); validErr != nil {
-		return nil, &ErrInvalidInput{Entity: "Space", Field: "IsValid", Value: validErr.Error()}
+		return nil, &ErrInvalidInput{Entity: "Space", Field: "IsValid", Value: validErr.Error(), Reason: validErr.Id}
 	}
 
 	updateBuilder := s.getQueryBuilder().
@@ -169,7 +179,9 @@ func (s *Store) UpdateSpace(space *model.Space) (_ *model.Space, err error) {
 // DeleteSpace soft-deletes a space and cascades to its live pages in the same
 // transaction. Pages are scoped by SpaceId so a reused ChannelId is not affected.
 func (s *Store) DeleteSpace(id string) (err error) {
-	now := mmmodel.GetMillis()
+	if id == "" {
+		return &ErrInvalidInput{Entity: "Space", Field: "id", Value: id}
+	}
 
 	tx, err := s.db.Beginx()
 	if err != nil {
@@ -177,13 +189,42 @@ func (s *Store) DeleteSpace(id string) (err error) {
 	}
 	defer s.finalizeTransaction(tx, &err)
 
-	// Lock the space before its pages (space-before-page order) so page ops never deadlock
-	// with this cascade.
+	// Lock the live space before its pages (space-before-page order) so page ops never deadlock
+	// with this cascade; ErrNotFound if it is already gone.
+	if lockErr := s.lockLiveSpace(tx, id); lockErr != nil {
+		return lockErr
+	}
+
+	// Stamp the space and the pages it cascades with one cascade marker strictly greater than
+	// any DeleteAt already on the space's non-snapshot pages. RestoreSpace matches on this exact
+	// value, so a page deleted individually beforehand — even in the same millisecond — keeps a
+	// smaller DeleteAt and is never swept back in. The space row is held by the lock above, and
+	// DeletePage also takes that lock, so no page in this space can be deleted concurrently and
+	// land an equal stamp after this read.
+	now := mmmodel.GetMillis()
+	var maxPageDeleteAt int64
+	// DeleteAt > 0 both matches idx_docs_page_spaceid_deleted's partial predicate (so the
+	// planner can use it) and is harmless: live rows contribute only 0 to the MAX anyway.
+	maxQuery := s.getQueryBuilder().
+		Select("COALESCE(MAX(DeleteAt), 0)").
+		From("DOCS_Page").
+		Where(sq.Eq{"SpaceId": id, "OriginalId": ""}).
+		Where(sq.Gt{"DeleteAt": 0})
+	if mErr := s.getBuilder(tx, &maxPageDeleteAt, maxQuery); mErr != nil {
+		return errors.Wrap(mErr, "failed to compute space cascade stamp")
+	}
+	cascadeAt := now
+	if maxPageDeleteAt >= cascadeAt {
+		cascadeAt = maxPageDeleteAt + 1
+	}
+
 	spaceQuery := s.getQueryBuilder().
 		Update("DOCS_Space").
-		Set("DeleteAt", now).
+		Set("DeleteAt", cascadeAt).
+		// Advance the CAS token (UpdateSpace optimistic-locks on UpdateAt) so a delete
+		// invalidates stale client baselines. GREATEST(UpdateAt+1, ?) is nextMonotonic in SQL.
+		Set("UpdateAt", sq.Expr("GREATEST(UpdateAt + 1, ?)", cascadeAt)).
 		Where(sq.Eq{"Id": id, "DeleteAt": 0})
-
 	result, txErr := s.execBuilder(tx, spaceQuery)
 	if txErr != nil {
 		return errors.Wrap(txErr, "unable_to_delete_space")
@@ -192,15 +233,92 @@ func (s *Store) DeleteSpace(id string) (err error) {
 		return rowsErr
 	}
 
-	// Cascade to live pages. OriginalId='' matches idx_docs_page_spaceid's partial
-	// predicate (version snapshots always have DeleteAt>0 so they're already excluded).
+	// Cascade to live pages with the same stamp. OriginalId='' excludes version snapshots
+	// (always DeleteAt>0, so already excluded by the DeleteAt=0 predicate too).
 	pagesQuery := s.getQueryBuilder().
 		Update("DOCS_Page").
-		Set("DeleteAt", now).
+		Set("DeleteAt", cascadeAt).
+		Set("UpdateAt", cascadeAt).
+		Set("EditAt", sq.Expr("GREATEST(EditAt + 1, ?)", cascadeAt)).
 		Where(sq.Eq{"SpaceId": id, "OriginalId": "", "DeleteAt": 0})
 
 	if _, pErr := s.execBuilder(tx, pagesQuery); pErr != nil {
 		return errors.Wrap(pErr, "unable_to_delete_space_pages")
+	}
+
+	// Drafts are left untouched: this soft-delete is reversible (RestoreSpace), so a user's
+	// in-progress work must survive the round trip. Drafts have no DeleteAt, so they are purged
+	// only on page delete (DeletePage) or a permanent space delete.
+	if err = tx.Commit(); err != nil {
+		return errors.Wrap(err, "commit_transaction")
+	}
+	return nil
+}
+
+// RestoreSpace un-deletes a soft-deleted space and the pages that DeleteSpace cascaded,
+// matched by the shared DeleteAt stamp, in space-before-page lock order. Pages deleted
+// individually before the space, and version snapshots, stay deleted. Returns ErrNotFound
+// when there is no soft-deleted space to restore, and ErrConflict when another live space now
+// owns the same backing channel (the partial unique index uq_docs_space_channel_id).
+func (s *Store) RestoreSpace(id string) (err error) {
+	if id == "" {
+		return &ErrInvalidInput{Entity: "Space", Field: "id", Value: id}
+	}
+
+	tx, err := s.db.Beginx()
+	if err != nil {
+		return errors.Wrap(err, "begin_transaction")
+	}
+	defer s.finalizeTransaction(tx, &err)
+
+	now := mmmodel.GetMillis()
+
+	// Lock the soft-deleted space row; its DeleteAt scopes the page un-cascade below.
+	var deleted struct {
+		ChannelID string
+		DeleteAt  int64
+	}
+	selectQuery := s.getQueryBuilder().
+		Select("ChannelId", "DeleteAt").
+		From("DOCS_Space").
+		Where(sq.And{sq.Eq{"Id": id}, sq.NotEq{"DeleteAt": 0}}).
+		Suffix("FOR UPDATE")
+	if txErr := s.getBuilder(tx, &deleted, selectQuery); txErr != nil {
+		if errors.Is(txErr, sql.ErrNoRows) {
+			return &ErrNotFound{EntityName: "Space", ID: id}
+		}
+		return errors.Wrap(txErr, "failed to read space for restore")
+	}
+
+	spaceQuery := s.getQueryBuilder().
+		Update("DOCS_Space").
+		Set("DeleteAt", 0).
+		// Advance the CAS token monotonically so a delete→restore round trip — even within one
+		// millisecond, or after a prior synthetic UpdateAt — invalidates stale client baselines.
+		Set("UpdateAt", sq.Expr("GREATEST(UpdateAt + 1, ?)", now)).
+		Where(sq.And{sq.Eq{"Id": id}, sq.NotEq{"DeleteAt": 0}})
+	result, txErr := s.execBuilder(tx, spaceQuery)
+	if txErr != nil {
+		// A live space already holds this channel: restoring would breach uq_docs_space_channel_id.
+		if isUniqueViolation(txErr) {
+			return &ErrConflict{Resource: "Space channel_id=" + deleted.ChannelID}
+		}
+		return errors.Wrap(txErr, "unable_to_restore_space")
+	}
+	if rowsErr := checkRowsAffected(result, "Space", id); rowsErr != nil {
+		return rowsErr
+	}
+
+	// Un-cascade only the pages this space's delete took down (same DeleteAt stamp); their
+	// SortOrder/ParentId are untouched by the cascade, so the pre-delete tree reconstitutes.
+	pagesQuery := s.getQueryBuilder().
+		Update("DOCS_Page").
+		Set("DeleteAt", 0).
+		Set("UpdateAt", now).
+		Set("EditAt", sq.Expr("GREATEST(EditAt + 1, ?)", now)).
+		Where(sq.Eq{"SpaceId": id, "OriginalId": "", "DeleteAt": deleted.DeleteAt})
+	if _, pErr := s.execBuilder(tx, pagesQuery); pErr != nil {
+		return errors.Wrap(pErr, "unable_to_restore_space_pages")
 	}
 
 	if err = tx.Commit(); err != nil {

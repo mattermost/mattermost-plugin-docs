@@ -47,10 +47,11 @@ func (s *Space) PreSave() {
 		s.Props = make(mmmodel.StringInterface)
 	}
 
+	now := mmmodel.GetMillis()
 	if s.CreateAt == 0 {
-		s.CreateAt = mmmodel.GetMillis()
+		s.CreateAt = now
 	}
-	s.UpdateAt = s.CreateAt
+	s.UpdateAt = now
 
 	if s.SortOrder == 0 {
 		s.SortOrder = s.CreateAt
