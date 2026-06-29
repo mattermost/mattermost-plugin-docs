@@ -195,6 +195,10 @@ func (p *Page) IsValid() *mmmodel.AppError {
 		return mmmodel.NewAppError("Page.IsValid", "model.page.is_valid.original_id.app_error", nil, "id="+p.Id, http.StatusBadRequest)
 	}
 
+	if p.OriginalId == p.Id {
+		return mmmodel.NewAppError("Page.IsValid", "model.page.is_valid.original_self.app_error", nil, "id="+p.Id, http.StatusBadRequest)
+	}
+
 	// A version snapshot (OriginalId set) is always soft-deleted; enforce the invariant the
 	// chk_docs_page_snapshot_deleted DB constraint also guards, for an early, specific error.
 	if p.OriginalId != "" && p.DeleteAt == 0 {
