@@ -27,7 +27,15 @@ const config = {
     ],
     plugins: [
         'babel-plugin-typescript-to-proptypes',
+        [
+            'formatjs',
+            {
+                idInterpolationPattern: '[sha512:contenthash:base64:6]',
+                ast: true,
+            },
+        ],
     ],
+    sourceType: 'unambiguous',
 };
 
 // Jest needs module transformation

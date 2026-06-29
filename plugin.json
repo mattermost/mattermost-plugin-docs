@@ -1,11 +1,11 @@
 {
-    "id": "com.mattermost.plugin-starter-template",
-    "name": "Plugin Starter Template",
-    "description": "This plugin serves as a starting point for writing a Mattermost plugin.",
-    "homepage_url": "https://github.com/mattermost/mattermost-plugin-starter-template",
-    "support_url": "https://github.com/mattermost/mattermost-plugin-starter-template/issues",
-    "icon_path": "assets/starter-template-icon.svg",
-    "min_server_version": "6.2.1",
+    "id": "com.mattermost.docs",
+    "name": "Docs",
+    "description": "Browse and manage documentation spaces and pages in Mattermost.",
+    "homepage_url": "https://github.com/mattermost/mattermost-plugin-docs",
+    "support_url": "https://github.com/mattermost/mattermost-plugin-docs/issues",
+    "icon_path": "assets/docs-icon.svg",
+    "min_server_version": "11.8.0",
     "server": {
         "executables": {
             "linux-amd64": "server/dist/plugin-linux-amd64",
