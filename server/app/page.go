@@ -57,9 +57,11 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.search_text_without_content.app_error", nil, "", http.StatusBadRequest)
 	}
 
-	// Validate the space before the parent below, so a missing or soft-deleted space returns a
-	// clean "space not found" rather than a misleading parent error. Advisory only: the store
-	// re-checks under lock and is authoritative (see the not-found handling after CreatePage).
+	// Check the space before the parent checks below, so a missing or deleted space returns a
+	// clear "space not found" instead of a confusing "invalid parent" error when parentID is set.
+	// This early check is only for that error message, not enforcement: the space can still be
+	// deleted before the insert, so the store re-validates it on insert and returns the same
+	// not-found (handled after the call).
 	if _, spaceErr := s.GetSpace(spaceID); spaceErr != nil {
 		return nil, spaceErr
 	}
@@ -82,10 +84,12 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 		if ancErr != nil {
 			return nil, storeAppError("CreatePage", "app.page.create.depth_check", ancErr)
 		}
-		// ancestorDepth excludes the parent itself; new page depth = ancestorDepth + 2.
-		// Best-effort: read outside the create tx, so concurrent inserts could briefly
-		// exceed MaxPageDepth; the store CTE's hard cap is the real backstop.
+		// Derive the new child's depth (root page = depth 1). ancestorDepth counts the parent's
+		// ancestors but not the parent itself, so the parent is at ancestorDepth + 1, and its new
+		// child is one level deeper: +1 (parent) +1 (child) = ancestorDepth + 2.
 		newDepth := ancestorDepth + 2
+		// This runs outside the create transaction, so a concurrent insert can briefly push depth
+		// past MaxPageDepth; the store CTE's recursion cap is the hard backstop against runaway nesting.
 		if newDepth > MaxPageDepth {
 			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest)
 		}
@@ -159,8 +163,8 @@ func (s *Service) UpdatePage(pageID string, patch *model.PagePatch, baseEditAt i
 		return nil, invalidInputAppError("UpdatePage", "app.page.update.invalid_content.app_error", storeErr)
 	}
 	if store.IsErrConflict(storeErr) {
-		// currentPage is stale after the lost CAS; re-fetch for accurate conflict metadata.
-		// If the re-read races with a delete, still report the original conflict rather than
+		// The CAS conflict left us without an updated page; re-fetch it for accurate conflict
+		// metadata. If the re-read races with a delete, still report the original conflict rather than
 		// the follow-up error, so the client never sees a 404 for a stale update.
 		fresh, freshErr := s.GetPage(pageID)
 		if freshErr != nil {
@@ -174,7 +178,9 @@ func (s *Service) UpdatePage(pageID string, patch *model.PagePatch, baseEditAt i
 	return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.store_error.app_error", nil, "", http.StatusInternalServerError).Wrap(storeErr)
 }
 
-// GetPageWithDeleted fetches a page including soft-deleted rows, for restore flows.
+// GetPageWithDeleted returns a page by ID even when soft-deleted (DeleteAt != 0),
+// unlike GetPage which returns only live pages. Version snapshots (OriginalId set)
+// are excluded and return not-found regardless of deletion state.
 func (s *Service) GetPageWithDeleted(pageID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("GetPageWithDeleted", "app.page.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -183,15 +189,15 @@ func (s *Service) GetPageWithDeleted(pageID string) (*model.Page, *mmmodel.AppEr
 	if err != nil {
 		return nil, storeAppError("GetPageWithDeleted", "app.page.get", err)
 	}
-	// Version snapshots (OriginalId != "") are soft-deleted but not restorable; treat as not found.
+	// includeDeleted would also surface version snapshots (always soft-deleted, OriginalId set);
+	// exclude them so an ID resolves to its current page, never a historical version.
 	if page.OriginalId != "" {
 		return nil, mmmodel.NewAppError("GetPageWithDeleted", "app.page.get.not_found.app_error", nil, "", http.StatusNotFound)
 	}
 	return page, nil
 }
 
-// DeletePage soft-deletes a page; the store promotes its live children to the page's parent
-// (not undone on restore, matching Confluence).
+// DeletePage soft-deletes a page by ID.
 func (s *Service) DeletePage(pageID string) *mmmodel.AppError {
 	if !mmmodel.IsValidId(pageID) {
 		return mmmodel.NewAppError("DeletePage", "app.page.delete.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -202,8 +208,7 @@ func (s *Service) DeletePage(pageID string) *mmmodel.AppError {
 	return nil
 }
 
-// RestorePage un-deletes a soft-deleted page; promoted children stay put (matching
-// Confluence), and the page returns under its original parent or the space root if it's gone.
+// RestorePage un-deletes a soft-deleted page by ID. Version snapshots cannot be un-deleted.
 func (s *Service) RestorePage(pageID string) *mmmodel.AppError {
 	if !mmmodel.IsValidId(pageID) {
 		return mmmodel.NewAppError("RestorePage", "app.page.restore.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -212,8 +217,8 @@ func (s *Service) RestorePage(pageID string) *mmmodel.AppError {
 	if err != nil {
 		return storeAppError("RestorePage", "app.page.restore", err)
 	}
-	// Version snapshots (OriginalId != "") are soft-deleted by design and are not restorable;
-	// reject them explicitly so the store's OriginalId="" filter doesn't surface as a 404.
+	// Version snapshots (OriginalId != "") are soft-deleted by design and cannot be un-deleted;
+	// reject them explicitly so a snapshot returns a clear error instead of a generic not-found.
 	if page.OriginalId != "" {
 		return mmmodel.NewAppError("RestorePage", "app.page.restore.not_restorable.app_error", nil, "", http.StatusBadRequest)
 	}

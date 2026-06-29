@@ -12,10 +12,10 @@ CREATE TABLE IF NOT EXISTS DOCS_Draft (
     PRIMARY KEY (UserId, PageId)
 );
 
--- List a user's drafts within a space (sidebar/tree): GetDraftsForSpace filters (UserId, SpaceId)
--- and orders by UpdateAt DESC; the trailing column lets the index satisfy the sort, no filesort.
+-- List a user's drafts within a space (sidebar/tree): (UserId, SpaceId) filtered, ordered by
+-- UpdateAt DESC; the trailing column lets the index satisfy the sort, no filesort.
 CREATE INDEX IF NOT EXISTS idx_docs_draft_user_space ON DOCS_Draft (UserId, SpaceId, UpdateAt DESC);
 
--- Purge-by-page: DeletePage runs DELETE FROM DOCS_Draft WHERE PageId = ?, which the
--- (UserId, PageId) primary key cannot serve (PageId is not its leading column).
+-- Purge-by-page: DELETE FROM DOCS_Draft WHERE PageId = ?, which the (UserId, PageId)
+-- primary key cannot serve because PageId is not its leading column.
 CREATE INDEX IF NOT EXISTS idx_docs_draft_pageid ON DOCS_Draft (PageId);

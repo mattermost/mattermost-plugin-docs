@@ -81,7 +81,7 @@ func (s *Service) UpdateSpace(space *model.Space, force bool) (*model.Space, *mm
 	return updated, nil
 }
 
-// DeleteSpace soft-deletes a space and cascades to its pages. Backing-channel cleanup is not wired yet.
+// DeleteSpace soft-deletes a space by ID. Backing-channel cleanup is not wired yet.
 func (s *Service) DeleteSpace(spaceID string) *mmmodel.AppError {
 	if !mmmodel.IsValidId(spaceID) {
 		return mmmodel.NewAppError("DeleteSpace", "app.space.delete.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -92,17 +92,16 @@ func (s *Service) DeleteSpace(spaceID string) *mmmodel.AppError {
 	return nil
 }
 
-// RestoreSpace un-deletes a soft-deleted space and the pages its deletion cascaded. Returns
-// 409 if another live space now owns the backing channel. Backing-channel un-archive is not
-// wired yet (mirrors DeleteSpace).
+// RestoreSpace un-deletes a soft-deleted space by ID. Returns 409 if another live space now
+// owns the backing channel. Backing-channel un-archive is not wired yet (mirrors DeleteSpace).
 func (s *Service) RestoreSpace(spaceID string) *mmmodel.AppError {
 	if !mmmodel.IsValidId(spaceID) {
 		return mmmodel.NewAppError("RestoreSpace", "app.space.restore.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	// A live space cannot be restored. GetSpace filters DeleteAt=0, so a nil error means the
-	// space is already live: return 400 not_deleted (mirroring RestorePage) instead of letting
-	// the store's DeleteAt!=0 filter surface as a misleading 404. A real lookup failure (not a
-	// plain "not live") is surfaced as-is rather than masked by the restore.
+	// GetSpace returns not-found for soft-deleted spaces, so a nil error here means the
+	// space is already live — return 400 not_deleted (matching RestorePage) rather than a
+	// 404 that would make a live space look absent. Non-404 errors from GetSpace are
+	// surfaced as-is.
 	if _, liveErr := s.GetSpace(spaceID); liveErr == nil {
 		return mmmodel.NewAppError("RestoreSpace", "app.space.restore.not_deleted.app_error", nil, "", http.StatusBadRequest)
 	} else if liveErr.StatusCode != http.StatusNotFound {

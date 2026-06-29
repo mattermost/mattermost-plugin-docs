@@ -115,17 +115,16 @@ func (p *Page) Patch(patch *PagePatch) {
 	}
 }
 
-// IsValid enforces patch-level invariants that Page.IsValid cannot see, because they depend on
-// which fields the patch carries rather than on the merged page's final values. SearchText is
-// Body's plain-text projection backing the search index (Body is opaque rich-text, so it can't
-// be tokenized directly), so the two must be patched together: a Body change that left
-// SearchText stale would desync the index, and a SearchText change without a Body change would
-// desync the projection. A non-empty SearchText additionally requires a non-empty Body. This
-// lives on the patch (not only in the service) so every store.UpdatePage caller upholds it.
+// IsValid checks rules about which fields the patch sets — Page.IsValid can't, since it only
+// sees the merged page. SearchText is Body's plain-text projection backing the search index
+// (Body is opaque rich-text, so it can't be tokenized directly), so the two must be patched
+// together: changing one without the other desyncs the index from the body. A non-empty
+// SearchText additionally requires a non-empty Body. This lives on the patch (not only in the
+// service), so any caller that bypasses the service still upholds it.
 func (p *PagePatch) IsValid() *mmmodel.AppError {
-	// A nil or all-nil patch is a no-op: rejecting it here (not only in the service) keeps a
-	// direct store.UpdatePage caller from panicking on nil or bumping UpdateAt/EditAt/
-	// LastModifiedBy without a content change.
+	// A nil or all-nil patch is a no-op; rejecting it early prevents bumping timestamps
+	// without a content change, and avoids a nil-pointer panic on the Body/SearchText
+	// cross-checks below.
 	if p == nil || (p.Title == nil && p.Body == nil && p.SearchText == nil && p.Props == nil) {
 		return mmmodel.NewAppError("PagePatch.IsValid", "model.page.patch.nothing_to_update.app_error", nil, "", http.StatusBadRequest)
 	}

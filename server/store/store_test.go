@@ -1,3 +1,6 @@
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
+// See LICENSE.txt for license information.
+
 package store_test
 
 import (
@@ -734,7 +737,7 @@ func TestGetPageAncestors_FourLevelChain(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, ancestors, 3, "l3 leaf must have exactly 3 ancestors")
 
-	// CTE orders by CreateAt ascending, so root is first.
+	// CTE orders by depth descending (root has the greatest hop count), so root is first.
 	require.Equal(t, root.Id, ancestors[0].Id, "first ancestor must be root")
 	require.Equal(t, l1.Id, ancestors[1].Id, "second ancestor must be l1")
 	require.Equal(t, l2.Id, ancestors[2].Id, "third ancestor must be l2")
@@ -1028,7 +1031,7 @@ func TestRestorePage(t *testing.T) {
 		require.NoError(t, err)
 		require.Zero(t, restored.DeleteAt)
 
-		// Matching Confluence: restore does not pull the child back; it stays promoted.
+		// Matching Confluence: un-deleting the parent does not pull the child back; it stays promoted.
 		stillPromoted, err := s.GetPage(child.Id, false)
 		require.NoError(t, err)
 		require.Equal(t, parent.ParentId, stillPromoted.ParentId, "promoted child must stay under the grandparent after restore")

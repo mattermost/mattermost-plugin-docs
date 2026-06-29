@@ -24,7 +24,8 @@ func (s *Store) spaceSelectQuery() sq.SelectBuilder {
 		From("DOCS_Space")
 }
 
-// CreateSpace inserts a space row, applying PreSave and validation internally.
+// CreateSpace inserts a space row. It fills in defaults and rejects an invalid space itself, so
+// the caller need not prepare or validate it beforehand.
 func (s *Store) CreateSpace(space *model.Space) (*model.Space, error) {
 	space.PreSave()
 	if validErr := space.IsValid(); validErr != nil {
@@ -248,7 +249,7 @@ func (s *Store) DeleteSpace(id string) (err error) {
 
 	// Drafts are left untouched: this soft-delete is reversible (RestoreSpace), so a user's
 	// in-progress work must survive the round trip. Drafts have no DeleteAt, so they are purged
-	// only on page delete (DeletePage) or a permanent space delete.
+	// only when their page is deleted (DeletePage).
 	if err = tx.Commit(); err != nil {
 		return errors.Wrap(err, "commit_transaction")
 	}
@@ -259,7 +260,7 @@ func (s *Store) DeleteSpace(id string) (err error) {
 // matched by the shared DeleteAt stamp, in space-before-page lock order. Pages deleted
 // individually before the space, and version snapshots, stay deleted. Returns ErrNotFound
 // when there is no soft-deleted space to restore, and ErrConflict when another live space now
-// owns the same backing channel (the partial unique index uq_docs_space_channel_id).
+// owns the same backing channel.
 func (s *Store) RestoreSpace(id string) (err error) {
 	if id == "" {
 		return &ErrInvalidInput{Entity: "Space", Field: "id", Value: id}

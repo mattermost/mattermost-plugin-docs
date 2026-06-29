@@ -13,7 +13,7 @@ import (
 )
 
 // RawExecForTest executes a raw SQL query directly on the underlying DB handle.
-// It is intentionally exported only for tests (via the _test.go build tag) so that
+// It is intentionally exported only for tests (via the _test.go filename suffix) so that
 // test helpers can inject data-corruption scenarios (e.g. CTE cycle detection) without
 // going through the public API's validation guards.
 func (s *Store) RawExecForTest(query string, args ...any) (sql.Result, error) {

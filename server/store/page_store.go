@@ -36,7 +36,6 @@ func pageToSlice(p *model.Page) []any {
 	}
 }
 
-// pageColumnsP is pageColumnList prefixed with "p.", precomputed.
 var pageColumnsP = columnsWithAlias("p", pageColumnList)
 
 // CreatePage inserts a new page and assigns its sort order under a transaction-scoped
@@ -141,10 +140,9 @@ func (s *Store) UpdatePage(pageID string, patch *model.PagePatch, baseEditAt int
 	if pageID == "" {
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "Id", Value: pageID}
 	}
-	// Validate the patch (nil-safe; rejects a no-op patch and the Body/SearchText mismatch)
-	// before opening the transaction, so an invalid or empty patch never locks the row or bumps
-	// UpdateAt/EditAt/LastModifiedBy. Enforced here, not only in the service, so any store caller
-	// upholds the contract.
+	// Validate the patch before opening the transaction, so an invalid or empty patch never locks
+	// the row or bumps UpdateAt/EditAt/LastModifiedBy. Enforced here, not only in the service,
+	// so any store caller upholds the contract.
 	if validErr := patch.IsValid(); validErr != nil {
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "Patch", Value: validErr.Error(), Reason: validErr.Id}
 	}
@@ -245,9 +243,9 @@ func (s *Store) lockLiveSpace(tx *sqlx.Tx, spaceID string) error {
 	return nil
 }
 
-// lockLiveParent FOR UPDATE-locks the prospective parent page, requiring it to be live and
-// non-snapshot (DeleteAt=0 excludes snapshots) in the given space. A cross-space or missing
-// parent finds no row and yields ErrInvalidInput (Field "ParentId"); entity names the calling
+// lockLiveParent FOR UPDATE-locks the prospective parent page, requiring it to be a live page
+// (DeleteAt=0, which excludes snapshots since snapshots are always deleted) in the given space.
+// A cross-space or missing parent finds no row and yields ErrInvalidInput (Field "ParentId"); entity names the calling
 // resource for the error. Shared by CreatePage and UpsertDraft.
 func (s *Store) lockLiveParent(tx *sqlx.Tx, parentID, spaceID, entity string) error {
 	query := s.getQueryBuilder().
@@ -290,7 +288,7 @@ func (s *Store) nextSortOrder(tx *sqlx.Tx, channelID, parentID string) (int64, e
 // parent, as a contiguous block in the page's slot so their order survives. Locks are
 // space-before-page, and the page row is locked FOR UPDATE before its children are read so
 // a concurrent CreatePage can't leave a live child under it. Snapshots (OriginalId != "")
-// are never deleted; restore does not pull the promoted children back (matching Confluence).
+// are never deleted; un-deleting the page does not pull the promoted children back (matching Confluence).
 func (s *Store) DeletePage(pageID string) (err error) {
 	if pageID == "" {
 		return &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
@@ -444,10 +442,9 @@ func (s *Store) DeletePage(pageID string) (err error) {
 	}
 
 	// A new-page draft parented under this page is a pending child of it. Mirror the live-child
-	// promotion above and reparent it to this page's parent, so it stays publishable instead of
-	// dangling under a soft-deleted parent — the read gates filter on a draft's own page, not its
-	// parent, so without this the draft would survive pointing at a dead parent. The deleted
-	// page's parent is live (or root) by the "no live page under a deleted parent" invariant.
+	// promotion above and reparent it to this page's parent; otherwise it would stay readable
+	// while pointing at a soft-deleted parent. The deleted page's parent is live (or root) by the
+	// "no live page under a deleted parent" invariant.
 	reparentDraftsQuery := s.getQueryBuilder().
 		Update("DOCS_Draft").
 		Set("ParentId", deleted.ParentID).
@@ -465,8 +462,8 @@ func (s *Store) DeletePage(pageID string) (err error) {
 
 // RestorePage un-deletes a soft-deleted page. Promoted children are NOT pulled back
 // (matching Confluence). The page returns under its original parent, or falls back to the
-// space root if that parent is gone — so a restore never fails for a deleted parent. Only a
-// soft-deleted live row (OriginalId == "", DeleteAt > 0) in a live space restores; space and
+// space root if that parent is gone — so un-deleting never fails for a deleted parent. Only a
+// soft-deleted live row (OriginalId == "", DeleteAt > 0) in a live space is un-deletable; space and
 // parent are locked FOR UPDATE in space→parent order.
 func (s *Store) RestorePage(pageID string) (err error) {
 	if pageID == "" {

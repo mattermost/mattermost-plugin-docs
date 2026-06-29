@@ -24,7 +24,7 @@ var draftMetaColumns = []string{
 
 // applyDraftLivenessFilter adds the space-liveness JOIN and page-liveness condition shared by
 // the draft read queries: the space must be live, and the draft's page must be either absent
-// (a new-page draft) or a live, non-snapshot page in the draft's own space. The draft table
+// (a new-page draft) or a live page in the draft's own space. The draft table
 // must be aliased "d".
 func applyDraftLivenessFilter(q sq.SelectBuilder) sq.SelectBuilder {
 	return q.
@@ -36,13 +36,15 @@ func applyDraftLivenessFilter(q sq.SelectBuilder) sq.SelectBuilder {
 		})
 }
 
-// UpsertDraft creates or replaces the draft keyed by (UserId, PageId), applying PreSave and
-// validation internally. The row is replaced wholesale on conflict; CreateAt is preserved from
-// the supplied draft. The write is transactional and follows CreatePage's space-before-page
-// lock order: it requires a live space, and — when a page already exists for the draft's PageId
-// — requires that page to be live, non-snapshot, and in the same space, locking it FOR UPDATE
-// so a concurrent DeletePage cannot soft-delete the page (and purge this draft) underneath the
-// write. A PageId with no page row is a new-page draft (a legal orphan) and is accepted.
+// UpsertDraft creates or replaces the draft keyed by (UserId, PageId). It fills in defaults and
+// rejects an invalid draft itself, so the caller need not prepare or validate it beforehand.
+// If a draft already exists for that key every field is overwritten (no field-level merge),
+// except CreateAt, which keeps the existing row's original value. The write is transactional
+// and follows CreatePage's space-before-page lock order: it requires a live space, and — when a
+// page already exists for the draft's PageId — requires that page to be live and in the same
+// space, locking it FOR UPDATE so a concurrent DeletePage cannot soft-delete the page (and purge
+// this draft) underneath the write. A PageId with no page row is a new-page draft (a legal
+// orphan) and is accepted.
 func (s *Store) UpsertDraft(draft *model.Draft) (_ *model.Draft, err error) {
 	draft.PreSave()
 	if validErr := draft.IsValid(); validErr != nil {
@@ -71,7 +73,7 @@ func (s *Store) UpsertDraft(draft *model.Draft) (_ *model.Draft, err error) {
 		Suffix("FOR UPDATE")
 	switch pErr := s.getBuilder(tx, &page, pageLockQuery); {
 	case pErr == nil:
-		// A page row exists: the draft edits it, so it must be a live, non-snapshot page in the
+		// A page row exists: the draft edits it, so it must be a live page in the
 		// draft's own space.
 		if page.DeleteAt != 0 || page.OriginalId != "" || page.SpaceID != draft.SpaceId {
 			return nil, &ErrInvalidInput{Entity: "Draft", Field: "PageId", Value: draft.PageId}
@@ -82,11 +84,11 @@ func (s *Store) UpsertDraft(draft *model.Draft) (_ *model.Draft, err error) {
 		return nil, errors.Wrap(pErr, "failed to lock page for draft upsert")
 	}
 
-	// The pending hierarchy parent must be a live, non-snapshot page in the draft's space, the
-	// same liveness CreatePage enforces (DeleteAt=0 excludes snapshots). Scoping the lock by
+	// The pending hierarchy parent must be a live page in the draft's space, the same liveness
+	// CreatePage enforces (DeleteAt=0 excludes snapshots). Scoping the lock by
 	// SpaceId keeps it within the space already locked above, so a cross-space ParentId simply
-	// finds no row and is rejected. A reserved-but-unpublished parent is not a legal draft
-	// parent here, matching CreatePage.
+	// finds no row and is rejected. A ParentId whose page does not exist yet (a draft target with
+	// no page row) is likewise rejected, matching CreatePage's parent requirement.
 	if draft.ParentId != "" {
 		if parentErr := s.lockLiveParent(tx, draft.ParentId, draft.SpaceId, "Draft"); parentErr != nil {
 			return nil, parentErr
@@ -116,7 +118,7 @@ func (s *Store) UpsertDraft(draft *model.Draft) (_ *model.Draft, err error) {
 
 // GetDraft returns the draft keyed by (userID, pageID), or ErrNotFound. It is gated the same
 // way as GetDraftsForSpace: the draft is returned only when its space is live and its page is
-// either not yet created (a new-page draft) or a live, non-snapshot page in the same space.
+// either not yet created (a new-page draft) or a live page in the same space.
 func (s *Store) GetDraft(userID, pageID string) (*model.Draft, error) {
 	if userID == "" {
 		return nil, &ErrInvalidInput{Entity: "Draft", Field: "userId", Value: userID}

@@ -20,8 +20,6 @@ const MaxPageDescendantsLimit = 5000
 // belongs in the HTTP API layer once the REST endpoints are wired.
 const MaxRowsPerQuery = 5000
 
-// pageColListP is the comma-joined "p."-prefixed column list, precomputed for the
-// hierarchy CTE final SELECTs.
 var pageColListP = strings.Join(pageColumnsP, ", ")
 
 // These CTEs are built once at package init (inputs are compile-time constants) rather than on

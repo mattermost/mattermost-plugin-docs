@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-// Package app_test contains integration-style tests for the space plugin service layer.
+// Package app_test contains integration-style tests for the Docs plugin service layer.
 // Tests require a real Postgres database; the DSN comes from MM_SQLSETTINGS_DATASOURCE
 // or TEST_DATABASE_DSN, defaulting to the standard local dev Postgres. They never skip —
 // a missing database fails the run rather than passing on a skip.

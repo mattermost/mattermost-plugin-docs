@@ -109,7 +109,6 @@ func storeAppError(where, keyPrefix string, err error) *mmmodel.AppError {
 
 // invalidInputAppError maps a store ErrInvalidInput to a 400 *AppError, preferring the
 // specific validation key the store carried (from a model IsValid check) over fallbackKey.
-// Used by the hand-rolled error switches that need their own fallback message key.
 func invalidInputAppError(where, fallbackKey string, err error) *mmmodel.AppError {
 	var invErr *store.ErrInvalidInput
 	if errors.As(err, &invErr) && invErr.Reason != "" {

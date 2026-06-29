@@ -27,7 +27,7 @@ func (s *Service) GetPageChildren(pageID string, page, perPage int) ([]*model.Pa
 	return pages, nil
 }
 
-// GetPageAncestors fetches all ancestors of a page up to the root.
+// GetPageAncestors fetches all live ancestors of a page up to the root.
 func (s *Service) GetPageAncestors(pageID string) ([]*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("GetPageAncestors", "app.page.get_ancestors.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -42,7 +42,7 @@ func (s *Service) GetPageAncestors(pageID string) ([]*model.Page, *mmmodel.AppEr
 	return pages, nil
 }
 
-// GetPageDescendants fetches all descendants of a page (entire subtree).
+// GetPageDescendants fetches all live descendants of a page (entire subtree).
 func (s *Service) GetPageDescendants(pageID string) ([]*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("GetPageDescendants", "app.page.get_descendants.invalid_id.app_error", nil, "", http.StatusBadRequest)
