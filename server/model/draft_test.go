@@ -98,7 +98,7 @@ func TestDraftIsValid(t *testing.T) {
 
 	t.Run("props over cap rejected", func(t *testing.T) {
 		d := validDraft()
-		d.Props = mmmodel.StringInterface{"k": strings.Repeat("x", model.DraftPropsMaxBytes)}
+		d.Props = mmmodel.StringInterface{"k": strings.Repeat("x", model.PagePropsMaxBytes)}
 		aerr := d.IsValid()
 		require.NotNil(t, aerr)
 		require.Equal(t, "model.draft.is_valid.props_size.app_error", aerr.Id)

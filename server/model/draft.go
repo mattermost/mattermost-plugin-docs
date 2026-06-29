@@ -11,10 +11,7 @@ import (
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 )
 
-// DraftPropsMaxBytes caps the serialized size of the opaque Props map.
-const DraftPropsMaxBytes = 64 * 1024
-
-// DraftFileidsMaxRunes caps the serialized FileIds array (matches MM core's Draft cap).
+// DraftFileidsMaxRunes is the maximum rune length of the serialized FileIds JSON array.
 const DraftFileidsMaxRunes = 300
 
 // Draft is a per-user autosave draft for a space page, stored in DOCS_Draft.
@@ -40,8 +37,8 @@ type Draft struct {
 
 func (d *Draft) PreSave() {
 	d.Title = strings.TrimSpace(mmmodel.SanitizeUnicode(d.Title))
-	// Body is stored as-is (opaque editor content; matches Page.PreUpdate). Sanitizing here
-	// could corrupt structured payloads (e.g. ProseMirror/TipTap JSON).
+	// Body is stored as-is: sanitizing opaque editor content (e.g. ProseMirror/TipTap JSON)
+	// would corrupt structured payloads.
 
 	if d.FileIds == nil {
 		d.FileIds = mmmodel.StringArray{}
@@ -115,7 +112,7 @@ func (d *Draft) IsValid() *mmmodel.AppError {
 		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.file_ids.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
 	}
 
-	if err := validatePropsSize("Draft.IsValid", "model.draft.is_valid", "page_id="+d.PageId, d.Props, DraftPropsMaxBytes); err != nil {
+	if err := validatePropsSize("Draft.IsValid", "model.draft.is_valid", "page_id="+d.PageId, d.Props, PagePropsMaxBytes); err != nil {
 		return err
 	}
 
