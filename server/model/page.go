@@ -128,7 +128,9 @@ func (p *PagePatch) IsValid() *mmmodel.AppError {
 	if p == nil || (p.Title == nil && p.Body == nil && p.SearchText == nil && p.Props == nil) {
 		return mmmodel.NewAppError("PagePatch.IsValid", "model.page.patch.nothing_to_update.app_error", nil, "", http.StatusBadRequest)
 	}
-	if (p.Body == nil) != (p.SearchText == nil) {
+	bodyPatched := p.Body != nil
+	searchTextPatched := p.SearchText != nil
+	if bodyPatched != searchTextPatched {
 		return mmmodel.NewAppError("PagePatch.IsValid", "model.page.patch.search_text_body_mismatch.app_error", nil, "", http.StatusBadRequest)
 	}
 	if p.SearchText != nil && *p.SearchText != "" && *p.Body == "" {
