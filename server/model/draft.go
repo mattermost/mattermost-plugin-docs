@@ -1,0 +1,141 @@
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
+// See LICENSE.txt for license information.
+
+package model
+
+import (
+	"net/http"
+	"strings"
+	"unicode/utf8"
+
+	mmmodel "github.com/mattermost/mattermost/server/public/model"
+)
+
+// DraftPropsMaxBytes caps the serialized size of the opaque Props map.
+const DraftPropsMaxBytes = 64 * 1024
+
+// DraftFileidsMaxRunes caps the serialized FileIds array (matches MM core's Draft cap).
+const DraftFileidsMaxRunes = 300
+
+// Draft is a per-user autosave draft for a space page, stored in DOCS_Draft.
+//
+// A draft is keyed by (UserId, PageId): PageId is the page id reserved when the
+// user starts editing and stable across the draft -> publish lifecycle, so a
+// draft for a not-yet-created page and a draft editing an existing page share the
+// same key. There is no foreign key to DOCS_Page — an orphan draft for a page that
+// has not been published yet is legal. ParentId carries the pending hierarchy
+// parent for a new page; Body holds the raw (opaque) editor content.
+type Draft struct {
+	UserId   string                  `json:"user_id"`
+	SpaceId  string                  `json:"space_id"`
+	PageId   string                  `json:"page_id"`
+	ParentId string                  `json:"parent_id"`
+	Title    string                  `json:"title"`
+	Body     string                  `json:"body"`
+	FileIds  mmmodel.StringArray     `json:"file_ids"`
+	Props    mmmodel.StringInterface `json:"props"`
+	CreateAt int64                   `json:"create_at"`
+	UpdateAt int64                   `json:"update_at"`
+}
+
+func (d *Draft) PreSave() {
+	d.Title = strings.TrimSpace(mmmodel.SanitizeUnicode(d.Title))
+	// Body is stored as-is (opaque editor content; matches Page.PreUpdate). Sanitizing here
+	// could corrupt structured payloads (e.g. ProseMirror/TipTap JSON).
+
+	if d.FileIds == nil {
+		d.FileIds = mmmodel.StringArray{}
+	}
+
+	if d.Props == nil {
+		d.Props = make(mmmodel.StringInterface)
+	}
+
+	now := mmmodel.GetMillis()
+	if d.CreateAt == 0 {
+		d.CreateAt = now
+	}
+	d.UpdateAt = now
+}
+
+func (d *Draft) Auditable() map[string]any {
+	return map[string]any{
+		"user_id":   d.UserId,
+		"space_id":  d.SpaceId,
+		"page_id":   d.PageId,
+		"parent_id": d.ParentId,
+		"title":     d.Title,
+		"file_ids":  d.FileIds,
+		"props":     d.GetProps(),
+		"create_at": d.CreateAt,
+		"update_at": d.UpdateAt,
+	}
+}
+
+func (d *Draft) IsValid() *mmmodel.AppError {
+	if !mmmodel.IsValidId(d.UserId) {
+		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.user_id.app_error", nil, "user_id="+d.UserId, http.StatusBadRequest)
+	}
+
+	if !mmmodel.IsValidId(d.SpaceId) {
+		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.space_id.app_error", nil, "space_id="+d.SpaceId, http.StatusBadRequest)
+	}
+
+	if !mmmodel.IsValidId(d.PageId) {
+		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.page_id.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
+	}
+
+	if d.ParentId != "" {
+		if !mmmodel.IsValidId(d.ParentId) {
+			return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.parent_id.app_error", nil, "parent_id="+d.ParentId, http.StatusBadRequest)
+		}
+		if d.ParentId == d.PageId {
+			return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.parent_self.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
+		}
+	}
+
+	if d.CreateAt == 0 {
+		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.create_at.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
+	}
+
+	if d.UpdateAt == 0 {
+		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.update_at.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
+	}
+
+	// A draft publishes into a page, so it is bound by the page content limits.
+	if utf8.RuneCountInString(d.Title) > PageTitleMaxRunes {
+		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.title_length.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
+	}
+
+	if len(d.Body) > PageBodyMaxBytes {
+		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.body_size.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
+	}
+
+	if utf8.RuneCountInString(mmmodel.ArrayToJSON(d.FileIds)) > DraftFileidsMaxRunes {
+		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.file_ids.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
+	}
+
+	if err := validatePropsSize("Draft.IsValid", "model.draft.is_valid", "page_id="+d.PageId, d.Props, DraftPropsMaxBytes); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// GetProps returns Props, initializing to an empty map if nil.
+func (d *Draft) GetProps() mmmodel.StringInterface {
+	return ensureProps(d.Props)
+}
+
+// Clone returns a deep copy.
+func (d *Draft) Clone() *Draft {
+	cp := *d
+	if d.FileIds != nil {
+		cp.FileIds = make(mmmodel.StringArray, len(d.FileIds))
+		copy(cp.FileIds, d.FileIds)
+	}
+	if d.Props != nil {
+		cp.Props = deepCloneStringInterface(d.Props)
+	}
+	return &cp
+}
