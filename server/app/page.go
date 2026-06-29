@@ -163,9 +163,12 @@ func (s *Service) UpdatePage(pageID string, patch *model.PagePatch, baseEditAt i
 	}
 	if store.IsErrConflict(storeErr) {
 		// currentPage is stale after the lost CAS; re-fetch for accurate conflict metadata.
+		// If the re-read races with a delete, still report the original conflict rather than
+		// the follow-up error, so the client never sees a 404 for a stale update.
 		fresh, freshErr := s.GetPage(pageID)
 		if freshErr != nil {
-			return nil, freshErr
+			return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.conflict.app_error",
+				nil, "conflict", http.StatusConflict).Wrap(storeErr)
 		}
 		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.conflict.app_error",
 			map[string]any{"ModifiedBy": modifierID(fresh), "ModifiedAt": fresh.EditAt},
