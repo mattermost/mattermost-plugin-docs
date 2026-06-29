@@ -57,9 +57,9 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.search_text_without_content.app_error", nil, "", http.StatusBadRequest)
 	}
 
-	// Guard against a missing or soft-deleted space here for a clean 404 (a parent in a
-	// gone space would otherwise mis-report as parent_different_space). The store re-checks
-	// under lock and is the source of truth for the page's ChannelId.
+	// Validate the space before the parent below, so a missing or soft-deleted space returns a
+	// clean "space not found" rather than a misleading parent error. Advisory only: the store
+	// re-checks under lock and is authoritative (see the not-found handling after CreatePage).
 	if _, spaceErr := s.GetSpace(spaceID); spaceErr != nil {
 		return nil, spaceErr
 	}
@@ -148,9 +148,6 @@ func (s *Service) UpdatePage(pageID string, patch *model.PagePatch, baseEditAt i
 		return nil, validErr
 	}
 
-	// The store merges the patch into the row under a FOR UPDATE lock: on the CAS path it
-	// rejects a stale baseEditAt with ErrConflict; on the force path it still merges only the
-	// patched fields, so a concurrent edit to untouched fields survives.
 	updatedPage, storeErr := s.store.UpdatePage(pageID, patch, baseEditAt, force, userID)
 	if storeErr == nil {
 		return updatedPage, nil

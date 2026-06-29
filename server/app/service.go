@@ -52,8 +52,7 @@ func validateTitle(where, keyPrefix, title string, maxRunes int) (string, *mmmod
 // unchanged". The model's PagePatch.IsValid owns the nil/no-op and Body/SearchText-coupling
 // invariants (shared with store.UpdatePage); this adds the app-layer caps.
 func normalizeAndValidatePagePatch(where string, patch *model.PagePatch) *mmmodel.AppError {
-	// Run the shared patch invariant first: it is nil-safe and rejects an all-nil patch, so the
-	// title deref below is safe, and it enforces the Body/SearchText coupling before a DB round trip.
+	// IsValid rejects a nil or all-nil patch, so the title deref below is safe.
 	if validErr := patch.IsValid(); validErr != nil {
 		return validErr
 	}
