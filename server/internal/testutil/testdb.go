@@ -57,6 +57,7 @@ func OpenSchemaDB(t *testing.T, schemaPrefix string) *sql.DB {
 	// Rebuild DSN with search_path set so every pooled connection uses the schema.
 	db, err := sql.Open("postgres", AddSearchPath(dsn, schema))
 	require.NoError(t, err, "open schema-scoped postgres")
+	t.Cleanup(func() { _ = db.Close() })
 	require.NoError(t, db.Ping(), "ping schema-scoped postgres")
 
 	return db
