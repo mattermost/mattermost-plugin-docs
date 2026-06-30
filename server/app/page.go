@@ -25,9 +25,8 @@ func modifierID(p *model.Page) string {
 	return p.UserId
 }
 
-// CreatePage creates a new page in the space identified by spaceID. The backing
-// channel is derived from the space (a space has exactly one), never passed in,
-// so a page's ChannelId can never disagree with its space.
+// CreatePage creates a new page in the space identified by spaceID. ChannelId is
+// derived from the space (which has exactly one backing channel), not supplied by the caller.
 func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID, pageID string) (*model.Page, *mmmodel.AppError) {
 	if pageID != "" && !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -41,7 +40,7 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 	if parentID != "" && !mmmodel.IsValidId(parentID) {
 		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.invalid_parent_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	title, titleErr := validateTitle("CreatePage", "app.page.create", title, model.PageTitleMaxRunes)
+	title, titleErr := validateTitle("CreatePage", title, model.PageTitleMaxRunes)
 	if titleErr != nil {
 		return nil, titleErr
 	}
@@ -82,7 +81,7 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 		}
 		ancestorDepth, ancErr := s.store.GetPageAncestorDepth(parentID)
 		if ancErr != nil {
-			return nil, storeAppError("CreatePage", "app.page.create.depth_check", ancErr)
+			return nil, storeAppError("CreatePage", ancErr)
 		}
 		// Derive the new child's depth (root page = depth 1). ancestorDepth counts the parent's
 		// ancestors but not the parent itself, so the parent is at ancestorDepth + 1, and its new
@@ -114,7 +113,7 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.space_not_found.app_error", nil, "", http.StatusNotFound).Wrap(storeErr)
 		}
 		if store.IsErrInvalidInput(storeErr) {
-			return nil, invalidInputAppError("CreatePage", "app.page.create.invalid_input.app_error", storeErr)
+			return nil, invalidInputAppError("CreatePage", storeErr)
 		}
 		if store.IsErrConflict(storeErr) {
 			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.conflict.app_error", nil, "", http.StatusConflict).Wrap(storeErr)
@@ -134,7 +133,7 @@ func (s *Service) GetPage(pageID string) (*model.Page, *mmmodel.AppError) {
 	}
 	page, err := s.store.GetPage(pageID, false)
 	if err != nil {
-		return nil, storeAppError("GetPage", "app.page.get", err)
+		return nil, storeAppError("GetPage", err)
 	}
 	return page, nil
 }
@@ -160,7 +159,7 @@ func (s *Service) UpdatePage(pageID string, patch *model.PagePatch, baseEditAt i
 		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.not_found.app_error", nil, "", http.StatusNotFound).Wrap(storeErr)
 	}
 	if store.IsErrInvalidInput(storeErr) {
-		return nil, invalidInputAppError("UpdatePage", "app.page.update.invalid_content.app_error", storeErr)
+		return nil, invalidInputAppError("UpdatePage", storeErr)
 	}
 	if store.IsErrConflict(storeErr) {
 		// The CAS conflict left us without an updated page; re-fetch it for accurate conflict
@@ -187,7 +186,7 @@ func (s *Service) GetPageWithDeleted(pageID string) (*model.Page, *mmmodel.AppEr
 	}
 	page, err := s.store.GetPage(pageID, true)
 	if err != nil {
-		return nil, storeAppError("GetPageWithDeleted", "app.page.get", err)
+		return nil, storeAppError("GetPageWithDeleted", err)
 	}
 	// includeDeleted would also surface version snapshots (always soft-deleted, OriginalId set);
 	// exclude them so an ID resolves to its current page, never a historical version.
@@ -203,7 +202,7 @@ func (s *Service) DeletePage(pageID string) *mmmodel.AppError {
 		return mmmodel.NewAppError("DeletePage", "app.page.delete.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	if delErr := s.store.DeletePage(pageID); delErr != nil {
-		return storeAppError("DeletePage", "app.page.delete", delErr)
+		return storeAppError("DeletePage", delErr)
 	}
 	return nil
 }
@@ -215,7 +214,7 @@ func (s *Service) RestorePage(pageID string) *mmmodel.AppError {
 	}
 	page, err := s.store.GetPage(pageID, true)
 	if err != nil {
-		return storeAppError("RestorePage", "app.page.restore", err)
+		return storeAppError("RestorePage", err)
 	}
 	// Version snapshots (OriginalId != "") are soft-deleted by design and cannot be un-deleted;
 	// reject them explicitly so a snapshot returns a clear error instead of a generic not-found.
@@ -226,7 +225,7 @@ func (s *Service) RestorePage(pageID string) *mmmodel.AppError {
 		return mmmodel.NewAppError("RestorePage", "app.page.restore.not_deleted.app_error", nil, "", http.StatusBadRequest)
 	}
 	if restoreErr := s.store.RestorePage(pageID); restoreErr != nil {
-		return storeAppError("RestorePage", "app.page.restore", restoreErr)
+		return storeAppError("RestorePage", restoreErr)
 	}
 	return nil
 }

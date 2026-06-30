@@ -112,7 +112,7 @@ func (d *Draft) IsValid() *mmmodel.AppError {
 		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.file_ids.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
 	}
 
-	if err := validatePropsSize("Draft.IsValid", "model.draft.is_valid", "page_id="+d.PageId, d.Props, PagePropsMaxBytes); err != nil {
+	if err := validatePropsSize("Draft.IsValid", "page_id="+d.PageId, d.Props, PagePropsMaxBytes); err != nil {
 		return err
 	}
 

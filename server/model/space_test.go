@@ -127,7 +127,7 @@ func TestSpaceIsValid(t *testing.T) {
 		s.Props = mmmodel.StringInterface{"k": bigValue}
 		aerr := s.IsValid()
 		require.NotNil(t, aerr)
-		require.Equal(t, "model.space.is_valid.props_size.app_error", aerr.Id)
+		require.Equal(t, "model.shared.props_too_large.app_error", aerr.Id)
 	})
 }
 

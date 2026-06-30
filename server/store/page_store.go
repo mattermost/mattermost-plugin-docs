@@ -225,8 +225,9 @@ func (s *Store) UpdatePage(pageID string, patch *model.PagePatch, baseEditAt int
 	return &page, nil
 }
 
-// lockLiveSpace FOR UPDATE-locks the live space row to hold the space-before-page lock
-// order (shared with CreatePage/DeleteSpace). Returns ErrNotFound if the space is gone.
+// lockLiveSpace FOR UPDATE-locks the live space row, establishing the space-before-page
+// lock order that all page-lifecycle writes (UpsertDraft, DeletePage, RestorePage) observe
+// to avoid deadlocks with DeleteSpace. Returns ErrNotFound if the space is gone.
 func (s *Store) lockLiveSpace(tx *sqlx.Tx, spaceID string) error {
 	query := s.getQueryBuilder().
 		Select("1").

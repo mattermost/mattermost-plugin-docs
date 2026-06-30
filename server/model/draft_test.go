@@ -101,7 +101,7 @@ func TestDraftIsValid(t *testing.T) {
 		d.Props = mmmodel.StringInterface{"k": strings.Repeat("x", model.PagePropsMaxBytes)}
 		aerr := d.IsValid()
 		require.NotNil(t, aerr)
-		require.Equal(t, "model.draft.is_valid.props_size.app_error", aerr.Id)
+		require.Equal(t, "model.shared.props_too_large.app_error", aerr.Id)
 	})
 
 	t.Run("CreateAt zero rejected", func(t *testing.T) {

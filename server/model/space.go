@@ -20,6 +20,9 @@ const (
 	SpacePropsMaxBytes = 64 * 1024
 )
 
+// Space is stored in the DOCS_Space table. Each space owns a backing MM channel (ChannelId).
+// A soft-deleted space (DeleteAt>0) retains its pages; pages share the same DeleteAt via a
+// cascade and can be restored with the space.
 type Space struct {
 	Id          string                  `json:"id"`
 	ChannelId   string                  `json:"-"`
@@ -126,7 +129,7 @@ func (s *Space) IsValid() *mmmodel.AppError {
 		return mmmodel.NewAppError("Space.IsValid", "model.space.is_valid.icon_length.app_error", nil, "id="+s.Id, http.StatusBadRequest)
 	}
 
-	if err := validatePropsSize("Space.IsValid", "model.space.is_valid", "id="+s.Id, s.Props, SpacePropsMaxBytes); err != nil {
+	if err := validatePropsSize("Space.IsValid", "id="+s.Id, s.Props, SpacePropsMaxBytes); err != nil {
 		return err
 	}
 

@@ -22,7 +22,7 @@ func (s *Service) GetPageChildren(pageID string, page, perPage int) ([]*model.Pa
 	offset, limit := paginationOffsetLimit(page, perPage)
 	pages, storeErr := s.store.GetPageChildren(pageID, offset, limit)
 	if storeErr != nil {
-		return nil, storeAppError("GetPageChildren", "app.page.get_children", storeErr)
+		return nil, storeAppError("GetPageChildren", storeErr)
 	}
 	return pages, nil
 }
@@ -37,7 +37,7 @@ func (s *Service) GetPageAncestors(pageID string) ([]*model.Page, *mmmodel.AppEr
 	}
 	pages, err := s.store.GetPageAncestors(pageID)
 	if err != nil {
-		return nil, storeAppError("GetPageAncestors", "app.page.get_ancestors", err)
+		return nil, storeAppError("GetPageAncestors", err)
 	}
 	return pages, nil
 }
@@ -52,7 +52,7 @@ func (s *Service) GetPageDescendants(pageID string) ([]*model.Page, *mmmodel.App
 	}
 	pages, err := s.store.GetPageDescendants(pageID)
 	if err != nil {
-		return nil, storeAppError("GetPageDescendants", "app.page.get_descendants", err)
+		return nil, storeAppError("GetPageDescendants", err)
 	}
 	return pages, nil
 }

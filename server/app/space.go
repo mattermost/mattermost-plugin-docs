@@ -19,7 +19,7 @@ func (s *Service) GetSpace(spaceID string) (*model.Space, *mmmodel.AppError) {
 	}
 	space, err := s.store.GetSpace(spaceID)
 	if err != nil {
-		return nil, storeAppError("GetSpace", "app.space.get", err)
+		return nil, storeAppError("GetSpace", err)
 	}
 	return space, nil
 }
@@ -31,7 +31,7 @@ func (s *Service) GetSpaceForChannel(channelID string) (*model.Space, *mmmodel.A
 	}
 	space, err := s.store.GetSpaceForChannel(channelID)
 	if err != nil {
-		return nil, storeAppError("GetSpaceForChannel", "app.space.get_for_channel", err)
+		return nil, storeAppError("GetSpaceForChannel", err)
 	}
 	return space, nil
 }
@@ -44,7 +44,7 @@ func (s *Service) GetSpacesForTeam(teamID string, page, perPage int) ([]*model.S
 	offset, limit := paginationOffsetLimit(page, perPage)
 	spaces, err := s.store.GetSpacesForTeam(teamID, offset, limit)
 	if err != nil {
-		return nil, storeAppError("GetSpacesForTeam", "app.space.get_for_team", err)
+		return nil, storeAppError("GetSpacesForTeam", err)
 	}
 	return spaces, nil
 }
@@ -60,7 +60,7 @@ func (s *Service) UpdateSpace(space *model.Space, force bool) (*model.Space, *mm
 	if !mmmodel.IsValidId(space.Id) {
 		return nil, mmmodel.NewAppError("UpdateSpace", "app.space.update.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	title, titleErr := validateTitle("UpdateSpace", "app.space.update", space.Title, model.SpaceTitleMaxRunes)
+	title, titleErr := validateTitle("UpdateSpace", space.Title, model.SpaceTitleMaxRunes)
 	if titleErr != nil {
 		return nil, titleErr
 	}
@@ -75,7 +75,7 @@ func (s *Service) UpdateSpace(space *model.Space, force bool) (*model.Space, *mm
 
 	updated, err := s.store.UpdateSpace(space, force)
 	if err != nil {
-		return nil, storeAppError("UpdateSpace", "app.space.update", err)
+		return nil, storeAppError("UpdateSpace", err)
 	}
 
 	return updated, nil
@@ -87,7 +87,7 @@ func (s *Service) DeleteSpace(spaceID string) *mmmodel.AppError {
 		return mmmodel.NewAppError("DeleteSpace", "app.space.delete.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	if err := s.store.DeleteSpace(spaceID); err != nil {
-		return storeAppError("DeleteSpace", "app.space.delete", err)
+		return storeAppError("DeleteSpace", err)
 	}
 	return nil
 }
@@ -108,7 +108,7 @@ func (s *Service) RestoreSpace(spaceID string) *mmmodel.AppError {
 		return liveErr
 	}
 	if err := s.store.RestoreSpace(spaceID); err != nil {
-		return storeAppError("RestoreSpace", "app.space.restore", err)
+		return storeAppError("RestoreSpace", err)
 	}
 	return nil
 }
@@ -124,7 +124,7 @@ func (s *Service) GetSpacePages(spaceID string, page, perPage int) ([]*model.Pag
 	offset, limit := paginationOffsetLimit(page, perPage)
 	pages, storeErr := s.store.GetSpacePages(spaceID, offset, limit)
 	if storeErr != nil {
-		return nil, storeAppError("GetSpacePages", "app.space.get_pages", storeErr)
+		return nil, storeAppError("GetSpacePages", storeErr)
 	}
 	return pages, nil
 }

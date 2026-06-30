@@ -175,7 +175,7 @@ func TestPageIsValid(t *testing.T) {
 		p.Props = mmmodel.StringInterface{"k": bigValue}
 		aerr := p.IsValid()
 		require.NotNil(t, aerr)
-		require.Equal(t, "model.page.is_valid.props_size.app_error", aerr.Id)
+		require.Equal(t, "model.shared.props_too_large.app_error", aerr.Id)
 	})
 }
 

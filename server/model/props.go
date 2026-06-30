@@ -19,17 +19,17 @@ func ensureProps(props mmmodel.StringInterface) mmmodel.StringInterface {
 }
 
 // validatePropsSize enforces the serialized-size cap on a Props map.
-// keyPrefix is the i18n message-key namespace (e.g. "model.page.is_valid").
-func validatePropsSize(where, keyPrefix, details string, props mmmodel.StringInterface, maxBytes int) *mmmodel.AppError {
+// where identifies the calling operation for logs; the message keys are shared across callers.
+func validatePropsSize(where, details string, props mmmodel.StringInterface, maxBytes int) *mmmodel.AppError {
 	if props == nil {
 		return nil
 	}
 	b, err := json.Marshal(props)
 	if err != nil {
-		return mmmodel.NewAppError(where, keyPrefix+".props.app_error", nil, details, http.StatusBadRequest)
+		return mmmodel.NewAppError(where, "model.shared.props_invalid.app_error", nil, details, http.StatusBadRequest)
 	}
 	if len(b) > maxBytes {
-		return mmmodel.NewAppError(where, keyPrefix+".props_size.app_error", map[string]any{"MaxBytes": maxBytes}, details, http.StatusBadRequest)
+		return mmmodel.NewAppError(where, "model.shared.props_too_large.app_error", map[string]any{"MaxBytes": maxBytes}, details, http.StatusBadRequest)
 	}
 	return nil
 }
