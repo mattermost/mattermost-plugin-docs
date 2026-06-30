@@ -87,7 +87,7 @@ func (s *Store) GetSpaceForChannel(channelID string) (*model.Space, error) {
 	return &space, nil
 }
 
-// GetSpacesForTeam returns spaces for the given team, ordered by SortOrder.
+// GetSpacesForTeam returns live spaces for the given team, ordered by SortOrder.
 // limit <= 0 returns all rows up to MaxRowsPerQuery (ErrLimitExceeded beyond that).
 func (s *Store) GetSpacesForTeam(teamID string, offset, limit int) ([]*model.Space, error) {
 	if teamID == "" {
@@ -259,8 +259,8 @@ func (s *Store) DeleteSpace(id string) (err error) {
 // RestoreSpace un-deletes a soft-deleted space and the pages that DeleteSpace cascaded,
 // matched by the shared DeleteAt stamp, in space-before-page lock order. Pages deleted
 // individually before the space, and version snapshots, stay deleted. Returns ErrNotFound
-// when there is no soft-deleted space to restore, and ErrConflict when another live space now
-// owns the same backing channel.
+// when the space ID does not exist, ErrInvalidInput when the space exists but is already live
+// (not deleted), and ErrConflict when another live space now owns the same backing channel.
 func (s *Store) RestoreSpace(id string) (err error) {
 	if id == "" {
 		return &ErrInvalidInput{Entity: "Space", Field: "id", Value: id}

@@ -88,5 +88,3 @@ func (p *Plugin) OnDeactivate() error {
 	}
 	return nil
 }
-
-// See https://developers.mattermost.com/extend/plugins/server/reference/

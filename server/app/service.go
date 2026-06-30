@@ -52,7 +52,8 @@ func validateTitle(where, title string, maxRunes int) (string, *mmmodel.AppError
 // unchanged". The model's PagePatch.IsValid owns the nil/no-op and Body/SearchText-coupling
 // invariants (shared with store.UpdatePage); this adds the app-layer caps.
 func normalizeAndValidatePagePatch(where string, patch *model.PagePatch) *mmmodel.AppError {
-	// IsValid rejects a nil or all-nil patch, so the title deref below is safe.
+	// The patch.Title != nil guard below protects the title dereference; IsValid only
+	// rejects a nil or all-nil patch and can pass with Title == nil.
 	if validErr := patch.IsValid(); validErr != nil {
 		return validErr
 	}
@@ -72,8 +73,9 @@ func normalizeAndValidatePagePatch(where string, patch *model.PagePatch) *mmmode
 	return nil
 }
 
-// paginationOffsetLimit converts a zero-based page/size into a SQL offset/limit;
-// perPage <= 0 means "no limit" and returns (0, 0).
+// paginationOffsetLimit converts a zero-based page/size into a SQL offset/limit; perPage <= 0
+// returns (0, 0) to signal no SQL LIMIT (the store still caps at MaxRowsPerQuery and returns
+// ErrLimitExceeded beyond that).
 func paginationOffsetLimit(page, perPage int) (offset, limit int) {
 	if page < 0 {
 		page = 0
@@ -85,7 +87,7 @@ func paginationOffsetLimit(page, perPage int) (offset, limit int) {
 }
 
 // storeAppError maps a store sentinel error to an *AppError with the conventional status code
-// and a shared message key (app.store.*). where identifies the calling operation for logs.
+// and a shared message key (app.store.*); where identifies the calling operation for logs.
 // This is the default for translating store errors; hand-roll an inline NewAppError only when a
 // case needs a message key or metadata this can't produce (e.g. CreatePage's space-not-found, or
 // UpdatePage's conflict carrying ModifiedBy/ModifiedAt).

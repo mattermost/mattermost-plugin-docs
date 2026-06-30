@@ -37,7 +37,8 @@ func (s *Service) GetSpaceForChannel(channelID string) (*model.Space, *mmmodel.A
 	return space, nil
 }
 
-// GetSpacesForTeam returns paginated spaces for a team. perPage <= 0 returns all spaces.
+// GetSpacesForTeam returns paginated spaces for a team. perPage <= 0 returns all
+// spaces up to MaxRowsPerQuery (ErrLimitExceeded beyond that).
 func (s *Service) GetSpacesForTeam(teamID string, page, perPage int) ([]*model.Space, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(teamID) {
 		return nil, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.invalid_team_id.app_error", nil, "", http.StatusBadRequest)
@@ -53,7 +54,7 @@ func (s *Service) GetSpacesForTeam(teamID string, page, perPage int) ([]*model.S
 // UpdateSpace replaces a space's mutable fields (Title, Description, Icon, Props) —
 // full replacement, not partial merge. Callers must pass a complete space (typically
 // from GetSpace) with only the intended fields changed; zero values clear stored values.
-// space.UpdateAt is the optimistic-lock baseline; force skips the check (last-write-wins).
+// Optimistic-locked on space.UpdateAt; force overrides with last-write-wins.
 func (s *Service) UpdateSpace(space *model.Space, force bool) (*model.Space, *mmmodel.AppError) {
 	if space == nil {
 		return nil, mmmodel.NewAppError("UpdateSpace", "app.space.update.nil_input.app_error", nil, "", http.StatusBadRequest)
@@ -112,7 +113,8 @@ func (s *Service) RestoreSpace(spaceID string) *mmmodel.AppError {
 	return nil
 }
 
-// GetSpacePages returns paginated pages for a space. perPage <= 0 returns all pages.
+// GetSpacePages returns paginated pages for a space. perPage <= 0 returns all
+// pages up to MaxRowsPerQuery (ErrLimitExceeded beyond that).
 func (s *Service) GetSpacePages(spaceID string, page, perPage int) ([]*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(spaceID) {
 		return nil, mmmodel.NewAppError("GetSpacePages", "app.space.get_pages.invalid_space_id.app_error", nil, "", http.StatusBadRequest)

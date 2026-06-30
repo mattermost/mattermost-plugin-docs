@@ -39,12 +39,13 @@ func applyDraftLivenessFilter(q sq.SelectBuilder) sq.SelectBuilder {
 // UpsertDraft creates or replaces the draft keyed by (UserId, PageId). It fills in defaults and
 // rejects an invalid draft itself, so the caller need not prepare or validate it beforehand.
 // If a draft already exists for that key every field is overwritten (no field-level merge),
-// except CreateAt, which keeps the existing row's original value. The write is transactional
-// and follows CreatePage's space-before-page lock order: it requires a live space, and — when a
-// page already exists for the draft's PageId — requires that page to be live and in the same
-// space, locking it FOR UPDATE so a concurrent DeletePage cannot soft-delete the page (and purge
-// this draft) underneath the write. A PageId with no page row is a new-page draft (a legal
-// orphan) and is accepted.
+// except CreateAt, which keeps the existing row's original value.
+//
+// The write is transactional and follows CreatePage's space-before-page lock order: it requires
+// a live space, and — when a page already exists for the draft's PageId — requires that page to
+// be live and in the same space, locking it FOR UPDATE so a concurrent DeletePage cannot
+// soft-delete the page (and purge this draft) underneath the write. A PageId with no page row is
+// a new-page draft (a legal orphan) and is accepted without a page lock.
 func (s *Store) UpsertDraft(draft *model.Draft) (_ *model.Draft, err error) {
 	draft.PreSave()
 	if validErr := draft.IsValid(); validErr != nil {
@@ -169,7 +170,8 @@ func (s *Store) DeleteDraft(userID, pageID string) error {
 // with Body omitted (metadata only — see draftMetaColumns). Results pass applyDraftLivenessFilter,
 // so a soft-deleted space lists no drafts (they survive the soft-delete and reappear after
 // RestoreSpace) and a draft whose page is soft-deleted is dropped rather than rendered as a
-// phantom tree node. limit is implicit: at most MaxRowsPerQuery.
+// phantom tree node. The result is capped at MaxRowsPerQuery; ErrLimitExceeded is returned
+// rather than truncating when more rows match.
 func (s *Store) GetDraftsForSpace(userID, spaceID string) ([]*model.Draft, error) {
 	if userID == "" {
 		return nil, &ErrInvalidInput{Entity: "Draft", Field: "userId", Value: userID}

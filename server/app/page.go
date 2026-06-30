@@ -203,7 +203,8 @@ func (s *Service) DeletePage(pageID string) *mmmodel.AppError {
 	return nil
 }
 
-// RestorePage un-deletes a soft-deleted page by ID. Version snapshots cannot be un-deleted.
+// RestorePage un-deletes a soft-deleted page by ID. This is delete's complement, not a
+// version revert: version snapshots were never live pages that got deleted, so they are rejected.
 func (s *Service) RestorePage(pageID string) *mmmodel.AppError {
 	if !mmmodel.IsValidId(pageID) {
 		return mmmodel.NewAppError("RestorePage", "app.page.restore.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -212,8 +213,10 @@ func (s *Service) RestorePage(pageID string) *mmmodel.AppError {
 	if err != nil {
 		return storeAppError("RestorePage", err)
 	}
-	// Version snapshots (OriginalId != "") are soft-deleted by design and cannot be un-deleted;
-	// reject them explicitly so a snapshot returns a clear error instead of a generic not-found.
+	// Snapshots are historical versions, not live pages; they carry DeleteAt > 0 purely to stay
+	// out of live-page listings (enforced by chk_docs_page_snapshot_deleted). Reverting to a
+	// snapshot copies its content forward onto the live page — it does not un-delete the snapshot
+	// row — so un-delete does not apply here. Reject explicitly instead of returning a generic not-found.
 	if page.OriginalId != "" {
 		return mmmodel.NewAppError("RestorePage", "app.page.restore.not_restorable.app_error", nil, "", http.StatusBadRequest)
 	}
