@@ -19,7 +19,7 @@ func ensureProps(props mmmodel.StringInterface) mmmodel.StringInterface {
 }
 
 // validatePropsSize enforces the serialized-size cap on a Props map.
-// where identifies the calling operation for logs; the message keys are shared across callers.
+// The where argument identifies the calling operation for logs; the message keys are shared across callers.
 func validatePropsSize(where, details string, props mmmodel.StringInterface, maxBytes int) *mmmodel.AppError {
 	if props == nil {
 		return nil

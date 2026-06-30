@@ -84,7 +84,7 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 		// parent is at ancestorDepth + 1, and its new child is one deeper: +1 (parent) +1 (child) = ancestorDepth + 2.
 		newDepth := ancestorDepth + 2
 		// This runs outside the create transaction, so a concurrent insert can briefly push depth
-		// past MaxPageDepth; the store CTE's recursion cap is the hard backstop against runaway nesting.
+		// past MaxPageDepth; the store enforces a deeper cap as the hard backstop against runaway nesting.
 		if newDepth > MaxPageDepth {
 			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest)
 		}
@@ -214,9 +214,8 @@ func (s *Service) RestorePage(pageID string) *mmmodel.AppError {
 		return storeAppError("RestorePage", err)
 	}
 	// Snapshots are historical versions, not live pages; they carry DeleteAt > 0 purely to stay
-	// out of live-page listings (enforced by chk_docs_page_snapshot_deleted). Reverting to a
-	// snapshot copies its content forward onto the live page — it does not un-delete the snapshot
-	// row — so un-delete does not apply here. Reject explicitly instead of returning a generic not-found.
+	// out of live-page listings (enforced by chk_docs_page_snapshot_deleted), so un-delete does
+	// not apply here. Reject explicitly instead of returning a generic not-found.
 	if page.OriginalId != "" {
 		return mmmodel.NewAppError("RestorePage", "app.page.restore.not_restorable.app_error", nil, "", http.StatusBadRequest)
 	}

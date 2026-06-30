@@ -88,9 +88,6 @@ func (p *Page) PreUpdate() {
 // PagePatch is a partial update to a Page: a nil field is left unchanged, a non-nil
 // field (including an empty string) is applied. This avoids overloading "" to mean
 // both "set to empty" and "leave unchanged". Mirrors MM core's *Patch convention.
-// SortOrder is deliberately not patchable here: changing a page's position is a sibling-group
-// reorder/move concern (group locking, renumbering, duplicate/negative prevention), not a
-// generic field edit, and belongs in a dedicated operation.
 type PagePatch struct {
 	Title      *string                  `json:"title"`
 	Body       *string                  `json:"body"`

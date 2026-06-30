@@ -19,8 +19,7 @@ CREATE TABLE IF NOT EXISTS DOCS_Page (
 
     -- A version snapshot (OriginalId<>'') is always soft-deleted. Space deletion
     -- cascades a soft-delete to all its pages, and every live-page query filters on
-    -- DeleteAt=0. Enforce this at the DB level rather than trusting all current and
-    -- future write paths to maintain it.
+    -- DeleteAt=0.
     CONSTRAINT chk_docs_page_snapshot_deleted CHECK (OriginalId = '' OR DeleteAt > 0)
 );
 
@@ -32,20 +31,6 @@ CREATE INDEX IF NOT EXISTS idx_docs_page_parentid ON DOCS_Page (ParentId, SortOr
 -- the trailing sort columns make the MAX(SortOrder)-per-sibling-group lookup an index-only
 -- scan, and let the sibling-reorder listing avoid a filesort.
 CREATE INDEX IF NOT EXISTS idx_docs_page_channelid_parentid ON DOCS_Page (ChannelId, ParentId, SortOrder, CreateAt, Id) WHERE DeleteAt = 0;
-
--- List-by-channel: the channel page listings key on (ChannelId, DeleteAt=0, OriginalId='').
--- Partial on OriginalId='' so version snapshots stay out of the index.
-CREATE INDEX IF NOT EXISTS idx_docs_page_channelid ON DOCS_Page (ChannelId) WHERE DeleteAt = 0 AND OriginalId = '';
-
--- Full-text search over Title + SearchText. Partial on live rows so the
--- index does not bloat with version-history rows. The search query must include
--- DeleteAt=0 AND OriginalId='' for the planner to use this index.
-CREATE INDEX IF NOT EXISTS idx_docs_page_search_txt ON DOCS_Page
-    USING GIN (to_tsvector('english', COALESCE(Title, '') || ' ' || COALESCE(SearchText, '')))
-    WHERE DeleteAt = 0 AND OriginalId = '';
-
--- Version-history lookup: WHERE OriginalId=pageId AND DeleteAt>0.
-CREATE INDEX IF NOT EXISTS idx_docs_page_originalid ON DOCS_Page (OriginalId) WHERE DeleteAt > 0;
 
 -- Space page listing: WHERE SpaceId=? AND OriginalId='' AND DeleteAt=0,
 -- ordered by (CreateAt DESC, Id DESC). The trailing sort columns make paginated

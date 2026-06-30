@@ -15,11 +15,9 @@ import (
 	"github.com/mattermost/mattermost/server/v8/channels/store/storetest"
 )
 
-// OpenTestDB provisions an isolated Postgres database for the test using the Mattermost
-// convention (storetest.MakeSqlSettings): it reads TEST_DATABASE_POSTGRESQL_DSN or falls back
-// to the standard local dev Postgres, creates a randomly named database, and drops it via
-// t.Cleanup so parallel package runs never share tables. Tests never skip: a missing or
-// unreachable database fails rather than passing on a skip.
+// OpenTestDB provisions an isolated Postgres database for a test using storetest.MakeSqlSettings
+// and registers t.Cleanup to drop it when the test ends. A missing or unreachable database
+// fails the test rather than skipping it.
 func OpenTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 

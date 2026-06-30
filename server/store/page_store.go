@@ -225,9 +225,8 @@ func (s *Store) UpdatePage(pageID string, patch *model.PagePatch, baseEditAt int
 	return &page, nil
 }
 
-// lockLiveSpace FOR UPDATE-locks the live space row, establishing the space-before-page
-// lock order that all page-lifecycle writes (UpsertDraft, DeletePage, RestorePage) observe
-// to avoid deadlocks with DeleteSpace. Returns ErrNotFound if the space is gone.
+// lockLiveSpace FOR UPDATE-locks the live space row.
+// Returns ErrNotFound if the space does not exist or is already soft-deleted.
 func (s *Store) lockLiveSpace(tx *sqlx.Tx, spaceID string) error {
 	query := s.getQueryBuilder().
 		Select("1").
@@ -247,7 +246,7 @@ func (s *Store) lockLiveSpace(tx *sqlx.Tx, spaceID string) error {
 // lockLiveParent FOR UPDATE-locks the prospective parent page, requiring it to be a live page
 // (DeleteAt=0, which excludes snapshots since snapshots are always deleted) in the given space.
 // A cross-space or missing parent finds no row and yields ErrInvalidInput (Field "ParentId"); entity names the calling
-// resource for the error. Shared by CreatePage and UpsertDraft.
+// resource for the error.
 func (s *Store) lockLiveParent(tx *sqlx.Tx, parentID, spaceID, entity string) error {
 	query := s.getQueryBuilder().
 		Select("1").
@@ -286,10 +285,9 @@ func (s *Store) nextSortOrder(tx *sqlx.Tx, channelID, parentID string) (int64, e
 }
 
 // DeletePage soft-deletes a live page and promotes its live children to the page's own
-// parent, as a contiguous block in the page's slot so their order survives. Locks are
-// space-before-page, and the page row is locked FOR UPDATE before its children are read so
-// a concurrent CreatePage can't leave a live child under it. Snapshots (OriginalId != "")
-// are never deleted; un-deleting the page does not pull the promoted children back (matching Confluence).
+// parent as a contiguous block in the page's slot so their relative order survives. It
+// rejects snapshots (OriginalId != ""). The invariant that no live page sits under a
+// deleted parent holds even under concurrent CreatePage calls.
 func (s *Store) DeletePage(pageID string) (err error) {
 	if pageID == "" {
 		return &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}

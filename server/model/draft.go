@@ -37,8 +37,7 @@ type Draft struct {
 
 func (d *Draft) PreSave() {
 	d.Title = strings.TrimSpace(mmmodel.SanitizeUnicode(d.Title))
-	// Body is stored as-is: sanitizing opaque editor content (e.g. ProseMirror/TipTap JSON)
-	// would corrupt structured payloads.
+	// Body is stored as-is (no sanitization, unlike Title).
 
 	if d.FileIds == nil {
 		d.FileIds = mmmodel.StringArray{}

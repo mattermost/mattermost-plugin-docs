@@ -49,8 +49,8 @@ func validateTitle(where, title string, maxRunes int) (string, *mmmodel.AppError
 
 // normalizeAndValidatePagePatch enforces the title/body/searchText caps on a page update
 // patch and writes the normalized title back into the patch. A nil field means "leave
-// unchanged". The model's PagePatch.IsValid owns the nil/no-op and Body/SearchText-coupling
-// invariants (shared with store.UpdatePage); this adds the app-layer caps.
+// unchanged". It first rejects a nil, no-op, or Body/SearchText-mismatched patch via
+// PagePatch.IsValid, then applies the app-layer size caps.
 func normalizeAndValidatePagePatch(where string, patch *model.PagePatch) *mmmodel.AppError {
 	// The patch.Title != nil guard below protects the title dereference; IsValid only
 	// rejects a nil or all-nil patch and can pass with Title == nil.
@@ -87,7 +87,7 @@ func paginationOffsetLimit(page, perPage int) (offset, limit int) {
 }
 
 // storeAppError maps a store sentinel error to an *AppError with the conventional status code
-// and a shared message key (app.store.*); where identifies the calling operation for logs.
+// and a shared message key (app.store.*); the where argument identifies the calling operation for logs.
 // This is the default for translating store errors; hand-roll an inline NewAppError only when a
 // case needs a message key or metadata this can't produce (e.g. CreatePage's space-not-found, or
 // UpdatePage's conflict carrying ModifiedBy/ModifiedAt).

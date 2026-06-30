@@ -16,8 +16,8 @@ var draftSelectColumns = []string{
 	"UserId", "SpaceId", "PageId", "ParentId", "Title", "Body", "FileIds", "Props", "CreateAt", "UpdateAt",
 }
 
-// draftMetaColumns omits Body: the sidebar/tree listing only needs metadata, and Body can be
-// up to PageBodyMaxBytes per draft, so loading it for every row would be wasteful.
+// draftMetaColumns is the metadata column set for draft listings. Body is excluded: the
+// sidebar/tree listing needs only metadata, and Body can be up to PageBodyMaxBytes per draft.
 var draftMetaColumns = []string{
 	"UserId", "SpaceId", "PageId", "ParentId", "Title", "FileIds", "Props", "CreateAt", "UpdateAt",
 }
@@ -41,11 +41,9 @@ func applyDraftLivenessFilter(q sq.SelectBuilder) sq.SelectBuilder {
 // If a draft already exists for that key every field is overwritten (no field-level merge),
 // except CreateAt, which keeps the existing row's original value.
 //
-// The write is transactional and follows CreatePage's space-before-page lock order: it requires
-// a live space, and — when a page already exists for the draft's PageId — requires that page to
-// be live and in the same space, locking it FOR UPDATE so a concurrent DeletePage cannot
-// soft-delete the page (and purge this draft) underneath the write. A PageId with no page row is
-// a new-page draft (a legal orphan) and is accepted without a page lock.
+// The draft's space must be live, and a PageId that already has a page requires that page to be
+// live and in the same space; a PageId with no page row is a new-page draft (a legal orphan)
+// and is accepted.
 func (s *Store) UpsertDraft(draft *model.Draft) (_ *model.Draft, err error) {
 	draft.PreSave()
 	if validErr := draft.IsValid(); validErr != nil {
@@ -85,11 +83,9 @@ func (s *Store) UpsertDraft(draft *model.Draft) (_ *model.Draft, err error) {
 		return nil, errors.Wrap(pErr, "failed to lock page for draft upsert")
 	}
 
-	// The pending hierarchy parent must be a live page in the draft's space, the same liveness
-	// CreatePage enforces (DeleteAt=0 excludes snapshots). Scoping the lock by
-	// SpaceId keeps it within the space already locked above, so a cross-space ParentId simply
-	// finds no row and is rejected. A ParentId whose page does not exist yet (a draft target with
-	// no page row) is likewise rejected, matching CreatePage's parent requirement.
+	// The parent must be a live page (DeleteAt=0, which excludes snapshots) in the draft's own
+	// space. Scoping the lock by SpaceId reuses the space lock already held above, so a
+	// cross-space ParentId, or one whose page row does not exist yet, finds no row and is rejected.
 	if draft.ParentId != "" {
 		if parentErr := s.lockLiveParent(tx, draft.ParentId, draft.SpaceId, "Draft"); parentErr != nil {
 			return nil, parentErr
