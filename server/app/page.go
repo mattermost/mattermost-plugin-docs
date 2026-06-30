@@ -56,11 +56,6 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.search_text_without_content.app_error", nil, "", http.StatusBadRequest)
 	}
 
-	// Check the space before the parent checks below, so a missing or deleted space returns a
-	// clear "space not found" instead of a confusing "invalid parent" error when parentID is set.
-	// This early check is only for that error message, not enforcement: the space can still be
-	// deleted before the insert, so the store re-validates it on insert and returns the same
-	// not-found (handled after the call).
 	if _, spaceErr := s.GetSpace(spaceID); spaceErr != nil {
 		return nil, spaceErr
 	}
@@ -83,9 +78,10 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 		if ancErr != nil {
 			return nil, storeAppError("CreatePage", ancErr)
 		}
-		// Derive the new child's depth (root page = depth 1). ancestorDepth counts the parent's
-		// ancestors but not the parent itself, so the parent is at ancestorDepth + 1, and its new
-		// child is one level deeper: +1 (parent) +1 (child) = ancestorDepth + 2.
+		// Derive the new child's absolute depth from the tree root (a root page is depth 1; this is
+		// distinct from the subtree-relative depth the descendants CTE reports, where the queried
+		// node is 0). ancestorDepth counts the parent's ancestors but not the parent itself, so the
+		// parent is at ancestorDepth + 1, and its new child is one deeper: +1 (parent) +1 (child) = ancestorDepth + 2.
 		newDepth := ancestorDepth + 2
 		// This runs outside the create transaction, so a concurrent insert can briefly push depth
 		// past MaxPageDepth; the store CTE's recursion cap is the hard backstop against runaway nesting.
