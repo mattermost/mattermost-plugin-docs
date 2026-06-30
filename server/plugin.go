@@ -4,11 +4,13 @@
 package main
 
 import (
+	"path/filepath"
 	"sync"
 
 	"github.com/gorilla/mux"
 	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
+	"github.com/mattermost/mattermost/server/public/shared/i18n"
 	"github.com/pkg/errors"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/app"
@@ -34,6 +36,14 @@ type Plugin struct {
 
 // OnActivate initializes the store, runs migrations, and wires up the service and router.
 func (p *Plugin) OnActivate() error {
+	bundlePath, err := p.API.GetBundlePath()
+	if err != nil {
+		return errors.Wrap(err, "failed to get bundle path")
+	}
+	if translErr := i18n.TranslationsPreInit(filepath.Join(bundlePath, "assets", "i18n")); translErr != nil {
+		return errors.Wrap(translErr, "failed to load translation files")
+	}
+
 	p.client = pluginapi.NewClient(p.API, p.Driver)
 
 	masterDB, err := p.client.Store.GetMasterDB()

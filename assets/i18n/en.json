@@ -1,0 +1,358 @@
+[
+  {
+    "id": "app.page.create.body_too_long.app_error",
+    "translation": "The page body exceeds the maximum size of {{.MaxBytes}} bytes."
+  },
+  {
+    "id": "app.page.create.conflict.app_error",
+    "translation": "A page with this ID already exists."
+  },
+  {
+    "id": "app.page.create.invalid_id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page.create.invalid_parent.app_error",
+    "translation": "The parent page does not exist."
+  },
+  {
+    "id": "app.page.create.invalid_parent_id.app_error",
+    "translation": "Invalid parent page ID."
+  },
+  {
+    "id": "app.page.create.invalid_space_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.page.create.invalid_user_id.app_error",
+    "translation": "Invalid user ID."
+  },
+  {
+    "id": "app.page.create.max_depth_exceeded.app_error",
+    "translation": "Pages cannot be nested more than {{.MaxDepth}} levels deep."
+  },
+  {
+    "id": "app.page.create.parent_different_space.app_error",
+    "translation": "The parent page belongs to a different space."
+  },
+  {
+    "id": "app.page.create.search_text_too_long.app_error",
+    "translation": "The page search text exceeds the maximum size of {{.MaxBytes}} bytes."
+  },
+  {
+    "id": "app.page.create.search_text_without_content.app_error",
+    "translation": "Search text cannot be set without page content."
+  },
+  {
+    "id": "app.page.create.space_not_found.app_error",
+    "translation": "The space could not be found."
+  },
+  {
+    "id": "app.page.create.store_error.app_error",
+    "translation": "An error occurred while creating the page."
+  },
+  {
+    "id": "app.page.delete.invalid_id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page.get.invalid_id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page.get.not_found.app_error",
+    "translation": "The page could not be found."
+  },
+  {
+    "id": "app.page.get_ancestors.invalid_id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page.get_children.invalid_id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page.get_descendants.invalid_id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page.restore.invalid_id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page.restore.not_deleted.app_error",
+    "translation": "The page is not deleted, so it cannot be restored."
+  },
+  {
+    "id": "app.page.restore.not_restorable.app_error",
+    "translation": "This page cannot be restored."
+  },
+  {
+    "id": "app.page.update.body_too_long.app_error",
+    "translation": "The page body exceeds the maximum size of {{.MaxBytes}} bytes."
+  },
+  {
+    "id": "app.page.update.conflict.app_error",
+    "translation": "The page was changed by someone else. Reload and try again."
+  },
+  {
+    "id": "app.page.update.invalid_id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page.update.invalid_user_id.app_error",
+    "translation": "Invalid user ID."
+  },
+  {
+    "id": "app.page.update.not_found.app_error",
+    "translation": "The page could not be found."
+  },
+  {
+    "id": "app.page.update.search_text_too_long.app_error",
+    "translation": "The page search text exceeds the maximum size of {{.MaxBytes}} bytes."
+  },
+  {
+    "id": "app.page.update.store_error.app_error",
+    "translation": "An error occurred while updating the page."
+  },
+  {
+    "id": "app.shared.title_required.app_error",
+    "translation": "A title is required."
+  },
+  {
+    "id": "app.shared.title_too_long.app_error",
+    "translation": "The title exceeds the maximum length of {{.MaxLength}} characters."
+  },
+  {
+    "id": "app.space.delete.invalid_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.space.get.invalid_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.space.get_for_channel.invalid_channel_id.app_error",
+    "translation": "Invalid channel ID."
+  },
+  {
+    "id": "app.space.get_for_team.invalid_team_id.app_error",
+    "translation": "Invalid team ID."
+  },
+  {
+    "id": "app.space.get_pages.invalid_space_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.space.restore.invalid_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.space.restore.not_deleted.app_error",
+    "translation": "The space is not deleted, so it cannot be restored."
+  },
+  {
+    "id": "app.space.update.description_too_long.app_error",
+    "translation": "The space description exceeds the maximum length of {{.MaxLength}} characters."
+  },
+  {
+    "id": "app.space.update.icon_too_large.app_error",
+    "translation": "The space icon exceeds the maximum size of {{.MaxBytes}} bytes."
+  },
+  {
+    "id": "app.space.update.invalid_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.space.update.nil_input.app_error",
+    "translation": "No space data was provided."
+  },
+  {
+    "id": "app.store.conflict.app_error",
+    "translation": "The operation conflicts with the current state. Reload and try again."
+  },
+  {
+    "id": "app.store.internal_error.app_error",
+    "translation": "An unexpected error occurred. Please try again."
+  },
+  {
+    "id": "app.store.invalid_input.app_error",
+    "translation": "The request contains invalid input."
+  },
+  {
+    "id": "app.store.not_found.app_error",
+    "translation": "The requested item could not be found."
+  },
+  {
+    "id": "app.store.too_large.app_error",
+    "translation": "The result set is too large; narrow your request (limit {{.Limit}})."
+  },
+  {
+    "id": "model.draft.is_valid.body_size.app_error",
+    "translation": "The draft body is too long."
+  },
+  {
+    "id": "model.draft.is_valid.create_at.app_error",
+    "translation": "Invalid draft creation time."
+  },
+  {
+    "id": "model.draft.is_valid.file_ids.app_error",
+    "translation": "The draft has too many file attachments."
+  },
+  {
+    "id": "model.draft.is_valid.page_id.app_error",
+    "translation": "Invalid page ID for the draft."
+  },
+  {
+    "id": "model.draft.is_valid.parent_id.app_error",
+    "translation": "Invalid parent page ID for the draft."
+  },
+  {
+    "id": "model.draft.is_valid.parent_self.app_error",
+    "translation": "A draft cannot be its own parent."
+  },
+  {
+    "id": "model.draft.is_valid.space_id.app_error",
+    "translation": "Invalid space ID for the draft."
+  },
+  {
+    "id": "model.draft.is_valid.title_length.app_error",
+    "translation": "The draft title is too long."
+  },
+  {
+    "id": "model.draft.is_valid.update_at.app_error",
+    "translation": "Invalid draft update time."
+  },
+  {
+    "id": "model.draft.is_valid.user_id.app_error",
+    "translation": "Invalid user ID for the draft."
+  },
+  {
+    "id": "model.page.is_valid.body.app_error",
+    "translation": "The page body exceeds the maximum size of {{.MaxBytes}} bytes."
+  },
+  {
+    "id": "model.page.is_valid.channel_id.app_error",
+    "translation": "Invalid channel ID for the page."
+  },
+  {
+    "id": "model.page.is_valid.create_at.app_error",
+    "translation": "Invalid page creation time."
+  },
+  {
+    "id": "model.page.is_valid.id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "model.page.is_valid.last_modified_by.app_error",
+    "translation": "Invalid user ID for the page's last editor."
+  },
+  {
+    "id": "model.page.is_valid.original_id.app_error",
+    "translation": "Invalid original page ID."
+  },
+  {
+    "id": "model.page.is_valid.original_self.app_error",
+    "translation": "A page version cannot reference itself."
+  },
+  {
+    "id": "model.page.is_valid.parent_id.app_error",
+    "translation": "Invalid parent page ID."
+  },
+  {
+    "id": "model.page.is_valid.parent_self.app_error",
+    "translation": "A page cannot be its own parent."
+  },
+  {
+    "id": "model.page.is_valid.search_text.app_error",
+    "translation": "The page search text exceeds the maximum size of {{.MaxBytes}} bytes."
+  },
+  {
+    "id": "model.page.is_valid.snapshot_not_deleted.app_error",
+    "translation": "A page version snapshot must be marked as deleted."
+  },
+  {
+    "id": "model.page.is_valid.space_id.app_error",
+    "translation": "Invalid space ID for the page."
+  },
+  {
+    "id": "model.page.is_valid.title.app_error",
+    "translation": "The page title is required."
+  },
+  {
+    "id": "model.page.is_valid.title_length.app_error",
+    "translation": "The page title is too long."
+  },
+  {
+    "id": "model.page.is_valid.type.app_error",
+    "translation": "Invalid page type."
+  },
+  {
+    "id": "model.page.is_valid.update_at.app_error",
+    "translation": "Invalid page update time."
+  },
+  {
+    "id": "model.page.is_valid.user_id.app_error",
+    "translation": "Invalid user ID for the page."
+  },
+  {
+    "id": "model.page.patch.nothing_to_update.app_error",
+    "translation": "The update contains no changes."
+  },
+  {
+    "id": "model.page.patch.search_text_body_mismatch.app_error",
+    "translation": "The page body and search text must be updated together."
+  },
+  {
+    "id": "model.page.patch.search_text_without_content.app_error",
+    "translation": "Search text cannot be set without page content."
+  },
+  {
+    "id": "model.shared.props_invalid.app_error",
+    "translation": "The properties are invalid."
+  },
+  {
+    "id": "model.shared.props_too_large.app_error",
+    "translation": "The properties exceed the maximum size of {{.MaxBytes}} bytes."
+  },
+  {
+    "id": "model.space.is_valid.channel_id.app_error",
+    "translation": "Invalid channel ID for the space."
+  },
+  {
+    "id": "model.space.is_valid.create_at.app_error",
+    "translation": "Invalid space creation time."
+  },
+  {
+    "id": "model.space.is_valid.creator_id.app_error",
+    "translation": "Invalid creator user ID for the space."
+  },
+  {
+    "id": "model.space.is_valid.description_length.app_error",
+    "translation": "The space description is too long."
+  },
+  {
+    "id": "model.space.is_valid.icon_length.app_error",
+    "translation": "The space icon is too large."
+  },
+  {
+    "id": "model.space.is_valid.id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "model.space.is_valid.team_id.app_error",
+    "translation": "Invalid team ID for the space."
+  },
+  {
+    "id": "model.space.is_valid.title.app_error",
+    "translation": "The space title is required."
+  },
+  {
+    "id": "model.space.is_valid.title_length.app_error",
+    "translation": "The space title is too long."
+  },
+  {
+    "id": "model.space.is_valid.update_at.app_error",
+    "translation": "Invalid space update time."
+  }
+]

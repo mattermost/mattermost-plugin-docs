@@ -372,13 +372,35 @@ endif
 
 ## Extract strings for translation from the source code.
 .PHONY: i18n-extract
-i18n-extract:
+i18n-extract: i18n-extract-webapp i18n-extract-server
+
+.PHONY: i18n-extract-webapp
+i18n-extract-webapp:
 ifneq ($(HAS_WEBAPP),)
-ifeq ($(HAS_MM_UTILITIES),)
-	@echo "You must clone github.com/mattermost/mattermost-utilities repo in .. to use this command"
-else
-	cd $(MM_UTILITIES_DIR) && npm install && npm run babel && node mmjstool/build/index.js i18n extract-webapp --webapp-dir $(PWD)/webapp
+	cd webapp && $(NPM) run extract
 endif
+
+.PHONY: i18n-extract-server
+i18n-extract-server:
+ifneq ($(HAS_SERVER),)
+	$(GO) install -modfile=go.tools.mod github.com/mattermost/mattermost-utilities/mmgotool
+	mkdir -p server/i18n
+	cp assets/i18n/en.json server/i18n/en.json
+	cd server && $(GOBIN)/mmgotool i18n extract --portal-dir="" --skip-dynamic
+	mv server/i18n/en.json assets/i18n/en.json
+	rmdir server/i18n
+endif
+
+## Exit on empty translation strings and translation source strings.
+.PHONY: i18n-check
+i18n-check:
+ifneq ($(HAS_SERVER),)
+	$(GO) install -modfile=go.tools.mod github.com/mattermost/mattermost-utilities/mmgotool
+	mkdir -p server/i18n
+	cp assets/i18n/en.json server/i18n/en.json
+	cd server && $(GOBIN)/mmgotool i18n clean-empty --portal-dir="" --check
+	cd server && $(GOBIN)/mmgotool i18n check-empty-src --portal-dir=""
+	rm -rf server/i18n
 endif
 
 ## Disable the plugin.
