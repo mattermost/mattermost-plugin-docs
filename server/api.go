@@ -28,7 +28,7 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 
 // MattermostAuthorizationRequired is a middleware that rejects unauthenticated
 // requests. It reads the Mattermost-User-ID header set by the platform and
-// returns 401 if the header is absent.
+// rejects the request as unauthorized if the header is absent.
 func (p *Plugin) MattermostAuthorizationRequired(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		userID := r.Header.Get("Mattermost-User-ID")

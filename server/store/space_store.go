@@ -282,13 +282,19 @@ func (s *Store) RestoreSpace(id string) (err error) {
 	selectQuery := s.getQueryBuilder().
 		Select("ChannelId", "DeleteAt").
 		From("DOCS_Space").
-		Where(sq.And{sq.Eq{"Id": id}, sq.NotEq{"DeleteAt": 0}}).
+		Where(sq.Eq{"Id": id}).
 		Suffix("FOR UPDATE")
 	if txErr := s.getBuilder(tx, &deleted, selectQuery); txErr != nil {
 		if errors.Is(txErr, sql.ErrNoRows) {
 			return &ErrNotFound{EntityName: "Space", ID: id}
 		}
 		return errors.Wrap(txErr, "failed to read space for restore")
+	}
+
+	// Already live: nothing to restore. Decided under the row lock so a concurrent restore
+	// cannot turn this into a misleading not-found. The app layer maps this to not_deleted.
+	if deleted.DeleteAt == 0 {
+		return &ErrInvalidInput{Entity: "Space", Field: "id", Value: id}
 	}
 
 	spaceQuery := s.getQueryBuilder().

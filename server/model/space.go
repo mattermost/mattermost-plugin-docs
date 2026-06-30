@@ -136,7 +136,7 @@ func (s *Space) IsValid() *mmmodel.AppError {
 	return nil
 }
 
-// GetProps returns Props, initializing to an empty map if nil.
+// GetProps returns Props, or an empty map if Props is nil.
 func (s *Space) GetProps() mmmodel.StringInterface {
 	return ensureProps(s.Props)
 }

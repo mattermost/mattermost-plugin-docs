@@ -237,7 +237,7 @@ func (p *Page) Auditable() map[string]any {
 	}
 }
 
-// GetProps returns Props, initializing to an empty map if nil.
+// GetProps returns Props, or an empty map if Props is nil.
 func (p *Page) GetProps() mmmodel.StringInterface {
 	return ensureProps(p.Props)
 }

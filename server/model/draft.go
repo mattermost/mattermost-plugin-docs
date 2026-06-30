@@ -121,7 +121,8 @@ func (d *Draft) IsValid() *mmmodel.AppError {
 
 // GetProps returns Props, initializing to an empty map if nil.
 func (d *Draft) GetProps() mmmodel.StringInterface {
-	return ensureProps(d.Props)
+	d.Props = ensureProps(d.Props)
+	return d.Props
 }
 
 // Clone returns a deep copy.

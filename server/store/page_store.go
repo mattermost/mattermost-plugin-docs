@@ -464,8 +464,8 @@ func (s *Store) DeletePage(pageID string) (err error) {
 // RestorePage un-deletes a soft-deleted page. Promoted children are NOT pulled back
 // (matching Confluence). The page returns under its original parent, or falls back to the
 // space root if that parent is gone — so un-deleting never fails for a deleted parent. Only a
-// soft-deleted live row (OriginalId == "", DeleteAt > 0) in a live space is un-deletable; space and
-// parent are locked FOR UPDATE in space→parent order.
+// soft-deleted original page (OriginalId == "", DeleteAt > 0) in a live space is un-deletable; the
+// space is locked FOR UPDATE, and the parent (when non-root) is also locked, in space→parent order.
 func (s *Store) RestorePage(pageID string) (err error) {
 	if pageID == "" {
 		return &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}

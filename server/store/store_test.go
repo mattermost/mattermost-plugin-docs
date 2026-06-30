@@ -356,8 +356,8 @@ func TestRestoreSpaceChannelTakenConflict(t *testing.T) {
 	require.True(t, store.IsErrConflict(err), "expected ErrConflict, got %T: %v", err, err)
 }
 
-// TestRestoreSpaceNotDeleted verifies RestoreSpace returns ErrNotFound for a live or
-// nonexistent space (there is nothing to restore).
+// TestRestoreSpaceNotDeleted verifies RestoreSpace distinguishes a live space (invalid input,
+// nothing to restore) from a nonexistent one (not-found), deciding both under the row lock.
 func TestRestoreSpaceNotDeleted(t *testing.T) {
 	s := openTestDB(t)
 
@@ -365,7 +365,7 @@ func TestRestoreSpaceNotDeleted(t *testing.T) {
 	space, err := s.CreateSpace(newSpace(channelID))
 	require.NoError(t, err)
 
-	require.True(t, store.IsErrNotFound(s.RestoreSpace(space.Id)), "restoring a live space is not-found")
+	require.True(t, store.IsErrInvalidInput(s.RestoreSpace(space.Id)), "restoring a live space is invalid input")
 	require.True(t, store.IsErrNotFound(s.RestoreSpace(mmmodel.NewId())), "restoring a missing space is not-found")
 }
 

@@ -10,6 +10,7 @@ import (
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
+	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
 // GetSpace returns the space with the given ID.
@@ -99,16 +100,13 @@ func (s *Service) RestoreSpace(spaceID string) *mmmodel.AppError {
 	if !mmmodel.IsValidId(spaceID) {
 		return mmmodel.NewAppError("RestoreSpace", "app.space.restore.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	// GetSpace returns not-found for soft-deleted spaces, so a nil error here means the
-	// space is already live — return 400 not_deleted (matching RestorePage) rather than a
-	// 404 that would make a live space look absent. Non-404 errors from GetSpace are
-	// surfaced as-is.
-	if _, liveErr := s.GetSpace(spaceID); liveErr == nil {
-		return mmmodel.NewAppError("RestoreSpace", "app.space.restore.not_deleted.app_error", nil, "", http.StatusBadRequest)
-	} else if liveErr.StatusCode != http.StatusNotFound {
-		return liveErr
-	}
+	// The store decides not-deleted vs not-found atomically under the row lock. Since the id
+	// is already validated above, an ErrInvalidInput from the store means the space is already
+	// live: map it to 400 not_deleted rather than a 404 that would make a live space look absent.
 	if err := s.store.RestoreSpace(spaceID); err != nil {
+		if store.IsErrInvalidInput(err) {
+			return mmmodel.NewAppError("RestoreSpace", "app.space.restore.not_deleted.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+		}
 		return storeAppError("RestoreSpace", err)
 	}
 	return nil
