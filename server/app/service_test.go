@@ -178,10 +178,8 @@ func TestServiceUpdateSpace(t *testing.T) {
 	})
 }
 
-// TestServiceCreatePageParentDifferentSpace verifies that a parent living on the same
-// backing channel but belonging to a different space (e.g. a surviving page from a prior,
-// since-deleted space that reused the channel) is rejected, preventing cross-space
-// hierarchy corruption.
+// TestServiceCreatePageParentDifferentSpace verifies that a parent belonging to a different
+// space is rejected, preventing cross-space hierarchy corruption.
 func TestServiceCreatePageParentDifferentSpace(t *testing.T) {
 	h := openTestService(t)
 
@@ -694,9 +692,8 @@ func TestServiceGetPageEmptyID(t *testing.T) {
 	require.Equal(t, "app.page.get.invalid_id.app_error", err.Id)
 }
 
-// TestServiceUpdatePageNothingToUpdate verifies that the optimistic
-// path rejects an empty-title + empty-content write with 400, rather than advancing edit
-// metadata for a no-op.
+// TestServiceUpdatePageNothingToUpdate verifies that a patch with no fields set is rejected
+// with 400, rather than advancing edit metadata for a no-op.
 func TestServiceUpdatePageNothingToUpdate(t *testing.T) {
 	h := openTestService(t)
 

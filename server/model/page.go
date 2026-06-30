@@ -122,9 +122,8 @@ func (p *Page) Patch(patch *PagePatch) {
 // SearchText additionally requires a non-empty Body. This lives on the patch (not only in the
 // service), so any caller that bypasses the service still upholds it.
 func (p *PagePatch) IsValid() *mmmodel.AppError {
-	// A nil or all-nil patch is a no-op; rejecting it early prevents bumping timestamps
-	// without a content change, and avoids a nil-pointer panic on the Body/SearchText
-	// cross-checks below.
+	// Reject a nil patch (which would panic on the Body/SearchText cross-checks below) and an
+	// all-nil-fields patch (a no-op that would otherwise bump timestamps without a content change).
 	if p == nil || (p.Title == nil && p.Body == nil && p.SearchText == nil && p.Props == nil) {
 		return mmmodel.NewAppError("PagePatch.IsValid", "model.page.patch.nothing_to_update.app_error", nil, "", http.StatusBadRequest)
 	}

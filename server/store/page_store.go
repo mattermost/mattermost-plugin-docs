@@ -529,8 +529,8 @@ func (s *Store) RestorePage(pageID string) (err error) {
 	}
 
 	// The pre-delete SortOrder is stale (its slot was reused; siblings may have changed), so
-	// append at the end of the destination group under CreatePage's advisory lock to avoid
-	// collisions.
+	// append at the end of the destination group under the (channelId, parentId) advisory lock
+	// (via nextSortOrder) to avoid collisions.
 	sortOrder, sortErr := s.nextSortOrder(tx, target.ChannelID, restoreParentID)
 	if sortErr != nil {
 		return sortErr
@@ -674,7 +674,8 @@ func (s *Store) GetPageAncestorDepth(pageID string) (int, error) {
 	return count, nil
 }
 
-// GetPageAncestors fetches all live ancestors of a page up to the root.
+// GetPageAncestors fetches all live ancestors of a page up to the root. Returns ErrLimitExceeded
+// when the chain exceeds MaxPageHierarchyDepth ancestors (too deep), rather than truncating.
 func (s *Store) GetPageAncestors(pageID string) ([]*model.Page, error) {
 	if pageID == "" {
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}

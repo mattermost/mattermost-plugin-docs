@@ -135,7 +135,7 @@ func (s *Service) GetPage(pageID string) (*model.Page, *mmmodel.AppError) {
 }
 
 // UpdatePage applies a partial patch to a page with first-one-wins
-// concurrency control. baseEditAt is the EditAt the client last saw. Returns 409 on conflict.
+// concurrency control. baseEditAt is the EditAt the client last saw.
 func (s *Service) UpdatePage(pageID string, patch *model.PagePatch, baseEditAt int64, force bool, userID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.invalid_id.app_error", nil, "", http.StatusBadRequest)

@@ -92,8 +92,9 @@ func (s *Service) DeleteSpace(spaceID string) *mmmodel.AppError {
 	return nil
 }
 
-// RestoreSpace un-deletes a soft-deleted space by ID. Returns 409 if another live space now
-// owns the backing channel. Backing-channel un-archive is not wired yet (mirrors DeleteSpace).
+// RestoreSpace un-deletes a soft-deleted space by ID. Fails with a conflict error if another
+// live space already owns the backing channel. Backing-channel un-archive is not wired yet
+// (mirrors DeleteSpace).
 func (s *Service) RestoreSpace(spaceID string) *mmmodel.AppError {
 	if !mmmodel.IsValidId(spaceID) {
 		return mmmodel.NewAppError("RestoreSpace", "app.space.restore.invalid_id.app_error", nil, "", http.StatusBadRequest)
