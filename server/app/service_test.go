@@ -40,7 +40,7 @@ type testHarness struct {
 func openTestService(t *testing.T) *testHarness {
 	t.Helper()
 
-	db := testutil.OpenSchemaDB(t, "docs_svc_")
+	db := testutil.OpenTestDB(t)
 
 	s, err := store.New(db, "postgres")
 	require.NoError(t, err, "create store")

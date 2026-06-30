@@ -24,7 +24,7 @@ import (
 func openTestDB(t *testing.T) *store.Store {
 	t.Helper()
 
-	db := testutil.OpenSchemaDB(t, "docs_test_")
+	db := testutil.OpenTestDB(t)
 
 	s, err := store.New(db, "postgres")
 	require.NoError(t, err, "create store")
