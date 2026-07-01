@@ -5,6 +5,7 @@ import manifest from 'manifest';
 import {DOCS_BASE_URL} from 'routing/paths';
 
 import DocsRoot from 'components/docs_root/docs_root';
+import DocsSettingsButton from 'components/docs_settings_button/docs_settings_button';
 
 import type {PluginRegistry} from 'types/mattermost-webapp';
 
@@ -35,6 +36,7 @@ export default class Plugin {
             switcherLinkURL: DOCS_BASE_URL,
             mainComponent: DocsRoot,
             headerCentreComponent: DocsHeaderCentre,
+            headerRightComponent: DocsSettingsButton,
             showTeamSidebar: true,
         });
     }

@@ -6,10 +6,10 @@ import type React from 'react';
 export type MenuItemSpec = {
     id: string;
     label: React.ReactNode;
+    secondaryLabel?: React.ReactNode;
     leadingIcon?: React.ReactNode;
     onClick?: () => void;
     isDestructive?: boolean;
-
-    // Render a divider above this item.
+    isLink?: boolean;
     hasDivider?: boolean;
 };

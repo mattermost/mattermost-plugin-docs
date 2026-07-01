@@ -1,0 +1,89 @@
+.root {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+}
+
+.previewRow {
+    display: flex;
+    gap: 4px;
+    align-items: baseline;
+}
+
+.preview {
+    overflow: hidden;
+    color: rgba(var(--center-channel-color-rgb), 0.75);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 12px;
+    line-height: 16px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.edit {
+    flex-shrink: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--link-color);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 16px;
+    cursor: pointer;
+
+    &:hover {
+        text-decoration: underline;
+    }
+}
+
+.field {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    padding: 5px 8px;
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.16);
+    border-radius: 4px;
+    background: var(--center-channel-bg);
+
+    &:focus-within {
+        padding: 4px 7px;
+        border: 2px solid var(--button-bg);
+    }
+}
+
+.prefix {
+    flex-shrink: 0;
+    color: rgba(var(--center-channel-color-rgb), 0.56);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 12px;
+    line-height: 16px;
+}
+
+.input {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--center-channel-color);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 12px;
+    line-height: 16px;
+
+    &:focus {
+        outline: none;
+    }
+}
+
+.error {
+    color: var(--error-text);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 12px;
+    line-height: 16px;
+}
+
+.hasError .field {
+    border-color: var(--error-text);
+}

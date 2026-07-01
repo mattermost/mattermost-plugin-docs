@@ -3,7 +3,7 @@
 
 import {monitorForElements} from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
 import {extractClosestEdge} from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge';
-import {useLatest} from 'hooks/use_latest';
+import {useLatest} from 'hooks/utils';
 import {useEffect} from 'react';
 
 import {getDropIndex} from './get_drop_index';
@@ -15,10 +15,6 @@ type Args = {
     onReorder: (spaceId: string, from: DndCategory, to: DndCategory, index: number) => void;
 };
 
-// A single monitor for the whole sidebar. Reads the dropped source + target,
-// computes the destination index inline, and reports the move. Handles reorder
-// within a category, moving between Spaces and Favorites, and dropping onto the
-// empty Favorites zone. Mirrors core's use_bookmarks_dnd.
 export function useSpacesDnd({favoriteOrder, spacesOrder, onReorder}: Args) {
     const favRef = useLatest(favoriteOrder);
     const spacesRef = useLatest(spacesOrder);

@@ -17,6 +17,8 @@ import type {MenuItemSpec} from 'components/menu/menu_types';
 
 import type {Space} from 'types/docs';
 
+import styles from './space_item.module.scss';
+
 type Props = {
     space: Space;
     favorite: boolean;
@@ -29,9 +31,7 @@ const SpaceItemMenu = ({space, favorite, onToggleFavorite}: Props) => {
     const items: MenuItemSpec[] = [
         {
             id: 'favorite',
-            label: favorite ?
-                formatMessage({id: 'docs.sidebar.space.unfavorite', defaultMessage: 'Remove from favorites'}) :
-                formatMessage({id: 'docs.sidebar.space.favorite', defaultMessage: 'Add to favorites'}),
+            label: favorite ? formatMessage({id: 'docs.sidebar.space.unfavorite', defaultMessage: 'Remove from favorites'}) : formatMessage({id: 'docs.sidebar.space.favorite', defaultMessage: 'Add to favorites'}),
             leadingIcon: favorite ? <StarIcon size={18}/> : <StarOutlineIcon size={18}/>,
             onClick: () => onToggleFavorite(space.id),
         },
@@ -70,7 +70,7 @@ const SpaceItemMenu = ({space, favorite, onToggleFavorite}: Props) => {
             trigger={(
                 <button
                     type='button'
-                    className='DocsSpaceItem__dot'
+                    className={styles.dot}
                     aria-label={menuLabel}
                     onClick={(e) => e.stopPropagation()}
                 >

@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {useSpaces} from 'hooks/use_spaces';
+import {useSpaces} from 'hooks/spaces';
 import {useMemo, useState} from 'react';
 
 import type {Space} from 'types/docs';
@@ -32,9 +32,8 @@ export type SidebarSpacesModel = {
     toggleFavorite: (id: string) => void;
 };
 
-// View-model for the spaces sidebar: ordered favorites/spaces, collapse state,
-// favorite toggling, and the drag-and-drop reorder wiring. Holds local state
-// today; ordering/favorites move to user preferences in a later phase.
+// Holds ordering/favorites in local state today; these move to user
+// preferences in a later phase.
 export function useSidebarSpaces(): SidebarSpacesModel {
     const spaces = useSpaces();
     const [favoriteOrder, setFavoriteOrder] = useState<string[]>([]);

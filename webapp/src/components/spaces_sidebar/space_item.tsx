@@ -10,8 +10,8 @@ import type {Space} from 'types/docs';
 import type {DndCategory} from './dnd/types';
 import {useSpaceDragDrop} from './dnd/use_space_drag_drop';
 import SidebarItem from './sidebar_item';
+import styles from './space_item.module.scss';
 import SpaceItemMenu from './space_item_menu';
-import './space_item.scss';
 
 type Props = {
     space: Space;
@@ -28,7 +28,7 @@ const SpaceItem = ({space, category, active, favorite, onSelect, onToggleFavorit
 
     const emoji = (
         <span
-            className='DocsSpaceItem__emoji'
+            className={styles.emoji}
             aria-hidden={true}
         >
             {space.emoji}
@@ -38,7 +38,7 @@ const SpaceItem = ({space, category, active, favorite, onSelect, onToggleFavorit
     return (
         <div
             ref={setElement}
-            className={classNames('DocsSpaceItem', {'DocsSpaceItem--dragging': dragging})}
+            className={classNames(styles.root, {[styles.dragging]: dragging})}
         >
             <SidebarItem
                 leading={emoji}

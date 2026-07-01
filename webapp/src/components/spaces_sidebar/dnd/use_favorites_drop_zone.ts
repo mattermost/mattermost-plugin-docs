@@ -6,8 +6,6 @@ import {useEffect, useState} from 'react';
 
 import {FAVORITES_ZONE_TYPE, SPACE_DRAG_TYPE} from './types';
 
-// Makes the empty-favorites area a drop target so a non-favorite space can be
-// dragged in to favorite it.
 export function useFavoritesDropZone(element: HTMLElement | null) {
     const [over, setOver] = useState(false);
 

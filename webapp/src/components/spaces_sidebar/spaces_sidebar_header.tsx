@@ -1,56 +1,69 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {useDocsDispatch} from 'hooks/redux';
 import React from 'react';
 import {useIntl} from 'react-intl';
 
 import AccountMultipleOutlineIcon from '@mattermost/compass-icons/components/account-multiple-outline';
 import AccountMultiplePlusOutlineIcon from '@mattermost/compass-icons/components/account-multiple-plus-outline';
 import ChevronDownIcon from '@mattermost/compass-icons/components/chevron-down';
-import CogOutlineIcon from '@mattermost/compass-icons/components/cog-outline';
 import ExitToAppIcon from '@mattermost/compass-icons/components/exit-to-app';
-import FolderPlusOutlineIcon from '@mattermost/compass-icons/components/folder-plus-outline';
 import GlobeIcon from '@mattermost/compass-icons/components/globe';
+import LightbulbOutlineIcon from '@mattermost/compass-icons/components/lightbulb-outline';
 import PlusIcon from '@mattermost/compass-icons/components/plus';
+import SettingsOutlineIcon from '@mattermost/compass-icons/components/settings-outline';
+
+import {createTeam, invitePeople, learnAboutTeams, leaveTeam, manageMembers, openTeamSettings} from 'actions/team_menu';
 
 import Menu from 'components/menu/menu';
 import type {MenuItemSpec} from 'components/menu/menu_types';
 
-import './spaces_sidebar_header.scss';
+import styles from './spaces_sidebar_header.module.scss';
 
 type Props = {
     teamName: string;
+    teamDescription?: string;
     onCreateSpace?: () => void;
+    onBrowseSpaces?: () => void;
 };
 
-const SpacesSidebarHeader = ({teamName, onCreateSpace}: Props) => {
+const SpacesSidebarHeader = ({teamName, teamDescription, onCreateSpace, onBrowseSpaces}: Props) => {
     const {formatMessage} = useIntl();
+    const dispatch = useDocsDispatch();
 
     const teamItems: MenuItemSpec[] = [
-        {id: 'invite', label: formatMessage({id: 'docs.sidebar.team.invite', defaultMessage: 'Invite people'}), leadingIcon: <AccountMultiplePlusOutlineIcon size={18}/>},
-        {id: 'members', label: formatMessage({id: 'docs.sidebar.team.members', defaultMessage: 'Manage members'}), leadingIcon: <AccountMultipleOutlineIcon size={18}/>},
-        {id: 'settings', label: formatMessage({id: 'docs.sidebar.team.settings', defaultMessage: 'Team settings'}), leadingIcon: <CogOutlineIcon size={18}/>},
-        {id: 'leave', label: formatMessage({id: 'docs.sidebar.team.leave', defaultMessage: 'Leave team'}), leadingIcon: <ExitToAppIcon size={18}/>, isDestructive: true, hasDivider: true},
+        {
+            id: 'invite',
+            label: formatMessage({id: 'docs.sidebar.team.invite', defaultMessage: 'Invite people'}),
+            secondaryLabel: formatMessage({id: 'docs.sidebar.team.invite.secondary', defaultMessage: 'Add or invite people to the team'}),
+            leadingIcon: <AccountMultiplePlusOutlineIcon size={18}/>,
+            onClick: () => dispatch(invitePeople()),
+        },
+        {id: 'settings', label: formatMessage({id: 'docs.sidebar.team.settings', defaultMessage: 'Team settings'}), leadingIcon: <SettingsOutlineIcon size={18}/>, onClick: () => dispatch(openTeamSettings())},
+        {id: 'members', label: formatMessage({id: 'docs.sidebar.team.members', defaultMessage: 'Manage members'}), leadingIcon: <AccountMultipleOutlineIcon size={18}/>, onClick: () => dispatch(manageMembers())},
+        {id: 'leave', label: formatMessage({id: 'docs.sidebar.team.leave', defaultMessage: 'Leave team'}), leadingIcon: <ExitToAppIcon size={18}/>, isDestructive: true, onClick: () => dispatch(leaveTeam())},
+        {id: 'createTeam', label: formatMessage({id: 'docs.sidebar.team.createTeam', defaultMessage: 'Create a team'}), leadingIcon: <PlusIcon size={18}/>, hasDivider: true, onClick: () => dispatch(createTeam())},
+        {id: 'learn', label: formatMessage({id: 'docs.sidebar.team.learn', defaultMessage: 'Learn about teams'}), leadingIcon: <LightbulbOutlineIcon size={18}/>, isLink: true, hasDivider: true, onClick: () => dispatch(learnAboutTeams())},
     ];
 
     const addItems: MenuItemSpec[] = [
         {id: 'create', label: formatMessage({id: 'docs.sidebar.add.create', defaultMessage: 'Create a space'}), leadingIcon: <PlusIcon size={18}/>, onClick: onCreateSpace},
-        {id: 'browse', label: formatMessage({id: 'docs.sidebar.add.browse', defaultMessage: 'Browse spaces'}), leadingIcon: <GlobeIcon size={18}/>},
-        {id: 'category', label: formatMessage({id: 'docs.sidebar.add.category', defaultMessage: 'Create a category'}), leadingIcon: <FolderPlusOutlineIcon size={18}/>},
+        {id: 'browse', label: formatMessage({id: 'docs.sidebar.add.browse', defaultMessage: 'Browse spaces'}), leadingIcon: <GlobeIcon size={18}/>, onClick: onBrowseSpaces},
     ];
 
     return (
-        <div className='DocsSidebarHeader'>
+        <div className={styles.root}>
             <Menu
                 ariaLabel={formatMessage({id: 'docs.sidebar.team.menu', defaultMessage: 'Manage {teamName}'}, {teamName})}
                 items={teamItems}
+                tooltip={teamDescription || teamName}
                 trigger={(
                     <button
                         type='button'
-                        className='DocsSidebarHeader__dropdown'
-                        title={formatMessage({id: 'docs.sidebar.team.menu', defaultMessage: 'Manage {teamName}'}, {teamName})}
+                        className={styles.dropdown}
                     >
-                        <span className='DocsSidebarHeader__teamName'>{teamName}</span>
+                        <span className={styles.teamName}>{teamName}</span>
                         <ChevronDownIcon size={16}/>
                     </button>
                 )}
@@ -63,7 +76,7 @@ const SpacesSidebarHeader = ({teamName, onCreateSpace}: Props) => {
                 trigger={(
                     <button
                         type='button'
-                        className='DocsSidebarHeader__add'
+                        className={styles.add}
                         aria-label={formatMessage({id: 'docs.sidebar.add.menu', defaultMessage: 'Add or browse spaces'})}
                     >
                         <PlusIcon size={16}/>

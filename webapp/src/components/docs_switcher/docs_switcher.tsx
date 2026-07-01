@@ -2,10 +2,9 @@
 // See LICENSE.txt for license information.
 
 import classNames from 'classnames';
-import {useDocsNavigation} from 'hooks/use_docs_navigation';
-import {useDocsSearch} from 'hooks/use_docs_search';
-import {useRecentDocs} from 'hooks/use_recent_docs';
-import {useSpaces} from 'hooks/use_spaces';
+import {useDocsSearch, useRecentDocs} from 'hooks/docs';
+import {useDocsNavigation} from 'hooks/navigation';
+import {useSpaces} from 'hooks/spaces';
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useIntl} from 'react-intl';
 
@@ -16,7 +15,7 @@ import GenericModal from 'components/generic_modal/generic_modal';
 
 import type {Page, Space} from 'types/docs';
 
-import './docs_switcher.scss';
+import styles from './docs_switcher.module.scss';
 
 type Props = {
     onClose: () => void;
@@ -75,10 +74,8 @@ const DocsSwitcher = ({onClose}: Props) => {
     const total = flat.length;
     const active = total === 0 ? -1 : Math.min(activeIndex, total - 1);
 
-    // Reset the highlight to the top whenever the result set changes.
     useEffect(() => setActiveIndex(0), [trimmed]);
 
-    // Keep the highlighted option scrolled into view as it moves.
     useEffect(() => {
         if (active >= 0) {
             document.getElementById(optionId(active))?.scrollIntoView({block: 'nearest'});
@@ -125,9 +122,7 @@ const DocsSwitcher = ({onClose}: Props) => {
         }
     };
 
-    const title = hasQuery ?
-        formatMessage({id: 'docs.switcher.title.query', defaultMessage: 'Find spaces or pages'}) :
-        formatMessage({id: 'docs.switcher.title', defaultMessage: 'Find docs'});
+    const title = hasQuery ? formatMessage({id: 'docs.switcher.title.query', defaultMessage: 'Find spaces or pages'}) : formatMessage({id: 'docs.switcher.title', defaultMessage: 'Find docs'});
     const placeholder = formatMessage({id: 'docs.switcher.placeholder', defaultMessage: 'Search all spaces and pages'});
 
     const renderEntry = (entry: Entry) => (
@@ -137,31 +132,31 @@ const DocsSwitcher = ({onClose}: Props) => {
             type='button'
             role='option'
             aria-selected={entry.index === active}
-            className={classNames('DocsSwitcher__item', {'DocsSwitcher__item--active': entry.index === active})}
+            className={classNames(styles.item, {[styles.active]: entry.index === active})}
             onMouseMove={() => setActiveIndex(entry.index)}
             onClick={() => selectEntry(entry)}
         >
             {entry.kind === 'space' ? (
                 <>
-                    <span className='DocsSwitcher__itemIcon DocsSwitcher__itemIcon--emoji'>{entry.space.emoji}</span>
-                    <span className='DocsSwitcher__itemLabel'>{entry.space.name}</span>
+                    <span className={classNames(styles.itemIcon, styles.itemIconEmoji)}>{entry.space.emoji}</span>
+                    <span className={styles.itemLabel}>{entry.space.name}</span>
                 </>
             ) : (
                 <>
-                    <span className='DocsSwitcher__itemIcon'><TextBoxOutlineIcon size={16}/></span>
-                    <span className='DocsSwitcher__itemLabel'>{entry.page.title}</span>
-                    <span className='DocsSwitcher__itemMeta'>{entry.page.spaceName}</span>
+                    <span className={styles.itemIcon}><TextBoxOutlineIcon size={16}/></span>
+                    <span className={styles.itemLabel}>{entry.page.title}</span>
+                    <span className={styles.itemMeta}>{entry.page.spaceName}</span>
                 </>
             )}
         </button>
     );
 
     const searchField = (
-        <div className='DocsSwitcher__inputWrap'>
+        <div className={styles.inputWrap}>
             <MagnifyIcon size={16}/>
             <input
                 ref={inputRef}
-                className='DocsSwitcher__input'
+                className={styles.input}
                 type='text'
                 role='combobox'
                 aria-expanded={true}
@@ -181,29 +176,29 @@ const DocsSwitcher = ({onClose}: Props) => {
         <GenericModal
             title={title}
             ariaLabel={title}
-            className='DocsSwitcher'
+            className={styles.root}
             initialFocus={inputRef}
             headerContent={searchField}
             onClose={onClose}
         >
             <div
-                className='DocsSwitcher__body'
+                className={styles.body}
                 id={LISTBOX_ID}
                 role='listbox'
                 aria-label={title}
             >
                 {total === 0 ? (
-                    <div className='DocsSwitcher__empty'>
+                    <div className={styles.empty}>
                         {formatMessage({id: 'docs.switcher.noResults', defaultMessage: 'No spaces or pages found'})}
                     </div>
                 ) : groups.map((group) => (group.entries.length === 0 ? null : (
                     <div
                         key={group.id}
-                        className='DocsSwitcher__group'
+                        className={styles.group}
                         role='group'
                         aria-label={group.title}
                     >
-                        <div className='DocsSwitcher__groupTitle'>{group.title}</div>
+                        <div className={styles.groupTitle}>{group.title}</div>
                         {group.entries.map(renderEntry)}
                     </div>
                 )))}

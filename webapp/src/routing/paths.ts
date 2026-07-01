@@ -20,7 +20,6 @@ export const spacePath = (spaceId: string): string => `${DOCS_BASE_URL}/${segmen
 
 export const pagePath = (spaceId: string, pageId: string): string => `${spacePath(spaceId)}/${segment(pageId)}`;
 
-// Builds the path for any depth of selection (home / space / page).
 export const docsPath = (spaceId?: string, pageId?: string): string => {
     if (!spaceId) {
         return docsHomePath();

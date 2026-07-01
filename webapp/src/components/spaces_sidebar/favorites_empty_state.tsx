@@ -6,17 +6,17 @@ import React, {useState} from 'react';
 import {FormattedMessage} from 'react-intl';
 
 import {useFavoritesDropZone} from './dnd/use_favorites_drop_zone';
-import './favorites_empty_state.scss';
+import styles from './favorites_empty_state.module.scss';
 
 const FavoritesEmptyState = () => {
     const [element, setElement] = useState<HTMLDivElement | null>(null);
     const over = useFavoritesDropZone(element);
 
     return (
-        <div className='DocsFavoritesEmpty'>
+        <div className={styles.root}>
             <div
                 ref={setElement}
-                className={classNames('DocsFavoritesEmpty__box', {'DocsFavoritesEmpty__box--over': over})}
+                className={classNames(styles.box, {[styles.over]: over})}
             >
                 <FormattedMessage
                     id='docs.sidebar.favorites.empty'

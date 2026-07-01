@@ -4,7 +4,7 @@
 import classNames from 'classnames';
 import React from 'react';
 
-import './sidebar_item.scss';
+import styles from './sidebar_item.module.scss';
 
 type Props = {
     leading: React.ReactNode;
@@ -18,23 +18,23 @@ type Props = {
 };
 
 const SidebarItem = ({leading, label, active = false, muted = true, title, trailing, revealTrailingOnHover = false, onClick}: Props) => (
-    <div className={classNames('DocsSidebarItem', {'DocsSidebarItem--active': active})}>
-        {active && <span className='DocsSidebarItem__activeBar'/>}
+    <div className={classNames(styles.root, {[styles.active]: active})}>
+        {active && <span className={styles.activeBar}/>}
         <button
             type='button'
-            className='DocsSidebarItem__button'
+            className={styles.button}
             title={title}
             onClick={onClick}
         >
-            <span className='DocsSidebarItem__icon'>{leading}</span>
-            <span className='DocsSidebarItem__content'>
-                <span className={classNames('DocsSidebarItem__label', {'DocsSidebarItem__label--bright': active || !muted})}>
+            <span className={styles.icon}>{leading}</span>
+            <span className={styles.content}>
+                <span className={classNames(styles.label, {[styles.bright]: active || !muted})}>
                     {label}
                 </span>
             </span>
         </button>
         {trailing && (
-            <span className={classNames('DocsSidebarItem__trailing', {'DocsSidebarItem__trailing--reveal': revealTrailingOnHover})}>
+            <span className={classNames(styles.trailing, {[styles.reveal]: revealTrailingOnHover})}>
                 {trailing}
             </span>
         )}

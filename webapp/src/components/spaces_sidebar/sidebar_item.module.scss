@@ -1,0 +1,90 @@
+.root {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
+    overflow: hidden;
+
+    &:hover {
+        background: rgba(var(--sidebar-text-rgb), 0.08);
+    }
+
+    &.active,
+    &.active:hover {
+        background: rgba(var(--sidebar-text-rgb), 0.12);
+    }
+
+    &:hover .reveal,
+    &:focus-within .reveal {
+        opacity: 1;
+    }
+}
+
+.activeBar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 2px;
+    height: 100%;
+    border-radius: 0 2px 2px 0;
+    background: var(--sidebar-text-active-border);
+}
+
+.button {
+    display: flex;
+    flex: 1 1 0;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    padding: 4px 8px 4px 18px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+}
+
+.icon {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    padding: 4px;
+    color: var(--sidebar-text);
+    font-size: 16px;
+    line-height: 16px;
+}
+
+.content {
+    display: flex;
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 2px;
+}
+
+.label {
+    overflow: hidden;
+    color: rgba(var(--sidebar-text-rgb), 0.75);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 20px;
+    letter-spacing: 0.28px;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bright {
+    color: var(--sidebar-text);
+}
+
+.trailing {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 2px;
+    padding-right: 12px;
+    color: rgba(var(--sidebar-text-rgb), 0.75);
+}
+
+.reveal {
+    opacity: 0;
+}

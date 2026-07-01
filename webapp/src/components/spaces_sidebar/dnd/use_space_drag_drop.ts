@@ -15,9 +15,6 @@ type Args = {
     element: HTMLElement | null;
 };
 
-// Registers a space row as both a draggable and a drop target, tracking its own
-// drag state and the closest edge for the drop indicator. Mirrors core's
-// use_bookmark_drag_drop.
 export function useSpaceDragDrop({spaceId, category, element}: Args) {
     const [dragging, setDragging] = useState(false);
     const [closestEdge, setClosestEdge] = useState<Edge | null>(null);

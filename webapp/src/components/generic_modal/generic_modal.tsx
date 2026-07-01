@@ -9,35 +9,22 @@ import {useIntl} from 'react-intl';
 import CloseIcon from '@mattermost/compass-icons/components/close';
 import {WithTooltip} from '@mattermost/shared/components/tooltip';
 
-import './generic_modal.scss';
+import styles from './generic_modal.module.scss';
 
 type Props = {
     onClose: () => void;
     title: React.ReactNode;
-
-    // Accessible name for the dialog; defaults to letting Base UI derive it
-    // from the title.
     ariaLabel?: string;
-
-    // Modifier class on the popup for per-modal layout (size, position).
     className?: string;
-
-    // Element focused when the modal opens.
+    headerClassName?: string;
     initialFocus?: React.RefObject<HTMLElement | null>;
     showCloseButton?: boolean;
-
-    // Extra header content rendered under the title row (e.g. a search field).
     headerContent?: React.ReactNode;
-
-    // GenericModal body.
+    footer?: React.ReactNode;
     children: React.ReactNode;
 };
 
-// Reusable modal built on Base UI's Dialog: portaled, focus-trapped, scroll-
-// locked, dismissable (Esc / outside press), with the standard Mattermost modal
-// chrome (title row + 40x40 close button). Consumers supply the title, optional
-// header content, and the body; per-modal sizing/position comes via className.
-const GenericModal = ({onClose, title, ariaLabel, className, initialFocus, showCloseButton = true, headerContent, children}: Props) => {
+const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, initialFocus, showCloseButton = true, headerContent, footer, children}: Props) => {
     const {formatMessage} = useIntl();
     const closeLabel = formatMessage({id: 'generic_modal.close', defaultMessage: 'Close'});
 
@@ -51,37 +38,44 @@ const GenericModal = ({onClose, title, ariaLabel, className, initialFocus, showC
             }}
         >
             <Dialog.Portal>
-                <Dialog.Backdrop className='GenericModal__backdrop'/>
-                <Dialog.Popup
-                    className={classNames('GenericModal', className)}
-                    initialFocus={initialFocus}
-                    aria-label={ariaLabel}
-                >
-                    <div className='GenericModal__header'>
-                        <div className='GenericModal__titleRow'>
-                            <Dialog.Title render={<h1 className='GenericModal__title'/>}>
-                                {title}
-                            </Dialog.Title>
-                            {showCloseButton && (
-                                <WithTooltip title={closeLabel}>
-                                    <Dialog.Close
-                                        render={(
-                                            <button
-                                                type='button'
-                                                className='GenericModal__close'
-                                                aria-label={closeLabel}
-                                            />
-                                        )}
-                                    >
-                                        <CloseIcon size={24}/>
-                                    </Dialog.Close>
-                                </WithTooltip>
-                            )}
+                <Dialog.Backdrop className={styles.backdrop}/>
+
+                {/* Flex centering container rendered after the backdrop, so the
+                    popup paints above it by DOM order — no z-index needed, and
+                    no centering transform on the popup itself. */}
+                <div className={styles.viewport}>
+                    <Dialog.Popup
+                        className={classNames(styles.modal, className)}
+                        initialFocus={initialFocus}
+                        aria-label={ariaLabel}
+                    >
+                        <div className={classNames(styles.header, headerClassName)}>
+                            <div className={styles.titleRow}>
+                                <Dialog.Title render={<h1 className={styles.title}/>}>
+                                    {title}
+                                </Dialog.Title>
+                                {showCloseButton && (
+                                    <WithTooltip title={closeLabel}>
+                                        <Dialog.Close
+                                            render={(
+                                                <button
+                                                    type='button'
+                                                    className={styles.close}
+                                                    aria-label={closeLabel}
+                                                />
+                                            )}
+                                        >
+                                            <CloseIcon size={24}/>
+                                        </Dialog.Close>
+                                    </WithTooltip>
+                                )}
+                            </div>
+                            {headerContent}
                         </div>
-                        {headerContent}
-                    </div>
-                    {children}
-                </Dialog.Popup>
+                        {children}
+                        {footer && <div className={styles.footer}>{footer}</div>}
+                    </Dialog.Popup>
+                </div>
             </Dialog.Portal>
         </Dialog.Root>
     );

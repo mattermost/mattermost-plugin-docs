@@ -68,6 +68,17 @@ const config = {
                     'style-loader',
                     {
                         loader: 'css-loader',
+                        options: {
+                            // CSS Modules for *.module.(s)css only (auto-detected by
+                            // filename). Scopes every class to a hashed name so the
+                            // plugin's styles can never collide with or leak into the
+                            // host web app (e.g. core's own .GenericModal). Readable
+                            // names in dev; opaque hashes in production.
+                            modules: {
+                                auto: true,
+                                localIdentName: isDev ? 'docs-[name]__[local]' : 'docs-[hash:base64:6]',
+                            },
+                        },
                     },
                     {
                         loader: 'sass-loader',

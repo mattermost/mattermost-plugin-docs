@@ -1,57 +1,55 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {useDocsNavigation} from 'hooks/use_docs_navigation';
-import React, {useCallback, useEffect, useState} from 'react';
+import {useDocsNavigation} from 'hooks/navigation';
+import {useEnsureCurrentTeam} from 'hooks/team';
+import React, {useCallback, useState} from 'react';
+import {useHotkeys} from 'react-hotkeys-hook';
 
+import CreateSpaceModal from 'components/create_space_modal/create_space_modal';
 import DocsSwitcher from 'components/docs_switcher/docs_switcher';
 import SpacesSidebar from 'components/spaces_sidebar/spaces_sidebar';
 
 import DocsMainContent from './docs_main_content';
-import './docs_root.scss';
+import styles from './docs_root.module.scss';
 
-// The product main component owns the entire /docs subtree. Routing/selection
-// is read through useDocsNavigation; this component only holds local UI state
-// (the switcher open state) and the host integration effects.
 const DocsRoot = () => {
+    useEnsureCurrentTeam();
+
     const {spaceId, pageId} = useDocsNavigation();
 
     const [switcherOpen, setSwitcherOpen] = useState(false);
     const openSwitcher = useCallback(() => setSwitcherOpen(true), []);
     const closeSwitcher = useCallback(() => setSwitcherOpen(false), []);
 
-    useEffect(() => {
-        // Mirrors the host's channels layout so the global header inherits the
-        // correct theming while the Docs product is active.
-        const root = document.getElementById('root');
-        root?.classList.add('channel-view');
-        return () => root?.classList.remove('channel-view');
-    }, []);
+    const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
+    const openCreateSpace = useCallback(() => setCreateSpaceOpen(true), []);
+    const closeCreateSpace = useCallback(() => setCreateSpaceOpen(false), []);
 
-    useEffect(() => {
-        // Cmd/Ctrl+K opens the Find-docs switcher. Capture-phase + preventDefault
-        // so it takes precedence over the host's channel switcher while Docs is active.
-        const onKeyDown = (e: KeyboardEvent) => {
-            if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === 'k' || e.key === 'K')) {
-                e.preventDefault();
-                e.stopPropagation();
-                setSwitcherOpen((open) => !open);
-            }
-        };
-        window.addEventListener('keydown', onKeyDown, true);
-        return () => window.removeEventListener('keydown', onKeyDown, true);
-    }, []);
+    // stopPropagation so the Docs switcher wins the shortcut over the host's.
+    useHotkeys('mod+k', (e) => {
+        e.stopPropagation();
+        setSwitcherOpen((open) => !open);
+    }, {preventDefault: true, enableOnFormTags: true});
 
     return (
-        <div className='DocsRoot'>
-            <div className='DocsRoot__sidebar'>
-                <SpacesSidebar onOpenSwitcher={openSwitcher}/>
+        <div className={styles.root}>
+            <div className={styles.sidebar}>
+                <SpacesSidebar
+                    onOpenSwitcher={openSwitcher}
+                    onCreateSpace={openCreateSpace}
+                />
             </div>
-            <DocsMainContent
-                spaceId={spaceId}
-                pageId={pageId}
-            />
+            <main className={styles.main}>
+                <DocsMainContent
+                    spaceId={spaceId}
+                    pageId={pageId}
+                    onCreateSpace={openCreateSpace}
+                    onBrowseSpaces={openSwitcher}
+                />
+            </main>
             {switcherOpen && <DocsSwitcher onClose={closeSwitcher}/>}
+            {createSpaceOpen && <CreateSpaceModal onClose={closeCreateSpace}/>}
         </div>
     );
 };
