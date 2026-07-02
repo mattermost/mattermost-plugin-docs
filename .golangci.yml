@@ -31,7 +31,7 @@ linters:
       # rule cannot be reintroduced per-test; a missing test DB must fail, not skip.
       forbid:
         - pattern: '\.Skip(f|Now)?$'
-          msg: 'tests must never skip; provide a Postgres DSN (TEST_DATABASE_DSN) so the test runs'
+          msg: 'tests must never skip; provide a Postgres DSN (TEST_DATABASE_POSTGRESQL_DSN) so the test runs'
         - pattern: '^testing\.Short$'
           msg: 'do not gate tests on -short; tests must always run'
       analyze-types: true

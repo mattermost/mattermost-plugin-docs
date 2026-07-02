@@ -3,7 +3,7 @@
 
 // Package app contains integration-style tests for the Docs plugin service layer.
 // Tests require a real Postgres database; the DSN comes from MM_SQLSETTINGS_DATASOURCE
-// or TEST_DATABASE_DSN, defaulting to the standard local dev Postgres. They never skip —
+// or TEST_DATABASE_POSTGRESQL_DSN, defaulting to the standard local dev Postgres. They never skip —
 // a missing database fails the run rather than passing on a skip.
 package app
 

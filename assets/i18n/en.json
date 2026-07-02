@@ -1,9 +1,5 @@
 [
   {
-    "id": "app.page.create.body_too_long.app_error",
-    "translation": "The page body exceeds the maximum size of {{.MaxBytes}} bytes."
-  },
-  {
     "id": "app.page.create.conflict.app_error",
     "translation": "A page with this ID already exists."
   },
@@ -34,10 +30,6 @@
   {
     "id": "app.page.create.parent_different_space.app_error",
     "translation": "The parent page belongs to a different space."
-  },
-  {
-    "id": "app.page.create.search_text_too_long.app_error",
-    "translation": "The page search text exceeds the maximum size of {{.MaxBytes}} bytes."
   },
   {
     "id": "app.page.create.search_text_without_content.app_error",
@@ -88,10 +80,6 @@
     "translation": "This page cannot be restored."
   },
   {
-    "id": "app.page.update.body_too_long.app_error",
-    "translation": "The page body exceeds the maximum size of {{.MaxBytes}} bytes."
-  },
-  {
     "id": "app.page.update.conflict.app_error",
     "translation": "The page was changed by someone else. Reload and try again."
   },
@@ -108,20 +96,8 @@
     "translation": "The page could not be found."
   },
   {
-    "id": "app.page.update.search_text_too_long.app_error",
-    "translation": "The page search text exceeds the maximum size of {{.MaxBytes}} bytes."
-  },
-  {
     "id": "app.page.update.store_error.app_error",
     "translation": "An error occurred while updating the page."
-  },
-  {
-    "id": "app.shared.title_required.app_error",
-    "translation": "A title is required."
-  },
-  {
-    "id": "app.shared.title_too_long.app_error",
-    "translation": "The title exceeds the maximum length of {{.MaxLength}} characters."
   },
   {
     "id": "app.space.delete.invalid_id.app_error",
@@ -150,14 +126,6 @@
   {
     "id": "app.space.restore.not_deleted.app_error",
     "translation": "The space is not deleted, so it cannot be restored."
-  },
-  {
-    "id": "app.space.update.description_too_long.app_error",
-    "translation": "The space description exceeds the maximum length of {{.MaxLength}} characters."
-  },
-  {
-    "id": "app.space.update.icon_too_large.app_error",
-    "translation": "The space icon exceeds the maximum size of {{.MaxBytes}} bytes."
   },
   {
     "id": "app.space.update.invalid_id.app_error",

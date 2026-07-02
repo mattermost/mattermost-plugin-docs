@@ -107,9 +107,7 @@ func storeAppError(where string, err error) *mmmodel.AppError {
 	case store.IsErrLimitExceeded(err):
 		// Use the limit the error carries; different store methods have different bounds.
 		var limitErr *store.ErrLimitExceeded
-		if !errors.As(err, &limitErr) {
-			return mmmodel.NewAppError(where, "app.store.internal_error.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
-		}
+		_ = errors.As(err, &limitErr) // guaranteed true: IsErrLimitExceeded already performed this assertion
 		return mmmodel.NewAppError(where, "app.store.too_large.app_error", map[string]any{"Limit": limitErr.Limit}, "", http.StatusUnprocessableEntity).Wrap(err)
 	default:
 		return mmmodel.NewAppError(where, "app.store.internal_error.app_error", nil, "", http.StatusInternalServerError).Wrap(err)

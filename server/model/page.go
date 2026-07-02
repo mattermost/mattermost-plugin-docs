@@ -44,8 +44,10 @@ type Page struct {
 	LastModifiedBy string `json:"last_modified_by"`
 	SortOrder      int64  `json:"sort_order"`
 
-	CreateAt   int64  `json:"create_at"`
-	UpdateAt   int64  `json:"update_at"`
+	CreateAt int64 `json:"create_at"`
+	UpdateAt int64 `json:"update_at"`
+	// EditAt is the optimistic-lock (CAS) token compared against a caller-supplied
+	// base value on update; see Store.UpdatePage.
 	EditAt     int64  `json:"edit_at"`
 	DeleteAt   int64  `json:"delete_at"`
 	OriginalId string `json:"original_id"`
