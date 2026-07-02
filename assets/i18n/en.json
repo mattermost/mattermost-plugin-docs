@@ -224,6 +224,10 @@
     "translation": "The page search text exceeds the maximum size of {{.MaxBytes}} bytes."
   },
   {
+    "id": "model.page.is_valid.search_text_without_body.app_error",
+    "translation": "Search text cannot be set without page content."
+  },
+  {
     "id": "model.page.is_valid.snapshot_not_deleted.app_error",
     "translation": "A page version snapshot must be marked as deleted."
   },

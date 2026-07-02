@@ -186,6 +186,10 @@ func (p *Page) IsValid() *mmmodel.AppError {
 		return mmmodel.NewAppError("Page.IsValid", "model.page.is_valid.search_text.app_error", map[string]any{"MaxBytes": PageSearchTextMaxBytes}, "id="+p.Id, http.StatusBadRequest)
 	}
 
+	if p.SearchText != "" && p.Body == "" {
+		return mmmodel.NewAppError("Page.IsValid", "model.page.is_valid.search_text_without_body.app_error", nil, "id="+p.Id, http.StatusBadRequest)
+	}
+
 	if err := validatePropsSize("Page.IsValid", "id="+p.Id, p.Props, PagePropsMaxBytes); err != nil {
 		return err
 	}

@@ -18,6 +18,11 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
+// testDefaultMaxDepth is the maxDepth passed to CreatePage by tests that aren't exercising the
+// depth cap itself, chosen well past MaxPageHierarchyDepth so it never interferes with chains
+// built to test the read-side CTE limit.
+const testDefaultMaxDepth = store.MaxPageHierarchyDepth + 10
+
 // openTestDB opens an isolated Postgres schema for this test run, runs migrations into it, and
 // returns the Store. The schema is dropped in t.Cleanup so parallel package runs never share
 // tables.
@@ -147,7 +152,7 @@ func TestCreateAndGetPage(t *testing.T) {
 
 	userID := mmmodel.NewId()
 	p := newPage(savedSpace.Id, channelID, userID, "")
-	created, err := s.CreatePage(p)
+	created, err := s.CreatePage(p, testDefaultMaxDepth)
 	require.NoError(t, err)
 	require.NotEmpty(t, created.Id)
 	require.Equal(t, savedSpace.Id, created.SpaceId)
@@ -176,12 +181,12 @@ func TestCreatePageSortOrder(t *testing.T) {
 	userID := mmmodel.NewId()
 	p1 := newPage(savedSpace.Id, channelID, userID, "")
 	p1.Title = "Page 1"
-	c1, err := s.CreatePage(p1)
+	c1, err := s.CreatePage(p1, testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	p2 := newPage(savedSpace.Id, channelID, userID, "")
 	p2.Title = "Page 2"
-	c2, err := s.CreatePage(p2)
+	c2, err := s.CreatePage(p2, testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	require.Greater(t, c2.SortOrder, c1.SortOrder, "second page should have higher sort order")
@@ -199,12 +204,12 @@ func TestGetPageChildren(t *testing.T) {
 
 	parent := newPage(savedSpace.Id, channelID, userID, "")
 	parent.Title = "Parent"
-	createdParent, err := s.CreatePage(parent)
+	createdParent, err := s.CreatePage(parent, testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	child := newPage(savedSpace.Id, channelID, userID, createdParent.Id)
 	child.Title = "Child"
-	_, err = s.CreatePage(child)
+	_, err = s.CreatePage(child, testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	children, err := s.GetPageChildren(createdParent.Id, 0, 100)
@@ -221,7 +226,7 @@ func TestGetPageChildren_NonPositiveLimit(t *testing.T) {
 	channelID := mmmodel.NewId()
 	space, err := s.CreateSpace(newSpace(channelID))
 	require.NoError(t, err)
-	parent, err := s.CreatePage(newPage(space.Id, channelID, mmmodel.NewId(), ""))
+	parent, err := s.CreatePage(newPage(space.Id, channelID, mmmodel.NewId(), ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	for _, limit := range []int{0, -1} {
@@ -239,17 +244,17 @@ func TestGetPageChildrenOrderedBySortOrder(t *testing.T) {
 	require.NoError(t, err)
 
 	userID := mmmodel.NewId()
-	parent, err := s.CreatePage(newPage(savedSpace.Id, channelID, userID, ""))
+	parent, err := s.CreatePage(newPage(savedSpace.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	first := newPage(savedSpace.Id, channelID, userID, parent.Id)
 	first.Title = "First"
-	createdFirst, err := s.CreatePage(first)
+	createdFirst, err := s.CreatePage(first, testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	second := newPage(savedSpace.Id, channelID, userID, parent.Id)
 	second.Title = "Second"
-	_, err = s.CreatePage(second)
+	_, err = s.CreatePage(second, testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	// Children come back in SortOrder order (here, creation order), not newest-first.
@@ -282,10 +287,10 @@ func TestDeleteSpaceCascadesPages(t *testing.T) {
 	require.NoError(t, err)
 
 	userID := mmmodel.NewId()
-	parent, err := s.CreatePage(newPage(savedSpace.Id, channelID, userID, ""))
+	parent, err := s.CreatePage(newPage(savedSpace.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
-	createdChild, err := s.CreatePage(newPage(savedSpace.Id, channelID, userID, parent.Id))
+	createdChild, err := s.CreatePage(newPage(savedSpace.Id, channelID, userID, parent.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	require.NoError(t, s.DeleteSpace(savedSpace.Id))
@@ -315,7 +320,7 @@ func TestCreatePageInDeletedSpaceRejected(t *testing.T) {
 
 	require.NoError(t, s.DeleteSpace(space.Id))
 
-	_, err = s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	_, err = s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.Error(t, err, "creating a page in a soft-deleted space must fail")
 	require.True(t, store.IsErrNotFound(err), "deleted space must map to ErrNotFound; got %T: %v", err, err)
 }
@@ -330,13 +335,13 @@ func TestRestoreSpaceUncascadesCascadedPages(t *testing.T) {
 	require.NoError(t, err)
 	userID := mmmodel.NewId()
 
-	parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
-	child, err := s.CreatePage(newPage(space.Id, channelID, userID, parent.Id))
+	child, err := s.CreatePage(newPage(space.Id, channelID, userID, parent.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	// A page deleted before the space must stay deleted after restore.
-	preDeleted, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	preDeleted, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 	require.NoError(t, s.DeletePage(preDeleted.Id))
 
@@ -423,9 +428,9 @@ func TestRestoreSpaceStampExceedsExistingDeleteAt(t *testing.T) {
 	require.NoError(t, err)
 	userID := mmmodel.NewId()
 
-	cascaded, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	cascaded, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
-	individual, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	individual, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	// Delete one page individually, then force its DeleteAt above the wall clock so a now-based
@@ -463,17 +468,17 @@ func TestGetPageDescendants(t *testing.T) {
 
 	root := newPage(savedSpace.Id, channelID, userID, "")
 	root.Title = "Root"
-	createdRoot, err := s.CreatePage(root)
+	createdRoot, err := s.CreatePage(root, testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	child := newPage(savedSpace.Id, channelID, userID, createdRoot.Id)
 	child.Title = "Child"
-	createdChild, err := s.CreatePage(child)
+	createdChild, err := s.CreatePage(child, testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	grandchild := newPage(savedSpace.Id, channelID, userID, createdChild.Id)
 	grandchild.Title = "Grandchild"
-	_, err = s.CreatePage(grandchild)
+	_, err = s.CreatePage(grandchild, testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	descendants, err := s.GetPageDescendants(createdRoot.Id)
@@ -493,12 +498,12 @@ func TestGetPageAncestors(t *testing.T) {
 
 	root := newPage(savedSpace.Id, channelID, userID, "")
 	root.Title = "Root"
-	createdRoot, err := s.CreatePage(root)
+	createdRoot, err := s.CreatePage(root, testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	child := newPage(savedSpace.Id, channelID, userID, createdRoot.Id)
 	child.Title = "Child"
-	createdChild, err := s.CreatePage(child)
+	createdChild, err := s.CreatePage(child, testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	ancestors, err := s.GetPageAncestors(createdChild.Id)
@@ -519,13 +524,14 @@ func TestDepthBoundaryExact(t *testing.T) {
 
 	userID := mmmodel.NewId()
 
-	// Build a chain of maxDepth pages (root at depth 1).
+	// Build a chain of maxDepth pages (root at depth 1), passing maxDepth as CreatePage's cap
+	// so the chain itself exercises the boundary rather than just bypassing it.
 	parentID := ""
 	var lastPage *model.Page
 	for depth := 1; depth <= maxDepth; depth++ {
 		pg := newPage(savedSpace.Id, channelID, userID, parentID)
 		pg.Title = fmt.Sprintf("depth-%d", depth)
-		created, createErr := s.CreatePage(pg)
+		created, createErr := s.CreatePage(pg, maxDepth)
 		require.NoError(t, createErr, "create page at depth %d", depth)
 		parentID = created.Id
 		lastPage = created
@@ -536,11 +542,18 @@ func TestDepthBoundaryExact(t *testing.T) {
 	ancestors, ancestorErr := s.GetPageAncestors(lastPage.Id)
 	require.NoError(t, ancestorErr)
 	require.Len(t, ancestors, maxDepth-1, "leaf at depth %d should have %d ancestors", maxDepth, maxDepth-1)
+
+	// One level past the cap must be rejected atomically by CreatePage itself.
+	tooDeep := newPage(savedSpace.Id, channelID, userID, parentID)
+	_, createErr := s.CreatePage(tooDeep, maxDepth)
+	require.Error(t, createErr)
+	require.True(t, store.IsErrInvalidInput(createErr), "expected ErrInvalidInput, got %v", createErr)
 }
 
 // TestGetPageAncestorsLimitExceeded verifies GetPageAncestors returns ErrLimitExceeded
-// rather than truncating when the parent chain exceeds MaxPageHierarchyDepth. The store
-// CreatePage enforces no depth cap (only the app layer does), so the chain is built directly.
+// rather than truncating when the parent chain exceeds MaxPageHierarchyDepth. The chain is
+// built with testDefaultMaxDepth, well past MaxPageHierarchyDepth, so CreatePage's own cap
+// doesn't interfere with reaching the read-side limit under test.
 func TestGetPageAncestorsLimitExceeded(t *testing.T) {
 	s := openTestDB(t)
 
@@ -552,7 +565,7 @@ func TestGetPageAncestorsLimitExceeded(t *testing.T) {
 	parentID := ""
 	var leaf *model.Page
 	for range store.MaxPageHierarchyDepth + 2 {
-		leaf, err = s.CreatePage(newPage(space.Id, channelID, userID, parentID))
+		leaf, err = s.CreatePage(newPage(space.Id, channelID, userID, parentID), testDefaultMaxDepth)
 		require.NoError(t, err)
 		parentID = leaf.Id
 	}
@@ -564,8 +577,9 @@ func TestGetPageAncestorsLimitExceeded(t *testing.T) {
 
 // TestGetPageDescendantsDepthLimitExceeded verifies GetPageDescendants returns
 // ErrLimitExceeded rather than silently truncating when the subtree is deeper than
-// MaxPageHierarchyDepth. The store CreatePage enforces no depth cap (only the app layer
-// does), so the chain is built directly.
+// MaxPageHierarchyDepth. The chain is built with testDefaultMaxDepth, well past
+// MaxPageHierarchyDepth, so CreatePage's own cap doesn't interfere with reaching the
+// read-side limit under test.
 func TestGetPageDescendantsDepthLimitExceeded(t *testing.T) {
 	s := openTestDB(t)
 
@@ -574,12 +588,12 @@ func TestGetPageDescendantsDepthLimitExceeded(t *testing.T) {
 	require.NoError(t, err)
 	userID := mmmodel.NewId()
 
-	root, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	root, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	parentID := root.Id
 	for range store.MaxPageHierarchyDepth + 2 {
-		child, createErr := s.CreatePage(newPage(space.Id, channelID, userID, parentID))
+		child, createErr := s.CreatePage(newPage(space.Id, channelID, userID, parentID), testDefaultMaxDepth)
 		require.NoError(t, createErr)
 		parentID = child.Id
 	}
@@ -600,13 +614,13 @@ func TestGetPageDescendantsDepthAtCapAllowed(t *testing.T) {
 	require.NoError(t, err)
 	userID := mmmodel.NewId()
 
-	root, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	root, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	// Build exactly MaxPageHierarchyDepth descendants chained below the root.
 	parentID := root.Id
 	for range store.MaxPageHierarchyDepth {
-		child, createErr := s.CreatePage(newPage(space.Id, channelID, userID, parentID))
+		child, createErr := s.CreatePage(newPage(space.Id, channelID, userID, parentID), testDefaultMaxDepth)
 		require.NoError(t, createErr)
 		parentID = child.Id
 	}
@@ -627,7 +641,7 @@ func TestOptimisticLockConflict(t *testing.T) {
 
 	userID := mmmodel.NewId()
 	p := newPage(savedSpace.Id, channelID, userID, "")
-	created, err := s.CreatePage(p)
+	created, err := s.CreatePage(p, testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	// Update once to advance EditAt.
@@ -742,13 +756,13 @@ func TestGetPageAncestors_FourLevelChain(t *testing.T) {
 	require.NoError(t, err)
 
 	// Build root → L1 → L2 → L3.
-	root, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	root, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
-	l1, err := s.CreatePage(newPage(space.Id, channelID, userID, root.Id))
+	l1, err := s.CreatePage(newPage(space.Id, channelID, userID, root.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
-	l2, err := s.CreatePage(newPage(space.Id, channelID, userID, l1.Id))
+	l2, err := s.CreatePage(newPage(space.Id, channelID, userID, l1.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
-	l3, err := s.CreatePage(newPage(space.Id, channelID, userID, l2.Id))
+	l3, err := s.CreatePage(newPage(space.Id, channelID, userID, l2.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	ancestors, err := s.GetPageAncestors(l3.Id)
@@ -773,13 +787,13 @@ func TestGetPageDescendants_ExcludesUnrelatedSubtrees(t *testing.T) {
 	require.NoError(t, err)
 
 	// Root with two children; childA has its own grandchild.
-	root, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	root, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
-	childA, err := s.CreatePage(newPage(space.Id, channelID, userID, root.Id))
+	childA, err := s.CreatePage(newPage(space.Id, channelID, userID, root.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
-	_, err = s.CreatePage(newPage(space.Id, channelID, userID, root.Id)) // childB — unrelated subtree
+	_, err = s.CreatePage(newPage(space.Id, channelID, userID, root.Id), testDefaultMaxDepth) // childB — unrelated subtree
 	require.NoError(t, err)
-	grandchild, err := s.CreatePage(newPage(space.Id, channelID, userID, childA.Id))
+	grandchild, err := s.CreatePage(newPage(space.Id, channelID, userID, childA.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	// Descendants of childA must be only grandchild, not childB.
@@ -799,7 +813,7 @@ func TestGetPageDescendants_LeafHasZeroDescendants(t *testing.T) {
 	space, err := s.CreateSpace(newSpace(channelID))
 	require.NoError(t, err)
 
-	leaf, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	leaf, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	descendants, err := s.GetPageDescendants(leaf.Id)
@@ -879,12 +893,12 @@ func TestCreatePageDuplicateIDConflict(t *testing.T) {
 
 	first := newPage(savedSpace.Id, channelID, userID, "")
 	first.Id = pageID
-	_, err = s.CreatePage(first)
+	_, err = s.CreatePage(first, testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	second := newPage(savedSpace.Id, channelID, userID, "")
 	second.Id = pageID
-	_, err = s.CreatePage(second)
+	_, err = s.CreatePage(second, testDefaultMaxDepth)
 	require.Error(t, err)
 	require.True(t, store.IsErrConflict(err), "duplicate page Id must map to ErrConflict, got %T: %v", err, err)
 }
@@ -917,7 +931,7 @@ func TestCTECycleDetection(t *testing.T) {
 	// Create a valid page normally, then corrupt ParentId via raw SQL to create a
 	// self-referential cycle (page → itself). The store's CreatePage calls IsValid
 	// which rejects self-parent, so we must bypass it at the DB level.
-	created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	// Inject the self-parent cycle directly into the DB, bypassing app-layer validation.
@@ -965,7 +979,7 @@ func TestUpdatePageWritesProps(t *testing.T) {
 	userID := mmmodel.NewId()
 	space, err := s.CreateSpace(newSpace(channelID))
 	require.NoError(t, err)
-	created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	newTitle := "Props Test"
@@ -991,7 +1005,7 @@ func TestDeletePage(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("soft-deletes a page: hidden from the live view, visible with includeDeleted", func(t *testing.T) {
-		created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 
 		// Two users hold drafts for this page; both must be hard-deleted when the page is.
@@ -1018,9 +1032,9 @@ func TestDeletePage(t *testing.T) {
 	})
 
 	t.Run("reparents live children to the deleted page's parent", func(t *testing.T) {
-		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
-		child, err := s.CreatePage(newPage(space.Id, channelID, userID, parent.Id))
+		child, err := s.CreatePage(newPage(space.Id, channelID, userID, parent.Id), testDefaultMaxDepth)
 		require.NoError(t, err)
 
 		require.NoError(t, s.DeletePage(parent.Id))
@@ -1050,7 +1064,7 @@ func TestRestorePage(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("restores a soft-deleted page", func(t *testing.T) {
-		created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 
 		require.NoError(t, s.DeletePage(created.Id))
@@ -1062,9 +1076,9 @@ func TestRestorePage(t *testing.T) {
 	})
 
 	t.Run("leaves promoted children under the grandparent on restore", func(t *testing.T) {
-		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
-		child, err := s.CreatePage(newPage(space.Id, channelID, userID, parent.Id))
+		child, err := s.CreatePage(newPage(space.Id, channelID, userID, parent.Id), testDefaultMaxDepth)
 		require.NoError(t, err)
 
 		require.NoError(t, s.DeletePage(parent.Id))
@@ -1085,7 +1099,7 @@ func TestRestorePage(t *testing.T) {
 	})
 
 	t.Run("a live page is not restorable", func(t *testing.T) {
-		live, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		live, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 		// Decided atomically under the page's row lock (see RestorePage), matching
 		// RestoreSpace's already-live convention — not a generic not-found.
@@ -1102,7 +1116,7 @@ func TestRestorePageRejectsDeletedSpace(t *testing.T) {
 	userID := mmmodel.NewId()
 	space, err := s.CreateSpace(newSpace(channelID))
 	require.NoError(t, err)
-	page, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	page, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	require.NoError(t, s.DeletePage(page.Id))
@@ -1120,9 +1134,9 @@ func TestRestorePageFallsBackToRootWhenParentDeleted(t *testing.T) {
 	userID := mmmodel.NewId()
 	space, err := s.CreateSpace(newSpace(channelID))
 	require.NoError(t, err)
-	parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
-	child, err := s.CreatePage(newPage(space.Id, channelID, userID, parent.Id))
+	child, err := s.CreatePage(newPage(space.Id, channelID, userID, parent.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	// Delete the child, then the parent; restoring the child now falls back to root.
@@ -1148,15 +1162,15 @@ func TestRestorePageAppendsAtEndOfSiblingGroup(t *testing.T) {
 	require.NoError(t, err)
 
 	// Grandparent g with children a, p (SortOrder 1, 2). p has children c1, c2.
-	g, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	g, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
-	a, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id))
+	a, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
-	p, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id))
+	p, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
-	c1, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id))
+	c1, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
-	c2, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id))
+	c2, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	// Delete p: c1, c2 are promoted into p's old slot, so g's children become a, c1, c2.
@@ -1188,7 +1202,7 @@ func TestDeleteRestoreAdvancesEditAt(t *testing.T) {
 	space, err := s.CreateSpace(newSpace(channelID))
 	require.NoError(t, err)
 
-	created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	require.NoError(t, s.DeletePage(created.Id))
@@ -1217,7 +1231,7 @@ func TestDeletePageCreateChildConcurrency(t *testing.T) {
 	require.NoError(t, err)
 
 	for i := range 25 {
-		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 
 		var wg sync.WaitGroup
@@ -1229,7 +1243,7 @@ func TestDeletePageCreateChildConcurrency(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			_, createErr = s.CreatePage(newPage(space.Id, channelID, userID, parent.Id))
+			_, createErr = s.CreatePage(newPage(space.Id, channelID, userID, parent.Id), testDefaultMaxDepth)
 		}()
 		wg.Wait()
 
@@ -1257,7 +1271,7 @@ func TestCreatePageConcurrentSortOrderUnique(t *testing.T) {
 	userID := mmmodel.NewId()
 	space, err := s.CreateSpace(newSpace(channelID))
 	require.NoError(t, err)
-	parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	const n = 20
@@ -1267,7 +1281,7 @@ func TestCreatePageConcurrentSortOrderUnique(t *testing.T) {
 	for i := range n {
 		go func() {
 			defer wg.Done()
-			_, errs[i] = s.CreatePage(newPage(space.Id, channelID, userID, parent.Id))
+			_, errs[i] = s.CreatePage(newPage(space.Id, channelID, userID, parent.Id), testDefaultMaxDepth)
 		}()
 	}
 	wg.Wait()
@@ -1297,20 +1311,20 @@ func TestDeletePagePromotedChildrenTakeDeletedPosition(t *testing.T) {
 	require.NoError(t, err)
 
 	// Grandparent with three children created in order a, b, p (SortOrder 1, 2, 3).
-	g, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	g, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
-	a, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id))
+	a, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
-	b, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id))
+	b, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
-	p, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id))
+	p, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	// p's own children (SortOrder 1, 2). Their low order is exactly what would hoist them
 	// above b if it leaked into g's sibling group.
-	c1, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id))
+	c1, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
-	c2, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id))
+	c2, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	require.NoError(t, s.DeletePage(p.Id))
@@ -1338,19 +1352,19 @@ func TestDeletePagePreservesReorderedChildBlock(t *testing.T) {
 
 	// Grandparent with children a, p, d (SortOrder 1, 2, 3); d sits after the page to be
 	// deleted, so it must shift to make room for p's child block.
-	g, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	g, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
-	a, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id))
+	a, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
-	p, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id))
+	p, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
-	d, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id))
+	d, err := s.CreatePage(newPage(space.Id, channelID, userID, g.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	// p's children c1, c2 created in order, then manually reordered so c2 precedes c1.
-	c1, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id))
+	c1, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
-	c2, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id))
+	c2, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	pChildren, err := s.GetPageChildren(p.Id, 0, 100)
@@ -1382,12 +1396,12 @@ func TestDeletePageDeleteSpaceNoDeadlock(t *testing.T) {
 		channelID := mmmodel.NewId()
 		space, err := s.CreateSpace(newSpace(channelID))
 		require.NoError(t, err)
-		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 		// Load-bearing: the child makes DeletePage lock child rows — the same rows
 		// DeleteSpace's cascade locks, the precise contention a regression would deadlock on.
 		// Do not remove it.
-		_, err = s.CreatePage(newPage(space.Id, channelID, userID, parent.Id))
+		_, err = s.CreatePage(newPage(space.Id, channelID, userID, parent.Id), testDefaultMaxDepth)
 		require.NoError(t, err)
 
 		var wg sync.WaitGroup
@@ -1415,7 +1429,7 @@ func TestUpdatePageForceConcurrentMonotonic(t *testing.T) {
 	userID := mmmodel.NewId()
 	space, err := s.CreateSpace(newSpace(channelID))
 	require.NoError(t, err)
-	created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	const n = 10
@@ -1459,7 +1473,7 @@ func TestUpdatePageForcePreservesUnpatchedFields(t *testing.T) {
 	userID := mmmodel.NewId()
 	space, err := s.CreateSpace(newSpace(channelID))
 	require.NoError(t, err)
-	created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	// A concurrent writer advances the body; baseEditAt (created.EditAt) is now stale. Body and
@@ -1494,7 +1508,7 @@ func TestUpdatePageRejectsBodyWithoutSearchText(t *testing.T) {
 	userID := mmmodel.NewId()
 	space, err := s.CreateSpace(newSpace(channelID))
 	require.NoError(t, err)
-	created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	newBody := `{"type":"doc","content":[{"type":"paragraph"}]}`
@@ -1513,7 +1527,7 @@ func TestUpdatePageRejectsNilAndEmptyPatch(t *testing.T) {
 	userID := mmmodel.NewId()
 	space, err := s.CreateSpace(newSpace(channelID))
 	require.NoError(t, err)
-	created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	_, nilErr := s.UpdatePage(created.Id, nil, created.EditAt, false, userID)
@@ -1690,7 +1704,7 @@ func TestDraft(t *testing.T) {
 		// A live page in space B. UpsertDraft refuses to attach a space-A draft to it (see the
 		// write-path test below), so insert the cross-space row directly to exercise the
 		// read-path guard against a corrupt or legacy row.
-		pageInB, err := s.CreatePage(newPage(spaceB.Id, spaceB.ChannelId, userID, ""))
+		pageInB, err := s.CreatePage(newPage(spaceB.Id, spaceB.ChannelId, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 		now := mmmodel.GetMillis()
 		_, rawErr := s.RawExecForTest(
@@ -1712,7 +1726,7 @@ func TestDraft(t *testing.T) {
 		spaceB, err := s.CreateSpace(newSpace(mmmodel.NewId()))
 		require.NoError(t, err)
 
-		pageInB, err := s.CreatePage(newPage(spaceB.Id, spaceB.ChannelId, userID, ""))
+		pageInB, err := s.CreatePage(newPage(spaceB.Id, spaceB.ChannelId, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 
 		_, err = s.UpsertDraft(newDraft(userID, spaceA.Id, pageInB.Id, ""))
@@ -1727,13 +1741,13 @@ func TestDraft(t *testing.T) {
 		userID := mmmodel.NewId()
 
 		// A draft editing a live page is included.
-		live, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		live, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 		_, err = s.UpsertDraft(newDraft(userID, space.Id, live.Id, ""))
 		require.NoError(t, err)
 
 		// A draft whose page is soft-deleted is excluded.
-		deleted, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		deleted, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 		_, err = s.UpsertDraft(newDraft(userID, space.Id, deleted.Id, ""))
 		require.NoError(t, err)
@@ -1757,7 +1771,7 @@ func TestDraft(t *testing.T) {
 		// written while the page is still live; the read path must then exclude it: the LEFT
 		// JOIN matches the snapshot row, OriginalId != '' fails the live-page predicate, and
 		// p.Id IS NULL is false.
-		snap, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		snap, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 		_, err = s.UpsertDraft(newDraft(userID, space.Id, snap.Id, ""))
 		require.NoError(t, err)
@@ -1780,7 +1794,7 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, err)
 		userID := mmmodel.NewId()
 
-		page, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		page, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 		require.NoError(t, s.DeletePage(page.Id))
 
@@ -1806,7 +1820,7 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, err)
 		userID := mmmodel.NewId()
 
-		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 
 		saved, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), parent.Id))
@@ -1830,7 +1844,7 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, err)
 		userID := mmmodel.NewId()
 
-		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 		require.NoError(t, s.DeletePage(parent.Id))
 
@@ -1847,7 +1861,7 @@ func TestDraft(t *testing.T) {
 		spaceB, err := s.CreateSpace(newSpace(mmmodel.NewId()))
 		require.NoError(t, err)
 
-		parentInB, err := s.CreatePage(newPage(spaceB.Id, spaceB.ChannelId, userID, ""))
+		parentInB, err := s.CreatePage(newPage(spaceB.Id, spaceB.ChannelId, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 
 		_, err = s.UpsertDraft(newDraft(userID, spaceA.Id, mmmodel.NewId(), parentInB.Id))
@@ -1916,9 +1930,9 @@ func TestDraft(t *testing.T) {
 		spaceID := space.Id
 
 		// Parents must be live pages in the space (UpsertDraft validates ParentId liveness).
-		firstPage, err := s.CreatePage(newPage(spaceID, space.ChannelId, userID, ""))
+		firstPage, err := s.CreatePage(newPage(spaceID, space.ChannelId, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
-		secondPage, err := s.CreatePage(newPage(spaceID, space.ChannelId, userID, ""))
+		secondPage, err := s.CreatePage(newPage(spaceID, space.ChannelId, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 		firstParent, secondParent := firstPage.Id, secondPage.Id
 
@@ -2014,9 +2028,9 @@ func TestDeletePageReparentsPendingDrafts(t *testing.T) {
 	space, err := s.CreateSpace(newSpace(channelID))
 	require.NoError(t, err)
 
-	grandparent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
+	grandparent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
-	parent, err := s.CreatePage(newPage(space.Id, channelID, userID, grandparent.Id))
+	parent, err := s.CreatePage(newPage(space.Id, channelID, userID, grandparent.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
 
 	// A new-page draft (its own page not yet created) pending as a child of parent.
@@ -2033,6 +2047,6 @@ func TestDeletePageReparentsPendingDrafts(t *testing.T) {
 	require.Equal(t, grandparent.Id, got.ParentId, "draft must be reparented to the deleted page's parent")
 
 	// The reparented draft is publishable: CreatePage with its parent now succeeds.
-	_, err = s.CreatePage(newPage(space.Id, channelID, userID, got.ParentId))
+	_, err = s.CreatePage(newPage(space.Id, channelID, userID, got.ParentId), testDefaultMaxDepth)
 	require.NoError(t, err, "draft's reparented parent must be a valid live parent")
 }

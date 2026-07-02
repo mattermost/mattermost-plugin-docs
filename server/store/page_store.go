@@ -46,8 +46,10 @@ func liveNonSnapshotFilter(alias string) sq.Eq {
 	return sq.Eq{alias + "DeleteAt": 0, alias + "OriginalId": ""}
 }
 
-// CreatePage inserts a new page, assigning it the next sort order among its siblings.
-func (s *Store) CreatePage(page *model.Page) (_ *model.Page, err error) {
+// CreatePage inserts a new page, assigning it the next sort order among its siblings. maxDepth
+// caps the page's depth in the hierarchy (root pages are depth 1); the caller owns the limit's
+// value, this only enforces it atomically against the locked parent.
+func (s *Store) CreatePage(page *model.Page, maxDepth int) (_ *model.Page, err error) {
 	if page == nil {
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "page", Value: nil}
 	}
@@ -77,10 +79,20 @@ func (s *Store) CreatePage(page *model.Page) (_ *model.Page, err error) {
 	// uq_docs_space_channel_id) rather than trusting the caller-supplied value.
 	page.ChannelId = spaceChannelID
 
-	// Re-verify the parent is still live under the same transaction.
+	// Re-verify the parent is still live under the same transaction, and enforce maxDepth against
+	// its locked, current ancestor count — atomic with the insert, unlike a pre-transaction read.
 	if page.ParentId != "" {
 		if pErr := s.lockLiveParent(tx, page.ParentId, page.SpaceId, "Page"); pErr != nil {
 			return nil, pErr
+		}
+		ancestorDepth, ancErr := s.getPageAncestorDepth(tx, page.ParentId)
+		if ancErr != nil {
+			return nil, ancErr
+		}
+		// ancestorDepth excludes the parent itself, so the parent is at ancestorDepth + 1 and the
+		// new child one level deeper, at ancestorDepth + 2. Root pages have depth 1.
+		if ancestorDepth+2 > maxDepth {
+			return nil, &ErrInvalidInput{Entity: "Page", Field: "ParentId", Value: page.ParentId, Reason: ReasonMaxDepthExceeded}
 		}
 	}
 
@@ -678,9 +690,15 @@ func (s *Store) GetPageAncestorDepth(pageID string) (int, error) {
 	if pageID == "" {
 		return 0, &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
 	}
+	return s.getPageAncestorDepth(s.db, pageID)
+}
 
+// getPageAncestorDepth is the shared implementation behind GetPageAncestorDepth, parameterized
+// on the executor so CreatePage can run the same count against its transaction (with the parent
+// row locked) instead of a separate pre-transaction read.
+func (s *Store) getPageAncestorDepth(e sqlx.ExtContext, pageID string) (int, error) {
 	var count int
-	if err := s.get(s.db, &count, pageAncestorCountCTE, pageID); err != nil {
+	if err := s.get(e, &count, pageAncestorCountCTE, pageID); err != nil {
 		return 0, errors.Wrapf(err, "failed to count ancestors for page_id=%s", pageID)
 	}
 	return count, nil

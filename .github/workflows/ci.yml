@@ -136,7 +136,9 @@ jobs:
           path: dist
 
       - name: ci/prepare-artifact
-        run: mv *.tar.gz ${GITHUB_REPOSITORY#*/}-${{ github.ref_name }}.tar.gz
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: mv *.tar.gz ${GITHUB_REPOSITORY#*/}-${REF_NAME}.tar.gz
         working-directory: dist
 
       - name: ci/aws-configure

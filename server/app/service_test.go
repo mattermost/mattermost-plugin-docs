@@ -79,7 +79,10 @@ func mustCreatePage(t *testing.T, s *store.Store, spaceID, channelID, userID, pa
 		Title:     "Test Page",
 		Body:      `{"type":"doc","content":[]}`,
 	}
-	created, err := s.CreatePage(p)
+	// This fixture helper isn't exercising the depth cap (some callers build chains deeper than
+	// MaxPageDepth to test store.MaxPageHierarchyDepth instead), so bypass it with a value well
+	// past the store's own read-side limit.
+	created, err := s.CreatePage(p, store.MaxPageHierarchyDepth+10)
 	require.NoError(t, err)
 	return created
 }

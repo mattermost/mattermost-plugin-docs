@@ -4,6 +4,7 @@
 package app
 
 import (
+	"errors"
 	"net/http"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -12,9 +13,10 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
-// MaxPageDepth is the maximum depth for page hierarchies (app-layer enforcement on create).
-// The store has no write-time depth check; store.MaxPageHierarchyDepth (= 50) only bounds
-// how deep the read-side ancestor/descendant CTEs recurse.
+// MaxPageDepth is the maximum depth for page hierarchies. The app layer owns the limit's value
+// and passes it to Store.CreatePage, which enforces it atomically against the locked parent.
+// store.MaxPageHierarchyDepth (= 50) is a separate, larger bound on how deep the read-side
+// ancestor/descendant CTEs recurse.
 const MaxPageDepth = 10
 
 // CreatePage creates a new page in spaceID. ChannelId is derived from the space
@@ -71,12 +73,10 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 		// ancestorDepth excludes the parent itself, so the parent is at ancestorDepth + 1
 		// and the new child one level deeper, at ancestorDepth + 2. Root pages have depth 1.
 		newDepth := ancestorDepth + 2
-		// This depth check reads ancestorDepth before CreatePage's insert transaction starts, so it
-		// is not atomic with the insert: a concurrent create under the same parent can land between
-		// this check and the insert, and both inserts can pass depth validation using the same
-		// pre-insert ancestorDepth, briefly pushing the tree past MaxPageDepth. The store does not
-		// enforce a depth cap on insert; MaxPageHierarchyDepth only bounds the read-side CTEs
-		// (GetPageAncestors/GetPageDescendants), so this race is not backstopped.
+		// This is a fast-fail read before CreatePage's insert transaction starts, so it is not
+		// itself atomic with the insert (a concurrent move could change ancestorDepth after this
+		// read). CreatePage re-derives and enforces the same cap against the locked parent inside
+		// its transaction, which is the authoritative check.
 		if newDepth > MaxPageDepth {
 			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest)
 		}
@@ -97,13 +97,17 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 
 	s.logDebug("Creating page", "space_id", spaceID, "parent_id", parentID, "user_id", userID)
 
-	created, storeErr := s.store.CreatePage(page)
+	created, storeErr := s.store.CreatePage(page, MaxPageDepth)
 	if storeErr != nil {
 		if store.IsErrNotFound(storeErr) {
 			// The space was soft-deleted between the check above and the insert.
 			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.space_not_found.app_error", nil, "", http.StatusNotFound).Wrap(storeErr)
 		}
 		if store.IsErrInvalidInput(storeErr) {
+			var invErr *store.ErrInvalidInput
+			if errors.As(storeErr, &invErr) && invErr.Reason == store.ReasonMaxDepthExceeded {
+				return nil, mmmodel.NewAppError("CreatePage", "app.page.create.max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest).Wrap(storeErr)
+			}
 			return nil, invalidInputAppError("CreatePage", storeErr)
 		}
 		if store.IsErrConflict(storeErr) {
