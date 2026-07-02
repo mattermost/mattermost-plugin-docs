@@ -218,7 +218,7 @@ func (s *Service) RestorePage(pageID string) *mmmodel.AppError {
 		return mmmodel.NewAppError("RestorePage", "app.page.restore.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	s.logDebug("Restoring page", "page_id", pageID)
-	if restoreErr := s.store.RestorePage(pageID); restoreErr != nil {
+	if restoreErr := s.store.RestorePage(pageID, MaxPageDepth); restoreErr != nil {
 		if appErr := restoreReasonAppError("RestorePage", restoreErr, map[string]string{
 			store.ReasonNotRestorable: "app.page.restore.not_restorable.app_error",
 			store.ReasonNotDeleted:    "app.page.restore.not_deleted.app_error",

@@ -1068,7 +1068,7 @@ func TestRestorePage(t *testing.T) {
 		require.NoError(t, err)
 
 		require.NoError(t, s.DeletePage(created.Id))
-		require.NoError(t, s.RestorePage(created.Id))
+		require.NoError(t, s.RestorePage(created.Id, testDefaultMaxDepth))
 
 		got, err := s.GetPage(created.Id, false)
 		require.NoError(t, err)
@@ -1086,7 +1086,7 @@ func TestRestorePage(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, parent.ParentId, promoted.ParentId)
 
-		require.NoError(t, s.RestorePage(parent.Id))
+		require.NoError(t, s.RestorePage(parent.Id, testDefaultMaxDepth))
 
 		restored, err := s.GetPage(parent.Id, false)
 		require.NoError(t, err)
@@ -1103,7 +1103,7 @@ func TestRestorePage(t *testing.T) {
 		require.NoError(t, err)
 		// Decided atomically under the page's row lock (see RestorePage), matching
 		// RestoreSpace's already-live convention — not a generic not-found.
-		require.True(t, store.IsErrInvalidInput(s.RestorePage(live.Id)))
+		require.True(t, store.IsErrInvalidInput(s.RestorePage(live.Id, testDefaultMaxDepth)))
 	})
 }
 
@@ -1122,7 +1122,7 @@ func TestRestorePageRejectsDeletedSpace(t *testing.T) {
 	require.NoError(t, s.DeletePage(page.Id))
 	require.NoError(t, s.DeleteSpace(space.Id))
 
-	require.True(t, store.IsErrNotFound(s.RestorePage(page.Id)), "must not restore into a deleted space")
+	require.True(t, store.IsErrNotFound(s.RestorePage(page.Id, testDefaultMaxDepth)), "must not restore into a deleted space")
 }
 
 // TestRestorePageFallsBackToRootWhenParentDeleted verifies that if the original parent is
@@ -1143,12 +1143,40 @@ func TestRestorePageFallsBackToRootWhenParentDeleted(t *testing.T) {
 	require.NoError(t, s.DeletePage(child.Id))
 	require.NoError(t, s.DeletePage(parent.Id))
 
-	require.NoError(t, s.RestorePage(child.Id), "restore must succeed by falling back to root")
+	require.NoError(t, s.RestorePage(child.Id, testDefaultMaxDepth), "restore must succeed by falling back to root")
 
 	restored, err := s.GetPage(child.Id, false)
 	require.NoError(t, err)
 	require.Zero(t, restored.DeleteAt)
 	require.Empty(t, restored.ParentId, "child must be restored at the space root when its parent is gone")
+}
+
+// TestRestorePageFallsBackToRootWhenParentTooDeep verifies that if restoring under the original
+// parent would exceed maxDepth, restore lands the page at the space root instead of failing —
+// the same "never fail" fallback as a deleted parent, re-checked atomically under the parent's
+// lock since the parent may have moved deeper since this page was deleted.
+func TestRestorePageFallsBackToRootWhenParentTooDeep(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+	parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+	require.NoError(t, err)
+	child, err := s.CreatePage(newPage(space.Id, channelID, userID, parent.Id), testDefaultMaxDepth)
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeletePage(child.Id))
+
+	// parent is live at depth 1, so restoring the child under it would land at depth 2 — over a
+	// cap of 1.
+	require.NoError(t, s.RestorePage(child.Id, 1), "restore must succeed by falling back to root")
+
+	restored, err := s.GetPage(child.Id, false)
+	require.NoError(t, err)
+	require.Zero(t, restored.DeleteAt)
+	require.Empty(t, restored.ParentId, "child must be restored at the space root when its parent is too deep")
 }
 
 // TestRestorePageAppendsAtEndOfSiblingGroup verifies a restored page is appended at the end of
@@ -1179,7 +1207,7 @@ func TestRestorePageAppendsAtEndOfSiblingGroup(t *testing.T) {
 		"sanity: promoted children take the deleted page's slot")
 
 	// Restore p: it must append at the end (a, c1, c2, p), not reclaim its stale slot 2.
-	require.NoError(t, s.RestorePage(p.Id))
+	require.NoError(t, s.RestorePage(p.Id, testDefaultMaxDepth))
 	children := mustChildren(t, s, g.Id)
 	require.Equal(t, []string{a.Id, c1.Id, c2.Id, p.Id}, idsOf(children),
 		"restored page must be appended at the end of the sibling group")
@@ -1206,7 +1234,7 @@ func TestDeleteRestoreAdvancesEditAt(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, s.DeletePage(created.Id))
-	require.NoError(t, s.RestorePage(created.Id))
+	require.NoError(t, s.RestorePage(created.Id, testDefaultMaxDepth))
 
 	restored, err := s.GetPage(created.Id, false)
 	require.NoError(t, err)

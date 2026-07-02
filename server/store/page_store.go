@@ -375,7 +375,8 @@ func (s *Store) DeletePage(pageID string) (err error) {
 	childIDsQuery := s.getQueryBuilder().
 		Select("Id").
 		From("DOCS_Page").
-		Where(sq.Eq{"ParentId": pageID, "DeleteAt": 0}).
+		Where(sq.Eq{"ParentId": pageID}).
+		Where(liveNonSnapshotFilter("")).
 		OrderBy("SortOrder ASC", "CreateAt ASC", "Id ASC").
 		Suffix("FOR UPDATE")
 	var childIDs []string
@@ -426,7 +427,8 @@ func (s *Store) DeletePage(pageID string) (err error) {
 			Set("SortOrder", sortOrderCase).
 			Set("UpdateAt", now).
 			Set("EditAt", sq.Expr("GREATEST(EditAt + 1, ?)", now)).
-			Where(sq.Eq{"Id": childIDs, "ParentId": pageID, "DeleteAt": 0})
+			Where(sq.Eq{"Id": childIDs, "ParentId": pageID}).
+			Where(liveNonSnapshotFilter(""))
 		result, txErr := s.execBuilder(tx, blockQuery)
 		if txErr != nil {
 			return errors.Wrap(txErr, "failed to reparent children into block")
@@ -477,10 +479,10 @@ func (s *Store) DeletePage(pageID string) (err error) {
 }
 
 // RestorePage un-deletes a soft-deleted page. Promoted children are NOT pulled back
-// (matching Confluence); the parent-fallback rule is documented at the restore-parent
-// resolution below. Only a soft-deleted original page (OriginalId == "", DeleteAt > 0) in a
-// live space is restorable.
-func (s *Store) RestorePage(pageID string) (err error) {
+// (matching Confluence); the parent-fallback rule, including the maxDepth re-check, is
+// documented at the restore-parent resolution below. Only a soft-deleted original page
+// (OriginalId == "", DeleteAt > 0) in a live space is restorable.
+func (s *Store) RestorePage(pageID string, maxDepth int) (err error) {
 	if pageID == "" {
 		return &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
 	}
@@ -544,8 +546,10 @@ func (s *Store) RestorePage(pageID string) (err error) {
 		return &ErrInvalidInput{Entity: "Page", Field: "id", Value: pageID, Reason: ReasonNotDeleted}
 	}
 
-	// Restore under the original parent if it's still live; otherwise fall back to the space
-	// root rather than failing (matching Confluence — root always exists once the space is live).
+	// Restore under the original parent if it's still live and not too deep; otherwise fall back
+	// to the space root rather than failing (matching Confluence — root always exists once the
+	// space is live). The parent may have moved deeper since this page was deleted, so the depth
+	// cap is re-checked here under the parent's lock rather than trusted from delete time.
 	restoreParentID := target.ParentID
 	if target.ParentID != "" {
 		parentLive, pErr := s.tryLockLiveParent(tx, target.ParentID, spaceID)
@@ -554,6 +558,16 @@ func (s *Store) RestorePage(pageID string) (err error) {
 		}
 		if !parentLive {
 			restoreParentID = ""
+		} else {
+			ancestorDepth, ancErr := s.getPageAncestorDepth(tx, target.ParentID)
+			if ancErr != nil {
+				return ancErr
+			}
+			// ancestorDepth excludes the parent itself, so the parent is at ancestorDepth + 1 and
+			// the restored page one level deeper, at ancestorDepth + 2. Root pages have depth 1.
+			if ancestorDepth+2 > maxDepth {
+				restoreParentID = ""
+			}
 		}
 	}
 
