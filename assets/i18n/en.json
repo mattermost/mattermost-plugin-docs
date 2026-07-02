@@ -72,14 +72,6 @@
     "translation": "Invalid page ID."
   },
   {
-    "id": "app.page.restore.not_deleted.app_error",
-    "translation": "The page is not deleted, so it cannot be restored."
-  },
-  {
-    "id": "app.page.restore.not_restorable.app_error",
-    "translation": "This page cannot be restored."
-  },
-  {
     "id": "app.page.update.conflict.app_error",
     "translation": "The page was changed by someone else. Reload and try again."
   },
@@ -122,10 +114,6 @@
   {
     "id": "app.space.restore.invalid_id.app_error",
     "translation": "Invalid space ID."
-  },
-  {
-    "id": "app.space.restore.not_deleted.app_error",
-    "translation": "The space is not deleted, so it cannot be restored."
   },
   {
     "id": "app.space.update.invalid_id.app_error",
