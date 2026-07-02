@@ -10,7 +10,6 @@ import (
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 )
 
-// ensureProps returns props, or a new empty map when props is nil.
 func ensureProps(props mmmodel.StringInterface) mmmodel.StringInterface {
 	if props == nil {
 		return make(mmmodel.StringInterface)
@@ -32,43 +31,4 @@ func validatePropsSize(where, details string, props mmmodel.StringInterface, max
 		return mmmodel.NewAppError(where, "model.shared.props_too_large.app_error", map[string]any{"MaxBytes": maxBytes}, details, http.StatusBadRequest)
 	}
 	return nil
-}
-
-// deepCloneStringInterface returns a deep copy of a StringInterface,
-// recursively copying nested maps and slices to avoid aliasing.
-func deepCloneStringInterface(src mmmodel.StringInterface) mmmodel.StringInterface {
-	dst := make(mmmodel.StringInterface, len(src))
-	for k, v := range src {
-		dst[k] = deepCloneAny(v)
-	}
-	return dst
-}
-
-func deepCloneAny(v any) any {
-	switch x := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, vv := range x {
-			out[k] = deepCloneAny(vv)
-		}
-		return out
-	case mmmodel.StringInterface:
-		out := make(mmmodel.StringInterface, len(x))
-		for k, vv := range x {
-			out[k] = deepCloneAny(vv)
-		}
-		return out
-	case []any:
-		out := make([]any, len(x))
-		for i, vv := range x {
-			out[i] = deepCloneAny(vv)
-		}
-		return out
-	case []string:
-		out := make([]string, len(x))
-		copy(out, x)
-		return out
-	default:
-		return x
-	}
 }

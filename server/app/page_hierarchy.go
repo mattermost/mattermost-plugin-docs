@@ -11,9 +11,8 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-// GetPageChildren fetches direct live children of a page. With perPage <= 0 the store may
-// return ErrLimitExceeded (mapped to an AppError here) rather than truncating when the child
-// count exceeds its row cap.
+// GetPageChildren fetches a page of direct live children of a page. perPage <= 0 defaults to
+// PerPageDefault; larger values are capped at PerPageMaximum.
 func (s *Service) GetPageChildren(pageID string, page, perPage int) ([]*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("GetPageChildren", "app.page.get_children.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -29,8 +28,8 @@ func (s *Service) GetPageChildren(pageID string, page, perPage int) ([]*model.Pa
 	return pages, nil
 }
 
-// GetPageAncestors fetches all live ancestors of a page up to the root. Returns an error when
-// the ancestor chain exceeds the store's depth limit, rather than truncating.
+// GetPageAncestors fetches all live ancestors of a page up to the root; this can fail with an
+// error instead of returning a partial chain.
 func (s *Service) GetPageAncestors(pageID string) ([]*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("GetPageAncestors", "app.page.get_ancestors.invalid_id.app_error", nil, "", http.StatusBadRequest)

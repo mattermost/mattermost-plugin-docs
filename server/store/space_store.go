@@ -27,6 +27,10 @@ func (s *Store) spaceSelectQuery() sq.SelectBuilder {
 // CreateSpace inserts a space row. It fills in defaults and rejects an invalid space itself, so
 // the caller need not prepare or validate it beforehand.
 func (s *Store) CreateSpace(space *model.Space) (*model.Space, error) {
+	if space == nil {
+		return nil, &ErrInvalidInput{Entity: "Space", Field: "space", Value: nil}
+	}
+
 	space.PreSave()
 	if validErr := space.IsValid(); validErr != nil {
 		return nil, &ErrInvalidInput{Entity: "Space", Field: "IsValid", Value: validErr.Error(), Reason: validErr.Id}
@@ -87,11 +91,14 @@ func (s *Store) GetSpaceForChannel(channelID string) (*model.Space, error) {
 	return &space, nil
 }
 
-// GetSpacesForTeam returns live spaces for the given team, ordered by SortOrder.
-// limit <= 0 returns all rows up to MaxRowsPerQuery (ErrLimitExceeded beyond that).
+// GetSpacesForTeam returns live spaces for the given team, ordered by SortOrder ascending,
+// with CreateAt then Id as stable tie-breakers. limit must be > 0.
 func (s *Store) GetSpacesForTeam(teamID string, offset, limit int) ([]*model.Space, error) {
 	if teamID == "" {
 		return nil, &ErrInvalidInput{Entity: "Space", Field: "teamID", Value: teamID}
+	}
+	if err := requirePositiveLimit("Space", limit); err != nil {
+		return nil, err
 	}
 
 	builder := s.spaceSelectQuery().
@@ -104,9 +111,6 @@ func (s *Store) GetSpacesForTeam(teamID string, offset, limit int) ([]*model.Spa
 	if err := s.selectBuilder(s.db, &spaces, builder); err != nil {
 		return nil, errors.Wrap(err, "unable_to_get_spaces_for_team")
 	}
-	if limit <= 0 && len(spaces) > MaxRowsPerQuery {
-		return nil, &ErrLimitExceeded{Resource: "Spaces for team_id=" + teamID, Limit: MaxRowsPerQuery}
-	}
 	return spaces, nil
 }
 
@@ -115,6 +119,9 @@ func (s *Store) GetSpacesForTeam(teamID string, offset, limit int) ([]*model.Spa
 // a complete row. space.UpdateAt is the optimistic-lock baseline (first-one-wins): a
 // mismatch returns ErrConflict. Passing force skips the check (last-write-wins).
 func (s *Store) UpdateSpace(space *model.Space, force bool) (_ *model.Space, err error) {
+	if space == nil {
+		return nil, &ErrInvalidInput{Entity: "Space", Field: "space", Value: nil}
+	}
 	if space.Id == "" {
 		return nil, &ErrInvalidInput{Entity: "Space", Field: "Id", Value: space.Id}
 	}
@@ -204,8 +211,8 @@ func (s *Store) DeleteSpace(id string) (err error) {
 	// land an equal stamp after this read.
 	now := mmmodel.GetMillis()
 	var maxPageDeleteAt int64
-	// DeleteAt > 0 both matches idx_docs_page_spaceid_deleted's partial predicate (so the
-	// planner can use it) and is harmless: live rows contribute only 0 to the MAX anyway.
+	// DeleteAt > 0 both matches idx_docs_page_spaceid_deleted's predicate (so the planner
+	// can use it) and is harmless: live rows contribute only 0 to the MAX anyway.
 	maxQuery := s.getQueryBuilder().
 		Select("COALESCE(MAX(DeleteAt), 0)").
 		From("DOCS_Page").
@@ -257,8 +264,8 @@ func (s *Store) DeleteSpace(id string) (err error) {
 }
 
 // RestoreSpace un-deletes a soft-deleted space and the pages that DeleteSpace cascaded,
-// matched by the shared DeleteAt stamp, in space-before-page lock order. Pages deleted
-// individually before the space, and version snapshots, stay deleted. Returns ErrNotFound
+// matched by the shared DeleteAt stamp. Pages deleted individually before the space, and
+// version snapshots, stay deleted. Returns ErrNotFound
 // when the space ID does not exist, ErrInvalidInput when the space exists but is already live
 // (not deleted), and ErrConflict when another live space now owns the same backing channel.
 func (s *Store) RestoreSpace(id string) (err error) {
@@ -292,9 +299,9 @@ func (s *Store) RestoreSpace(id string) (err error) {
 	}
 
 	// Already live: nothing to restore. Decided under the row lock so a concurrent restore
-	// cannot turn this into a misleading not-found. The app layer maps this to not_deleted.
+	// cannot turn this into a misleading not-found.
 	if deleted.DeleteAt == 0 {
-		return &ErrInvalidInput{Entity: "Space", Field: "id", Value: id}
+		return &ErrInvalidInput{Entity: "Space", Field: "id", Value: id, Reason: ReasonNotDeleted}
 	}
 
 	spaceQuery := s.getQueryBuilder().

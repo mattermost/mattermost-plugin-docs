@@ -24,11 +24,11 @@ const (
 	// PagePropsMaxBytes caps the serialized size of the opaque Props map.
 	PagePropsMaxBytes = 64 * 1024
 
-	// PageSearchTextMaxBytes caps the stored SearchText, which feeds the GIN index.
+	// PageSearchTextMaxBytes caps the stored SearchText's size.
 	PageSearchTextMaxBytes = 2 * 1024 * 1024
 )
 
-// Page is stored in the Pages table. Live pages have (DeleteAt=0, OriginalId="");
+// Page is stored in the DOCS_Page table. Live pages have (DeleteAt=0, OriginalId="");
 // snapshots have OriginalId!="" and are always soft-deleted (DeleteAt>0).
 type Page struct {
 	Id         string `json:"id"`
@@ -53,6 +53,12 @@ type Page struct {
 	Props mmmodel.StringInterface `json:"props"`
 }
 
+// IsSnapshot reports whether p is a version snapshot rather than a live page.
+func (p *Page) IsSnapshot() bool {
+	return p.OriginalId != ""
+}
+
+// PreSave sanitizes Page and defaults its Id-independent fields before insert.
 func (p *Page) PreSave() {
 	if p.Id == "" {
 		p.Id = mmmodel.NewId()
@@ -75,6 +81,7 @@ func (p *Page) PreSave() {
 	p.UpdateAt = now
 }
 
+// PreUpdate sanitizes Page and stamps UpdateAt before an update is persisted.
 func (p *Page) PreUpdate() {
 	p.UpdateAt = mmmodel.GetMillis()
 	p.Title = strings.TrimSpace(mmmodel.SanitizeUnicode(p.Title))
@@ -135,6 +142,7 @@ func (p *PagePatch) IsValid() *mmmodel.AppError {
 	return nil
 }
 
+// IsValid checks Page's required fields, size limits, and cross-field invariants.
 func (p *Page) IsValid() *mmmodel.AppError {
 	if !mmmodel.IsValidId(p.Id) {
 		return mmmodel.NewAppError("Page.IsValid", "model.page.is_valid.id.app_error", nil, "", http.StatusBadRequest)
@@ -196,8 +204,8 @@ func (p *Page) IsValid() *mmmodel.AppError {
 		return mmmodel.NewAppError("Page.IsValid", "model.page.is_valid.original_self.app_error", nil, "id="+p.Id, http.StatusBadRequest)
 	}
 
-	// A version snapshot (OriginalId set) is always soft-deleted; enforce the invariant the
-	// chk_docs_page_snapshot_deleted DB constraint also guards, for an early, specific error.
+	// Enforce the snapshot invariant (see the type comment above) for an early, specific error;
+	// chk_docs_page_snapshot_deleted guards the same invariant at the DB level.
 	if p.OriginalId != "" && p.DeleteAt == 0 {
 		return mmmodel.NewAppError("Page.IsValid", "model.page.is_valid.snapshot_not_deleted.app_error", nil, "id="+p.Id, http.StatusBadRequest)
 	}
@@ -213,6 +221,7 @@ func (p *Page) IsValid() *mmmodel.AppError {
 	return nil
 }
 
+// Auditable returns Page's fields safe to include in an audit log, excluding Body and SearchText.
 func (p *Page) Auditable() map[string]any {
 	return map[string]any{
 		"id":               p.Id,
@@ -237,15 +246,4 @@ func (p *Page) Auditable() map[string]any {
 // GetProps returns Props, or an empty map if Props is nil.
 func (p *Page) GetProps() mmmodel.StringInterface {
 	return ensureProps(p.Props)
-}
-
-// Clone returns a deep copy.
-func (p *Page) Clone() *Page {
-	cp := *p
-
-	if p.Props != nil {
-		cp.Props = deepCloneStringInterface(p.Props)
-	}
-
-	return &cp
 }

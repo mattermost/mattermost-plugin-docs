@@ -10,7 +10,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"unicode/utf8"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
@@ -34,56 +33,62 @@ func New(s *store.Store, client *pluginapi.Client) *Service {
 	}
 }
 
-// validateTitle sanitizes and validates an entity title, returning the normalized form.
-// where identifies the calling operation for logs; the message keys are shared across callers.
-func validateTitle(where, title string, maxRunes int) (string, *mmmodel.AppError) {
-	title = strings.TrimSpace(mmmodel.SanitizeUnicode(title))
-	if title == "" {
-		return "", mmmodel.NewAppError(where, "app.shared.title_required.app_error", nil, "", http.StatusBadRequest)
+// logDebug logs a debug-level message via the plugin API client, if one is wired. client is
+// nil in store-backed unit tests that seed data directly and never exercise it.
+func (s *Service) logDebug(message string, keyValuePairs ...any) {
+	if s.client == nil {
+		return
 	}
-	if utf8.RuneCountInString(title) > maxRunes {
-		return "", mmmodel.NewAppError(where, "app.shared.title_too_long.app_error", map[string]any{"MaxLength": maxRunes}, "", http.StatusBadRequest)
-	}
-	return title, nil
+	s.client.Log.Debug(message, keyValuePairs...)
 }
 
-// normalizeAndValidatePagePatch enforces the title/body/searchText caps on a page update
-// patch and writes the normalized title back into the patch. A nil field means "leave
-// unchanged". It first rejects a nil, no-op, or Body/SearchText-mismatched patch via
-// PagePatch.IsValid, then applies the app-layer size caps.
-func normalizeAndValidatePagePatch(where string, patch *model.PagePatch) *mmmodel.AppError {
+// normalizeTitle sanitizes and trims a title. Length and required-field validation are
+// enforced by Page.IsValid/Space.IsValid at the store boundary — the single source of truth
+// for that rule — so this only normalizes.
+func normalizeTitle(title string) string {
+	return strings.TrimSpace(mmmodel.SanitizeUnicode(title))
+}
+
+// normalizeAndValidatePagePatch normalizes a page update patch's Title (trimmed, with the
+// result written back into the patch); Body and SearchText are left as-is. A nil field means
+// "leave unchanged". Size caps and required-field checks are enforced by Page.IsValid at the
+// store boundary. It defers patch-shape validation to PagePatch.IsValid.
+func normalizeAndValidatePagePatch(patch *model.PagePatch) *mmmodel.AppError {
 	// The patch.Title != nil guard below protects the title dereference; IsValid only
 	// rejects a nil or all-nil patch and can pass with Title == nil.
 	if validErr := patch.IsValid(); validErr != nil {
 		return validErr
 	}
 	if patch.Title != nil {
-		normalized, titleErr := validateTitle(where, *patch.Title, model.PageTitleMaxRunes)
-		if titleErr != nil {
-			return titleErr
-		}
+		normalized := normalizeTitle(*patch.Title)
 		patch.Title = &normalized
-	}
-	if patch.Body != nil && len(*patch.Body) > model.PageBodyMaxBytes {
-		return mmmodel.NewAppError(where, "app.page.update.body_too_long.app_error", map[string]any{"MaxBytes": model.PageBodyMaxBytes}, "", http.StatusBadRequest)
-	}
-	if patch.SearchText != nil && len(*patch.SearchText) > model.PageSearchTextMaxBytes {
-		return mmmodel.NewAppError(where, "app.page.update.search_text_too_long.app_error", map[string]any{"MaxBytes": model.PageSearchTextMaxBytes}, "", http.StatusBadRequest)
 	}
 	return nil
 }
 
-// paginationOffsetLimit converts a zero-based page/size into a SQL offset/limit; perPage <= 0
-// returns (0, 0) to signal no SQL LIMIT (the store still caps at MaxRowsPerQuery and returns
-// ErrLimitExceeded beyond that).
+// PerPageDefault is the page size used when perPage is not a positive value, matching
+// core's page-param convention (server/channels/web/params.go).
+const PerPageDefault = 60
+
+// PerPageMaximum is the largest page size a caller may request; larger values are
+// clamped down, matching core's page-param convention.
+const PerPageMaximum = 200
+
+// paginationOffsetLimit converts a zero-based page/size into a SQL offset/limit. perPage <= 0
+// is clamped to PerPageDefault and perPage > PerPageMaximum is clamped down to PerPageMaximum,
+// so the returned limit is always positive and bounded — a caller can never request an
+// unbounded result this way.
 func paginationOffsetLimit(page, perPage int) (offset, limit int) {
 	if page < 0 {
 		page = 0
 	}
-	if perPage > 0 {
-		return page * perPage, perPage
+	switch {
+	case perPage <= 0:
+		perPage = PerPageDefault
+	case perPage > PerPageMaximum:
+		perPage = PerPageMaximum
 	}
-	return 0, 0
+	return page * perPage, perPage
 }
 
 // storeAppError maps a store sentinel error to an *AppError with the conventional status code
@@ -102,7 +107,9 @@ func storeAppError(where string, err error) *mmmodel.AppError {
 	case store.IsErrLimitExceeded(err):
 		// Use the limit the error carries; different store methods have different bounds.
 		var limitErr *store.ErrLimitExceeded
-		errors.As(err, &limitErr)
+		if !errors.As(err, &limitErr) {
+			return mmmodel.NewAppError(where, "app.store.internal_error.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+		}
 		return mmmodel.NewAppError(where, "app.store.too_large.app_error", map[string]any{"Limit": limitErr.Limit}, "", http.StatusUnprocessableEntity).Wrap(err)
 	default:
 		return mmmodel.NewAppError(where, "app.store.internal_error.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
@@ -117,4 +124,20 @@ func invalidInputAppError(where string, err error) *mmmodel.AppError {
 		return mmmodel.NewAppError(where, invErr.Reason, nil, "", http.StatusBadRequest).Wrap(err)
 	}
 	return mmmodel.NewAppError(where, "app.store.invalid_input.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+}
+
+// restoreReasonAppError maps a store.Reason* restore-failure code (see RestorePage, RestoreSpace)
+// to its app-facing error key via reasonKeys, so the store communicates which condition failed
+// without naming the app-facing message key itself. Returns nil if err isn't an ErrInvalidInput
+// carrying one of reasonKeys, leaving the caller to fall back to storeAppError.
+func restoreReasonAppError(where string, err error, reasonKeys map[string]string) *mmmodel.AppError {
+	var invErr *store.ErrInvalidInput
+	if !errors.As(err, &invErr) {
+		return nil
+	}
+	key, ok := reasonKeys[invErr.Reason]
+	if !ok {
+		return nil
+	}
+	return mmmodel.NewAppError(where, key, nil, "", http.StatusBadRequest).Wrap(err)
 }

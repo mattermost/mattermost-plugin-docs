@@ -6,6 +6,7 @@ package store
 import (
 	"database/sql"
 
+	"github.com/jmoiron/sqlx"
 	sq "github.com/mattermost/squirrel"
 	"github.com/pkg/errors"
 
@@ -36,15 +37,46 @@ func applyDraftLivenessFilter(q sq.SelectBuilder) sq.SelectBuilder {
 		})
 }
 
+// deleteDraftsForPage hard-deletes every user's draft for pageID. Drafts are hard rows with no
+// soft-delete, so this is called from DeletePage (in the same transaction) rather than left for
+// the draft to go stale. Must run inside tx.
+func (s *Store) deleteDraftsForPage(tx *sqlx.Tx, pageID string) error {
+	query := s.getQueryBuilder().
+		Delete("DOCS_Draft").
+		Where(sq.Eq{"PageId": pageID})
+	if _, err := s.execBuilder(tx, query); err != nil {
+		return errors.Wrap(err, "failed to delete page drafts")
+	}
+	return nil
+}
+
+// reparentDraftsForPage reparents every new-page draft pointing at pageID (as its pending
+// parent) to newParentID. Called from DeletePage: the deleted page's own parent is live (or
+// root) by the "no live page under a deleted parent" invariant, so a draft that stays parented
+// under pageID would otherwise point at a soft-deleted parent. Must run inside tx.
+func (s *Store) reparentDraftsForPage(tx *sqlx.Tx, pageID, newParentID string, now int64) error {
+	query := s.getQueryBuilder().
+		Update("DOCS_Draft").
+		Set("ParentId", newParentID).
+		Set("UpdateAt", now).
+		Where(sq.Eq{"ParentId": pageID})
+	if _, err := s.execBuilder(tx, query); err != nil {
+		return errors.Wrap(err, "failed to reparent page drafts")
+	}
+	return nil
+}
+
 // UpsertDraft creates or replaces the draft keyed by (UserId, PageId). It fills in defaults and
 // rejects an invalid draft itself, so the caller need not prepare or validate it beforehand.
 // If a draft already exists for that key every field is overwritten (no field-level merge),
 // except CreateAt, which keeps the existing row's original value.
 //
-// The draft's space must be live, and a PageId that already has a page requires that page to be
-// live and in the same space; a PageId with no page row is a new-page draft (a legal orphan)
-// and is accepted.
+// The draft's space must be live; the PageId constraint is enforced at the page lock below.
 func (s *Store) UpsertDraft(draft *model.Draft) (_ *model.Draft, err error) {
+	if draft == nil {
+		return nil, &ErrInvalidInput{Entity: "Draft", Field: "draft", Value: nil}
+	}
+
 	draft.PreSave()
 	if validErr := draft.IsValid(); validErr != nil {
 		return nil, &ErrInvalidInput{Entity: "Draft", Field: "IsValid", Value: validErr.Error(), Reason: validErr.Id}
@@ -83,8 +115,7 @@ func (s *Store) UpsertDraft(draft *model.Draft) (_ *model.Draft, err error) {
 		return nil, errors.Wrap(pErr, "failed to lock page for draft upsert")
 	}
 
-	// The parent must be a live page (DeleteAt=0, which excludes snapshots) in the draft's own
-	// space. Scoping the lock by SpaceId reuses the space lock already held above, so a
+	// Re-validate the parent is still live under the same transaction (see lockLiveParent). A
 	// cross-space ParentId, or one whose page row does not exist yet, finds no row and is rejected.
 	if draft.ParentId != "" {
 		if parentErr := s.lockLiveParent(tx, draft.ParentId, draft.SpaceId, "Draft"); parentErr != nil {

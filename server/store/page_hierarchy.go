@@ -14,10 +14,8 @@ const MaxPageHierarchyDepth = 50
 // MaxPageDescendantsLimit is the maximum number of descendants returned by GetPageDescendants.
 const MaxPageDescendantsLimit = 5000
 
-// MaxRowsPerQuery caps any unpaginated "return all" listing (limit<=0) — pages, spaces, or
-// drafts — so it cannot load an unbounded number of rows. This is a defensive backstop, not a
-// pagination policy; the per-page default/maximum (cf. core's 60/200, server/channels/web/params.go)
-// belongs in the HTTP API layer once the REST endpoints are wired.
+// MaxRowsPerQuery caps GetDraftsForSpace, which has no pagination parameters, so it cannot
+// load an unbounded number of rows for a single user/space pair.
 const MaxRowsPerQuery = 5000
 
 var pageColListP = strings.Join(pageColumnsP, ", ")
@@ -37,8 +35,10 @@ var (
 
 // ancestorsRecursiveCTE returns the recursive WITH clause that walks the parent chain
 // to the root while depth < maxDepth. Shared by the full-row and count-only queries.
-// The full-row caller passes MaxPageHierarchyDepth+2 so it can emit one row beyond the
-// cap, letting GetPageAncestors distinguish "at limit" from "truncated".
+// The full-row caller passes maxDepth = MaxPageHierarchyDepth+2: depth is 1-indexed at
+// the queried page itself (excluded from ancestor output), accounting for +1, and the
+// second +1 lets the chain emit one row beyond MaxPageHierarchyDepth so GetPageAncestors
+// can distinguish "at limit" from "truncated".
 func ancestorsRecursiveCTE(maxDepth int) string {
 	return fmt.Sprintf(`
 	WITH RECURSIVE ancestors AS (
@@ -54,16 +54,14 @@ func ancestorsRecursiveCTE(maxDepth int) string {
 }
 
 // computeDescendantsCTE generates the recursive CTE that walks the subtree below a page,
-// excluding the root node and returning full page columns plus the node's depth. Uses the SQL
-// CYCLE clause (PG 14+), guaranteed by the plugin's min_server_version constraint.
-// CYCLE stops recursion on a ParentId loop; NOT is_cycle drops the sentinel row.
-// sort_path/create_path/id_path accumulate each ancestor's ordering keys so the final
-// ORDER BY yields a pre-order depth-first walk with sibling order matching GetPageChildren
-// (SortOrder, CreateAt, Id). depth counts edges below the requested page: the root is seeded
-// at 0, so a direct child is depth 1. The recursion runs one level past MaxPageHierarchyDepth
-// so a subtree deeper than the cap emits a depth > MaxPageHierarchyDepth row, letting
-// GetPageDescendants distinguish "at the cap" from "truncated" instead of silently dropping.
+// excluding the root node and returning full page columns plus the node's depth. depth counts
+// edges below the requested page: the root is seeded at 0, so a direct child is depth 1. The
+// recursion runs one level past MaxPageHierarchyDepth so a subtree deeper than the cap emits a
+// depth > MaxPageHierarchyDepth row, letting GetPageDescendants distinguish "at the cap" from
+// "truncated" instead of silently dropping. Uses the SQL CYCLE clause (requires PostgreSQL
+// 14+); the plugin does not verify the deployment's Postgres version.
 func computeDescendantsCTE() string {
+	// CYCLE stops recursion on a ParentId loop; NOT is_cycle (below) drops the sentinel row.
 	cte := fmt.Sprintf(`
 		WITH RECURSIVE descendants AS (
 			SELECT Id, ParentId, 0 AS depth,
@@ -80,6 +78,9 @@ func computeDescendantsCTE() string {
 			INNER JOIN descendants d ON p.ParentId = d.Id
 			WHERE p.DeleteAt = 0 AND d.depth < %d
 		) CYCLE Id SET is_cycle USING cycle_path`, MaxPageHierarchyDepth+1)
+	// sort_path/create_path/id_path accumulate each ancestor's ordering keys so the ORDER BY
+	// below yields a pre-order depth-first walk with sibling order matching GetPageChildren
+	// (SortOrder, CreateAt, Id).
 	return cte + `
 	SELECT ` + pageColListP + `, d.depth
 	FROM descendants d
@@ -89,9 +90,8 @@ func computeDescendantsCTE() string {
 }
 
 // computeAncestorsCTE generates the recursive CTE that walks the parent chain above a page,
-// excluding the root node and returning full page columns. The +2 lets the chain emit
-// MaxPageHierarchyDepth+1 rows; GetPageAncestors errors when it receives more than
-// MaxPageHierarchyDepth (see ancestorsRecursiveCTE).
+// excluding the root node and returning full page columns (see ancestorsRecursiveCTE for the
+// +2 derivation). GetPageAncestors errors when it receives more than MaxPageHierarchyDepth rows.
 func computeAncestorsCTE() string {
 	return ancestorsRecursiveCTE(MaxPageHierarchyDepth+2) + `
 	SELECT ` + pageColListP + `

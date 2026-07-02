@@ -1,11 +1,11 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-// Package app_test contains integration-style tests for the Docs plugin service layer.
+// Package app contains integration-style tests for the Docs plugin service layer.
 // Tests require a real Postgres database; the DSN comes from MM_SQLSETTINGS_DATASOURCE
 // or TEST_DATABASE_DSN, defaulting to the standard local dev Postgres. They never skip —
 // a missing database fails the run rather than passing on a skip.
-package app_test
+package app
 
 import (
 	"database/sql"
@@ -17,7 +17,6 @@ import (
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
-	"github.com/mattermost/mattermost-plugin-docs/server/app"
 	"github.com/mattermost/mattermost-plugin-docs/server/internal/testutil"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
@@ -28,7 +27,7 @@ import (
 // testHarness holds both the service and the underlying store so tests can seed
 // data directly without opening a second DB connection.
 type testHarness struct {
-	svc   *app.Service
+	svc   *Service
 	store *store.Store
 	// db is the schema-scoped handle, exposed so tests can seed states the public
 	// store API forbids (e.g. version snapshots: OriginalId set + soft-deleted).
@@ -49,7 +48,7 @@ func openTestService(t *testing.T) *testHarness {
 
 	// nil pluginapi client: these tests seed data directly through the store and
 	// never exercise the client, so no mock is needed.
-	svc := app.New(s, nil)
+	svc := New(s, nil)
 
 	return &testHarness{svc: svc, store: s, db: db}
 }
@@ -164,7 +163,7 @@ func TestServiceUpdateSpace(t *testing.T) {
 		_, err := h.svc.UpdateSpace(&clone, false)
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
-		require.Equal(t, "app.space.update.description_too_long.app_error", err.Id)
+		require.Equal(t, "model.space.is_valid.description_length.app_error", err.Id)
 	})
 
 	t.Run("icon over max bytes rejected with 400", func(t *testing.T) {
@@ -174,7 +173,7 @@ func TestServiceUpdateSpace(t *testing.T) {
 		_, err := h.svc.UpdateSpace(&clone, false)
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
-		require.Equal(t, "app.space.update.icon_too_large.app_error", err.Id)
+		require.Equal(t, "model.space.is_valid.icon_length.app_error", err.Id)
 	})
 }
 
@@ -636,7 +635,7 @@ func TestServiceCreatePage(t *testing.T) {
 		// Build a full-depth chain (root at depth 1 up to MaxPageDepth); the next
 		// child would be at depth MaxPageDepth+1 and must be rejected.
 		parentID := ""
-		for range app.MaxPageDepth {
+		for range MaxPageDepth {
 			p, err := h.svc.CreatePage(depthSpace.Id, parentID, "d", "", "", userID, "")
 			require.Nil(t, err)
 			parentID = p.Id
@@ -720,7 +719,7 @@ func TestServiceUpdatePageOversizedBody(t *testing.T) {
 	_, err := h.svc.UpdatePage(created.Id, &model.PagePatch{Body: mmmodel.NewPointer(oversized), SearchText: mmmodel.NewPointer("")}, created.EditAt, false, mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	require.Contains(t, err.Id, "body_too_long")
+	require.Equal(t, "model.page.is_valid.body.app_error", err.Id)
 }
 
 // TestServiceUpdatePageOversizedSearchText verifies that the update path rejects oversized
@@ -736,7 +735,7 @@ func TestServiceUpdatePageOversizedSearchText(t *testing.T) {
 	_, err := h.svc.UpdatePage(created.Id, &model.PagePatch{Title: mmmodel.NewPointer("Title"), Body: mmmodel.NewPointer("body"), SearchText: mmmodel.NewPointer(oversized)}, created.EditAt, false, mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	require.Equal(t, "app.page.update.search_text_too_long.app_error", err.Id)
+	require.Equal(t, "model.page.is_valid.search_text.app_error", err.Id)
 }
 
 // TestServiceCreatePageOversizedBody verifies that CreatePage rejects a body that exceeds
@@ -751,7 +750,7 @@ func TestServiceCreatePageOversizedBody(t *testing.T) {
 	_, err := h.svc.CreatePage(space.Id, "", "Title", oversized, "", mmmodel.NewId(), "")
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	require.Contains(t, err.Id, "body_too_long")
+	require.Equal(t, "model.page.is_valid.body.app_error", err.Id)
 }
 
 // TestServiceUpdatePageCanSetEmptyBody verifies the patch contract: a non-nil empty Body
@@ -981,4 +980,30 @@ func TestServiceRestoreSpace(t *testing.T) {
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusConflict, err.StatusCode)
 	})
+}
+
+// TestPaginationOffsetLimit verifies perPage <= 0 defaults to PerPageDefault and
+// perPage > PerPageMaximum is capped at PerPageMaximum, so a caller can never
+// request an unbounded result — matching core's page-param convention.
+func TestPaginationOffsetLimit(t *testing.T) {
+	tests := []struct {
+		name          string
+		page, perPage int
+		wantOffset    int
+		wantLimit     int
+	}{
+		{"zero perPage defaults", 0, 0, 0, PerPageDefault},
+		{"negative perPage defaults", 0, -5, 0, PerPageDefault},
+		{"perPage within range is unchanged", 1, 25, 25, 25},
+		{"perPage over max is capped", 0, PerPageMaximum + 50, 0, PerPageMaximum},
+		{"negative page treated as zero", -1, 10, 0, 10},
+		{"offset derived from page * clamped perPage", 2, 25, 50, 25},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			offset, limit := paginationOffsetLimit(tt.page, tt.perPage)
+			require.Equal(t, tt.wantOffset, offset)
+			require.Equal(t, tt.wantLimit, limit)
+		})
+	}
 }

@@ -58,7 +58,7 @@ func newPage(spaceID, channelID, userID, parentID string) *model.Page {
 // mustChildren returns a page's live children, failing the test on error.
 func mustChildren(t *testing.T, s *store.Store, pageID string) []*model.Page {
 	t.Helper()
-	children, err := s.GetPageChildren(pageID, 0, 0)
+	children, err := s.GetPageChildren(pageID, 0, 100)
 	require.NoError(t, err)
 	return children
 }
@@ -207,10 +207,28 @@ func TestGetPageChildren(t *testing.T) {
 	_, err = s.CreatePage(child)
 	require.NoError(t, err)
 
-	children, err := s.GetPageChildren(createdParent.Id, 0, 0)
+	children, err := s.GetPageChildren(createdParent.Id, 0, 100)
 	require.NoError(t, err)
 	require.Len(t, children, 1)
 	require.Equal(t, "Child", children[0].Title)
+}
+
+// TestGetPageChildren_NonPositiveLimit verifies that GetPageChildren rejects limit <= 0
+// with ErrInvalidInput instead of silently returning an unbounded result.
+func TestGetPageChildren_NonPositiveLimit(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+	parent, err := s.CreatePage(newPage(space.Id, channelID, mmmodel.NewId(), ""))
+	require.NoError(t, err)
+
+	for _, limit := range []int{0, -1} {
+		_, err := s.GetPageChildren(parent.Id, 0, limit)
+		require.Error(t, err)
+		require.True(t, store.IsErrInvalidInput(err), "limit=%d must return ErrInvalidInput; got %v", limit, err)
+	}
 }
 
 func TestGetPageChildrenOrderedBySortOrder(t *testing.T) {
@@ -235,7 +253,7 @@ func TestGetPageChildrenOrderedBySortOrder(t *testing.T) {
 	require.NoError(t, err)
 
 	// Children come back in SortOrder order (here, creation order), not newest-first.
-	children, err := s.GetPageChildren(parent.Id, 0, 0)
+	children, err := s.GetPageChildren(parent.Id, 0, 100)
 	require.NoError(t, err)
 	require.Len(t, children, 2)
 	require.Equal(t, "First", children[0].Title)
@@ -249,7 +267,7 @@ func TestGetPageChildrenOrderedBySortOrder(t *testing.T) {
 		Update("DOCS_Page").Set("SortOrder", newSortOrder).Where(sq.Eq{"Id": createdFirst.Id}))
 	require.NoError(t, err)
 
-	reordered, err := s.GetPageChildren(parent.Id, 0, 0)
+	reordered, err := s.GetPageChildren(parent.Id, 0, 100)
 	require.NoError(t, err)
 	require.Len(t, reordered, 2)
 	require.Equal(t, "Second", reordered[0].Title)
@@ -803,9 +821,38 @@ func TestGetSpacesForTeam(t *testing.T) {
 	_, err := s.CreateSpace(newSpace(mmmodel.NewId()))
 	require.NoError(t, err)
 
-	spaces, err := s.GetSpacesForTeam(teamID, 0, 0)
+	spaces, err := s.GetSpacesForTeam(teamID, 0, 100)
 	require.NoError(t, err)
 	require.Len(t, spaces, 2)
+}
+
+// TestGetSpacesForTeam_NonPositiveLimit verifies that GetSpacesForTeam rejects limit <= 0
+// with ErrInvalidInput instead of silently returning an unbounded result.
+func TestGetSpacesForTeam_NonPositiveLimit(t *testing.T) {
+	s := openTestDB(t)
+
+	teamID := mmmodel.NewId()
+	for _, limit := range []int{0, -1} {
+		_, err := s.GetSpacesForTeam(teamID, 0, limit)
+		require.Error(t, err)
+		require.True(t, store.IsErrInvalidInput(err), "limit=%d must return ErrInvalidInput; got %v", limit, err)
+	}
+}
+
+// TestGetSpacePages_NonPositiveLimit verifies that GetSpacePages rejects limit <= 0
+// with ErrInvalidInput instead of silently returning an unbounded result.
+func TestGetSpacePages_NonPositiveLimit(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+
+	for _, limit := range []int{0, -1} {
+		_, err := s.GetSpacePages(space.Id, 0, limit)
+		require.Error(t, err)
+		require.True(t, store.IsErrInvalidInput(err), "limit=%d must return ErrInvalidInput; got %v", limit, err)
+	}
 }
 
 func TestCreateSpaceDuplicateChannel(t *testing.T) {
@@ -1040,7 +1087,9 @@ func TestRestorePage(t *testing.T) {
 	t.Run("a live page is not restorable", func(t *testing.T) {
 		live, err := s.CreatePage(newPage(space.Id, channelID, userID, ""))
 		require.NoError(t, err)
-		require.True(t, store.IsErrNotFound(s.RestorePage(live.Id)))
+		// Decided atomically under the page's row lock (see RestorePage), matching
+		// RestoreSpace's already-live convention — not a generic not-found.
+		require.True(t, store.IsErrInvalidInput(s.RestorePage(live.Id)))
 	})
 }
 
@@ -1227,7 +1276,7 @@ func TestCreatePageConcurrentSortOrderUnique(t *testing.T) {
 		require.NoError(t, cErr, "concurrent create %d must succeed", i)
 	}
 
-	children, err := s.GetPageChildren(parent.Id, 0, 0)
+	children, err := s.GetPageChildren(parent.Id, 0, 100)
 	require.NoError(t, err)
 	require.Len(t, children, n)
 	seen := make(map[int64]bool, len(children))
@@ -1304,7 +1353,7 @@ func TestDeletePagePreservesReorderedChildBlock(t *testing.T) {
 	c2, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id))
 	require.NoError(t, err)
 
-	pChildren, err := s.GetPageChildren(p.Id, 0, 0)
+	pChildren, err := s.GetPageChildren(p.Id, 0, 100)
 	require.NoError(t, err)
 	require.Equal(t, []string{c1.Id, c2.Id}, idsOf(pChildren), "sanity: creation order before reorder")
 	// Move c1 after c2 by raising its SortOrder directly (reorder is not a generic-patch

@@ -137,31 +137,3 @@ func TestSpacePreSaveDefaultsSortOrder(t *testing.T) {
 	require.NotZero(t, s.CreateAt)
 	require.Equal(t, s.CreateAt, s.SortOrder)
 }
-
-func TestSpaceCloneDeepCopy(t *testing.T) {
-	s := validSpace()
-	s.Props = mmmodel.StringInterface{"key": "original"}
-
-	cp := s.Clone()
-	require.Equal(t, s.Id, cp.Id)
-	require.Equal(t, s.Title, cp.Title)
-
-	// Mutating the clone's Props must not affect the original.
-	cp.Props["key"] = "mutated"
-	require.Equal(t, "original", s.Props["key"], "Clone must deep-copy Props")
-
-	// Adding a new key to the clone must not appear in the original.
-	cp.Props["new"] = "extra"
-	_, exists := s.Props["new"]
-	require.False(t, exists, "new key added to clone must not appear in original")
-}
-
-func TestSpaceCloneNilProps(t *testing.T) {
-	s := validSpace()
-	s.Props = nil
-
-	cp := s.Clone()
-	require.Equal(t, s.Id, cp.Id)
-	// Clone with nil Props must not panic, and the clone's Props remain nil.
-	require.Nil(t, cp.Props)
-}

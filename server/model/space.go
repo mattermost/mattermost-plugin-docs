@@ -38,6 +38,7 @@ type Space struct {
 	SortOrder   int64                   `json:"sort_order"`
 }
 
+// PreSave sanitizes Space and defaults its Id-independent fields before insert.
 func (s *Space) PreSave() {
 	if s.Id == "" {
 		s.Id = mmmodel.NewId()
@@ -61,6 +62,7 @@ func (s *Space) PreSave() {
 	}
 }
 
+// PreUpdate sanitizes Space and stamps UpdateAt before an update is persisted.
 func (s *Space) PreUpdate() {
 	s.UpdateAt = mmmodel.GetMillis()
 	s.Title = strings.TrimSpace(mmmodel.SanitizeUnicode(s.Title))
@@ -71,6 +73,7 @@ func (s *Space) PreUpdate() {
 	}
 }
 
+// Auditable returns Space's fields safe to include in an audit log.
 func (s *Space) Auditable() map[string]any {
 	return map[string]any{
 		"id":          s.Id,
@@ -88,6 +91,7 @@ func (s *Space) Auditable() map[string]any {
 	}
 }
 
+// IsValid checks Space's required fields and size limits.
 func (s *Space) IsValid() *mmmodel.AppError {
 	if !mmmodel.IsValidId(s.Id) {
 		return mmmodel.NewAppError("Space.IsValid", "model.space.is_valid.id.app_error", nil, "", http.StatusBadRequest)
@@ -139,13 +143,4 @@ func (s *Space) IsValid() *mmmodel.AppError {
 // GetProps returns Props, or an empty map if Props is nil.
 func (s *Space) GetProps() mmmodel.StringInterface {
 	return ensureProps(s.Props)
-}
-
-// Clone returns a deep copy.
-func (s *Space) Clone() *Space {
-	cp := *s
-	if s.Props != nil {
-		cp.Props = deepCloneStringInterface(s.Props)
-	}
-	return &cp
 }

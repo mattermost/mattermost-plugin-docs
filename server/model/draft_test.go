@@ -129,18 +129,3 @@ func TestDraftPreSaveDefaults(t *testing.T) {
 	require.NotNil(t, d.FileIds)
 	require.NotNil(t, d.Props)
 }
-
-func TestDraftCloneDeepCopy(t *testing.T) {
-	d := validDraft()
-	d.FileIds = mmmodel.StringArray{"f1"}
-	d.Props = mmmodel.StringInterface{"key": "original"}
-
-	cp := d.Clone()
-	require.Equal(t, d.PageId, cp.PageId)
-
-	cp.Props["key"] = "mutated"
-	require.Equal(t, "original", d.Props["key"], "Clone must deep-copy Props")
-
-	cp.FileIds[0] = "mutated"
-	require.Equal(t, "f1", d.FileIds[0], "Clone must copy FileIds")
-}

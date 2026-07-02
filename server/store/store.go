@@ -223,18 +223,22 @@ func nextMonotonic(now, prev int64) int64 {
 	return now
 }
 
-// applyLimitOffset paginates a select query. When limit > 0 it applies the limit and a
-// non-negative offset; otherwise it caps an unpaginated "return all" query at
-// MaxRowsPerQuery+1 so an oversized result can be detected and rejected rather than loading
-// an unbounded number of rows.
-func applyLimitOffset(builder sq.SelectBuilder, offset, limit int) sq.SelectBuilder {
-	if limit > 0 {
-		if offset < 0 {
-			offset = 0
-		}
-		return builder.Limit(uint64(limit)).Offset(uint64(offset)) //nolint:gosec // limit>0 and offset>=0 enforced above
+// requirePositiveLimit returns ErrInvalidInput when limit is not positive, for the
+// callers of applyLimitOffset that must reject limit <= 0 before querying.
+func requirePositiveLimit(entity string, limit int) error {
+	if limit <= 0 {
+		return &ErrInvalidInput{Entity: entity, Field: "limit", Value: limit}
 	}
-	return builder.Limit(uint64(MaxRowsPerQuery + 1))
+	return nil
+}
+
+// applyLimitOffset paginates a select query with a positive limit and a non-negative offset.
+// Callers must reject limit <= 0 themselves (as ErrInvalidInput) before calling this.
+func applyLimitOffset(builder sq.SelectBuilder, offset, limit int) sq.SelectBuilder {
+	if offset < 0 {
+		offset = 0
+	}
+	return builder.Limit(uint64(limit)).Offset(uint64(offset)) //nolint:gosec // limit>0 and offset>=0 enforced above
 }
 
 // checkRowsAffected returns ErrNotFound when the result reports zero rows affected.
@@ -272,10 +276,18 @@ type ErrInvalidInput struct {
 	Entity string
 	Field  string
 	Value  any
-	// Reason optionally carries the originating AppError.Id (e.g. from a model IsValid check)
-	// so the app layer can surface the specific validation key instead of a generic one.
+	// Reason optionally carries either the originating AppError.Id (e.g. from a model IsValid
+	// check) or one of the short Reason* codes below, so the app layer can surface the specific
+	// validation key instead of a generic one.
 	Reason string
 }
+
+// Reason codes for restore failures decided atomically under a row lock (see RestorePage,
+// RestoreSpace); the app layer maps these to its own app-facing error keys.
+const (
+	ReasonNotRestorable = "not_restorable"
+	ReasonNotDeleted    = "not_deleted"
+)
 
 func (e *ErrInvalidInput) Error() string {
 	return fmt.Sprintf("invalid input: %s field %s=%v", e.Entity, e.Field, e.Value)

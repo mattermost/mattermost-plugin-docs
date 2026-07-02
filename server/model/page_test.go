@@ -184,35 +184,6 @@ func TestPageGetProps(t *testing.T) {
 	require.NotNil(t, p.GetProps(), "GetProps must return a non-nil map even when Props is nil")
 }
 
-func TestPageCloneDeepCopy(t *testing.T) {
-	p := validPage()
-	p.Props = mmmodel.StringInterface{"k": "v"}
-
-	cp := p.Clone()
-	require.Equal(t, p.Id, cp.Id)
-
-	cp.Props["k"] = "changed"
-	require.Equal(t, "v", p.Props["k"], "Props must be deep-copied")
-}
-
-func TestPageCloneDeepCopyNested(t *testing.T) {
-	p := validPage()
-	p.Props = mmmodel.StringInterface{
-		"nested": map[string]any{"inner": "v"},
-		"list":   []any{"a", "b"},
-	}
-
-	cp := p.Clone()
-
-	cp.Props["nested"].(map[string]any)["inner"] = "changed"
-	require.Equal(t, "v", p.Props["nested"].(map[string]any)["inner"],
-		"nested map inside Props must be deep-copied, not aliased")
-
-	cp.Props["list"].([]any)[0] = "changed"
-	require.Equal(t, "a", p.Props["list"].([]any)[0],
-		"slice inside Props must be deep-copied, not aliased")
-}
-
 func TestPagePatch(t *testing.T) {
 	base := func() *model.Page {
 		return &model.Page{Title: "orig", Body: "origbody", SearchText: "origsearch"}

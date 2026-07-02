@@ -12,21 +12,18 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
-// MaxPageDepth is the maximum depth for page hierarchies (app-layer enforcement).
-// The store CTE uses a separate safety bound (store.MaxPageHierarchyDepth = 50).
+// MaxPageDepth is the maximum depth for page hierarchies (app-layer enforcement on create).
+// The store has no write-time depth check; store.MaxPageHierarchyDepth (= 50) only bounds
+// how deep the read-side ancestor/descendant CTEs recurse.
 const MaxPageDepth = 10
 
-// modifierID returns the user who last modified the page, falling back to the
-// original author when LastModifiedBy is unset.
-func modifierID(p *model.Page) string {
-	if p.LastModifiedBy != "" {
-		return p.LastModifiedBy
-	}
-	return p.UserId
-}
-
-// CreatePage creates a new page in the space identified by spaceID. ChannelId is
-// derived from the space (which has exactly one backing channel), not supplied by the caller.
+// CreatePage creates a new page in spaceID. ChannelId is derived from the space
+// (which has exactly one backing channel), not supplied by the caller.
+//
+// All seven parameters are plain strings with no compiler-enforced ordering, so a
+// caller binding an HTTP request body to this call is one transposed argument away from a
+// silent bug (e.g. swapping parentID and userID). Revisit as an input struct (mirroring
+// PagePatch) before a REST handler binds a request body to this signature.
 func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID, pageID string) (*model.Page, *mmmodel.AppError) {
 	if pageID != "" && !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -40,16 +37,9 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 	if parentID != "" && !mmmodel.IsValidId(parentID) {
 		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.invalid_parent_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	title, titleErr := validateTitle("CreatePage", title, model.PageTitleMaxRunes)
-	if titleErr != nil {
-		return nil, titleErr
-	}
-	if len(body) > model.PageBodyMaxBytes {
-		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.body_too_long.app_error", map[string]any{"MaxBytes": model.PageBodyMaxBytes}, "", http.StatusBadRequest)
-	}
-	if len(searchText) > model.PageSearchTextMaxBytes {
-		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.search_text_too_long.app_error", map[string]any{"MaxBytes": model.PageSearchTextMaxBytes}, "", http.StatusBadRequest)
-	}
+	// Title required/length and body/searchText size caps are enforced by Page.IsValid at the
+	// store boundary; this only normalizes the title.
+	title = normalizeTitle(title)
 	// SearchText is the body's plain-text projection, so it makes no sense without a body
 	// (matches the update path's rule).
 	if searchText != "" && body == "" {
@@ -78,13 +68,15 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 		if ancErr != nil {
 			return nil, storeAppError("CreatePage", ancErr)
 		}
-		// Derive the new child's absolute depth from the tree root (a root page is depth 1; this is
-		// distinct from the subtree-relative depth the descendants CTE reports, where the queried
-		// node is 0). ancestorDepth counts the parent's ancestors but not the parent itself, so the
-		// parent is at ancestorDepth + 1, and its new child is one deeper: +1 (parent) +1 (child) = ancestorDepth + 2.
+		// ancestorDepth excludes the parent itself, so the parent is at ancestorDepth + 1
+		// and the new child one level deeper, at ancestorDepth + 2. Root pages have depth 1.
 		newDepth := ancestorDepth + 2
-		// This runs outside the create transaction, so a concurrent insert can briefly push depth
-		// past MaxPageDepth; the store enforces a deeper cap as the hard backstop against runaway nesting.
+		// This depth check reads ancestorDepth before CreatePage's insert transaction starts, so it
+		// is not atomic with the insert: a concurrent create under the same parent can land between
+		// this check and the insert, and both inserts can pass depth validation using the same
+		// pre-insert ancestorDepth, briefly pushing the tree past MaxPageDepth. The store does not
+		// enforce a depth cap on insert; MaxPageHierarchyDepth only bounds the read-side CTEs
+		// (GetPageAncestors/GetPageDescendants), so this race is not backstopped.
 		if newDepth > MaxPageDepth {
 			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest)
 		}
@@ -92,15 +84,18 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 
 	// Body is stored as-is (TipTap validation/normalization and SearchText deferred).
 	page := &model.Page{
-		Id:         pageID,
-		SpaceId:    spaceID,
-		ParentId:   parentID,
-		Type:       model.PageTypePage,
-		Title:      title,
-		Body:       body,
-		SearchText: searchText,
-		UserId:     userID,
+		Id:             pageID,
+		SpaceId:        spaceID,
+		ParentId:       parentID,
+		Type:           model.PageTypePage,
+		Title:          title,
+		Body:           body,
+		SearchText:     searchText,
+		UserId:         userID,
+		LastModifiedBy: userID,
 	}
+
+	s.logDebug("Creating page", "space_id", spaceID, "parent_id", parentID, "user_id", userID)
 
 	created, storeErr := s.store.CreatePage(page)
 	if storeErr != nil {
@@ -134,8 +129,10 @@ func (s *Service) GetPage(pageID string) (*model.Page, *mmmodel.AppError) {
 	return page, nil
 }
 
-// UpdatePage applies a partial patch to a page with first-one-wins
-// concurrency control. baseEditAt is the EditAt the client last saw.
+// UpdatePage applies a partial patch to a page with first-one-wins concurrency control.
+// baseEditAt is the EditAt of the page version the caller's patch is based on; if the page
+// has been edited since baseEditAt, the update is rejected as a conflict, unless force is
+// set (see store.UpdatePage).
 func (s *Service) UpdatePage(pageID string, patch *model.PagePatch, baseEditAt int64, force bool, userID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -143,9 +140,11 @@ func (s *Service) UpdatePage(pageID string, patch *model.PagePatch, baseEditAt i
 	if !mmmodel.IsValidId(userID) {
 		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	if validErr := normalizeAndValidatePagePatch("UpdatePage", patch); validErr != nil {
+	if validErr := normalizeAndValidatePagePatch(patch); validErr != nil {
 		return nil, validErr
 	}
+
+	s.logDebug("Updating page", "page_id", pageID, "user_id", userID)
 
 	updatedPage, storeErr := s.store.UpdatePage(pageID, patch, baseEditAt, force, userID)
 	if storeErr == nil {
@@ -167,15 +166,14 @@ func (s *Service) UpdatePage(pageID string, patch *model.PagePatch, baseEditAt i
 				nil, "conflict", http.StatusConflict).Wrap(storeErr)
 		}
 		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.conflict.app_error",
-			map[string]any{"ModifiedBy": modifierID(fresh), "ModifiedAt": fresh.EditAt},
+			map[string]any{"ModifiedBy": fresh.LastModifiedBy, "ModifiedAt": fresh.EditAt},
 			"conflict", http.StatusConflict).Wrap(storeErr)
 	}
 	return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.store_error.app_error", nil, "", http.StatusInternalServerError).Wrap(storeErr)
 }
 
 // GetPageWithDeleted returns a page by ID even when soft-deleted (DeleteAt != 0),
-// unlike GetPage which returns only live pages. Version snapshots (OriginalId set)
-// are excluded and return not-found regardless of deletion state.
+// unlike GetPage which returns only live pages. Version snapshots are excluded.
 func (s *Service) GetPageWithDeleted(pageID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("GetPageWithDeleted", "app.page.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -184,45 +182,45 @@ func (s *Service) GetPageWithDeleted(pageID string) (*model.Page, *mmmodel.AppEr
 	if err != nil {
 		return nil, storeAppError("GetPageWithDeleted", err)
 	}
-	// includeDeleted would also surface version snapshots (always soft-deleted, OriginalId set);
-	// exclude them so an ID resolves to its current page, never a historical version.
-	if page.OriginalId != "" {
+	// includeDeleted would also surface snapshots; exclude them so an ID resolves to its
+	// current page, never a historical version.
+	if page.IsSnapshot() {
 		return nil, mmmodel.NewAppError("GetPageWithDeleted", "app.page.get.not_found.app_error", nil, "", http.StatusNotFound)
 	}
 	return page, nil
 }
 
-// DeletePage soft-deletes a page by ID.
+// DeletePage soft-deletes a page by ID. Unlike CreatePage/UpdatePage, this takes no actor
+// param, so who deleted the page is not recorded (Page.LastModifiedBy is left at its
+// last-editor value). Add a userID param and set LastModifiedBy before this is wired to an
+// audited REST endpoint.
 func (s *Service) DeletePage(pageID string) *mmmodel.AppError {
 	if !mmmodel.IsValidId(pageID) {
 		return mmmodel.NewAppError("DeletePage", "app.page.delete.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
+	s.logDebug("Deleting page", "page_id", pageID)
 	if delErr := s.store.DeletePage(pageID); delErr != nil {
 		return storeAppError("DeletePage", delErr)
 	}
 	return nil
 }
 
-// RestorePage un-deletes a soft-deleted page by ID. This is delete's complement, not a
-// version revert: version snapshots were never live pages that got deleted, so they are rejected.
+// RestorePage un-deletes a soft-deleted page by ID. Version snapshots are not restorable.
+// Not-found, not-restorable (snapshot), and already-live are all decided atomically by the
+// store under its row lock (see store.RestorePage), so there is no separate pre-fetch here.
+// Like DeletePage, this takes no actor param — see DeletePage's note on LastModifiedBy.
 func (s *Service) RestorePage(pageID string) *mmmodel.AppError {
 	if !mmmodel.IsValidId(pageID) {
 		return mmmodel.NewAppError("RestorePage", "app.page.restore.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	page, err := s.store.GetPage(pageID, true)
-	if err != nil {
-		return storeAppError("RestorePage", err)
-	}
-	// Snapshots are historical versions, not live pages; they carry DeleteAt > 0 purely to stay
-	// out of live-page listings (enforced by chk_docs_page_snapshot_deleted), so un-delete does
-	// not apply here. Reject explicitly instead of returning a generic not-found.
-	if page.OriginalId != "" {
-		return mmmodel.NewAppError("RestorePage", "app.page.restore.not_restorable.app_error", nil, "", http.StatusBadRequest)
-	}
-	if page.DeleteAt == 0 {
-		return mmmodel.NewAppError("RestorePage", "app.page.restore.not_deleted.app_error", nil, "", http.StatusBadRequest)
-	}
+	s.logDebug("Restoring page", "page_id", pageID)
 	if restoreErr := s.store.RestorePage(pageID); restoreErr != nil {
+		if appErr := restoreReasonAppError("RestorePage", restoreErr, map[string]string{
+			store.ReasonNotRestorable: "app.page.restore.not_restorable.app_error",
+			store.ReasonNotDeleted:    "app.page.restore.not_deleted.app_error",
+		}); appErr != nil {
+			return appErr
+		}
 		return storeAppError("RestorePage", restoreErr)
 	}
 	return nil

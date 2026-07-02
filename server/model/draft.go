@@ -19,8 +19,8 @@ const DraftFileidsMaxRunes = 300
 // A draft is keyed by (UserId, PageId): PageId is the page id reserved when the
 // user starts editing and stable across the draft -> publish lifecycle, so a
 // draft for a not-yet-created page and a draft editing an existing page share the
-// same key. There is no foreign key to DOCS_Page — an orphan draft for a page that
-// has not been published yet is legal. ParentId carries the pending hierarchy
+// same key. An orphan draft — one whose PageId has no matching DOCS_Page row — is legal,
+// since the page has not been published yet. ParentId carries the pending hierarchy
 // parent for a new page; Body holds the raw (opaque) editor content.
 type Draft struct {
 	UserId   string                  `json:"user_id"`
@@ -35,6 +35,7 @@ type Draft struct {
 	UpdateAt int64                   `json:"update_at"`
 }
 
+// PreSave sanitizes Draft and defaults its Id-independent fields before insert.
 func (d *Draft) PreSave() {
 	d.Title = strings.TrimSpace(mmmodel.SanitizeUnicode(d.Title))
 	// Body is stored as-is (no sanitization, unlike Title).
@@ -54,6 +55,7 @@ func (d *Draft) PreSave() {
 	d.UpdateAt = now
 }
 
+// Auditable returns Draft's fields safe to include in an audit log, excluding Body.
 func (d *Draft) Auditable() map[string]any {
 	return map[string]any{
 		"user_id":   d.UserId,
@@ -68,6 +70,7 @@ func (d *Draft) Auditable() map[string]any {
 	}
 }
 
+// IsValid checks Draft's required fields and size limits.
 func (d *Draft) IsValid() *mmmodel.AppError {
 	if !mmmodel.IsValidId(d.UserId) {
 		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.user_id.app_error", nil, "user_id="+d.UserId, http.StatusBadRequest)
@@ -118,21 +121,7 @@ func (d *Draft) IsValid() *mmmodel.AppError {
 	return nil
 }
 
-// GetProps returns Props, initializing to an empty map if nil.
+// GetProps returns Props, or an empty map if Props is nil.
 func (d *Draft) GetProps() mmmodel.StringInterface {
-	d.Props = ensureProps(d.Props)
-	return d.Props
-}
-
-// Clone returns a deep copy.
-func (d *Draft) Clone() *Draft {
-	cp := *d
-	if d.FileIds != nil {
-		cp.FileIds = make(mmmodel.StringArray, len(d.FileIds))
-		copy(cp.FileIds, d.FileIds)
-	}
-	if d.Props != nil {
-		cp.Props = deepCloneStringInterface(d.Props)
-	}
-	return &cp
+	return ensureProps(d.Props)
 }
