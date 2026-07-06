@@ -159,10 +159,9 @@ func descendantsRecursiveCTE() string {
 }
 
 // computeAncestorsCTE generates the recursive CTE that walks the parent chain above a page,
-// excluding the root node and returning full page columns. The +2 breaks down as +1 because
-// depth starts at 1 for the page itself, and +1 more so a chain exactly at the cap still emits
-// one row past it; together that lets the chain emit MaxPageHierarchyDepth+1 rows, and
-// GetPageAncestors errors when it receives more than MaxPageHierarchyDepth (see ancestorsRecursiveCTE).
+// excluding the root node and returning full page columns. It passes MaxPageHierarchyDepth+2 (see
+// ancestorsRecursiveCTE for the +2 derivation) so GetPageAncestors can distinguish a chain at the
+// limit from a truncated one.
 func computeAncestorsCTE() string {
 	return ancestorsRecursiveCTE(MaxPageHierarchyDepth+2) + `
 	SELECT ` + pageColListP + `

@@ -44,8 +44,8 @@ func (s *Service) CreateSpace(space *model.Space, userID string) (*model.Space, 
 	if userID != "" && !mmmodel.IsValidId(userID) {
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	// Unlike DeleteSpace/RestoreSpace, where archiving the backing channel is best-effort, creating
-	// a space requires a live client to stand up its backing channel; a nil client (store-only test
+	// Unlike DeleteSpace, where archiving the backing channel is best-effort, creating a space
+	// requires a live client to stand up its backing channel; a nil client (store-only test
 	// wiring) is a precondition failure rather than a panic.
 	if s.client == nil {
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.no_client.app_error", nil, "", http.StatusInternalServerError)
@@ -187,22 +187,9 @@ func (s *Service) ReplaceSpace(space *model.Space, force bool) (*model.Space, *m
 		return nil, storeAppError("ReplaceSpace", err)
 	}
 
-	// Mirror Title/Description onto the backing channel so it does not diverge from the space row
-	// (CreateSpace seeds the channel DisplayName/Header from them). Best-effort like DeleteSpace's
-	// archive: a failure is logged for reconciliation rather than failing the update, and the
-	// client nil-check keeps store-only tests (which seed spaces directly) from panicking.
-	if s.client != nil && updated.ChannelId != "" {
-		if channel, getErr := s.client.Channel.Get(updated.ChannelId); getErr != nil {
-			s.client.Log.Warn("ReplaceSpace: failed to load backing channel for metadata sync; channel may be stale", "channel_id", updated.ChannelId, "space_id", updated.Id, "err", getErr.Error())
-		} else {
-			channel.DisplayName = truncateToRunes(updated.Title, mmmodel.ChannelDisplayNameMaxRunes)
-			channel.Header = updated.Description
-			if upErr := s.client.Channel.Update(channel); upErr != nil {
-				s.client.Log.Warn("ReplaceSpace: failed to sync backing channel metadata; channel may be stale", "channel_id", updated.ChannelId, "space_id", updated.Id, "err", upErr.Error())
-			}
-		}
-	}
-
+	// The backing channel is an invisible "S" channel and the page/space store is the source of
+	// truth, so Title/Description are not mirrored onto it (matching the POC). Channel.Update on a
+	// space channel is unsupported anyway.
 	return updated, nil
 }
 
@@ -318,7 +305,7 @@ func (s *Service) retryStuckChannelRestore(spaceID string) (space *model.Space, 
 	if s.client == nil || got.ChannelId == "" {
 		return nil, nil, false
 	}
-	channel, getChanErr := s.client.Channel.Get(got.ChannelId)
+	channel, getChanErr := s.client.Channel.GetSpaceBackingChannel(got.ChannelId)
 	if getChanErr != nil {
 		return nil, mmmodel.NewAppError("RestoreSpace", "app.space.restore.channel_restore_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(getChanErr), true
 	}

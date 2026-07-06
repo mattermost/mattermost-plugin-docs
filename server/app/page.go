@@ -19,15 +19,6 @@ import (
 // ancestor/descendant CTEs recurse.
 const MaxPageDepth = 10
 
-// modifierID returns the user who last modified the page, falling back to the
-// original author when LastModifiedBy is unset.
-func modifierID(p *model.Page) string {
-	if p.LastModifiedBy != "" {
-		return p.LastModifiedBy
-	}
-	return p.UserId
-}
-
 // CreatePage creates a new page in spaceID. ChannelId is derived from the space
 // (which has exactly one backing channel), not supplied by the caller.
 //
@@ -182,7 +173,7 @@ func (s *Service) UpdatePage(pageID, spaceID string, patch *model.PagePatch, bas
 				nil, "conflict", http.StatusConflict).Wrap(storeErr)
 		}
 		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.conflict.app_error",
-			map[string]any{"ModifiedBy": modifierID(fresh), "ModifiedAt": fresh.EditAt},
+			map[string]any{"ModifiedBy": fresh.LastModifiedBy, "ModifiedAt": fresh.EditAt},
 			"conflict", http.StatusConflict).Wrap(storeErr)
 	}
 	return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.store_error.app_error", nil, "", http.StatusInternalServerError).Wrap(storeErr)
@@ -206,8 +197,9 @@ func (s *Service) GetPageWithDeleted(pageID string) (*model.Page, *mmmodel.AppEr
 	return page, nil
 }
 
-// DeletePage soft-deletes a page by ID. spaceID scopes the delete to the page's expected space: a
-// page relocated out of it by a concurrent move-to-space is not found here, closing the race window
+// DeletePage soft-deletes a page by ID. It takes no actor param, so LastModifiedBy is not updated to
+// record who deleted the page. spaceID scopes the delete to the page's expected space: a page
+// relocated out of it by a concurrent move-to-space is not found here, closing the race window
 // between a caller's page-in-space check and this write.
 func (s *Service) DeletePage(pageID, spaceID string) *mmmodel.AppError {
 	if !mmmodel.IsValidId(pageID) {
@@ -224,7 +216,8 @@ func (s *Service) DeletePage(pageID, spaceID string) *mmmodel.AppError {
 }
 
 // RestorePage un-deletes a soft-deleted page by ID and returns it, matching the other mutation
-// endpoints (Move/MoveToSpace/Duplicate) rather than requiring a follow-up GET. This is delete's
+// endpoints (Move/MoveToSpace/Duplicate) rather than requiring a follow-up GET; like DeletePage, it
+// records no actor. This is delete's
 // complement, not a version revert: version snapshots were never live pages that got deleted, so
 // they are rejected. Not-found, not-restorable (snapshot), and already-live are all decided
 // atomically by the store under its row lock (see store.RestorePage), so there is no separate
@@ -341,6 +334,8 @@ func (s *Service) DuplicatePage(pageID, sourceSpaceID, userID string, includeChi
 		if ancErr != nil {
 			return nil, storeAppError("DuplicatePage", ancErr)
 		}
+		// ancestorDepth excludes destParentID itself, so the destination parent is at ancestorDepth + 1
+		// and the copy one level deeper, at ancestorDepth + 2. Root pages have depth 1.
 		destinationDepth = ancestorDepth + 2
 	}
 	if capErr := checkDepthCap("DuplicatePage", destinationDepth, model.MaxDepthOfPreOrderedPages(descendants, pageID)); capErr != nil {

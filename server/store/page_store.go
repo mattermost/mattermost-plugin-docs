@@ -1426,20 +1426,14 @@ func (s *Store) GetSpacePages(spaceID string, offset, limit int) ([]*model.Page,
 	return pages, nil
 }
 
-// GetPageAncestorDepth returns the count of live ancestors (excluding the page itself).
+// GetPageAncestorDepth returns the count of live ancestors (excluding the page itself). Depth checks
+// that run inside a move/create transaction use pageDepth against the locked rows instead.
 func (s *Store) GetPageAncestorDepth(pageID string) (int, error) {
 	if pageID == "" {
 		return 0, &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
 	}
-	return s.getPageAncestorDepth(s.db, pageID)
-}
-
-// getPageAncestorDepth is the shared implementation behind GetPageAncestorDepth, parameterized
-// on the executor so CreatePage can run the same count against its transaction (with the parent
-// row locked) instead of a separate pre-transaction read.
-func (s *Store) getPageAncestorDepth(e sqlx.ExtContext, pageID string) (int, error) {
 	var count int
-	if err := s.get(e, &count, pageAncestorCountCTE, pageID); err != nil {
+	if err := s.get(s.db, &count, pageAncestorCountCTE, pageID); err != nil {
 		return 0, errors.Wrapf(err, "failed to count ancestors for page_id=%s", pageID)
 	}
 	return count, nil

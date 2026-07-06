@@ -12,8 +12,8 @@ import (
 )
 
 // GetPageChildren fetches direct live children of a page. spaceID scopes the read to the page's
-// expected space, narrowing (not fully closing — the check and the read are separate, unlocked
-// queries) the race window between a caller's page-in-space check and this read.
+// expected space; the internal page-in-space check (GetPageInSpace below) and the store read after
+// it are separate, unlocked queries, so this narrows but does not fully close the race between them.
 // perPage <= 0 defaults to PerPageDefault; larger values are capped at PerPageMaximum.
 func (s *Service) GetPageChildren(pageID, spaceID string, page, perPage int) ([]*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
@@ -31,8 +31,8 @@ func (s *Service) GetPageChildren(pageID, spaceID string, page, perPage int) ([]
 }
 
 // GetPageAncestors fetches all live ancestors of a page up to the root. spaceID scopes the read to
-// the page's expected space, narrowing (not fully closing — the check and the read are separate,
-// unlocked queries) the race window between a caller's page-in-space check and this read.
+// the page's expected space; the internal page-in-space check (GetPageInSpace below) and the store
+// read after it are separate, unlocked queries, so this narrows but does not fully close the race.
 // Returns an error when the ancestor chain exceeds the store's depth limit, rather than truncating.
 func (s *Service) GetPageAncestors(pageID, spaceID string) ([]*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
@@ -216,8 +216,8 @@ func (s *Service) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, p
 	// Only a genuine no-op — source and target space are the same and the page is already under
 	// exactly the requested parent — short-circuits here; every real relocation, including a
 	// same-space move to the root, falls through to the store, which enforces the optimistic-lock
-	// CAS. page.SpaceId is already sourceSpaceID (GetPageInSpace above scoped the read to it), so
-	// there's no separate staleness check to make here.
+	// CAS. This no-op path bypasses that store CAS, so the block below re-enforces the
+	// optimistic-lock baseline manually.
 	if sourceSpaceID == targetSpaceID && page.ParentId == requestedParent {
 		// This no-op path never reaches the store CAS, so enforce the optimistic-lock baseline here
 		// rather than silently succeeding against a stale baseline. force skips it, matching the store.

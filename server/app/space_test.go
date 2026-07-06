@@ -357,42 +357,6 @@ func TestServiceRestoreSpace_UnarchivesBackingChannel(t *testing.T) {
 	require.Equal(t, space.Id, got.Id)
 }
 
-// TestServicePatchSpace_SyncsBackingChannel verifies PatchSpace (which flows through ReplaceSpace)
-// mirrors the new title/description onto the backing channel's DisplayName/Header, so the channel
-// does not diverge from the space row after an update (CreateSpace seeds them at create time).
-func TestServicePatchSpace_SyncsBackingChannel(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	h := openTestServiceWithAPI(t, mockAPI)
-
-	teamID := mmmodel.NewId()
-	userID := mmmodel.NewId()
-	backingChannelID := mmmodel.NewId()
-
-	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
-		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
-	mockAPI.On("AddChannelMember", backingChannelID, userID).Return(&mmmodel.ChannelMember{}, nil)
-	mockAPI.On("GetChannel", backingChannelID).
-		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace, DisplayName: "Original"}, nil)
-	mockAPI.On("UpdateChannel", mock.MatchedBy(func(ch *mmmodel.Channel) bool {
-		return ch.Id == backingChannelID && ch.DisplayName == "Renamed" && ch.Header == "New description"
-	})).Return(&mmmodel.Channel{Id: backingChannelID, DisplayName: "Renamed", Header: "New description"}, nil)
-
-	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Original"}, userID)
-	require.Nil(t, appErr)
-
-	patched, appErr := h.svc.PatchSpace(space.Id, &model.SpacePatch{
-		Title:       mmmodel.NewPointer("Renamed"),
-		Description: mmmodel.NewPointer("New description"),
-	}, space.UpdateAt, false)
-	require.Nil(t, appErr)
-	require.Equal(t, "Renamed", patched.Title)
-	require.Equal(t, "New description", patched.Description)
-
-	mockAPI.AssertCalled(t, "UpdateChannel", mock.MatchedBy(func(ch *mmmodel.Channel) bool {
-		return ch.DisplayName == "Renamed" && ch.Header == "New description"
-	}))
-}
-
 // TestServicePatchSpace verifies PatchSpace applies only the supplied (non-nil) fields, preserves
 // unspecified ones, can clear a field with an explicit empty string, and enforces the
 // optimistic-lock baseline.
