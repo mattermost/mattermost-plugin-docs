@@ -319,6 +319,12 @@ func IsErrConflict(err error) bool {
 type ErrLimitExceeded struct {
 	Resource string
 	Limit    int
+	// Reason optionally carries the app-facing AppError.Id this specific limit violation should
+	// map to (e.g. one of checkDepthCap's two depth-exceeded keys), so a limit re-checked under
+	// lock surfaces the same id/status the app layer's own unlocked pre-check would have given for
+	// the identical condition, instead of a generic fallback. Empty means storeAppError falls back
+	// to app.store.too_large.app_error.
+	Reason string
 }
 
 func (e *ErrLimitExceeded) Error() string {
@@ -328,5 +334,21 @@ func (e *ErrLimitExceeded) Error() string {
 // IsErrLimitExceeded reports whether err is an ErrLimitExceeded.
 func IsErrLimitExceeded(err error) bool {
 	var e *ErrLimitExceeded
+	return errors.As(err, &e)
+}
+
+// ErrCircularReference is returned when a move would make a page its own ancestor or descendant.
+type ErrCircularReference struct {
+	PageID       string
+	DestParentID string
+}
+
+func (e *ErrCircularReference) Error() string {
+	return fmt.Sprintf("page %s cannot move under %s: would create a cycle", e.PageID, e.DestParentID)
+}
+
+// IsErrCircularReference reports whether err is an ErrCircularReference.
+func IsErrCircularReference(err error) bool {
+	var e *ErrCircularReference
 	return errors.As(err, &e)
 }

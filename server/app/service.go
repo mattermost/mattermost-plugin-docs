@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
@@ -40,6 +41,57 @@ func (s *Service) logDebug(message string, keyValuePairs ...any) {
 		return
 	}
 	s.client.Log.Debug(message, keyValuePairs...)
+}
+
+// validateTitle sanitizes and validates an entity title, returning the normalized form.
+// where identifies the calling operation for logs; the message keys are shared across callers.
+func validateTitle(where, title string, maxRunes int) (string, *mmmodel.AppError) {
+	title = strings.TrimSpace(mmmodel.SanitizeUnicode(title))
+	if title == "" {
+		return "", mmmodel.NewAppError(where, "app.shared.title_required.app_error", nil, "", http.StatusBadRequest)
+	}
+	if utf8.RuneCountInString(title) > maxRunes {
+		return "", mmmodel.NewAppError(where, "app.shared.title_too_long.app_error", map[string]any{"MaxLength": maxRunes}, "", http.StatusBadRequest)
+	}
+	return title, nil
+}
+
+// validateSpaceMutableFields enforces the Description/Icon size caps shared by CreateSpace and
+// UpdateSpace. where identifies the calling operation for logs; the message keys are shared
+// across callers.
+func validateSpaceMutableFields(where, description, icon string) *mmmodel.AppError {
+	if utf8.RuneCountInString(description) > model.SpaceDescriptionMaxRunes {
+		return mmmodel.NewAppError(where, "app.shared.description_too_long.app_error", map[string]any{"MaxLength": model.SpaceDescriptionMaxRunes}, "", http.StatusBadRequest)
+	}
+	if len(icon) > model.SpaceIconMaxBytes {
+		return mmmodel.NewAppError(where, "app.shared.icon_too_large.app_error", map[string]any{"MaxBytes": model.SpaceIconMaxBytes}, "", http.StatusBadRequest)
+	}
+	return nil
+}
+
+// truncateToRunes caps s to at most maxRunes runes (multi-byte safe), returning it unchanged when
+// already within the cap.
+func truncateToRunes(s string, maxRunes int) string {
+	if utf8.RuneCountInString(s) > maxRunes {
+		return string([]rune(s)[:maxRunes])
+	}
+	return s
+}
+
+// sameTeamSpaces fetches sourceSpaceID and destSpaceID and reports whether they belong to the same
+// team. Shared by DuplicatePage and MovePageToSpace, which both reject moving/copying a page across
+// team boundaries; each caller builds its own AppError on a false result so the i18n extractor sees
+// a literal message key at the call site, not a value forwarded through this helper.
+func (s *Service) sameTeamSpaces(sourceSpaceID, destSpaceID string) (bool, *mmmodel.AppError) {
+	sourceSpace, srcErr := s.GetSpace(sourceSpaceID)
+	if srcErr != nil {
+		return false, srcErr
+	}
+	destSpace, dstErr := s.GetSpace(destSpaceID)
+	if dstErr != nil {
+		return false, dstErr
+	}
+	return sourceSpace.TeamId == destSpace.TeamId, nil
 }
 
 // normalizeTitle sanitizes and trims a title. Length and required-field validation are
@@ -100,6 +152,8 @@ func storeAppError(where string, err error) *mmmodel.AppError {
 	switch {
 	case store.IsErrNotFound(err):
 		return mmmodel.NewAppError(where, "app.store.not_found.app_error", nil, "", http.StatusNotFound).Wrap(err)
+	case store.IsErrCircularReference(err):
+		return mmmodel.NewAppError(where, "app.page.move.circular_reference.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 	case store.IsErrInvalidInput(err):
 		return invalidInputAppError(where, err)
 	case store.IsErrConflict(err):
@@ -108,6 +162,12 @@ func storeAppError(where string, err error) *mmmodel.AppError {
 		// Use the limit the error carries; different store methods have different bounds.
 		var limitErr *store.ErrLimitExceeded
 		_ = errors.As(err, &limitErr) // guaranteed true: IsErrLimitExceeded already performed this assertion
+		if limitErr.Reason != "" {
+			// A depth-cap violation caught by a store-layer under-lock re-check: surface the same
+			// id/status the app layer's own unlocked pre-check (checkDepthCap) would give for the
+			// identical condition, instead of the generic 422 below.
+			return mmmodel.NewAppError(where, limitErr.Reason, map[string]any{"MaxDepth": limitErr.Limit}, "", http.StatusBadRequest).Wrap(err)
+		}
 		return mmmodel.NewAppError(where, "app.store.too_large.app_error", map[string]any{"Limit": limitErr.Limit}, "", http.StatusUnprocessableEntity).Wrap(err)
 	default:
 		return mmmodel.NewAppError(where, "app.store.internal_error.app_error", nil, "", http.StatusInternalServerError).Wrap(err)

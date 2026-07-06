@@ -56,17 +56,6 @@ func (p *Plugin) OnActivate() error {
 	}
 	s.SetLogger(&p.client.Log)
 
-	// OnDeactivate is not called when OnActivate fails, so close the store
-	// on any error to avoid leaking the DB pool.
-	activated := false
-	defer func() {
-		if !activated {
-			if closeErr := s.Close(); closeErr != nil {
-				p.API.LogError("Failed to close store after failed activation", "err", closeErr)
-			}
-		}
-	}()
-
 	if migErr := s.RunMigrations(); migErr != nil {
 		return errors.Wrap(migErr, "failed to run docs migrations")
 	}
@@ -75,16 +64,13 @@ func (p *Plugin) OnActivate() error {
 
 	p.router = p.initRouter()
 
-	activated = true
 	return nil
 }
 
-// OnDeactivate closes the store.
+// OnDeactivate is a no-op. It does not close the store's DB handle: that handle is the server's
+// shared master DB obtained via GetMasterDB, not one this plugin owns. It also does not clear
+// store/service/router: those fields are read without synchronization by ServeHTTP and handlers,
+// so niling them here would race an in-flight request against deactivation.
 func (p *Plugin) OnDeactivate() error {
-	if p.store != nil {
-		if err := p.store.Close(); err != nil {
-			p.API.LogError("Failed to close store", "err", err)
-		}
-	}
 	return nil
 }

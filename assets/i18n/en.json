@@ -1,5 +1,13 @@
 [
   {
+    "id": "api.invalid_json.app_error",
+    "translation": "The request body could not be parsed."
+  },
+  {
+    "id": "api.request_too_large.app_error",
+    "translation": "The request body exceeds the maximum allowed size of {{.MaxBytes}} bytes."
+  },
+  {
     "id": "app.page.create.conflict.app_error",
     "translation": "A page with this ID already exists."
   },
@@ -48,6 +56,34 @@
     "translation": "Invalid page ID."
   },
   {
+    "id": "app.page.delete.invalid_space_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.page.duplicate.cross_team.app_error",
+    "translation": "A page cannot be duplicated into a space on a different team."
+  },
+  {
+    "id": "app.page.duplicate.dest_not_found.app_error",
+    "translation": "The destination space or parent page could not be found."
+  },
+  {
+    "id": "app.page.duplicate.invalid_id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page.duplicate.invalid_space_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.page.duplicate.invalid_user_id.app_error",
+    "translation": "Invalid user ID."
+  },
+  {
+    "id": "app.page.duplicate.not_found.app_error",
+    "translation": "The page could not be found."
+  },
+  {
     "id": "app.page.get.invalid_id.app_error",
     "translation": "Invalid page ID."
   },
@@ -68,8 +104,64 @@
     "translation": "Invalid page ID."
   },
   {
+    "id": "app.page.invalid_space_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.page.move.circular_reference.app_error",
+    "translation": "A page cannot be moved under itself or one of its descendants."
+  },
+  {
+    "id": "app.page.move.invalid_id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page.move.invalid_parent.app_error",
+    "translation": "The destination parent page does not exist."
+  },
+  {
+    "id": "app.page.move.invalid_space_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.page.move.max_depth_exceeded.app_error",
+    "translation": "Moving the page here would exceed the maximum nesting depth of {{.MaxDepth}}."
+  },
+  {
+    "id": "app.page.move.parent_different_space.app_error",
+    "translation": "The destination parent page belongs to a different space."
+  },
+  {
+    "id": "app.page.move.subtree_max_depth_exceeded.app_error",
+    "translation": "Moving this page and its sub-pages here would exceed the maximum nesting depth of {{.MaxDepth}}."
+  },
+  {
+    "id": "app.page.move_to_space.cross_team.app_error",
+    "translation": "A page can only be moved to a space in the same team."
+  },
+  {
+    "id": "app.page.move_to_space.invalid_id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page.move_to_space.invalid_source_space.app_error",
+    "translation": "Invalid source space ID."
+  },
+  {
+    "id": "app.page.move_to_space.invalid_target_space.app_error",
+    "translation": "Invalid target space ID."
+  },
+  {
+    "id": "app.page.not_found.app_error",
+    "translation": "The page could not be found."
+  },
+  {
     "id": "app.page.restore.invalid_id.app_error",
     "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page.restore.invalid_space_id.app_error",
+    "translation": "Invalid space ID."
   },
   {
     "id": "app.page.update.conflict.app_error",
@@ -78,6 +170,10 @@
   {
     "id": "app.page.update.invalid_id.app_error",
     "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page.update.invalid_space_id.app_error",
+    "translation": "Invalid space ID."
   },
   {
     "id": "app.page.update.invalid_user_id.app_error",
@@ -90,6 +186,58 @@
   {
     "id": "app.page.update.store_error.app_error",
     "translation": "An error occurred while updating the page."
+  },
+  {
+    "id": "app.shared.description_too_long.app_error",
+    "translation": "The description exceeds the maximum length of {{.MaxLength}} characters."
+  },
+  {
+    "id": "app.shared.icon_too_large.app_error",
+    "translation": "The icon exceeds the maximum size of {{.MaxBytes}} bytes."
+  },
+  {
+    "id": "app.shared.title_required.app_error",
+    "translation": "A title is required."
+  },
+  {
+    "id": "app.shared.title_too_long.app_error",
+    "translation": "The title exceeds the maximum length of {{.MaxLength}} characters."
+  },
+  {
+    "id": "app.space.create.add_member_failed.app_error",
+    "translation": "Unable to add the creator to the backing channel for the space."
+  },
+  {
+    "id": "app.space.create.backing_channel_failed.app_error",
+    "translation": "Unable to create the backing channel for the space."
+  },
+  {
+    "id": "app.space.create.channel_id_not_allowed.app_error",
+    "translation": "A channel ID must not be supplied when creating a space."
+  },
+  {
+    "id": "app.space.create.invalid_team_id.app_error",
+    "translation": "Invalid team ID."
+  },
+  {
+    "id": "app.space.create.invalid_user_id.app_error",
+    "translation": "Invalid user ID."
+  },
+  {
+    "id": "app.space.create.nil_input.app_error",
+    "translation": "A space must be supplied."
+  },
+  {
+    "id": "app.space.create.no_client.app_error",
+    "translation": "Unable to create the space because the plugin API client is not available."
+  },
+  {
+    "id": "app.space.create.not_team_member.app_error",
+    "translation": "You must be a member of the team to create a space in it."
+  },
+  {
+    "id": "app.space.create.team_lookup_failed.app_error",
+    "translation": "Unable to verify team membership."
   },
   {
     "id": "app.space.delete.invalid_id.app_error",
@@ -110,6 +258,10 @@
   {
     "id": "app.space.get_pages.invalid_space_id.app_error",
     "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.space.restore.channel_restore_failed.app_error",
+    "translation": "The space was restored, but its backing channel could not be un-archived."
   },
   {
     "id": "app.space.restore.invalid_id.app_error",
@@ -314,5 +466,9 @@
   {
     "id": "model.space.is_valid.update_at.app_error",
     "translation": "Invalid space update time."
+  },
+  {
+    "id": "model.space.patch.nothing_to_update.app_error",
+    "translation": "The update contains no changes."
   }
 ]

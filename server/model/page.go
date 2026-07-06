@@ -24,7 +24,7 @@ const (
 	// PagePropsMaxBytes caps the serialized size of the opaque Props map.
 	PagePropsMaxBytes = 64 * 1024
 
-	// PageSearchTextMaxBytes caps the stored SearchText's size.
+	// PageSearchTextMaxBytes caps the stored SearchText, the Body's plain-text search projection.
 	PageSearchTextMaxBytes = 2 * 1024 * 1024
 )
 
@@ -58,6 +58,27 @@ type Page struct {
 // IsSnapshot reports whether p is a version snapshot rather than a live page.
 func (p *Page) IsSnapshot() bool {
 	return p.OriginalId != ""
+}
+
+// MaxDepthOfPreOrderedPages returns the maximum depth found in pages relative to rootID (depth 0),
+// where each page's depth is one more than its parent's. pages must be pre-order sorted (a page's
+// parent already appears earlier in the slice, or is rootID itself) so each ParentId lookup resolves
+// before it's needed. If rootID's own Page appears in pages, it is treated as the root (depth 0) and
+// not recomputed from its ParentId.
+func MaxDepthOfPreOrderedPages(pages []*Page, rootID string) int {
+	depthOf := map[string]int{rootID: 0}
+	maxDepth := 0
+	for _, p := range pages {
+		if p.Id == rootID {
+			continue
+		}
+		depth := depthOf[p.ParentId] + 1
+		depthOf[p.Id] = depth
+		if depth > maxDepth {
+			maxDepth = depth
+		}
+	}
+	return maxDepth
 }
 
 // PreSave sanitizes Page and defaults its Id-independent fields before insert.
@@ -105,8 +126,12 @@ type PagePatch struct {
 }
 
 // Patch applies the non-nil fields of patch to the page. Normalization (title trim,
-// etc.) happens in PreUpdate.
+// etc.) happens in PreUpdate. Callers must call patch.IsValid() first — a nil patch is a no-op here
+// rather than a panic, but produces no changes, silently defeating the caller's intent.
 func (p *Page) Patch(patch *PagePatch) {
+	if patch == nil {
+		return
+	}
 	if patch.Title != nil {
 		p.Title = *patch.Title
 	}
@@ -121,12 +146,10 @@ func (p *Page) Patch(patch *PagePatch) {
 	}
 }
 
-// IsValid checks rules about which fields the patch sets — Page.IsValid can't, since it only
-// sees the merged page. SearchText is Body's plain-text projection backing the search index
-// (Body is opaque rich-text, so it can't be tokenized directly), so the two must be patched
-// together: changing one without the other desyncs the index from the body. A non-empty
-// SearchText additionally requires a non-empty Body. This lives on the patch (not only in the
-// service), so any caller that bypasses the service still upholds it.
+// IsValid checks patch-level rules that Page.IsValid can't, since it only sees the merged page.
+// Body and SearchText must be patched together (one without the other desyncs the search index
+// from the body); a non-empty SearchText also requires a non-empty Body. Enforced here, not just
+// in the service, so callers that bypass the service still uphold it.
 func (p *PagePatch) IsValid() *mmmodel.AppError {
 	// Reject a nil patch (which would panic on the Body/SearchText cross-checks below) and an
 	// all-nil-fields patch (a no-op that would otherwise bump timestamps without a content change).

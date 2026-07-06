@@ -216,3 +216,47 @@ func TestPagePatch(t *testing.T) {
 		require.Equal(t, "orig", p.Title, "unset Title must remain unchanged")
 	})
 }
+
+func TestPagePatchIsValid(t *testing.T) {
+	t.Run("nil patch rejected", func(t *testing.T) {
+		var patch *model.PagePatch
+		aerr := patch.IsValid()
+		require.NotNil(t, aerr)
+		require.Equal(t, "model.page.patch.nothing_to_update.app_error", aerr.Id)
+	})
+
+	t.Run("empty patch rejected", func(t *testing.T) {
+		aerr := (&model.PagePatch{}).IsValid()
+		require.NotNil(t, aerr)
+		require.Equal(t, "model.page.patch.nothing_to_update.app_error", aerr.Id)
+	})
+
+	t.Run("body without search text rejected", func(t *testing.T) {
+		aerr := (&model.PagePatch{Body: mmmodel.NewPointer("body")}).IsValid()
+		require.NotNil(t, aerr)
+		require.Equal(t, "model.page.patch.search_text_body_mismatch.app_error", aerr.Id)
+	})
+
+	t.Run("search text without body rejected", func(t *testing.T) {
+		aerr := (&model.PagePatch{SearchText: mmmodel.NewPointer("search")}).IsValid()
+		require.NotNil(t, aerr)
+		require.Equal(t, "model.page.patch.search_text_body_mismatch.app_error", aerr.Id)
+	})
+
+	t.Run("non-empty search text with empty body rejected", func(t *testing.T) {
+		aerr := (&model.PagePatch{
+			Body:       mmmodel.NewPointer(""),
+			SearchText: mmmodel.NewPointer("search"),
+		}).IsValid()
+		require.NotNil(t, aerr)
+		require.Equal(t, "model.page.patch.search_text_without_content.app_error", aerr.Id)
+	})
+
+	t.Run("body and search text patched together accepted", func(t *testing.T) {
+		aerr := (&model.PagePatch{
+			Body:       mmmodel.NewPointer("body"),
+			SearchText: mmmodel.NewPointer("search"),
+		}).IsValid()
+		require.Nil(t, aerr)
+	})
+}
