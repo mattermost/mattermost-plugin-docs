@@ -375,8 +375,10 @@ func (s *Store) UpdatePage(pageID, spaceID string, patch *model.PagePatch, baseE
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "IsValid", Value: validErr.Error(), Reason: validErr.Id}
 	}
 
-	// Keep EditAt strictly monotonic (it is the CAS token).
-	now := nextMonotonic(mmmodel.GetMillis(), page.EditAt)
+	// Keep both EditAt and UpdateAt strictly monotonic. EditAt is the CAS token for content
+	// edits; UpdateAt may have been advanced beyond EditAt by a prior structural operation
+	// (move, delete, restore), so we take the greater of the two as the baseline.
+	now := nextMonotonic(mmmodel.GetMillis(), max(page.EditAt, page.UpdateAt))
 
 	// SortOrder is intentionally not written here: generic edits never move a page within its
 	// sibling group (that is a dedicated reorder concern), so the column keeps its value.
@@ -1126,7 +1128,7 @@ func (s *Store) DeletePage(pageID, spaceID string) (err error) {
 			shiftQuery := s.getQueryBuilder().
 				Update("DOCS_Page").
 				Set("SortOrder", sq.Expr("SortOrder + ?", n-1)).
-				Set("UpdateAt", now).
+				Set("UpdateAt", sq.Expr("GREATEST(UpdateAt + 1, ?)", now)).
 				Set("EditAt", sq.Expr("GREATEST(EditAt + 1, ?)", now)).
 				Where(sq.And{
 					sq.Eq{"ChannelId": deleted.ChannelID, "ParentId": deleted.ParentID, "DeleteAt": 0},
@@ -1181,7 +1183,7 @@ func (s *Store) DeletePage(pageID, spaceID string) (err error) {
 	deleteQuery := s.getQueryBuilder().
 		Update("DOCS_Page").
 		Set("DeleteAt", now).
-		Set("UpdateAt", now).
+		Set("UpdateAt", sq.Expr("GREATEST(UpdateAt + 1, ?)", now)).
 		Set("EditAt", sq.Expr("GREATEST(EditAt + 1, ?)", now)).
 		Where(sq.Eq{"Id": pageID}).
 		Where(liveNonSnapshotFilter(""))
@@ -1303,7 +1305,7 @@ func (s *Store) RestorePage(pageID, spaceID string, maxDepth int) (err error) {
 	restoreQuery := s.getQueryBuilder().
 		Update("DOCS_Page").
 		Set("DeleteAt", 0).
-		Set("UpdateAt", now).
+		Set("UpdateAt", sq.Expr("GREATEST(UpdateAt + 1, ?)", now)).
 		Set("EditAt", sq.Expr("GREATEST(EditAt + 1, ?)", now)).
 		Set("ParentId", restoreParentID).
 		Set("SortOrder", sortOrder)
