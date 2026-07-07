@@ -33,8 +33,11 @@ type Service struct {
 }
 
 // New creates a Service wired to the given store and logger.
-// Passing nil for log installs a no-op logger, safe for store-backed unit tests.
+// Passing nil for store panics immediately; passing nil for log installs a no-op logger.
 func New(s *store.Store, log Logger) *Service {
+	if s == nil {
+		panic("app.New: store must not be nil")
+	}
 	if log == nil {
 		log = noopLogger{}
 	}
