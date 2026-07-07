@@ -37,7 +37,9 @@ func openTestServiceWithAPI(t *testing.T, mockAPI *plugintest.API) *testHarness 
 	// stub. TestServiceCreateSpace_NotTeamMember overrides this to exercise the rejection path.
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil).Maybe()
-	h.svc = app.New(h.store, pluginapi.NewClient(mockAPI, nil))
+	mockAPI.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	client := pluginapi.NewClient(mockAPI, nil)
+	h.svc = app.New(h.store, &client.Log, client)
 	return h
 }
 
@@ -139,7 +141,8 @@ func TestServiceCreateSpace_NotTeamMember(t *testing.T) {
 	h := openTestService(t)
 	mockAPI := &plugintest.API{}
 	mockAPI.On("GetConfig").Return(&mmmodel.Config{}).Maybe()
-	h.svc = app.New(h.store, pluginapi.NewClient(mockAPI, nil))
+	client := pluginapi.NewClient(mockAPI, nil)
+	h.svc = app.New(h.store, &client.Log, client)
 
 	teamID := mmmodel.NewId()
 	userID := mmmodel.NewId()

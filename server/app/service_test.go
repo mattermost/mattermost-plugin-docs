@@ -49,7 +49,7 @@ func openTestService(t *testing.T) *testHarness {
 
 	// nil pluginapi client: these tests seed data directly through the store and
 	// never exercise the client, so no mock is needed.
-	svc := app.New(s, nil)
+	svc := app.New(s, nil, nil)
 
 	return &testHarness{svc: svc, store: s, db: db}
 }

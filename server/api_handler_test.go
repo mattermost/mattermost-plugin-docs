@@ -51,7 +51,7 @@ func openTestPlugin(t *testing.T, mockAPI *plugintest.API) *apiTestHarness {
 	if mockAPI != nil {
 		client = pluginapi.NewClient(mockAPI, nil)
 	}
-	p := &Plugin{store: s, service: app.New(s, client)}
+	p := &Plugin{store: s, service: app.New(s, nil, client)}
 	p.router = p.initRouter()
 	return &apiTestHarness{plugin: p, store: s}
 }

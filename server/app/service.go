@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/pluginapi"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
@@ -21,21 +22,25 @@ import (
 // Logger is the logging surface the service needs.
 type Logger interface {
 	Debug(msg string, keyValuePairs ...any)
+	Warn(msg string, keyValuePairs ...any)
 }
 
 type noopLogger struct{}
 
 func (noopLogger) Debug(_ string, _ ...any) {}
+func (noopLogger) Warn(_ string, _ ...any)  {}
 
 // Service is the central service struct for the Docs plugin.
 type Service struct {
-	store *store.Store
-	log   Logger
+	store  *store.Store
+	log    Logger
+	client *pluginapi.Client
 }
 
-// New creates a Service wired to the given store and logger.
+// New creates a Service wired to the given store, logger, and optional pluginapi client.
 // Passing nil for store panics immediately; passing nil for log installs a no-op logger.
-func New(s *store.Store, log Logger) *Service {
+// client may be nil in store-only unit tests that never exercise channel/team operations.
+func New(s *store.Store, log Logger, client *pluginapi.Client) *Service {
 	if s == nil {
 		panic("app.New: store must not be nil")
 	}
@@ -43,13 +48,18 @@ func New(s *store.Store, log Logger) *Service {
 		log = noopLogger{}
 	}
 	return &Service{
-		store: s,
-		log:   log,
+		store:  s,
+		log:    log,
+		client: client,
 	}
 }
 
 func (s *Service) logDebug(message string, keyValuePairs ...any) {
 	s.log.Debug(message, keyValuePairs...)
+}
+
+func (s *Service) logWarn(message string, keyValuePairs ...any) {
+	s.log.Warn(message, keyValuePairs...)
 }
 
 // validateTitle sanitizes and validates an entity title, returning the normalized form.

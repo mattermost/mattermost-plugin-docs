@@ -21,7 +21,7 @@ import (
 // and cause is its underlying error.
 func (s *Service) archiveOrphanChannel(channelID, reason string, cause error) {
 	if delErr := s.client.Channel.Delete(channelID); delErr != nil {
-		s.client.Log.Warn("CreateSpace: compensating channel archive also failed; channel may be orphaned", "channel_id", channelID, "failure_reason", reason, "cause_err", cause.Error(), "delete_err", delErr.Error())
+		s.logWarn("CreateSpace: compensating channel archive also failed; channel may be orphaned", "channel_id", channelID, "failure_reason", reason, "cause_err", cause.Error(), "delete_err", delErr.Error())
 	}
 }
 
@@ -239,7 +239,7 @@ func (s *Service) DeleteSpace(spaceID string) *mmmodel.AppError {
 	// directly and never wire a client) don't panic.
 	if space.ChannelId != "" && s.client != nil {
 		if err := s.client.Channel.Delete(space.ChannelId); err != nil {
-			s.client.Log.Warn("DeleteSpace: failed to archive backing channel; channel may require manual cleanup", "channel_id", space.ChannelId, "space_id", spaceID, "err", err.Error())
+			s.logWarn("DeleteSpace: failed to archive backing channel; channel may require manual cleanup", "channel_id", space.ChannelId, "space_id", spaceID, "err", err.Error())
 		}
 	}
 	return nil
