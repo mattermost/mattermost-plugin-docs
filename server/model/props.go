@@ -5,6 +5,7 @@ package model
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -14,7 +15,7 @@ func ensureProps(props mmmodel.StringInterface) mmmodel.StringInterface {
 	if props == nil {
 		return make(mmmodel.StringInterface)
 	}
-	return props
+	return maps.Clone(props)
 }
 
 // validatePropsSize enforces the serialized-size cap on a Props map.

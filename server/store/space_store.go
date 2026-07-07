@@ -5,6 +5,7 @@ package store
 
 import (
 	"database/sql"
+	"maps"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	sq "github.com/mattermost/squirrel"
@@ -151,7 +152,7 @@ func (s *Store) UpdateSpace(space *model.Space, force bool) (_ *model.Space, err
 	existing.Title = space.Title
 	existing.Description = space.Description
 	existing.Icon = space.Icon
-	existing.Props = space.Props
+	existing.Props = maps.Clone(space.Props)
 
 	existing.PreUpdate()
 	// Keep UpdateAt strictly monotonic (same-millisecond writes still advance the CAS token).
