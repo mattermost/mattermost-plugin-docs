@@ -5,7 +5,7 @@ import {useForm} from '@tanstack/react-form';
 import {docsDataSource} from 'data';
 import {useTeamContext} from 'hooks/team';
 import {useCallback, useMemo, useRef} from 'react';
-import {createSpaceFormSchema, slugify} from 'validation/space_schema';
+import {slugify, spaceFormSchema} from 'validation/space_schema';
 
 import type {Space, SpaceSummary, SpaceVisibility} from 'types/docs';
 
@@ -47,16 +47,14 @@ type CreateSpaceOptions = {
 export function useCreateSpace({onCreated}: CreateSpaceOptions = {}) {
     const {name: teamName} = useTeamContext();
 
-    const checkSlugAvailable = useCallback((slug: string) => docsDataSource.isSlugAvailable(slug), []);
-    const formSchema = useMemo(() => createSpaceFormSchema(checkSlugAvailable), [checkSlugAvailable]);
-    const slugSchema = useMemo(() => formSchema.shape.slug, [formSchema]);
+    const slugSchema = spaceFormSchema.shape.slug;
 
     // Stop deriving the slug from the name once the user edits the slug directly.
     const slugEdited = useRef(false);
 
     const form = useForm({
         defaultValues: INITIAL_VALUES,
-        validators: {onSubmitAsync: formSchema},
+        validators: {onSubmitAsync: spaceFormSchema},
         onSubmit: async ({value}) => {
             const space = await Promise.resolve(docsDataSource.createSpace({
                 ...value,
