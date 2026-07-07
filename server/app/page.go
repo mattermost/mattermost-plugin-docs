@@ -243,7 +243,12 @@ func (s *Service) RestorePage(pageID, spaceID string) (*model.Page, *mmmodel.App
 	}
 	restored, getErr := s.store.GetPage(pageID, false)
 	if getErr != nil {
-		return nil, storeAppError("RestorePage", getErr)
+		// The restore committed successfully; retry once in case of a transient read error, as
+		// a permanent 500 here would cause retries to hit "not deleted" (400) instead.
+		restored, getErr = s.store.GetPage(pageID, false)
+		if getErr != nil {
+			return nil, storeAppError("RestorePage", getErr)
+		}
 	}
 	return restored, nil
 }
@@ -274,6 +279,9 @@ func (s *Service) DuplicatePage(pageID, sourceSpaceID, userID string, includeChi
 	if !mmmodel.IsValidId(userID) {
 		return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
+	if targetSpaceID != "" && !mmmodel.IsValidId(targetSpaceID) {
+		return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.invalid_target_space_id.app_error", nil, "", http.StatusBadRequest)
+	}
 	source, descendants, getErr := s.store.GetPageForDuplicate(pageID, sourceSpaceID, includeChildren)
 	if getErr != nil {
 		if store.IsErrNotFound(getErr) {
@@ -294,7 +302,7 @@ func (s *Service) DuplicatePage(pageID, sourceSpaceID, userID string, includeChi
 			// not-found here can only be the destination space — remap to the specific id the
 			// other destination-missing paths below already use, instead of leaking the generic
 			// app.store.not_found.app_error id for the same failure class.
-			if crossErr.Id == "app.store.not_found.app_error" {
+			if crossErr.StatusCode == http.StatusNotFound {
 				return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.dest_not_found.app_error", nil, "", http.StatusNotFound).Wrap(crossErr)
 			}
 			return nil, crossErr

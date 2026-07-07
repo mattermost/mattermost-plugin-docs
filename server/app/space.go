@@ -20,6 +20,9 @@ import (
 // compensating archive itself fails so it can be reconciled. reason describes the step that failed
 // and cause is its underlying error.
 func (s *Service) archiveOrphanChannel(channelID, reason string, cause error) {
+	if s.client == nil {
+		return
+	}
 	if delErr := s.client.Channel.Delete(channelID); delErr != nil {
 		s.logWarn("CreateSpace: compensating channel archive also failed; channel may be orphaned", "channel_id", channelID, "failure_reason", reason, "cause_err", cause.Error(), "delete_err", delErr.Error())
 	}
@@ -44,23 +47,20 @@ func (s *Service) CreateSpace(space *model.Space, userID string) (*model.Space, 
 	if userID != "" && !mmmodel.IsValidId(userID) {
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	// Unlike DeleteSpace, where archiving the backing channel is best-effort, creating a space
-	// requires a live client to stand up its backing channel; a nil client (store-only test
-	// wiring) is a precondition failure rather than a panic.
+	// DeleteSpace can complete without a client — it removes the space row regardless and
+	// only archives the backing channel as a best-effort side effect. CreateSpace cannot:
+	// the backing channel must exist before the space row is saved, so a nil client is a
+	// hard precondition failure, not a recoverable skip.
 	if s.client == nil {
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.no_client.app_error", nil, "", http.StatusInternalServerError)
 	}
-	// Validate all in-memory fields before the first I/O call below, mirroring CreatePage: an
-	// over-long title/description/icon should fail cheaply rather than after a wasted Team.GetMember
-	// round-trip.
+	// Validate all in-memory fields before the first I/O call, mirroring CreatePage.
 	title, titleErr := validateTitle("CreateSpace", space.Title, model.SpaceTitleMaxRunes)
 	if titleErr != nil {
 		return nil, titleErr
 	}
 	space.Title = title
-	// Validate Description/Icon before creating the backing channel, mirroring ReplaceSpace. Otherwise
-	// an over-long Description (carried as the channel Header) only fails inside Channel.Create and
-	// surfaces as a 500 backing_channel_failed instead of a clean 400.
+	// Validate Description and Icon before creating the backing channel, mirroring replaceSpace.
 	if fieldErr := validateSpaceMutableFields("CreateSpace", space.Description, space.Icon); fieldErr != nil {
 		return nil, fieldErr
 	}
@@ -129,23 +129,24 @@ func (s *Service) GetSpace(spaceID string) (*model.Space, *mmmodel.AppError) {
 	return space, nil
 }
 
-// GetSpaceForChannel returns the active space for the given backing channel.
-func (s *Service) GetSpaceForChannel(channelID string) (*model.Space, *mmmodel.AppError) {
-	if !mmmodel.IsValidId(channelID) {
-		return nil, mmmodel.NewAppError("GetSpaceForChannel", "app.space.get_for_channel.invalid_channel_id.app_error", nil, "", http.StatusBadRequest)
-	}
-	space, err := s.store.GetSpaceForChannel(channelID)
-	if err != nil {
-		return nil, storeAppError("GetSpaceForChannel", err)
-	}
-	return space, nil
-}
-
 // GetSpacesForTeam returns paginated live spaces for a team. perPage <= 0 defaults to
-// PerPageDefault; larger values are capped at PerPageMaximum.
-func (s *Service) GetSpacesForTeam(teamID string, page, perPage int) ([]*model.Space, *mmmodel.AppError) {
+// PerPageDefault; larger values are capped at PerPageMaximum. A non-empty userID is verified to be
+// a member of the team before listing (skipped for system callers with userID == "" or when the
+// client is not wired).
+func (s *Service) GetSpacesForTeam(teamID, userID string, page, perPage int) ([]*model.Space, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(teamID) {
 		return nil, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.invalid_team_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	if userID != "" && !mmmodel.IsValidId(userID) {
+		return nil, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	if userID != "" && s.client != nil {
+		if _, memberErr := s.client.Team.GetMember(teamID, userID); memberErr != nil {
+			if errors.Is(memberErr, pluginapi.ErrNotFound) {
+				return nil, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.not_team_member.app_error", nil, "", http.StatusForbidden).Wrap(memberErr)
+			}
+			return nil, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memberErr)
+		}
 	}
 	offset, limit := paginationOffsetLimit(page, perPage)
 	spaces, err := s.store.GetSpacesForTeam(teamID, offset, limit)
@@ -155,51 +156,14 @@ func (s *Service) GetSpacesForTeam(teamID string, page, perPage int) ([]*model.S
 	return spaces, nil
 }
 
-// ReplaceSpace replaces a space's mutable fields (Title, Description, Icon, Props) —
-// full replacement, not partial merge. Callers must pass a complete space (typically
-// from GetSpace) with only the intended fields changed; zero values clear stored values.
-// Optimistic-locked on space.UpdateAt; force overrides with last-write-wins.
-//
-// This is intentionally PUT-style, unlike UpdatePage's PATCH-style *PagePatch (nil field =
-// unchanged): Space has few, always-together mutable fields, so full-replacement keeps the
-// call simple; Page's larger field set (and independent Body/SearchText/Props updates) needs
-// per-field nil-vs-set discrimination. If Space grows more independently-updatable fields,
-// revisit with a SpacePatch mirroring PagePatch.
-func (s *Service) ReplaceSpace(space *model.Space, force bool) (*model.Space, *mmmodel.AppError) {
-	if space == nil {
-		return nil, mmmodel.NewAppError("ReplaceSpace", "app.space.update.nil_input.app_error", nil, "", http.StatusBadRequest)
-	}
-	if !mmmodel.IsValidId(space.Id) {
-		return nil, mmmodel.NewAppError("ReplaceSpace", "app.space.update.invalid_id.app_error", nil, "", http.StatusBadRequest)
-	}
-	title, titleErr := validateTitle("ReplaceSpace", space.Title, model.SpaceTitleMaxRunes)
-	if titleErr != nil {
-		return nil, titleErr
-	}
-	space.Title = title
-
-	if fieldErr := validateSpaceMutableFields("ReplaceSpace", space.Description, space.Icon); fieldErr != nil {
-		return nil, fieldErr
-	}
-
-	updated, err := s.store.UpdateSpace(space, force)
-	if err != nil {
-		return nil, storeAppError("ReplaceSpace", err)
-	}
-
-	// The backing channel is an invisible "S" channel and the page/space store is the source of
-	// truth, so Title/Description are not mirrored onto it (matching the POC). Channel.Update on a
-	// space channel is unsupported anyway.
-	return updated, nil
-}
-
-// PatchSpace applies the non-nil fields of patch onto the existing space and saves it. A non-nil
-// field (including an empty string) overwrites the current value, so a field can be cleared. Named
-// Patch (not Update) because the store's own UpdateSpace already means full replacement — sharing
-// that name here would give "Update" opposite meanings at the App and Store layers.
+// UpdateSpace applies the non-nil fields of patch onto the existing space and saves it. A non-nil
+// field (including an empty string) overwrites the current value, so a field can be cleared.
 // Optimistic-locked on expectedUpdateAt: the caller passes the UpdateAt it last read, and a stale
 // baseline yields a conflict unless force overrides it with last-write-wins.
-func (s *Service) PatchSpace(spaceID string, patch *model.SpacePatch, expectedUpdateAt int64, force bool) (*model.Space, *mmmodel.AppError) {
+func (s *Service) UpdateSpace(spaceID string, patch *model.SpacePatch, expectedUpdateAt int64, force bool) (*model.Space, *mmmodel.AppError) {
+	if !mmmodel.IsValidId(spaceID) {
+		return nil, mmmodel.NewAppError("UpdateSpace", "app.space.update.invalid_id.app_error", nil, "", http.StatusBadRequest)
+	}
 	if appErr := patch.IsValid(); appErr != nil {
 		return nil, appErr
 	}
@@ -208,10 +172,25 @@ func (s *Service) PatchSpace(spaceID string, patch *model.SpacePatch, expectedUp
 		return nil, appErr
 	}
 	existing.Patch(patch)
-	// Carry the caller-supplied baseline so ReplaceSpace's optimistic-lock CAS compares against what
-	// the client read, not the row we just fetched (which would always match and defeat the lock).
+	// Carry the caller-supplied baseline so the optimistic-lock CAS compares against what the
+	// client read, not the row we just fetched (which would always match and defeat the lock).
 	existing.UpdateAt = expectedUpdateAt
-	return s.ReplaceSpace(existing, force)
+
+	title, titleErr := validateTitle("UpdateSpace", existing.Title, model.SpaceTitleMaxRunes)
+	if titleErr != nil {
+		return nil, titleErr
+	}
+	existing.Title = title
+
+	if fieldErr := validateSpaceMutableFields("UpdateSpace", existing.Description, existing.Icon); fieldErr != nil {
+		return nil, fieldErr
+	}
+
+	updated, err := s.store.UpdateSpace(existing, force)
+	if err != nil {
+		return nil, storeAppError("UpdateSpace", err)
+	}
+	return updated, nil
 }
 
 // DeleteSpace soft-deletes a space and its pages (reversible via RestoreSpace), then archives the
@@ -283,7 +262,11 @@ func (s *Service) RestoreSpace(spaceID string) (*model.Space, *mmmodel.AppError)
 	}
 	space, getErr := s.GetSpace(spaceID)
 	if getErr != nil {
-		return nil, getErr
+		// The restore committed successfully; retry once in case of a transient read error.
+		space, getErr = s.GetSpace(spaceID)
+		if getErr != nil {
+			return nil, getErr
+		}
 	}
 	if appErr := s.restoreSpaceChannel(space); appErr != nil {
 		return nil, appErr
@@ -309,7 +292,7 @@ func (s *Service) retryStuckChannelRestore(spaceID string) (space *model.Space, 
 	if getChanErr != nil {
 		return nil, mmmodel.NewAppError("RestoreSpace", "app.space.restore.channel_restore_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(getChanErr), true
 	}
-	if channel.DeleteAt == 0 {
+	if channel == nil || channel.DeleteAt == 0 {
 		return nil, nil, false
 	}
 	if appErr := s.restoreSpaceChannel(got); appErr != nil {

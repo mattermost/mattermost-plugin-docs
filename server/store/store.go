@@ -285,9 +285,10 @@ type ErrInvalidInput struct {
 // Reason codes for invariants decided atomically under a row lock (see RestorePage, RestoreSpace,
 // CreatePage); the app layer maps these to its own app-facing error keys.
 const (
-	ReasonNotRestorable    = "not_restorable"
-	ReasonNotDeleted       = "not_deleted"
-	ReasonMaxDepthExceeded = "max_depth_exceeded"
+	ReasonNotRestorable           = "not_restorable"
+	ReasonNotDeleted              = "not_deleted"
+	ReasonMaxDepthExceeded        = "max_depth_exceeded"
+	ReasonSubtreeMaxDepthExceeded = "subtree_max_depth_exceeded"
 )
 
 func (e *ErrInvalidInput) Error() string {

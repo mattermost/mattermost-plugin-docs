@@ -11,43 +11,34 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-// maxPageBodyBytes caps the raw HTTP request body for page create/update/move/duplicate. A request
-// at both service-level maxes (model.PageBodyMaxBytes + model.PageSearchTextMaxBytes, 4 MiB) still
-// needs room for the JSON envelope, field names, and any characters needing \-escaping inside
+// maxPageBodyBytes caps the raw HTTP request body for page create/update. A request at both
+// service-level maxes (model.PageBodyMaxBytes + model.PageSearchTextMaxBytes, 4 MiB) still needs
+// room for the JSON envelope, field names, and any characters needing \-escaping inside
 // Body/SearchText — all of which only grow the wire size beyond the decoded byte length the model
 // validates. Doubling the combined max gives that headroom so a model-valid payload is never
 // rejected here before reaching validation.
 const maxPageBodyBytes = 2 * (model.PageBodyMaxBytes + model.PageSearchTextMaxBytes) // 8 MiB
 
-// resolvePageInSpace fetches the page scoped to spaceID via the App layer (which owns the
-// page-belongs-to-space check — see Service.GetPageInSpace), writing the appropriate error response and
-// returning ok=false when the caller should stop. where identifies the calling handler.
-// includeDeleted also resolves soft-deleted pages (DeleteAt != 0).
-func (p *Plugin) resolvePageInSpace(w http.ResponseWriter, spaceID, pageID, where string, includeDeleted bool) (*model.Page, bool) {
-	page, appErr := p.service.GetPageInSpace(where, pageID, spaceID, includeDeleted)
-	if appErr != nil {
-		writeAppError(w, appErr)
-		return nil, false
-	}
-	return page, true
-}
+// maxPageStructBodyBytes caps request bodies for structural page operations (move, duplicate,
+// move-to-space) that carry only UUID strings, booleans, and int64 timestamps — no content fields.
+const maxPageStructBodyBytes = 4 * 1024 // 4 KiB
 
 // handleCreatePage handles POST /api/v1/spaces/{space_id}/pages.
 func (p *Plugin) handleCreatePage(w http.ResponseWriter, r *http.Request) {
-	spaceID := mux.Vars(r)["space_id"]
+	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
 
 	var req struct {
 		Title      string `json:"title"`
 		ParentId   string `json:"parent_id,omitempty"`
-		Body       string `json:"content,omitempty"`
+		Body       string `json:"body,omitempty"`
 		SearchText string `json:"search_text,omitempty"`
 	}
 	if !decodeJSONBody(w, r, maxPageBodyBytes, &req, "handleCreatePage", false) {
 		return
 	}
 
-	page, appErr := p.service.CreatePage(spaceID, req.ParentId, req.Title, req.Body, req.SearchText, userID, "")
+	page, appErr := p.service.CreatePage(vars["space_id"], req.ParentId, req.Title, req.Body, req.SearchText, userID, "")
 	if appErr != nil {
 		writeAppError(w, appErr)
 		return
@@ -58,8 +49,9 @@ func (p *Plugin) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 // handleGetSpacePage handles GET /api/v1/spaces/{space_id}/pages/{page_id}.
 func (p *Plugin) handleGetSpacePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	page, ok := p.resolvePageInSpace(w, vars["space_id"], vars["page_id"], "handleGetSpacePage", false)
-	if !ok {
+	page, appErr := p.service.GetPageInSpace("handleGetSpacePage", vars["page_id"], vars["space_id"], false)
+	if appErr != nil {
+		writeAppError(w, appErr)
 		return
 	}
 	writeJSON(w, http.StatusOK, page)
@@ -73,7 +65,7 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Title      *string `json:"title,omitempty"`
-		Body       *string `json:"content,omitempty"`
+		Body       *string `json:"body,omitempty"`
 		SearchText *string `json:"search_text,omitempty"`
 		BaseEditAt *int64  `json:"base_edit_at,omitempty"`
 		Force      bool    `json:"force,omitempty"`
@@ -83,7 +75,7 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// UpdatePage already resolves the page scoped to space_id, so no pre-check here.
-	// The request's "content" maps onto the page body; nil fields are left unchanged. The app
+	// The request's "body" maps onto the page body; nil fields are left unchanged. The app
 	// layer validates the patch (rejecting a nil/no-op or search-text-without-body patch).
 	patch := &model.PagePatch{Title: req.Title, Body: req.Body, SearchText: req.SearchText}
 
@@ -119,20 +111,6 @@ func (p *Plugin) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, restored)
 }
 
-// handleGetPageBreadcrumb handles GET /api/v1/spaces/{space_id}/pages/{page_id}/breadcrumb,
-// returning the page's ancestor chain, root down, as a plain JSON array — bounded by the depth
-// limit, so it skips the paginatedResponse envelope the list endpoints use.
-func (p *Plugin) handleGetPageBreadcrumb(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	// GetPageAncestors already resolves the page and checks its space, so no pre-check here.
-	ancestors, appErr := p.service.GetPageAncestors(vars["page_id"], vars["space_id"])
-	if appErr != nil {
-		writeAppError(w, appErr)
-		return
-	}
-	writeJSON(w, http.StatusOK, ancestors)
-}
-
 // handleMovePage handles PATCH /api/v1/spaces/{space_id}/pages/{page_id}/move. It reparents the page
 // (parent_id nil leaves the parent unchanged; "" moves to the space root) and positions it at
 // sibling_index within the destination sibling group (clamped to the group's bounds rather than
@@ -146,7 +124,7 @@ func (p *Plugin) handleMovePage(w http.ResponseWriter, r *http.Request) {
 		ExpectedUpdateAt *int64  `json:"expected_update_at,omitempty"`
 		Force            bool    `json:"force,omitempty"`
 	}
-	if !decodeJSONBody(w, r, maxPageBodyBytes, &req, "handleMovePage", false) {
+	if !decodeJSONBody(w, r, maxPageStructBodyBytes, &req, "handleMovePage", false) {
 		return
 	}
 
@@ -172,7 +150,7 @@ func (p *Plugin) handleDuplicatePage(w http.ResponseWriter, r *http.Request) {
 		TargetSpaceId   string  `json:"target_space_id,omitempty"`
 		ParentId        *string `json:"parent_id,omitempty"`
 	}
-	if !decodeJSONBody(w, r, maxPageBodyBytes, &req, "handleDuplicatePage", true) {
+	if !decodeJSONBody(w, r, maxPageStructBodyBytes, &req, "handleDuplicatePage", true) {
 		return
 	}
 
@@ -211,7 +189,7 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 		ExpectedUpdateAt *int64  `json:"expected_update_at,omitempty"`
 		Force            bool    `json:"force,omitempty"`
 	}
-	if !decodeJSONBody(w, r, maxPageBodyBytes, &req, "handleMovePageToSpace", false) {
+	if !decodeJSONBody(w, r, maxPageStructBodyBytes, &req, "handleMovePageToSpace", false) {
 		return
 	}
 

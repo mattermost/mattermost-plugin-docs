@@ -15,9 +15,10 @@ const maxSpaceBodyBytes = 1 << 20 // 1 MiB
 
 // handleGetTeamSpaces handles GET /api/v1/teams/{team_id}/spaces.
 func (p *Plugin) handleGetTeamSpaces(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromRequest(r)
 	teamID := mux.Vars(r)["team_id"]
 	page, perPage := pageParam(r), perPageParam(r)
-	spaces, appErr := p.service.GetSpacesForTeam(teamID, page, perPage)
+	spaces, appErr := p.service.GetSpacesForTeam(teamID, userID, page, perPage)
 	if appErr != nil {
 		writeAppError(w, appErr)
 		return
@@ -25,13 +26,13 @@ func (p *Plugin) handleGetTeamSpaces(w http.ResponseWriter, r *http.Request) {
 	writePaginatedJSON(w, spaces, page, perPage)
 }
 
-// handleCreateSpace handles POST /api/v1/spaces. The app layer validates and stands up the
-// backing channel; the handler only decodes and forwards the acting user.
+// handleCreateSpace handles POST /api/v1/teams/{team_id}/spaces. The app layer validates and stands
+// up the backing channel; the handler only decodes and forwards the acting user.
 func (p *Plugin) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
+	teamID := mux.Vars(r)["team_id"]
 
 	var req struct {
-		TeamId      string `json:"team_id"`
 		Title       string `json:"title"`
 		Description string `json:"description,omitempty"`
 		Icon        string `json:"icon,omitempty"`
@@ -43,7 +44,7 @@ func (p *Plugin) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 	// Decode only the client-settable fields; Id/CreateAt/DeleteAt/SortOrder/Props are server-owned
 	// and must not be accepted from the request body (CreatorId/ChannelId are set by CreateSpace).
 	space := &model.Space{
-		TeamId:      req.TeamId,
+		TeamId:      teamID,
 		Title:       req.Title,
 		Description: req.Description,
 		Icon:        req.Icon,
@@ -84,7 +85,7 @@ func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	patch := &model.SpacePatch{Title: req.Title, Description: req.Description, Icon: req.Icon}
-	updated, appErr := p.service.PatchSpace(spaceID, patch, int64OrZero(req.ExpectedUpdateAt), req.Force)
+	updated, appErr := p.service.UpdateSpace(spaceID, patch, int64OrZero(req.ExpectedUpdateAt), req.Force)
 	if appErr != nil {
 		writeAppError(w, appErr)
 		return

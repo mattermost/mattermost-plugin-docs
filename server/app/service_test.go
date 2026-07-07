@@ -108,79 +108,6 @@ func TestServiceGetSpace(t *testing.T) {
 	})
 }
 
-func TestServiceGetSpaceForChannel(t *testing.T) {
-	h := openTestService(t)
-
-	channelID := mmmodel.NewId()
-	saved := mustCreateSpace(t, h.store, channelID)
-
-	got, err := h.svc.GetSpaceForChannel(channelID)
-	require.Nil(t, err)
-	require.Equal(t, saved.Id, got.Id)
-}
-
-func TestServiceReplaceSpace(t *testing.T) {
-	h := openTestService(t)
-
-	t.Run("successful update", func(t *testing.T) {
-		space := mustCreateSpace(t, h.store, mmmodel.NewId())
-		space.Title = "Updated"
-		updated, err := h.svc.ReplaceSpace(space, false)
-		require.Nil(t, err)
-		require.Equal(t, "Updated", updated.Title)
-	})
-
-	t.Run("nil space rejected with 400", func(t *testing.T) {
-		_, err := h.svc.ReplaceSpace(nil, false)
-		require.NotNil(t, err)
-		require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	})
-
-	t.Run("invalid id rejected with 400", func(t *testing.T) {
-		_, err := h.svc.ReplaceSpace(&model.Space{Id: "not-an-id", Title: "x"}, false)
-		require.NotNil(t, err)
-		require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	})
-
-	t.Run("whitespace-only title rejected with 400", func(t *testing.T) {
-		space := mustCreateSpace(t, h.store, mmmodel.NewId())
-		clone := *space
-		clone.Title = "   "
-		_, err := h.svc.ReplaceSpace(&clone, false)
-		require.NotNil(t, err)
-		require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	})
-
-	t.Run("title over max runes rejected with 400", func(t *testing.T) {
-		space := mustCreateSpace(t, h.store, mmmodel.NewId())
-		clone := *space
-		clone.Title = strings.Repeat("a", model.SpaceTitleMaxRunes+1)
-		_, err := h.svc.ReplaceSpace(&clone, false)
-		require.NotNil(t, err)
-		require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	})
-
-	t.Run("description over max runes rejected with 400", func(t *testing.T) {
-		space := mustCreateSpace(t, h.store, mmmodel.NewId())
-		clone := *space
-		clone.Description = strings.Repeat("a", model.SpaceDescriptionMaxRunes+1)
-		_, err := h.svc.ReplaceSpace(&clone, false)
-		require.NotNil(t, err)
-		require.Equal(t, http.StatusBadRequest, err.StatusCode)
-		require.Equal(t, "app.shared.description_too_long.app_error", err.Id)
-	})
-
-	t.Run("icon over max bytes rejected with 400", func(t *testing.T) {
-		space := mustCreateSpace(t, h.store, mmmodel.NewId())
-		clone := *space
-		clone.Icon = strings.Repeat("a", model.SpaceIconMaxBytes+1)
-		_, err := h.svc.ReplaceSpace(&clone, false)
-		require.NotNil(t, err)
-		require.Equal(t, http.StatusBadRequest, err.StatusCode)
-		require.Equal(t, "app.shared.icon_too_large.app_error", err.Id)
-	})
-}
-
 // TestServiceCreatePageParentDifferentSpace verifies that a parent belonging to a different
 // space is rejected, preventing cross-space hierarchy corruption.
 func TestServiceCreatePageParentDifferentSpace(t *testing.T) {
@@ -445,36 +372,6 @@ func TestServiceGetPageChildren(t *testing.T) {
 	require.Equal(t, child.Id, children[0].Id)
 }
 
-func TestServiceGetPageAncestors(t *testing.T) {
-	h := openTestService(t)
-
-	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
-	userID := mmmodel.NewId()
-	root := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
-	child := mustCreatePage(t, h.store, space.Id, channelID, userID, root.Id)
-
-	ancestors, err := h.svc.GetPageAncestors(child.Id, space.Id)
-	require.Nil(t, err)
-	require.Len(t, ancestors, 1)
-	require.Equal(t, root.Id, ancestors[0].Id)
-}
-
-func TestServiceGetPageDescendants(t *testing.T) {
-	h := openTestService(t)
-
-	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
-	userID := mmmodel.NewId()
-	root := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
-	child := mustCreatePage(t, h.store, space.Id, channelID, userID, root.Id)
-	_ = mustCreatePage(t, h.store, space.Id, channelID, userID, child.Id)
-
-	descendants, err := h.svc.GetPageDescendants(root.Id, space.Id)
-	require.Nil(t, err)
-	require.Len(t, descendants, 2)
-}
-
 func TestServiceGetSpacePages(t *testing.T) {
 	h := openTestService(t)
 
@@ -526,7 +423,7 @@ func TestServiceGetTeamSpaces(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	spaces, err := h.svc.GetSpacesForTeam(teamID, 0, 0)
+	spaces, err := h.svc.GetSpacesForTeam(teamID, "", 0, 0)
 	require.Nil(t, err)
 	require.Len(t, spaces, 2)
 }
@@ -534,32 +431,10 @@ func TestServiceGetTeamSpaces(t *testing.T) {
 // TestServiceGetTeamSpacesInvalidID verifies a malformed team id is rejected with 400.
 func TestServiceGetTeamSpacesInvalidID(t *testing.T) {
 	h := openTestService(t)
-	_, err := h.svc.GetSpacesForTeam("not-a-valid-id", 0, 0)
+	_, err := h.svc.GetSpacesForTeam("not-a-valid-id", "", 0, 0)
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	require.Equal(t, "app.space.get_for_team.invalid_team_id.app_error", err.Id)
-}
-
-// TestServiceGetPageAncestorsLimitExceeded verifies the store's ErrLimitExceeded for an
-// over-deep ancestor chain maps to HTTP 422 at the service layer. The chain is seeded
-// directly through the store, since the app-layer CreatePage depth cap is far lower.
-func TestServiceGetPageAncestorsLimitExceeded(t *testing.T) {
-	h := openTestService(t)
-
-	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
-	userID := mmmodel.NewId()
-
-	parentID := ""
-	var leaf *model.Page
-	for range store.MaxPageHierarchyDepth + 2 {
-		leaf = mustCreatePage(t, h.store, space.Id, channelID, userID, parentID)
-		parentID = leaf.Id
-	}
-
-	_, err := h.svc.GetPageAncestors(leaf.Id, space.Id)
-	require.NotNil(t, err)
-	require.Equal(t, http.StatusUnprocessableEntity, err.StatusCode)
 }
 
 // TestServiceCreatePageDerivesChannelFromSpace verifies the page's ChannelId is
@@ -656,13 +531,6 @@ func TestServiceCreatePage(t *testing.T) {
 	})
 }
 
-func TestServiceGetSpaceForChannelNotFound(t *testing.T) {
-	h := openTestService(t)
-	_, err := h.svc.GetSpaceForChannel(mmmodel.NewId())
-	require.NotNil(t, err)
-	require.Equal(t, 404, err.StatusCode)
-}
-
 // TestServiceGetSpaceInvalidID verifies that GetSpace with a malformed ID returns 400
 // with the expected error key.
 func TestServiceGetSpaceInvalidID(t *testing.T) {
@@ -672,17 +540,6 @@ func TestServiceGetSpaceInvalidID(t *testing.T) {
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	require.Equal(t, "app.space.get.invalid_id.app_error", err.Id)
-}
-
-// TestServiceGetSpaceForChannelInvalidID verifies that GetSpaceForChannel with a malformed
-// ID returns 400 with the expected error key.
-func TestServiceGetSpaceForChannelInvalidID(t *testing.T) {
-	h := openTestService(t)
-
-	_, err := h.svc.GetSpaceForChannel("not-a-valid-id")
-	require.NotNil(t, err)
-	require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	require.Equal(t, "app.space.get_for_channel.invalid_channel_id.app_error", err.Id)
 }
 
 // TestServiceGetPageEmptyID verifies that GetPage with an empty string returns 400.
@@ -914,11 +771,11 @@ func TestServiceRestorePage(t *testing.T) {
 		require.Equal(t, parent.ParentId, gotChild.ParentId)
 	})
 
-	t.Run("a non-deleted page returns 400", func(t *testing.T) {
+	t.Run("a non-deleted page returns 409", func(t *testing.T) {
 		live := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 		_, err := h.svc.RestorePage(live.Id, live.SpaceId)
 		require.NotNil(t, err)
-		require.Equal(t, http.StatusBadRequest, err.StatusCode)
+		require.Equal(t, http.StatusConflict, err.StatusCode)
 		require.Equal(t, "app.page.restore.not_deleted.app_error", err.Id)
 	})
 
@@ -943,7 +800,7 @@ func TestServiceRestorePage(t *testing.T) {
 }
 
 // TestServiceRestoreSpace verifies the app restore path: a soft-deleted space becomes live, a
-// live (not-deleted) space → 400, an invalid id → 400, and restoring over a backing channel a
+// live (not-deleted) space → 409, an invalid id → 400, and restoring over a backing channel a
 // new live space now owns → 409.
 func TestServiceRestoreSpace(t *testing.T) {
 	h := openTestService(t)
@@ -957,11 +814,11 @@ func TestServiceRestoreSpace(t *testing.T) {
 		require.Zero(t, got.DeleteAt)
 	})
 
-	t.Run("a non-deleted space returns 400", func(t *testing.T) {
+	t.Run("a non-deleted space returns 409", func(t *testing.T) {
 		space := mustCreateSpace(t, h.store, mmmodel.NewId())
 		_, err := h.svc.RestoreSpace(space.Id)
 		require.NotNil(t, err)
-		require.Equal(t, http.StatusBadRequest, err.StatusCode)
+		require.Equal(t, http.StatusConflict, err.StatusCode)
 		require.Equal(t, "app.space.restore.not_deleted.app_error", err.Id)
 	})
 

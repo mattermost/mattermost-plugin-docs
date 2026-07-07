@@ -181,11 +181,11 @@ func storeAppError(where string, err error) *mmmodel.AppError {
 		// Use the limit the error carries; different store methods have different bounds.
 		var limitErr *store.ErrLimitExceeded
 		_ = errors.As(err, &limitErr) // guaranteed true: IsErrLimitExceeded already performed this assertion
-		if limitErr.Reason != "" {
-			// A depth-cap violation caught by a store-layer under-lock re-check: surface the same
-			// id/status the app layer's own unlocked pre-check (checkDepthCap) would give for the
-			// identical condition, instead of the generic 422 below.
-			return mmmodel.NewAppError(where, limitErr.Reason, map[string]any{"MaxDepth": limitErr.Limit}, "", http.StatusBadRequest).Wrap(err)
+		switch limitErr.Reason {
+		case store.ReasonMaxDepthExceeded:
+			return mmmodel.NewAppError(where, "app.page.move.max_depth_exceeded.app_error", map[string]any{"MaxDepth": limitErr.Limit}, "", http.StatusBadRequest).Wrap(err)
+		case store.ReasonSubtreeMaxDepthExceeded:
+			return mmmodel.NewAppError(where, "app.page.move.subtree_max_depth_exceeded.app_error", map[string]any{"MaxDepth": limitErr.Limit}, "", http.StatusBadRequest).Wrap(err)
 		}
 		return mmmodel.NewAppError(where, "app.store.too_large.app_error", map[string]any{"Limit": limitErr.Limit}, "", http.StatusUnprocessableEntity).Wrap(err)
 	default:
@@ -216,5 +216,9 @@ func restoreReasonAppError(where string, err error, reasonKeys map[string]string
 	if !ok {
 		return nil
 	}
-	return mmmodel.NewAppError(where, key, nil, "", http.StatusBadRequest).Wrap(err)
+	status := http.StatusBadRequest
+	if invErr.Reason == store.ReasonNotDeleted {
+		status = http.StatusConflict
+	}
+	return mmmodel.NewAppError(where, key, nil, "", status).Wrap(err)
 }

@@ -96,18 +96,6 @@ func TestSpace(t *testing.T) {
 		require.Equal(t, channelID, got.ChannelId)
 	})
 
-	t.Run("get for channel returns the space linked to that channel", func(t *testing.T) {
-		s := openTestDB(t)
-
-		channelID := mmmodel.NewId()
-		saved, err := s.CreateSpace(newSpace(channelID))
-		require.NoError(t, err)
-
-		got, err := s.GetSpaceForChannel(channelID)
-		require.NoError(t, err)
-		require.Equal(t, saved.Id, got.Id)
-	})
-
 	t.Run("update persists changed fields", func(t *testing.T) {
 		s := openTestDB(t)
 
@@ -486,32 +474,6 @@ func TestGetPageDescendants(t *testing.T) {
 	require.Len(t, descendants, 2) // child + grandchild (root excluded)
 }
 
-func TestGetPageAncestors(t *testing.T) {
-	s := openTestDB(t)
-
-	channelID := mmmodel.NewId()
-	w := newSpace(channelID)
-	savedSpace, err := s.CreateSpace(w)
-	require.NoError(t, err)
-
-	userID := mmmodel.NewId()
-
-	root := newPage(savedSpace.Id, channelID, userID, "")
-	root.Title = "Root"
-	createdRoot, err := s.CreatePage(root, testDefaultMaxDepth)
-	require.NoError(t, err)
-
-	child := newPage(savedSpace.Id, channelID, userID, createdRoot.Id)
-	child.Title = "Child"
-	createdChild, err := s.CreatePage(child, testDefaultMaxDepth)
-	require.NoError(t, err)
-
-	ancestors, err := s.GetPageAncestors(createdChild.Id)
-	require.NoError(t, err)
-	require.Len(t, ancestors, 1) // root (child excluded)
-	require.Equal(t, createdRoot.Id, ancestors[0].Id)
-}
-
 func TestDepthBoundaryExact(t *testing.T) {
 	const maxDepth = 10 // mirrors app.MaxPageDepth; the store CTE uses 50
 
@@ -538,41 +500,11 @@ func TestDepthBoundaryExact(t *testing.T) {
 	}
 	require.NotNil(t, lastPage)
 
-	// Verify GetPageAncestors returns maxDepth-1 ancestors for the leaf.
-	ancestors, ancestorErr := s.GetPageAncestors(lastPage.Id)
-	require.NoError(t, ancestorErr)
-	require.Len(t, ancestors, maxDepth-1, "leaf at depth %d should have %d ancestors", maxDepth, maxDepth-1)
-
 	// One level past the cap must be rejected atomically by CreatePage itself.
 	tooDeep := newPage(savedSpace.Id, channelID, userID, parentID)
 	_, createErr := s.CreatePage(tooDeep, maxDepth)
 	require.Error(t, createErr)
 	require.True(t, store.IsErrInvalidInput(createErr), "expected ErrInvalidInput, got %v", createErr)
-}
-
-// TestGetPageAncestorsLimitExceeded verifies GetPageAncestors returns ErrLimitExceeded
-// rather than truncating when the parent chain exceeds MaxPageHierarchyDepth. The chain is
-// built with testDefaultMaxDepth, well past MaxPageHierarchyDepth, so CreatePage's own cap
-// doesn't interfere with reaching the read-side limit under test.
-func TestGetPageAncestorsLimitExceeded(t *testing.T) {
-	s := openTestDB(t)
-
-	channelID := mmmodel.NewId()
-	space, err := s.CreateSpace(newSpace(channelID))
-	require.NoError(t, err)
-	userID := mmmodel.NewId()
-
-	parentID := ""
-	var leaf *model.Page
-	for range store.MaxPageHierarchyDepth + 2 {
-		leaf, err = s.CreatePage(newPage(space.Id, channelID, userID, parentID), testDefaultMaxDepth)
-		require.NoError(t, err)
-		parentID = leaf.Id
-	}
-
-	_, err = s.GetPageAncestors(leaf.Id)
-	require.Error(t, err)
-	require.True(t, store.IsErrLimitExceeded(err), "expected ErrLimitExceeded, got %v", err)
 }
 
 // TestGetPageDescendantsDepthLimitExceeded verifies GetPageDescendants returns
@@ -747,34 +679,6 @@ func TestCreatePageInvalidID(t *testing.T) {
 	require.NotNil(t, p.IsValid(), "page with invalid ID must fail IsValid")
 }
 
-func TestGetPageAncestors_FourLevelChain(t *testing.T) {
-	s := openTestDB(t)
-
-	channelID := mmmodel.NewId()
-	userID := mmmodel.NewId()
-	space, err := s.CreateSpace(newSpace(channelID))
-	require.NoError(t, err)
-
-	// Build root → L1 → L2 → L3.
-	root, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
-	require.NoError(t, err)
-	l1, err := s.CreatePage(newPage(space.Id, channelID, userID, root.Id), testDefaultMaxDepth)
-	require.NoError(t, err)
-	l2, err := s.CreatePage(newPage(space.Id, channelID, userID, l1.Id), testDefaultMaxDepth)
-	require.NoError(t, err)
-	l3, err := s.CreatePage(newPage(space.Id, channelID, userID, l2.Id), testDefaultMaxDepth)
-	require.NoError(t, err)
-
-	ancestors, err := s.GetPageAncestors(l3.Id)
-	require.NoError(t, err)
-	require.Len(t, ancestors, 3, "l3 leaf must have exactly 3 ancestors")
-
-	// CTE orders by depth descending (root has the greatest hop count), so root is first.
-	require.Equal(t, root.Id, ancestors[0].Id, "first ancestor must be root")
-	require.Equal(t, l1.Id, ancestors[1].Id, "second ancestor must be l1")
-	require.Equal(t, l2.Id, ancestors[2].Id, "third ancestor must be l2")
-}
-
 // TestGetPageDescendants_ExcludesUnrelatedSubtrees verifies that
 // GetPageDescendants for a mid-tree node returns only its own subtree
 // and not siblings or their children.
@@ -910,8 +814,8 @@ func TestPageIsValidSelfParent(t *testing.T) {
 	require.NotNil(t, p.IsValid(), "a page that is its own parent must be invalid")
 }
 
-// TestCTECycleDetection verifies that the recursive CTEs (GetPageDescendants and
-// GetPageAncestors) terminate and return bounded results even when a ParentId cycle is
+// TestCTECycleDetection verifies that the recursive CTE (GetPageDescendants)
+// terminates and returns bounded results even when a ParentId cycle is
 // present in the database (which cannot be created via the public API but can occur from
 // raw SQL or data corruption).
 //
@@ -944,11 +848,6 @@ func TestCTECycleDetection(t *testing.T) {
 	// We only care that it did NOT hang or panic — an empty result is correct.
 	require.NoError(t, descErr, "GetPageDescendants must not error on a cycle")
 	_ = descendants
-
-	// GetPageAncestors must also terminate.
-	ancestors, ancErr := s.GetPageAncestors(created.Id)
-	require.NoError(t, ancErr, "GetPageAncestors must not error on a cycle")
-	_ = ancestors
 }
 
 // TestGetPageDescendants_EmptyID verifies that GetPageDescendants rejects an empty pageID
@@ -2105,4 +2004,191 @@ func TestCreatePageSubtreeMissingSpace(t *testing.T) {
 	root.Id = mmmodel.NewId()
 	_, err := s.CreatePageSubtree([]*model.Page{root}, 0)
 	require.True(t, store.IsErrNotFound(err), "expected ErrNotFound for a missing space, got %v", err)
+}
+
+// TestGetSpacePages verifies GetSpacePages returns live pages for a space and excludes pages from
+// other spaces and soft-deleted pages.
+func TestGetSpacePages(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+	otherSpace, err := s.CreateSpace(newSpace(mmmodel.NewId()))
+	require.NoError(t, err)
+
+	// Create two pages in the target space.
+	p1, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+	require.NoError(t, err)
+	p2, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+	require.NoError(t, err)
+
+	// A page in a different space must not appear.
+	_, err = s.CreatePage(newPage(otherSpace.Id, mmmodel.NewId(), userID, ""), testDefaultMaxDepth)
+	require.NoError(t, err)
+
+	// A soft-deleted page in the target space must not appear.
+	deleted, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+	require.NoError(t, err)
+	require.NoError(t, s.DeletePage(deleted.Id, deleted.SpaceId))
+
+	pages, err := s.GetSpacePages(space.Id, 0, 100)
+	require.NoError(t, err)
+	require.Len(t, pages, 2, "must return exactly the two live pages in the space")
+
+	ids := idsOf(pages)
+	require.Contains(t, ids, p1.Id)
+	require.Contains(t, ids, p2.Id)
+	require.NotContains(t, ids, deleted.Id)
+}
+
+// TestCreatePageSubtreeSuccess verifies that CreatePageSubtree inserts a root plus children and
+// returns all created rows with their assigned IDs.
+func TestCreatePageSubtreeSuccess(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+
+	// Build a two-level subtree: root → child → grandchild.
+	root := newPage(space.Id, channelID, userID, "")
+	root.PreSave()
+	child := newPage(space.Id, channelID, userID, root.Id)
+	child.PreSave()
+	grandchild := newPage(space.Id, channelID, userID, child.Id)
+	grandchild.PreSave()
+
+	created, err := s.CreatePageSubtree([]*model.Page{root, child, grandchild}, testDefaultMaxDepth)
+	require.NoError(t, err)
+	require.Len(t, created, 3, "must return all three created pages")
+
+	ids := idsOf(created)
+	require.Contains(t, ids, root.Id)
+	require.Contains(t, ids, child.Id)
+	require.Contains(t, ids, grandchild.Id)
+
+	// Verify they are live in the DB.
+	for _, id := range ids {
+		got, getErr := s.GetPage(id, false)
+		require.NoError(t, getErr, "page %s must be fetchable after subtree create", id)
+		require.Zero(t, got.DeleteAt)
+	}
+}
+
+// TestGetPageAncestorDepth verifies that GetPageAncestorDepth returns the correct ancestor count
+// at various levels: root (0), child (1), and grandchild (2).
+func TestGetPageAncestorDepth(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+
+	root, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+	require.NoError(t, err)
+	child, err := s.CreatePage(newPage(space.Id, channelID, userID, root.Id), testDefaultMaxDepth)
+	require.NoError(t, err)
+	grandchild, err := s.CreatePage(newPage(space.Id, channelID, userID, child.Id), testDefaultMaxDepth)
+	require.NoError(t, err)
+
+	depth, err := s.GetPageAncestorDepth(root.Id)
+	require.NoError(t, err)
+	require.Equal(t, 0, depth, "root must have 0 ancestors")
+
+	depth, err = s.GetPageAncestorDepth(child.Id)
+	require.NoError(t, err)
+	require.Equal(t, 1, depth, "child must have 1 ancestor")
+
+	depth, err = s.GetPageAncestorDepth(grandchild.Id)
+	require.NoError(t, err)
+	require.Equal(t, 2, depth, "grandchild must have 2 ancestors")
+
+	// Empty ID must be rejected.
+	_, err = s.GetPageAncestorDepth("")
+	require.True(t, store.IsErrInvalidInput(err), "empty pageID must return ErrInvalidInput; got %v", err)
+}
+
+// TestGetPageAncestorIDs verifies that GetPageAncestorIDs returns the correct ancestor IDs in
+// order (nearest ancestor first) and returns ErrLimitExceeded when the chain exceeds
+// MaxPageHierarchyDepth.
+func TestGetPageAncestorIDs(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+
+	root, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+	require.NoError(t, err)
+	child, err := s.CreatePage(newPage(space.Id, channelID, userID, root.Id), testDefaultMaxDepth)
+	require.NoError(t, err)
+	grandchild, err := s.CreatePage(newPage(space.Id, channelID, userID, child.Id), testDefaultMaxDepth)
+	require.NoError(t, err)
+
+	// Root has no ancestors.
+	ancestors, err := s.GetPageAncestorIDs(root.Id)
+	require.NoError(t, err)
+	require.Empty(t, ancestors, "root must have no ancestors")
+
+	// Grandchild must have two ancestors: child then root (nearest-first order).
+	ancestors, err = s.GetPageAncestorIDs(grandchild.Id)
+	require.NoError(t, err)
+	require.Len(t, ancestors, 2)
+	require.Equal(t, child.Id, ancestors[0].Id, "first ancestor must be direct parent")
+	require.Equal(t, root.Id, ancestors[1].Id, "second ancestor must be grandparent")
+
+	// Empty ID must be rejected.
+	_, err = s.GetPageAncestorIDs("")
+	require.True(t, store.IsErrInvalidInput(err), "empty pageID must return ErrInvalidInput; got %v", err)
+
+	// A chain deeper than MaxPageHierarchyDepth must return ErrLimitExceeded.
+	parentID := root.Id
+	for range store.MaxPageHierarchyDepth + 1 {
+		deep, createErr := s.CreatePage(newPage(space.Id, channelID, userID, parentID), testDefaultMaxDepth)
+		require.NoError(t, createErr)
+		parentID = deep.Id
+	}
+	_, err = s.GetPageAncestorIDs(parentID)
+	require.True(t, store.IsErrLimitExceeded(err), "chain > MaxPageHierarchyDepth must return ErrLimitExceeded; got %v", err)
+}
+
+// TestGetPageDescendantIDParents verifies GetPageDescendantIDParents returns the correct
+// {Id, ParentId} pairs and errors correctly on an empty ID.
+func TestGetPageDescendantIDParents(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+
+	root, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+	require.NoError(t, err)
+	child, err := s.CreatePage(newPage(space.Id, channelID, userID, root.Id), testDefaultMaxDepth)
+	require.NoError(t, err)
+	grandchild, err := s.CreatePage(newPage(space.Id, channelID, userID, child.Id), testDefaultMaxDepth)
+	require.NoError(t, err)
+
+	// Leaf must have no descendant ID-parents.
+	desc, err := s.GetPageDescendantIDParents(grandchild.Id)
+	require.NoError(t, err)
+	require.Empty(t, desc, "leaf must have no descendant ID-parents")
+
+	// Root must surface child and grandchild with correct ParentId links.
+	desc, err = s.GetPageDescendantIDParents(root.Id)
+	require.NoError(t, err)
+	require.Len(t, desc, 2, "root must have two descendant ID-parent pairs")
+	require.Equal(t, child.Id, desc[0].Id)
+	require.Equal(t, root.Id, desc[0].ParentId)
+	require.Equal(t, grandchild.Id, desc[1].Id)
+	require.Equal(t, child.Id, desc[1].ParentId)
+
+	// Empty ID must be rejected.
+	_, err = s.GetPageDescendantIDParents("")
+	require.True(t, store.IsErrInvalidInput(err), "empty pageID must return ErrInvalidInput; got %v", err)
 }

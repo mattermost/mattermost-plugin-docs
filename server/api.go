@@ -30,11 +30,10 @@ func (p *Plugin) initRouter() *mux.Router {
 
 	api := router.PathPrefix("/api/v1").Subrouter()
 
-	// Space listing entry point (team-rooted).
 	api.HandleFunc("/teams/{team_id}/spaces", p.handleGetTeamSpaces).Methods(http.MethodGet)
+	api.HandleFunc("/teams/{team_id}/spaces", p.handleCreateSpace).Methods(http.MethodPost)
 
 	// Space CRUD.
-	api.HandleFunc("/spaces", p.handleCreateSpace).Methods(http.MethodPost)
 	api.HandleFunc("/spaces/{space_id}", p.handleGetSpace).Methods(http.MethodGet)
 	api.HandleFunc("/spaces/{space_id}", p.handleUpdateSpace).Methods(http.MethodPatch)
 	api.HandleFunc("/spaces/{space_id}", p.handleDeleteSpace).Methods(http.MethodDelete)
@@ -49,7 +48,6 @@ func (p *Plugin) initRouter() *mux.Router {
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}", p.handleUpdatePage).Methods(http.MethodPatch)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}", p.handleDeletePage).Methods(http.MethodDelete)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/restore", p.handleRestorePage).Methods(http.MethodPatch)
-	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/breadcrumb", p.handleGetPageBreadcrumb).Methods(http.MethodGet)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/children", p.handleGetPageChildren).Methods(http.MethodGet)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/move", p.handleMovePage).Methods(http.MethodPatch)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/move-to-space", p.handleMovePageToSpace).Methods(http.MethodPatch)
@@ -138,28 +136,6 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, v an
 		if allowEmptyBody && errors.Is(err, io.EOF) {
 			return true
 		}
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			writeAppError(w, mmmodel.NewAppError(where, "api.request_too_large.app_error", map[string]any{"MaxBytes": maxBytes}, "", http.StatusRequestEntityTooLarge))
-			return false
-		}
-		writeAppError(w, mmmodel.NewAppError(where, "api.invalid_json.app_error", nil, "", http.StatusBadRequest))
-		return false
-	}
-	if !decodedToEOF(w, dec, where, maxBytes) {
-		return false
-	}
-	return true
-}
-
-// decodedToEOF reports whether dec holds exactly one JSON value: after the first value is decoded,
-// the next token must be io.EOF. Trailing bytes (a second JSON document, or junk after the value)
-// are rejected as invalid, attributed to where — unless the trailing read is itself what pushed the
-// body over maxBytes, in which case it's reported as too large instead, mirroring decodeJSONBody's
-// own MaxBytesError handling on the first Decode call. json.Decoder skips trailing whitespace, so a
-// value followed only by whitespace still reads as EOF.
-func decodedToEOF(w http.ResponseWriter, dec *json.Decoder, where string, maxBytes int64) bool {
-	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			writeAppError(w, mmmodel.NewAppError(where, "api.request_too_large.app_error", map[string]any{"MaxBytes": maxBytes}, "", http.StatusRequestEntityTooLarge))

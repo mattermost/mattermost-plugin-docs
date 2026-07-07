@@ -76,6 +76,10 @@
     "translation": "Invalid space ID."
   },
   {
+    "id": "app.page.duplicate.invalid_target_space_id.app_error",
+    "translation": "Invalid target space ID."
+  },
+  {
     "id": "app.page.duplicate.invalid_user_id.app_error",
     "translation": "Invalid user ID."
   },
@@ -92,15 +96,7 @@
     "translation": "The page could not be found."
   },
   {
-    "id": "app.page.get_ancestors.invalid_id.app_error",
-    "translation": "Invalid page ID."
-  },
-  {
     "id": "app.page.get_children.invalid_id.app_error",
-    "translation": "Invalid page ID."
-  },
-  {
-    "id": "app.page.get_descendants.invalid_id.app_error",
     "translation": "Invalid page ID."
   },
   {
@@ -150,6 +146,10 @@
   {
     "id": "app.page.move_to_space.invalid_target_space.app_error",
     "translation": "Invalid target space ID."
+  },
+  {
+    "id": "app.page.move_to_space.target_not_found.app_error",
+    "translation": "The target space could not be found."
   },
   {
     "id": "app.page.not_found.app_error",
@@ -248,12 +248,20 @@
     "translation": "Invalid space ID."
   },
   {
-    "id": "app.space.get_for_channel.invalid_channel_id.app_error",
-    "translation": "Invalid channel ID."
-  },
-  {
     "id": "app.space.get_for_team.invalid_team_id.app_error",
     "translation": "Invalid team ID."
+  },
+  {
+    "id": "app.space.get_for_team.invalid_user_id.app_error",
+    "translation": "Invalid user ID."
+  },
+  {
+    "id": "app.space.get_for_team.not_team_member.app_error",
+    "translation": "You must be a member of the team to list its spaces."
+  },
+  {
+    "id": "app.space.get_for_team.team_lookup_failed.app_error",
+    "translation": "Unable to verify team membership."
   },
   {
     "id": "app.space.get_pages.invalid_space_id.app_error",
@@ -270,10 +278,6 @@
   {
     "id": "app.space.update.invalid_id.app_error",
     "translation": "Invalid space ID."
-  },
-  {
-    "id": "app.space.update.nil_input.app_error",
-    "translation": "No space data was provided."
   },
   {
     "id": "app.store.conflict.app_error",

@@ -107,9 +107,9 @@ func TestHandler_CreateSpace(t *testing.T) {
 		Return(&mmmodel.ChannelMember{}, nil)
 	h := openTestPlugin(t, mockAPI)
 
-	rec := h.do(t, http.MethodPost, "/api/v1/spaces", mmmodel.NewId(), map[string]any{
-		"team_id": mmmodel.NewId(),
-		"title":   "My Space",
+	teamID := mmmodel.NewId()
+	rec := h.do(t, http.MethodPost, "/api/v1/teams/"+teamID+"/spaces", mmmodel.NewId(), map[string]any{
+		"title": "My Space",
 	})
 	require.Equal(t, http.StatusCreated, rec.Code)
 
@@ -134,8 +134,8 @@ func TestHandler_CreateSpace_IgnoresServerOwnedFields(t *testing.T) {
 	h := openTestPlugin(t, mockAPI)
 
 	forgedID := mmmodel.NewId()
-	rec := h.do(t, http.MethodPost, "/api/v1/spaces", mmmodel.NewId(), map[string]any{
-		"team_id":    mmmodel.NewId(),
+	teamID := mmmodel.NewId()
+	rec := h.do(t, http.MethodPost, "/api/v1/teams/"+teamID+"/spaces", mmmodel.NewId(), map[string]any{
 		"title":      "My Space",
 		"id":         forgedID,
 		"delete_at":  1,
@@ -180,7 +180,7 @@ func TestHandler_SpaceAndPageRoundTrip(t *testing.T) {
 	t.Run("create page with content and search_text", func(t *testing.T) {
 		rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages", user, map[string]any{
 			"title":       "Page B",
-			"content":     `{"type":"doc","content":[]}`,
+			"body":        `{"type":"doc","content":[]}`,
 			"search_text": "plain text projection",
 		})
 		require.Equal(t, http.StatusCreated, rec.Code)
@@ -254,6 +254,32 @@ func TestHandler_DeleteSpace(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// TestHandler_RestoreSpace deletes then restores a space; a second restore of an already-live
+// space is rejected as a 409 (conflict — the space is already live).
+func TestHandler_RestoreSpace(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	space := seedSpace(t, h.store, mmmodel.NewId())
+
+	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id, user, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/restore", user, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var restored model.Space
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &restored))
+	require.Equal(t, space.Id, restored.Id)
+	require.Zero(t, restored.DeleteAt)
+
+	// A follow-up GET confirms the space is live.
+	rec = h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id, user, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Restoring an already-live space is a 409 (state conflict, not a bad request).
+	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/restore", user, nil)
+	require.Equal(t, http.StatusConflict, rec.Code)
+}
+
 // TestHandler_GetSpacePages lists a space's pages.
 func TestHandler_GetSpacePages(t *testing.T) {
 	h := openTestPlugin(t, nil)
@@ -301,7 +327,7 @@ func TestHandler_UpdatePage(t *testing.T) {
 	// Body and search text must be patched together (search text is the body's plain-text
 	// projection), so both are supplied.
 	body := map[string]any{
-		"content":      `{"type":"doc","content":[{"type":"paragraph"}]}`,
+		"body":         `{"type":"doc","content":[{"type":"paragraph"}]}`,
 		"search_text":  "updated text",
 		"base_edit_at": page.EditAt,
 	}
@@ -335,23 +361,6 @@ func TestHandler_RestorePage(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
-// TestHandler_Breadcrumb returns a page's ancestor chain.
-func TestHandler_Breadcrumb(t *testing.T) {
-	h := openTestPlugin(t, nil)
-	user := mmmodel.NewId()
-	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
-	parent := seedPage(t, h.store, space.Id, channelID, "")
-	child := seedPage(t, h.store, space.Id, channelID, parent.Id)
-
-	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/pages/"+child.Id+"/breadcrumb", user, nil)
-	require.Equal(t, http.StatusOK, rec.Code)
-	var ancestors []*model.Page
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &ancestors))
-	require.Len(t, ancestors, 1)
-	require.Equal(t, parent.Id, ancestors[0].Id)
-}
-
 // TestHandler_GetPageChildren returns a page's direct live children, paginated.
 func TestHandler_GetPageChildren(t *testing.T) {
 	h := openTestPlugin(t, nil)
@@ -377,26 +386,10 @@ func TestHandler_GetPageChildren(t *testing.T) {
 	require.False(t, resp.HasMore)
 }
 
-// TestHandler_Breadcrumb_WrongSpaceIs404 verifies breadcrumb is scoped to the route's space_id,
-// not just the page_id: a page moved out of the URL's space reads as not-found rather than
-// returning ancestor data for its current location.
-func TestHandler_Breadcrumb_WrongSpaceIs404(t *testing.T) {
-	h := openTestPlugin(t, nil)
-	user := mmmodel.NewId()
-	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
-	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
-	parent := seedPage(t, h.store, space.Id, channelID, "")
-	child := seedPage(t, h.store, space.Id, channelID, parent.Id)
-
-	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+otherSpace.Id+"/pages/"+child.Id+"/breadcrumb", user, nil)
-	require.Equal(t, http.StatusNotFound, rec.Code)
-}
-
 // TestHandler_Children_WrongSpaceIs404 verifies children is scoped to the route's space_id, not
 // just the page_id: a page moved out of the URL's space reads as not-found rather than returning
 // child data for its current location.
-func TestHandler_Children_WrongSpaceIs404(t *testing.T) {
+func TestHandler_GetPageChildren_WrongSpaceIs404(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
@@ -626,6 +619,120 @@ func TestHandler_DuplicatePage(t *testing.T) {
 	require.NotEqual(t, page.Id, dup.Id)
 }
 
+// TestHandler_DuplicatePage_WithChildren duplicates a page and its subtree.
+func TestHandler_DuplicatePage_WithChildren(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	parent := seedPage(t, h.store, space.Id, channelID, "")
+	seedPage(t, h.store, space.Id, channelID, parent.Id)
+
+	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages/"+parent.Id+"/duplicate", user, map[string]any{
+		"include_children": true,
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var dup model.Page
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dup))
+	require.NotEqual(t, parent.Id, dup.Id)
+}
+
+// TestHandler_DuplicatePage_CrossSpace duplicates a page into another space in the same team.
+func TestHandler_DuplicatePage_CrossSpace(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelA := mmmodel.NewId()
+	spaceA := seedSpace(t, h.store, channelA)
+	page := seedPage(t, h.store, spaceA.Id, channelA, "")
+
+	spaceB, err := h.store.CreateSpace(&model.Space{ChannelId: mmmodel.NewId(), TeamId: spaceA.TeamId, CreatorId: user, Title: "B"})
+	require.NoError(t, err)
+
+	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/duplicate", user, map[string]any{
+		"target_space_id": spaceB.Id,
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var dup model.Page
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dup))
+	require.Equal(t, spaceB.Id, dup.SpaceId)
+}
+
+// TestHandler_DuplicatePage_WithParent duplicates a page under a specified parent.
+func TestHandler_DuplicatePage_WithParent(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	parent := seedPage(t, h.store, space.Id, channelID, "")
+	page := seedPage(t, h.store, space.Id, channelID, "")
+	parentID := parent.Id
+
+	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id+"/duplicate", user, map[string]any{
+		"parent_id": parentID,
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var dup model.Page
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dup))
+	require.Equal(t, parent.Id, dup.ParentId)
+}
+
+// TestHandler_DuplicatePage_WrongSpaceIs404 verifies duplicate is scoped to the route's space_id.
+func TestHandler_DuplicatePage_WrongSpaceIs404(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	page := seedPage(t, h.store, space.Id, channelID, "")
+	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
+
+	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+otherSpace.Id+"/pages/"+page.Id+"/duplicate", user, nil)
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// TestHandler_UpdatePage_WrongSpaceIs404 verifies update is scoped to the route's space_id.
+func TestHandler_UpdatePage_WrongSpaceIs404(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	page := seedPage(t, h.store, space.Id, channelID, "")
+	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+otherSpace.Id+"/pages/"+page.Id, user, map[string]any{
+		"title": "New Title",
+	})
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// TestHandler_DeletePage_WrongSpaceIs404 verifies delete is scoped to the route's space_id.
+func TestHandler_DeletePage_WrongSpaceIs404(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	page := seedPage(t, h.store, space.Id, channelID, "")
+	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
+
+	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+otherSpace.Id+"/pages/"+page.Id, user, nil)
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// TestHandler_RestorePage_WrongSpaceIs404 verifies restore is scoped to the route's space_id.
+func TestHandler_RestorePage_WrongSpaceIs404(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	page := seedPage(t, h.store, space.Id, channelID, "")
+	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
+
+	// Soft-delete the page so restore has something to act on.
+	require.NoError(t, h.store.DeletePage(page.Id, space.Id))
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+otherSpace.Id+"/pages/"+page.Id+"/restore", user, nil)
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
 // TestHandler_InvalidJSON returns 400 on a malformed request body.
 func TestHandler_InvalidJSON(t *testing.T) {
 	h := openTestPlugin(t, nil)
@@ -664,36 +771,4 @@ func TestHandler_RequestTooLarge(t *testing.T) {
 	var appErr mmmodel.AppError
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
 	require.Equal(t, "api.request_too_large.app_error", appErr.Id)
-}
-
-// TestHandler_TrailingData rejects a body carrying more than one JSON document. Both decode helpers
-// require the body to be exactly one JSON value, so content after the first document is a 400 rather
-// than being silently ignored.
-func TestHandler_TrailingData(t *testing.T) {
-	h := openTestPlugin(t, nil)
-	user := mmmodel.NewId()
-	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
-	page := seedPage(t, h.store, space.Id, channelID, "")
-
-	send := func(method, path, body string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(method, path, strings.NewReader(body))
-		req.Header.Set("Mattermost-User-ID", user)
-		rec := httptest.NewRecorder()
-		h.plugin.ServeHTTP(&plugin.Context{}, rec, req)
-		return rec
-	}
-
-	t.Run("required body rejects a trailing document", func(t *testing.T) {
-		rec := send(http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages", `{"title":"x"} {}`)
-		require.Equal(t, http.StatusBadRequest, rec.Code)
-		var appErr mmmodel.AppError
-		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
-		require.Equal(t, "api.invalid_json.app_error", appErr.Id)
-	})
-
-	t.Run("optional body rejects trailing content after a value", func(t *testing.T) {
-		rec := send(http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id+"/duplicate", `{} garbage`)
-		require.Equal(t, http.StatusBadRequest, rec.Code)
-	})
 }

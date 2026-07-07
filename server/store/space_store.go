@@ -74,24 +74,6 @@ func (s *Store) GetSpace(id string) (*model.Space, error) {
 	return &space, nil
 }
 
-// GetSpaceForChannel returns the active space for the given channel, or ErrNotFound.
-func (s *Store) GetSpaceForChannel(channelID string) (*model.Space, error) {
-	if channelID == "" {
-		return nil, &ErrInvalidInput{Entity: "Space", Field: "channelID", Value: channelID}
-	}
-
-	builder := s.spaceSelectQuery().Where(sq.Eq{"ChannelId": channelID, "DeleteAt": 0})
-
-	var space model.Space
-	if err := s.getBuilder(s.db, &space, builder); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, &ErrNotFound{EntityName: "Space for channel", ID: channelID}
-		}
-		return nil, errors.Wrap(err, "unable_to_get_space_for_channel")
-	}
-	return &space, nil
-}
-
 // GetSpacesForTeam returns live spaces for the given team, ordered by SortOrder ascending,
 // with CreateAt then Id as stable tie-breakers. limit must be > 0.
 func (s *Store) GetSpacesForTeam(teamID string, offset, limit int) ([]*model.Space, error) {

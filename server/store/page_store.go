@@ -186,10 +186,10 @@ func (s *Store) CreatePageSubtree(pages []*model.Page, maxDepth int) (_ []*model
 		// steps — mirroring the app layer's checkDepthCap — so the Reason carried back matches the
 		// id checkDepthCap itself would have given for the same condition, not a generic fallback.
 		if destDepth+1 > maxDepth {
-			return nil, &ErrLimitExceeded{Resource: "Page subtree for page_id=" + root.Id + " (depth)", Limit: maxDepth, Reason: "app.page.move.max_depth_exceeded.app_error"}
+			return nil, &ErrLimitExceeded{Resource: "Page subtree for page_id=" + root.Id + " (depth)", Limit: maxDepth, Reason: ReasonMaxDepthExceeded}
 		}
 		if destDepth+1+model.MaxDepthOfPreOrderedPages(pages, pages[0].Id) > maxDepth {
-			return nil, &ErrLimitExceeded{Resource: "Page subtree for page_id=" + root.Id + " (depth)", Limit: maxDepth, Reason: "app.page.move.subtree_max_depth_exceeded.app_error"}
+			return nil, &ErrLimitExceeded{Resource: "Page subtree for page_id=" + root.Id + " (depth)", Limit: maxDepth, Reason: ReasonSubtreeMaxDepthExceeded}
 		}
 	}
 
@@ -630,7 +630,7 @@ func (s *Store) reindexSiblingGroup(tx *sqlx.Tx, channelID, parentID, movedPageI
 }
 
 // MovePageToSpace moves a page and its entire live subtree to a different space in one
-// transaction: every node's SpaceId/ChannelId is rewritten (live rows and version snapshots) and
+// transaction: every live node's SpaceId/ChannelId is rewritten and
 // the moved root is reparented (parentPageID nil/"" = target root) and appended to the destination
 // sibling group. The target's ChannelId is derived from its locked row, never trusted from the
 // caller, so it always matches the target space's single backing channel. A subtree
@@ -745,7 +745,7 @@ func (s *Store) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, par
 		return nil, raErr
 	}
 
-	// Rewrite SpaceId/ChannelId across the subtree (live rows + version snapshots + drafts).
+	// Rewrite SpaceId/ChannelId across the subtree (live rows and drafts).
 	if e := s.rewriteSubtreeSpace(tx, ids, targetSpaceID, targetChannelID, now); e != nil {
 		return nil, e
 	}
@@ -802,8 +802,8 @@ func (s *Store) collectLiveSubtreeIDs(tx *sqlx.Tx, pageID string) ([]string, err
 }
 
 // rewriteSubtreeSpace re-homes ids (a subtree collected by collectLiveSubtreeIDs) onto
-// targetSpaceID/targetChannelID, chunked, within tx. It rewrites SpaceId/ChannelId across three
-// tables — live DOCS_Page rows, DOCS_Page version snapshots, and DOCS_Draft rows.
+// targetSpaceID/targetChannelID, chunked, within tx. It rewrites SpaceId/ChannelId across
+// live DOCS_Page rows, their version snapshots (OriginalId IN ids), and DOCS_Draft rows.
 func (s *Store) rewriteSubtreeSpace(tx *sqlx.Tx, ids []string, targetSpaceID, targetChannelID string, now int64) error {
 	const chunkSize = 1000
 	for i := 0; i < len(ids); i += chunkSize {
@@ -822,14 +822,15 @@ func (s *Store) rewriteSubtreeSpace(tx *sqlx.Tx, ids []string, targetSpaceID, ta
 			return errors.Wrap(e, "failed to update subtree SpaceId/ChannelId")
 		}
 
+		// Version snapshots (OriginalId != "") are keyed by OriginalId, which points at a moved
+		// page's Id. Re-home them so snapshot queries scoped to the target space find them.
 		snapUpd := s.getQueryBuilder().
 			Update("DOCS_Page").
 			Set("SpaceId", targetSpaceID).
 			Set("ChannelId", targetChannelID).
-			Set("UpdateAt", now).
-			Where(sq.And{sq.Eq{"OriginalId": chunk}, sq.Gt{"DeleteAt": 0}})
+			Where(sq.Eq{"OriginalId": chunk})
 		if _, e := s.execBuilder(tx, snapUpd); e != nil {
-			return errors.Wrap(e, "failed to update subtree snapshots")
+			return errors.Wrap(e, "failed to update subtree snapshots SpaceId/ChannelId")
 		}
 
 		// Re-home drafts onto the target space: draft reads are scoped to the page's current space,
@@ -969,10 +970,10 @@ func (s *Store) checkMoveDepthUnderLock(tx *sqlx.Tx, destParentID, pageID string
 	// Reason carried back matches the id checkDepthCap itself would have given for the same
 	// condition, not a generic fallback.
 	if destDepth+1 > maxDepth {
-		return &ErrLimitExceeded{Resource: "Page subtree for page_id=" + pageID + " (move depth)", Limit: maxDepth, Reason: "app.page.move.max_depth_exceeded.app_error"}
+		return &ErrLimitExceeded{Resource: "Page subtree for page_id=" + pageID + " (move depth)", Limit: maxDepth, Reason: ReasonMaxDepthExceeded}
 	}
 	if destDepth+1+subtreeMax > maxDepth {
-		return &ErrLimitExceeded{Resource: "Page subtree for page_id=" + pageID + " (move depth)", Limit: maxDepth, Reason: "app.page.move.subtree_max_depth_exceeded.app_error"}
+		return &ErrLimitExceeded{Resource: "Page subtree for page_id=" + pageID + " (move depth)", Limit: maxDepth, Reason: ReasonSubtreeMaxDepthExceeded}
 	}
 	return nil
 }
@@ -1439,28 +1440,6 @@ func (s *Store) GetPageAncestorDepth(pageID string) (int, error) {
 		return 0, errors.Wrapf(err, "failed to count ancestors for page_id=%s", pageID)
 	}
 	return count, nil
-}
-
-// GetPageAncestors fetches all live ancestors of a page up to the root. Returns ErrLimitExceeded
-// when the chain exceeds MaxPageHierarchyDepth ancestors (too deep), rather than truncating.
-func (s *Store) GetPageAncestors(pageID string) ([]*model.Page, error) {
-	if pageID == "" {
-		return nil, &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
-	}
-
-	query := pageAncestorsCTE + fmt.Sprintf(" LIMIT %d", MaxPageHierarchyDepth+1)
-
-	pages := []*model.Page{}
-	if err := s.selectAll(s.db, &pages, query, pageID); err != nil {
-		return nil, errors.Wrapf(err, "failed to find ancestors for page_id=%s", pageID)
-	}
-	// The CTE recurses one level past the cap (see page_hierarchy.go), so an
-	// over-deep chain yields MaxPageHierarchyDepth+1 rows — error rather than truncate.
-	if len(pages) > MaxPageHierarchyDepth {
-		return nil, &ErrLimitExceeded{Resource: "Page ancestors for page_id=" + pageID, Limit: MaxPageHierarchyDepth}
-	}
-
-	return pages, nil
 }
 
 // GetPageAncestorIDs is the {Id}-only counterpart to GetPageAncestors, for callers (MovePage/

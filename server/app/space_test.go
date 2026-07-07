@@ -5,6 +5,7 @@ package app_test
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -329,7 +330,7 @@ func TestServiceCreateSpace_AddMemberFailedCompensates(t *testing.T) {
 	// The orphan channel is removed; no space row is persisted for the team.
 	mockAPI.AssertCalled(t, "DeleteChannel", backingChannelID)
 
-	spaces, listErr := h.svc.GetSpacesForTeam(teamID, 0, 60)
+	spaces, listErr := h.svc.GetSpacesForTeam(teamID, "", 0, 60)
 	require.Nil(t, listErr)
 	require.Empty(t, spaces)
 }
@@ -360,48 +361,62 @@ func TestServiceRestoreSpace_UnarchivesBackingChannel(t *testing.T) {
 	require.Equal(t, space.Id, got.Id)
 }
 
-// TestServicePatchSpace verifies PatchSpace applies only the supplied (non-nil) fields, preserves
+// TestServiceUpdateSpace verifies UpdateSpace applies only the supplied (non-nil) fields, preserves
 // unspecified ones, can clear a field with an explicit empty string, and enforces the
 // optimistic-lock baseline.
-func TestServicePatchSpace(t *testing.T) {
+func TestServiceUpdateSpace(t *testing.T) {
 	h := openTestService(t)
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 
-	patched, appErr := h.svc.PatchSpace(space.Id, &model.SpacePatch{Title: mmmodel.NewPointer("New Title"), Description: mmmodel.NewPointer("New Desc")}, space.UpdateAt, false)
+	patched, appErr := h.svc.UpdateSpace(space.Id, &model.SpacePatch{Title: mmmodel.NewPointer("New Title"), Description: mmmodel.NewPointer("New Desc")}, space.UpdateAt, false)
 	require.Nil(t, appErr)
 	require.Equal(t, "New Title", patched.Title)
 	require.Equal(t, "New Desc", patched.Description)
 
 	// A patch with only Icon leaves the previously-set Title/Description intact.
-	patched2, appErr := h.svc.PatchSpace(space.Id, &model.SpacePatch{Icon: mmmodel.NewPointer("icon-data")}, patched.UpdateAt, false)
+	patched2, appErr := h.svc.UpdateSpace(space.Id, &model.SpacePatch{Icon: mmmodel.NewPointer("icon-data")}, patched.UpdateAt, false)
 	require.Nil(t, appErr)
 	require.Equal(t, "New Title", patched2.Title, "unspecified fields are preserved")
 	require.Equal(t, "New Desc", patched2.Description)
 	require.Equal(t, "icon-data", patched2.Icon)
 
 	// An explicit empty string clears a field (a nil field would leave it unchanged).
-	patched3, appErr := h.svc.PatchSpace(space.Id, &model.SpacePatch{Description: mmmodel.NewPointer("")}, patched2.UpdateAt, false)
+	patched3, appErr := h.svc.UpdateSpace(space.Id, &model.SpacePatch{Description: mmmodel.NewPointer("")}, patched2.UpdateAt, false)
 	require.Nil(t, appErr)
 	require.Equal(t, "", patched3.Description, "an explicit empty string clears the field")
 	require.Equal(t, "New Title", patched3.Title)
 
 	// A stale baseline is rejected as a conflict unless force is set.
-	_, appErr = h.svc.PatchSpace(space.Id, &model.SpacePatch{Title: mmmodel.NewPointer("Stale")}, space.UpdateAt, false)
+	_, appErr = h.svc.UpdateSpace(space.Id, &model.SpacePatch{Title: mmmodel.NewPointer("Stale")}, space.UpdateAt, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusConflict, appErr.StatusCode)
 
-	forced, appErr := h.svc.PatchSpace(space.Id, &model.SpacePatch{Title: mmmodel.NewPointer("Forced")}, space.UpdateAt, true)
+	forced, appErr := h.svc.UpdateSpace(space.Id, &model.SpacePatch{Title: mmmodel.NewPointer("Forced")}, space.UpdateAt, true)
 	require.Nil(t, appErr)
 	require.Equal(t, "Forced", forced.Title)
+
+	// A description that exceeds SpaceDescriptionMaxRunes is rejected with the documented error ID.
+	longDesc := strings.Repeat("x", model.SpaceDescriptionMaxRunes+1)
+	_, appErr = h.svc.UpdateSpace(space.Id, &model.SpacePatch{Description: mmmodel.NewPointer(longDesc)}, 0, true)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+	require.Equal(t, "app.shared.description_too_long.app_error", appErr.Id)
+
+	// An icon that exceeds SpaceIconMaxBytes is rejected with the documented error ID.
+	largeIcon := strings.Repeat("i", model.SpaceIconMaxBytes+1)
+	_, appErr = h.svc.UpdateSpace(space.Id, &model.SpacePatch{Icon: mmmodel.NewPointer(largeIcon)}, 0, true)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+	require.Equal(t, "app.shared.icon_too_large.app_error", appErr.Id)
 }
 
-// TestServicePatchSpace_NoChangesRejected verifies an all-nil patch is rejected as a 400 rather
+// TestServiceUpdateSpace_NoChangesRejected verifies an all-nil patch is rejected as a 400 rather
 // than silently bumping UpdateAt (mirroring PagePatch's nothing-to-update guard).
-func TestServicePatchSpace_NoChangesRejected(t *testing.T) {
+func TestServiceUpdateSpace_NoChangesRejected(t *testing.T) {
 	h := openTestService(t)
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 
-	_, appErr := h.svc.PatchSpace(space.Id, &model.SpacePatch{}, space.UpdateAt, false)
+	_, appErr := h.svc.UpdateSpace(space.Id, &model.SpacePatch{}, space.UpdateAt, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 	require.Equal(t, "model.space.patch.nothing_to_update.app_error", appErr.Id)

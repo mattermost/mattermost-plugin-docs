@@ -30,28 +30,10 @@ func (s *Service) GetPageChildren(pageID, spaceID string, page, perPage int) ([]
 	return pages, nil
 }
 
-// GetPageAncestors fetches all live ancestors of a page up to the root. spaceID scopes the read to
-// the page's expected space; the internal page-in-space check (GetPageInSpace below) and the store
-// read after it are separate, unlocked queries, so this narrows but does not fully close the race.
-// Returns an error when the ancestor chain exceeds the store's depth limit, rather than truncating.
-func (s *Service) GetPageAncestors(pageID, spaceID string) ([]*model.Page, *mmmodel.AppError) {
-	if !mmmodel.IsValidId(pageID) {
-		return nil, mmmodel.NewAppError("GetPageAncestors", "app.page.get_ancestors.invalid_id.app_error", nil, "", http.StatusBadRequest)
-	}
-	if _, err := s.GetPageInSpace("GetPageAncestors", pageID, spaceID, false); err != nil {
-		return nil, err
-	}
-	pages, err := s.store.GetPageAncestors(pageID)
-	if err != nil {
-		return nil, storeAppError("GetPageAncestors", err)
-	}
-	return pages, nil
-}
-
 // GetPageInSpace fetches pageID (including soft-deleted rows when includeDeleted is set) and
 // rejects with a not-found AppError — rather than leaking that the page exists elsewhere — when it
 // does not belong to spaceID. where identifies the calling operation for the returned error id.
-// Shared by GetPageChildren/GetPageAncestors and by the API layer's pre-checks ahead of a mutation,
+// Shared by GetPageChildren and by the API layer's pre-checks ahead of a mutation,
 // so the page-in-space check lives in one place instead of being reimplemented per caller.
 func (s *Service) GetPageInSpace(where, pageID, spaceID string, includeDeleted bool) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(spaceID) {
@@ -71,24 +53,6 @@ func (s *Service) GetPageInSpace(where, pageID, spaceID string, includeDeleted b
 		return nil, mmmodel.NewAppError(where, "app.page.not_found.app_error", nil, "", http.StatusNotFound)
 	}
 	return page, nil
-}
-
-// GetPageDescendants fetches all live descendants of a page (entire subtree). spaceID scopes the
-// read to the page's expected space, matching the treatment GetPageChildren/GetPageAncestors give
-// their reads in this same file. Returns an error when the subtree exceeds the store's row-count or
-// depth limit, rather than truncating.
-func (s *Service) GetPageDescendants(pageID, spaceID string) ([]*model.Page, *mmmodel.AppError) {
-	if !mmmodel.IsValidId(pageID) {
-		return nil, mmmodel.NewAppError("GetPageDescendants", "app.page.get_descendants.invalid_id.app_error", nil, "", http.StatusBadRequest)
-	}
-	if _, err := s.GetPageInSpace("GetPageDescendants", pageID, spaceID, false); err != nil {
-		return nil, err
-	}
-	pages, err := s.store.GetPageDescendants(pageID)
-	if err != nil {
-		return nil, storeAppError("GetPageDescendants", err)
-	}
-	return pages, nil
 }
 
 // validateDestinationParent rejects a destination parent that is the page itself, does not exist,
@@ -113,7 +77,7 @@ func (s *Service) validateParentExists(where, destParentID, expectedSpaceID stri
 		// A missing parent is a bad request; any other failure (e.g. a transient store error)
 		// propagates unchanged rather than being masked as invalid_parent.
 		if parentErr.StatusCode == http.StatusNotFound {
-			return mmmodel.NewAppError(where, "app.page.move.invalid_parent.app_error", nil, "", http.StatusBadRequest)
+			return mmmodel.NewAppError(where, "app.page.move.invalid_parent.app_error", nil, "", http.StatusBadRequest).Wrap(parentErr)
 		}
 		return parentErr
 	}
@@ -201,6 +165,9 @@ func (s *Service) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, p
 	}
 	sameTeam, crossErr := s.sameTeamSpaces(page.SpaceId, targetSpaceID)
 	if crossErr != nil {
+		if crossErr.StatusCode == http.StatusNotFound {
+			return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.target_not_found.app_error", nil, "", http.StatusNotFound).Wrap(crossErr)
+		}
 		return nil, crossErr
 	}
 	if !sameTeam {

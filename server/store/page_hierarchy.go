@@ -35,7 +35,6 @@ var pageColListP = strings.Join(pageColumnsP, ", ")
 // create-time depth check.
 var (
 	pageDescendantsCTE = computeDescendantsCTE()
-	pageAncestorsCTE   = computeAncestorsCTE()
 
 	// pageDescendantIDsCTE/pageAncestorIDsCTE project only {Id, ParentId}/{Id} instead of full page
 	// columns, for callers (MovePage/MovePageToSpace's cycle and depth-cap pre-checks) that don't
@@ -83,11 +82,11 @@ var (
 )
 
 // ancestorsRecursiveCTE returns the recursive WITH clause that walks the parent chain
-// to the root while depth < maxDepth. Shared by the full-row and count-only queries.
-// The full-row caller passes maxDepth = MaxPageHierarchyDepth+2: depth is 1-indexed at
-// the queried page itself (excluded from ancestor output), accounting for +1, and the
-// second +1 lets the chain emit one row beyond MaxPageHierarchyDepth so GetPageAncestors
-// can distinguish "at limit" from "truncated".
+// to the root while depth < maxDepth. Shared by the id-only and count-only queries.
+// The id-only caller (GetPageAncestorIDs) passes maxDepth = MaxPageHierarchyDepth+2:
+// depth is 1-indexed at the queried page itself (excluded from ancestor output), accounting
+// for +1, and the second +1 lets the chain emit one row beyond MaxPageHierarchyDepth so
+// GetPageAncestorIDs can distinguish "at limit" from "truncated".
 func ancestorsRecursiveCTE(maxDepth int) string {
 	return fmt.Sprintf(`
 	WITH RECURSIVE ancestors AS (
@@ -156,20 +155,4 @@ func descendantsRecursiveCTE() string {
 			INNER JOIN descendants d ON p.ParentId = d.Id
 			WHERE p.DeleteAt = 0 AND d.depth < %d
 		) CYCLE Id SET is_cycle USING cycle_path`, MaxPageHierarchyDepth+1)
-}
-
-// computeAncestorsCTE generates the recursive CTE that walks the parent chain above a page,
-// excluding the root node and returning full page columns. It passes MaxPageHierarchyDepth+2 (see
-// ancestorsRecursiveCTE for the +2 derivation) so GetPageAncestors can distinguish a chain at the
-// limit from a truncated one.
-func computeAncestorsCTE() string {
-	return ancestorsRecursiveCTE(MaxPageHierarchyDepth+2) + `
-	SELECT ` + pageColListP + `
-	FROM ancestors a
-	INNER JOIN DOCS_Page p ON p.Id = a.Id
-	WHERE a.Id != $1 AND NOT a.is_cycle AND p.DeleteAt = 0
-	-- Order by chain position (depth descending = root first), not CreateAt: ancestor
-	-- depth is the canonical order of a parent chain, whereas CreateAt can invert it
-	-- after an import or a same-millisecond create.
-	ORDER BY a.depth DESC, p.Id`
 }
