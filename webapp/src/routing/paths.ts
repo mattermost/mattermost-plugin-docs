@@ -13,9 +13,9 @@
 //   /spaces/:spaceId/:pageId            ← page
 //   /spaces/:spaceId/drafts/:pageId     ← per-user draft
 //
-// TODO: the spec requires a /{teamName} prefix matching every other MM
-// permalink. registerProduct() only supports global baseURLs today; team
-// prefix needs a core platform change or registerNeedsTeamRoute().
+// TODO MM-69728: registerProduct() only supports global baseURLs today.
+// Once core supports /:team/ detection in baseURL, change DOCS_BASE_URL to
+// '/:team/spaces' and DOCS_ROUTE/builders accordingly.
 
 export const DOCS_BASE_URL = '/spaces';
 
