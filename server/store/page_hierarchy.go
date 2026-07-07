@@ -44,7 +44,8 @@ var (
 	SELECT a.Id
 	FROM ancestors a
 	INNER JOIN DOCS_Page p ON p.Id = a.Id
-	WHERE a.Id != $1 AND NOT a.is_cycle AND p.DeleteAt = 0`
+	WHERE a.Id != $1 AND NOT a.is_cycle AND p.DeleteAt = 0
+	ORDER BY a.depth ASC`
 
 	pageAncestorCountCTE = ancestorsRecursiveCTE(MaxPageHierarchyDepth) + `
 	SELECT COUNT(*)
