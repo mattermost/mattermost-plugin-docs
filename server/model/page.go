@@ -4,6 +4,7 @@
 package model
 
 import (
+	"maps"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -142,7 +143,7 @@ func (p *Page) Patch(patch *PagePatch) {
 		p.SearchText = *patch.SearchText
 	}
 	if patch.Props != nil {
-		p.Props = *patch.Props
+		p.Props = maps.Clone(*patch.Props)
 	}
 }
 

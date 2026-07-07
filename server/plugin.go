@@ -60,7 +60,7 @@ func (p *Plugin) OnActivate() error {
 		return errors.Wrap(migErr, "failed to run docs migrations")
 	}
 	p.store = s
-	p.service = app.New(p.store, p.client)
+	p.service = app.New(p.store, &p.client.Log)
 
 	p.router = p.initRouter()
 
