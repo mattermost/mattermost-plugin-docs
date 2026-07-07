@@ -3,7 +3,7 @@
 
 import {useCallback} from 'react';
 import {useHistory, useRouteMatch} from 'react-router-dom';
-import {DOCS_ROUTE, docsHomePath, docsPath, pagePath, spacePath} from 'routing/paths';
+import {DOCS_ROUTE, docsHomePath, docsPath, draftPath, pagePath, spacePath} from 'routing/paths';
 
 type DocsRouteParams = {
     spaceId?: string;
@@ -22,6 +22,7 @@ export function useDocsNavigation() {
 
     const goToSpace = useCallback((id: string) => history.push(spacePath(id)), [history]);
     const goToPage = useCallback((space: string, page: string) => history.push(pagePath(space, page)), [history]);
+    const goToDraft = useCallback((space: string, page: string) => history.push(draftPath(space, page)), [history]);
     const goHome = useCallback(() => history.push(docsHomePath()), [history]);
     const navigate = useCallback((space: string, page?: string) => history.push(docsPath(space, page)), [history]);
 
@@ -30,10 +31,11 @@ export function useDocsNavigation() {
         pageId,
         goToSpace,
         goToPage,
+        goToDraft,
         goHome,
         navigate,
 
         // Re-exported for declarative use, e.g. <Link to={paths.space(id)}>.
-        paths: {home: docsHomePath, space: spacePath, page: pagePath, to: docsPath},
+        paths: {home: docsHomePath, space: spacePath, page: pagePath, draft: draftPath, to: docsPath},
     };
 }
