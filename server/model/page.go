@@ -29,6 +29,13 @@ const (
 	PageSearchTextMaxBytes = 2 * 1024 * 1024
 )
 
+// Auditable is implemented by every model type that exposes a safe, redacted
+// representation for audit logs. The returned map must exclude sensitive fields
+// (e.g. Body, SearchText) and must not share references with the receiver.
+type Auditable interface {
+	Auditable() map[string]any
+}
+
 // Page is stored in the DOCS_Page table. Live pages have (DeleteAt=0, OriginalId="");
 // snapshots have OriginalId!="" and are always soft-deleted (DeleteAt>0).
 type Page struct {

@@ -269,6 +269,8 @@ func (s *Store) DeleteSpace(id string) (err error) {
 // version snapshots, stay deleted. Returns ErrNotFound
 // when the space ID does not exist, ErrInvalidInput when the space exists but is already live
 // (not deleted), and ErrConflict when another live space now owns the same backing channel.
+// Authorization (caller must be the original creator or a system admin) is enforced
+// by the app layer once the permission model is wired up.
 func (s *Store) RestoreSpace(id string) (err error) {
 	if id == "" {
 		return &ErrInvalidInput{Entity: "Space", Field: "id", Value: id}
