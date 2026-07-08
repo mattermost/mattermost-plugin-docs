@@ -31,7 +31,7 @@ const SpaceItem = ({space, category, active, favorite, onSelect, onToggleFavorit
             className={styles.emoji}
             aria-hidden={true}
         >
-            {space.emoji}
+            {space.icon}
         </span>
     );
 
@@ -42,9 +42,9 @@ const SpaceItem = ({space, category, active, favorite, onSelect, onToggleFavorit
         >
             <SidebarItem
                 leading={emoji}
-                label={space.name}
+                label={space.title}
                 active={active}
-                title={space.name}
+                title={space.title}
                 trailing={(
                     <SpaceItemMenu
                         space={space}

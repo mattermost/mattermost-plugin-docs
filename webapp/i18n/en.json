@@ -1,4 +1,6 @@
 {
+  "docs.confirmModal.cancel": "Cancel",
+  "docs.confirmModal.confirm": "Confirm",
   "docs.createSpace.cancel": "Cancel",
   "docs.createSpace.create": "Create",
   "docs.createSpace.descriptionHelp": "This will be displayed when browsing for spaces",
@@ -22,6 +24,7 @@
   "docs.form.url.edit": "Edit",
   "docs.form.url.editLabel": "Space URL",
   "docs.form.url.label": "URL:",
+  "docs.genericModal.close": "Close",
   "docs.header.settings": "Settings",
   "docs.home.browseSpaces": "Browse spaces",
   "docs.home.card.browse.body": "See what public spaces your team is already working on in your workspace.",
@@ -45,6 +48,9 @@
   "docs.home.title": "Home",
   "docs.home.welcome.body": "Long-form knowledge for your team — documentation, specs, handbooks, decisions, postmortems. Every page lives in a Space which can be linked with Channels for convenience.",
   "docs.home.welcome.title": "Welcome to Docs.",
+  "docs.leaveSpace.confirm": "Yes, leave space",
+  "docs.leaveSpace.message": "Are you sure you want to leave the <b>{name}</b> space? You can rejoin later if it is public.",
+  "docs.leaveSpace.title": "Leave {name}",
   "docs.main.page": "Page {pageId}",
   "docs.main.spaceOverview": "Space overview",
   "docs.sidebar.add.browse": "Browse spaces",
@@ -61,8 +67,6 @@
   "docs.sidebar.space.favorite": "Add to favorites",
   "docs.sidebar.space.leave": "Leave space",
   "docs.sidebar.space.menu": "Space options for {name}",
-  "docs.sidebar.space.mute": "Mute space",
-  "docs.sidebar.space.settings": "Space settings",
   "docs.sidebar.space.unfavorite": "Remove from favorites",
   "docs.sidebar.team.createTeam": "Create a team",
   "docs.sidebar.team.invite": "Invite people",
@@ -78,6 +82,5 @@
   "docs.switcher.noResults": "No spaces or pages found",
   "docs.switcher.placeholder": "Search all spaces and pages",
   "docs.switcher.title": "Find docs",
-  "docs.switcher.title.query": "Find spaces or pages",
-  "generic_modal.close": "Close"
+  "docs.switcher.title.query": "Find spaces or pages"
 }

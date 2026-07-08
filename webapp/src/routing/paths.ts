@@ -2,43 +2,51 @@
 // See LICENSE.txt for license information.
 
 // Pure URL construction for the Docs product. The single source of truth for
-// the /spaces URL scheme (opaque ids, no slugs/team segment). Usable by
-// React Router <Link to={...}>, <Route path={DOCS_ROUTE}>/useRouteMatch, and
-// the imperative useDocsNavigation hook — so navigation logic is shared rather
-// than re-derived per call site.
+// the team-scoped /spaces URL scheme (opaque ids, no slugs). Usable by React
+// Router <Link to={...}>, <Route path={DOCS_ROUTE}>/useRouteMatch, and the
+// imperative useDocsNavigation hook — so navigation logic is shared rather than
+// re-derived per call site.
 //
 // Canonical shapes (spec: /{teamName}/spaces/{spaceId}/{pageId}):
-//   /spaces                             ← product home
-//   /spaces/:spaceId                    ← space home
-//   /spaces/:spaceId/:pageId            ← page
-//   /spaces/:spaceId/drafts/:pageId     ← per-user draft
+//   /{team}/spaces                          ← product home
+//   /{team}/spaces/:spaceId                 ← space home
+//   /{team}/spaces/:spaceId/:pageId         ← page
+//   /{team}/spaces/:spaceId/drafts/:pageId  ← per-user draft
 //
-// TODO MM-69728: registerProduct() only supports global baseURLs today.
-// Once core supports /:team/ detection in baseURL, change DOCS_BASE_URL to
-// '/:team/spaces' and DOCS_ROUTE/builders accordingly.
+// registerProduct() mounts at DOCS_BASE_URL. The leading '/:team/' activates
+// core's team-scoped mounting + team-context init (MM-69728); switcherLinkURL
+// stays global (DOCS_SWITCHER_LINK_URL) and core prepends the current team.
 
-export const DOCS_BASE_URL = '/spaces';
+export const DOCS_KEYWORD = 'spaces';
 
-// 26-char lowercase-alphanumeric — the platform's standard opaque id format.
-const MM_ID = '[a-z0-9]{26}';
+export const DOCS_BASE_URL = `/:team/${DOCS_KEYWORD}`;
+export const DOCS_SWITCHER_LINK_URL = `/${DOCS_KEYWORD}`;
 
-// Route patterns for <Route>/useRouteMatch.
-export const DOCS_ROUTE = `${DOCS_BASE_URL}/:spaceId(${MM_ID})?/:pageId(${MM_ID})?`;
-export const DOCS_DRAFT_ROUTE = `${DOCS_BASE_URL}/:spaceId(${MM_ID})/drafts/:pageId(${MM_ID})`;
+// A space/page id in the URL is the platform's 26-char opaque id (the canonical,
+// ID-based form) OR a human-readable custom slug. Both reduce to: start with a
+// lowercase alphanumeric, then lowercase alphanumerics, dashes, or underscores.
+const SPACE_OR_PAGE_ID = '[a-z0-9][a-z0-9\\-_]*';
+
+// Route patterns for <Route>/useRouteMatch, matched against the full
+// team-scoped pathname the product mounts under.
+export const DOCS_ROUTE = `/:team/${DOCS_KEYWORD}/:spaceId(${SPACE_OR_PAGE_ID})?/:pageId(${SPACE_OR_PAGE_ID})?`;
+export const DOCS_DRAFT_ROUTE = `/:team/${DOCS_KEYWORD}/:spaceId(${SPACE_OR_PAGE_ID})/drafts/:pageId(${SPACE_OR_PAGE_ID})`;
 
 const segment = (value: string): string => encodeURIComponent(value);
 
-export const docsHomePath = (): string => DOCS_BASE_URL;
+const teamRoot = (teamName: string): string => `/${segment(teamName)}/${DOCS_KEYWORD}`;
 
-export const spacePath = (spaceId: string): string => `${DOCS_BASE_URL}/${segment(spaceId)}`;
+export const docsHomePath = (teamName: string): string => teamRoot(teamName);
 
-export const pagePath = (spaceId: string, pageId: string): string => `${spacePath(spaceId)}/${segment(pageId)}`;
+export const spacePath = (teamName: string, spaceId: string): string => `${teamRoot(teamName)}/${segment(spaceId)}`;
 
-export const draftPath = (spaceId: string, pageId: string): string => `${spacePath(spaceId)}/drafts/${segment(pageId)}`;
+export const pagePath = (teamName: string, spaceId: string, pageId: string): string => `${spacePath(teamName, spaceId)}/${segment(pageId)}`;
 
-export const docsPath = (spaceId?: string, pageId?: string): string => {
+export const draftPath = (teamName: string, spaceId: string, pageId: string): string => `${spacePath(teamName, spaceId)}/drafts/${segment(pageId)}`;
+
+export const docsPath = (teamName: string, spaceId?: string, pageId?: string): string => {
     if (!spaceId) {
-        return docsHomePath();
+        return docsHomePath(teamName);
     }
-    return pageId ? pagePath(spaceId, pageId) : spacePath(spaceId);
+    return pageId ? pagePath(teamName, spaceId, pageId) : spacePath(teamName, spaceId);
 };

@@ -34,8 +34,9 @@ const DocsMainContent = ({spaceId, pageId, onCreateSpace, onBrowseSpaces}: Props
         <div className={styles.root}>
             <div className={styles.empty}>
                 <h2 className={styles.title}>
-                    <span aria-hidden={true}>{`${space.emoji} `}</span>
-                    {space.name}
+                    {/* eslint-disable-next-line formatjs/no-literal-string-in-jsx -- decorative emoji, not translatable */}
+                    <span aria-hidden={true}>{space.icon ? `${space.icon} ` : null}</span>
+                    {space.title}
                 </h2>
                 <p className={styles.subtitle}>
                     {pageId ? (

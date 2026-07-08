@@ -151,11 +151,14 @@ const SpaceCard = ({summary, onOpen}: {summary: SpaceSummary; onOpen: (id: strin
                 className={styles.spaceCardEmoji}
                 aria-hidden='true'
             >
-                {space.emoji}
+                {space.icon}
             </span>
             <span className={styles.spaceCardText}>
-                <span className={styles.spaceCardName}>{space.name}</span>
-                <span className={styles.spaceCardMeta}>{viewedLabel ? `${pages} · ${viewedLabel}` : pages}</span>
+                <span className={styles.spaceCardName}>{space.title}</span>
+                <span className={styles.spaceCardMeta}>
+                    {/* eslint-disable-next-line formatjs/no-literal-string-in-jsx -- localized fragments joined by a decorative separator */}
+                    {viewedLabel ? `${pages} · ${viewedLabel}` : pages}
+                </span>
             </span>
         </button>
     );

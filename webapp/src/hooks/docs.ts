@@ -1,21 +1,22 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {docsDataSource} from 'data';
-import type {DocsSearchResults} from 'data';
+import {useAppSelector} from 'hooks/redux';
 import {useMemo} from 'react';
+
+import {getRecentPages, getRecentSpaces, searchDocs} from 'store/selectors';
+import type {DocsSearchResults} from 'store/selectors';
 
 import type {Page, Space} from 'types/docs';
 
 export function useRecentDocs(): {spaces: Space[]; pages: Page[]} {
-    return useMemo(() => ({
-        spaces: docsDataSource.getRecentSpaces(),
-        pages: docsDataSource.getRecentPages(),
-    }), []);
+    const spaces = useAppSelector(getRecentSpaces);
+    const pages = useAppSelector(getRecentPages);
+    return useMemo(() => ({spaces, pages}), [spaces, pages]);
 }
 
-// Filtering lives in the data layer, not the UI; later this can debounce
+// Filtering lives in the store selector, not the UI; later this can debounce
 // against a server search endpoint.
 export function useDocsSearch(query: string): DocsSearchResults {
-    return useMemo(() => docsDataSource.search(query), [query]);
+    return useAppSelector((state) => searchDocs(state, query));
 }

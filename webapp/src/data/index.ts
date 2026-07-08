@@ -9,4 +9,4 @@ import {mockDataSource} from './mock_data_source';
 // implementation, so the swap touches no UI.
 export const docsDataSource: DocsDataSource = mockDataSource;
 
-export type {DocsDataSource, DocsSearchResults} from './docs_data_source';
+export type {DocsDataSource} from './docs_data_source';

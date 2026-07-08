@@ -42,6 +42,7 @@ const DocsSwitcher = ({onClose}: Props) => {
     const allSpaces = useSpaces();
     const recent = useRecentDocs();
     const results = useDocsSearch(query);
+    const spaceTitleById = useMemo(() => new Map(allSpaces.map((space) => [space.id, space.title])), [allSpaces]);
 
     const groups: Group[] = useMemo(() => {
         let i = 0;
@@ -89,7 +90,7 @@ const DocsSwitcher = ({onClose}: Props) => {
         if (entry.kind === 'space') {
             navigate(entry.space.id);
         } else {
-            navigate(entry.page.spaceId, entry.page.id);
+            navigate(entry.page.space_id, entry.page.id);
         }
         onClose();
     }, [navigate, onClose]);
@@ -138,14 +139,14 @@ const DocsSwitcher = ({onClose}: Props) => {
         >
             {entry.kind === 'space' ? (
                 <>
-                    <span className={classNames(styles.itemIcon, styles.itemIconEmoji)}>{entry.space.emoji}</span>
-                    <span className={styles.itemLabel}>{entry.space.name}</span>
+                    <span className={classNames(styles.itemIcon, styles.itemIconEmoji)}>{entry.space.icon}</span>
+                    <span className={styles.itemLabel}>{entry.space.title}</span>
                 </>
             ) : (
                 <>
                     <span className={styles.itemIcon}><TextBoxOutlineIcon size={16}/></span>
                     <span className={styles.itemLabel}>{entry.page.title}</span>
-                    <span className={styles.itemMeta}>{entry.page.spaceName}</span>
+                    <span className={styles.itemMeta}>{spaceTitleById.get(entry.page.space_id)}</span>
                 </>
             )}
         </button>

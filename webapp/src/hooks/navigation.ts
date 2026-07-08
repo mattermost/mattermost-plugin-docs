@@ -1,32 +1,39 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {useTeamContext} from 'hooks/team';
 import {useCallback} from 'react';
 import {useHistory, useRouteMatch} from 'react-router-dom';
 import {DOCS_ROUTE, docsHomePath, docsPath, draftPath, pagePath, spacePath} from 'routing/paths';
 
 type DocsRouteParams = {
+    team?: string;
     spaceId?: string;
     pageId?: string;
 };
 
 // Reads the current Docs selection from the URL and provides imperative
 // navigation. Path construction lives in routing/paths so the same logic backs
-// React Router <Link>s; this hook just composes those builders with history for
-// programmatic navigation (clicks, keyboard handlers).
+// React Router <Link>s; this hook binds the current team (so callers stay
+// team-agnostic) and composes those builders with history for programmatic
+// navigation (clicks, keyboard handlers).
 export function useDocsNavigation() {
     const history = useHistory();
     const match = useRouteMatch<DocsRouteParams>(DOCS_ROUTE);
+    const {name: currentTeamName} = useTeamContext();
+
+    const teamName = match?.params.team || currentTeamName;
     const spaceId = match?.params.spaceId;
     const pageId = match?.params.pageId;
 
-    const goToSpace = useCallback((id: string) => history.push(spacePath(id)), [history]);
-    const goToPage = useCallback((space: string, page: string) => history.push(pagePath(space, page)), [history]);
-    const goToDraft = useCallback((space: string, page: string) => history.push(draftPath(space, page)), [history]);
-    const goHome = useCallback(() => history.push(docsHomePath()), [history]);
-    const navigate = useCallback((space: string, page?: string) => history.push(docsPath(space, page)), [history]);
+    const goToSpace = useCallback((id: string) => history.push(spacePath(teamName, id)), [history, teamName]);
+    const goToPage = useCallback((space: string, page: string) => history.push(pagePath(teamName, space, page)), [history, teamName]);
+    const goToDraft = useCallback((space: string, page: string) => history.push(draftPath(teamName, space, page)), [history, teamName]);
+    const goHome = useCallback(() => history.push(docsHomePath(teamName)), [history, teamName]);
+    const navigate = useCallback((space: string, page?: string) => history.push(docsPath(teamName, space, page)), [history, teamName]);
 
     return {
+        teamName,
         spaceId,
         pageId,
         goToSpace,
@@ -36,6 +43,13 @@ export function useDocsNavigation() {
         navigate,
 
         // Re-exported for declarative use, e.g. <Link to={paths.space(id)}>.
-        paths: {home: docsHomePath, space: spacePath, page: pagePath, draft: draftPath, to: docsPath},
+        // Team is pre-bound so call sites match the imperative helpers.
+        paths: {
+            home: () => docsHomePath(teamName),
+            space: (id: string) => spacePath(teamName, id),
+            page: (space: string, page: string) => pagePath(teamName, space, page),
+            draft: (space: string, page: string) => draftPath(teamName, space, page),
+            to: (space?: string, page?: string) => docsPath(teamName, space, page),
+        },
     };
 }

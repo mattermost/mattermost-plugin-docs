@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {useDocsDispatch} from 'hooks/redux';
+import {useAppDispatch} from 'hooks/redux';
 import React from 'react';
 import {useIntl} from 'react-intl';
 
@@ -30,7 +30,7 @@ type Props = {
 
 const SpacesSidebarHeader = ({teamName, teamDescription, onCreateSpace, onBrowseSpaces}: Props) => {
     const {formatMessage} = useIntl();
-    const dispatch = useDocsDispatch();
+    const dispatch = useAppDispatch();
 
     const teamItems: MenuItemSpec[] = [
         {

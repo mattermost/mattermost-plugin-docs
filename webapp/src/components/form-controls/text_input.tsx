@@ -31,6 +31,7 @@ const TextInput = ({id, label, value, onChange, leading, error, maxLength, autoF
 
                     // A non-empty placeholder lets :placeholder-shown drive the
                     // label float without extra JS.
+                    // eslint-disable-next-line formatjs/no-literal-string-in-jsx -- non-visible layout placeholder, not translatable
                     placeholder=' '
                     value={value}
                     maxLength={maxLength}

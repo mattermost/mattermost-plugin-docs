@@ -31,6 +31,7 @@ const UrlInput = ({id, baseUrl, value, onChange, onBlur, error}: Props) => {
         <div className={classNames(styles.root, {[styles.hasError]: Boolean(error)})}>
             {editing ? (
                 <div className={styles.field}>
+                    {/* eslint-disable-next-line formatjs/no-literal-string-in-jsx -- URL fragment, not translatable */}
                     <span className={styles.prefix}>{`${baseUrl}/`}</span>
                     <input
                         id={id}
@@ -52,6 +53,7 @@ const UrlInput = ({id, baseUrl, value, onChange, onBlur, error}: Props) => {
             ) : (
                 <div className={styles.previewRow}>
                     <span className={styles.preview}>
+                        {/* eslint-disable-next-line formatjs/no-literal-string-in-jsx -- localized label + URL fragment */}
                         {`${label} ${baseUrl}/${value}`}
                     </span>
                     <button

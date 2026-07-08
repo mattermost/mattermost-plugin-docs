@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {useDocsDispatch} from 'hooks/redux';
+import {useAppDispatch} from 'hooks/redux';
 import {useEffect} from 'react';
 import {useSelector} from 'react-redux';
 
@@ -51,13 +51,14 @@ function writePreviousTeamId(userId: string, teamId: string) {
     }
 }
 
-// Docs is a global product (/docs, no team segment), so on a hard refresh there
-// is no team in the URL for the host to select and `currentTeamId` can be empty.
-// Restore the last-active team from localStorage — validated against the user's
+// Team-scoped Docs URLs (/{team}/spaces/…) let core resolve the team from the
+// URL (MM-69728). This remains a defensive fallback: if `currentTeamId` is still
+// empty (e.g. reached via the global switcher link before a team is selected),
+// restore the last-active team from localStorage — validated against the user's
 // teams, with a first-team fallback — and keep it persisted, mirroring Channels
 // and Playbooks. Call once from the product root.
 export function useEnsureCurrentTeam(): void {
-    const dispatch = useDocsDispatch();
+    const dispatch = useAppDispatch();
     const userId = useSelector(getCurrentUserId);
     const currentTeamId = useSelector(getCurrentTeamId);
     const myTeams = useSelector(getMyTeams);

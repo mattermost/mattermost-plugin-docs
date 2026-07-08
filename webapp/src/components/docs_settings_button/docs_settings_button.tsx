@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {useDocsDispatch} from 'hooks/redux';
+import {useAppDispatch} from 'hooks/redux';
 import React from 'react';
 import {useIntl} from 'react-intl';
 
@@ -14,7 +14,7 @@ import styles from './docs_settings_button.module.scss';
 
 const DocsSettingsButton = () => {
     const {formatMessage} = useIntl();
-    const dispatch = useDocsDispatch();
+    const dispatch = useAppDispatch();
 
     const label = formatMessage({id: 'docs.header.settings', defaultMessage: 'Settings'});
 

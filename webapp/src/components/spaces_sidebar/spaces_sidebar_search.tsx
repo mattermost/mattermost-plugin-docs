@@ -42,6 +42,7 @@ const SpacesSidebarSearch = ({onOpen}: Props) => {
                     aria-hidden='true'
                 >
                     <ShortcutKey variant={ShortcutKeyVariant.InlineContent}>
+                        {/* eslint-disable-next-line formatjs/no-literal-string-in-jsx -- keyboard shortcut glyphs, not translatable */}
                         {onMac ? `${ShortcutKeys.cmd}K` : 'Ctrl+K'}
                     </ShortcutKey>
                 </span>

@@ -1,17 +1,18 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import React from 'react';
-import {useIntl} from 'react-intl';
+import {useDocsNavigation} from 'hooks/navigation';
+import React, {useState} from 'react';
+import {FormattedMessage, useIntl} from 'react-intl';
+import {copyToClipboard} from 'utils/clipboard';
 
-import BellOutlineIcon from '@mattermost/compass-icons/components/bell-outline';
-import CogOutlineIcon from '@mattermost/compass-icons/components/cog-outline';
 import DotsVerticalIcon from '@mattermost/compass-icons/components/dots-vertical';
 import ExitToAppIcon from '@mattermost/compass-icons/components/exit-to-app';
 import LinkVariantIcon from '@mattermost/compass-icons/components/link-variant';
 import StarIcon from '@mattermost/compass-icons/components/star';
 import StarOutlineIcon from '@mattermost/compass-icons/components/star-outline';
 
+import ConfirmModal from 'components/confirm_modal/confirm_modal';
 import Menu from 'components/menu/menu';
 import type {MenuItemSpec} from 'components/menu/menu_types';
 
@@ -27,57 +28,119 @@ type Props = {
 
 const SpaceItemMenu = ({space, favorite, onToggleFavorite}: Props) => {
     const {formatMessage} = useIntl();
+    const {paths} = useDocsNavigation();
+
+    const [confirmLeaveOpen, setConfirmLeaveOpen] = useState(false);
+
+    const copyLink = () => copyToClipboard(`${window.location.origin}${paths.space(space.id)}`);
 
     const items: MenuItemSpec[] = [
         {
             id: 'favorite',
-            label: favorite ? formatMessage({id: 'docs.sidebar.space.unfavorite', defaultMessage: 'Remove from favorites'}) : formatMessage({id: 'docs.sidebar.space.favorite', defaultMessage: 'Add to favorites'}),
+            label: favorite ? (
+                <FormattedMessage
+                    id='docs.sidebar.space.unfavorite'
+                    defaultMessage='Remove from favorites'
+                />
+            ) : (
+                <FormattedMessage
+                    id='docs.sidebar.space.favorite'
+                    defaultMessage='Add to favorites'
+                />
+            ),
             leadingIcon: favorite ? <StarIcon size={18}/> : <StarOutlineIcon size={18}/>,
             onClick: () => onToggleFavorite(space.id),
         },
-        {
-            id: 'mute',
-            label: formatMessage({id: 'docs.sidebar.space.mute', defaultMessage: 'Mute space'}),
-            leadingIcon: <BellOutlineIcon size={18}/>,
-        },
+
+        // Mute space is deferred until the mute feature exists.
+        // {
+        //     id: 'mute',
+        //     label: formatMessage({id: 'docs.sidebar.space.mute', defaultMessage: 'Mute space'}),
+        //     leadingIcon: <BellOutlineIcon size={18}/>,
+        // },
         {
             id: 'copy-link',
-            label: formatMessage({id: 'docs.sidebar.space.copyLink', defaultMessage: 'Copy link'}),
+            label: (
+                <FormattedMessage
+                    id='docs.sidebar.space.copyLink'
+                    defaultMessage='Copy link'
+                />
+            ),
             leadingIcon: <LinkVariantIcon size={18}/>,
+            onClick: copyLink,
         },
-        {
-            id: 'settings',
-            label: formatMessage({id: 'docs.sidebar.space.settings', defaultMessage: 'Space settings'}),
-            leadingIcon: <CogOutlineIcon size={18}/>,
-        },
+
+        // Space settings is deferred until the settings feature exists.
+        // {
+        //     id: 'settings',
+        //     label: formatMessage({id: 'docs.sidebar.space.settings', defaultMessage: 'Space settings'}),
+        //     leadingIcon: <CogOutlineIcon size={18}/>,
+        // },
         {
             id: 'leave',
-            label: formatMessage({id: 'docs.sidebar.space.leave', defaultMessage: 'Leave space'}),
+            label: (
+                <FormattedMessage
+                    id='docs.sidebar.space.leave'
+                    defaultMessage='Leave space'
+                />
+            ),
             leadingIcon: <ExitToAppIcon size={18}/>,
             isDestructive: true,
             hasDivider: true,
+            onClick: () => setConfirmLeaveOpen(true),
         },
     ];
 
-    const menuLabel = formatMessage({id: 'docs.sidebar.space.menu', defaultMessage: 'Space options for {name}'}, {name: space.name});
+    const menuLabel = formatMessage({id: 'docs.sidebar.space.menu', defaultMessage: 'Space options for {name}'}, {name: space.title});
 
     return (
-        <Menu
-            ariaLabel={menuLabel}
-            align='right'
-            items={items}
-            tooltip={menuLabel}
-            trigger={(
-                <button
-                    type='button'
-                    className={styles.dot}
-                    aria-label={menuLabel}
-                    onClick={(e) => e.stopPropagation()}
+        <>
+            <Menu
+                ariaLabel={menuLabel}
+                align='right'
+                items={items}
+                tooltip={menuLabel}
+                trigger={(
+                    <button
+                        type='button'
+                        className={styles.dot}
+                        aria-label={menuLabel}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <DotsVerticalIcon size={16}/>
+                    </button>
+                )}
+            />
+            {confirmLeaveOpen && (
+                <ConfirmModal
+                    title={(
+                        <FormattedMessage
+                            id='docs.leaveSpace.title'
+                            defaultMessage='Leave {name}'
+                            values={{name: space.title}}
+                        />
+                    )}
+                    confirmButtonText={(
+                        <FormattedMessage
+                            id='docs.leaveSpace.confirm'
+                            defaultMessage='Yes, leave space'
+                        />
+                    )}
+                    isConfirmDestructive={true}
+                    onConfirm={() => setConfirmLeaveOpen(false)}
+                    onCancel={() => setConfirmLeaveOpen(false)}
                 >
-                    <DotsVerticalIcon size={16}/>
-                </button>
+                    <FormattedMessage
+                        id='docs.leaveSpace.message'
+                        defaultMessage='Are you sure you want to leave the <b>{name}</b> space? You can rejoin later if it is public.'
+                        values={{
+                            name: space.title,
+                            b: (chunks) => <b>{chunks}</b>,
+                        }}
+                    />
+                </ConfirmModal>
             )}
-        />
+        </>
     );
 };
 

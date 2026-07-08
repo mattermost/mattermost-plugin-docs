@@ -2,7 +2,7 @@
 // See LICENSE.txt for license information.
 
 import {useSpaces} from 'hooks/spaces';
-import {useMemo, useState} from 'react';
+import {useEffect, useMemo, useState} from 'react';
 
 import type {Space} from 'types/docs';
 
@@ -23,6 +23,13 @@ const moveBetween = (
     return {favoriteOrder: fav, spacesOrder: spaces};
 };
 
+// Prunes ids no longer live and returns the same array reference when nothing
+// changed, so callers can bail out of a state update without a re-render.
+const pruneOrder = (order: string[], liveIds: Set<string>): string[] => {
+    const pruned = order.filter((id) => liveIds.has(id));
+    return pruned.length === order.length ? order : pruned;
+};
+
 export type SidebarSpacesModel = {
     spacesById: Map<string, Space>;
     favoriteOrder: string[];
@@ -41,6 +48,23 @@ export function useSidebarSpaces(): SidebarSpacesModel {
     const [favoritesCollapsed, setFavoritesCollapsed] = useState(false);
 
     const spacesById = useMemo(() => new Map(spaces.map((s) => [s.id, s])), [spaces]);
+
+    // The space set is now reactive (creates/deletes flow through the store),
+    // so reconcile the locally-owned order lists against it: prune ids that no
+    // longer exist, and append ids we haven't seen yet. Guarded so a no-op
+    // update returns the same reference and doesn't retrigger the effect.
+    useEffect(() => {
+        const liveIds = new Set(spaces.map((s) => s.id));
+
+        setFavoriteOrder((prev) => pruneOrder(prev, liveIds));
+
+        setSpacesOrder((prev) => {
+            const pruned = pruneOrder(prev, liveIds);
+            const tracked = new Set([...pruned, ...favoriteOrder]);
+            const additions = spaces.map((s) => s.id).filter((id) => !tracked.has(id));
+            return additions.length === 0 ? pruned : [...pruned, ...additions];
+        });
+    }, [spaces, favoriteOrder]);
 
     const applyMove = (spaceId: string, from: DndCategory, to: DndCategory, index: number) => {
         const next = moveBetween(favoriteOrder, spacesOrder, spaceId, to, index);

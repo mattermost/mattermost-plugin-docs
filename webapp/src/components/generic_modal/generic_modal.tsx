@@ -26,7 +26,7 @@ type Props = {
 
 const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, initialFocus, showCloseButton = true, headerContent, footer, children}: Props) => {
     const {formatMessage} = useIntl();
-    const closeLabel = formatMessage({id: 'generic_modal.close', defaultMessage: 'Close'});
+    const closeLabel = formatMessage({id: 'docs.genericModal.close', defaultMessage: 'Close'});
 
     return (
         <Dialog.Root

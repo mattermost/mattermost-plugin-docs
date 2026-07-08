@@ -4,22 +4,54 @@
 import type {Page, Space} from 'types/docs';
 
 // Design-time fixtures behind the mock data source. The real Docs API replaces
-// these once the server contract exists; only the mock source imports them.
+// these once the server contract exists; only the mock source and the store's
+// recent-docs selectors read them directly.
+
+function space(id: string, title: string, icon: string): Space {
+    return {
+        id,
+        team_id: '',
+        creator_id: '',
+        title,
+        icon,
+        props: {},
+        create_at: 0,
+        update_at: 0,
+        delete_at: 0,
+        sort_order: 0,
+    };
+}
+
+function page(id: string, title: string, spaceId: string): Page {
+    return {
+        id,
+        space_id: spaceId,
+        parent_id: '',
+        type: 'page',
+        title,
+        body: '',
+        sort_order: 0,
+        create_at: 0,
+        update_at: 0,
+        edit_at: 0,
+        delete_at: 0,
+    };
+}
 
 export const spaces: Space[] = [
-    {id: 'project-avalanche', name: 'Project Avalanche', emoji: '✈️'},
-    {id: 'contributor-wiki', name: 'Contributor Wiki', emoji: '👨🏻‍💻'},
-    {id: 'developers', name: 'Developers', emoji: '⌨️'},
-    {id: 'release-discussion', name: 'Release Discussion', emoji: '🚀'},
-    {id: 'incident-handbook', name: 'Incident Handbook', emoji: '📕'},
-    {id: 'security-incident-handbook', name: 'Security Incident Handbook', emoji: '🛡️'},
-    {id: 'product-support', name: 'Product Support', emoji: '🖐️'},
+    space('project-avalanche', 'Project Avalanche', '✈️'),
+    space('contributor-wiki', 'Contributor Wiki', '👨🏻‍💻'),
+    space('developers', 'Developers', '⌨️'),
+    space('release-discussion', 'Release Discussion', '🚀'),
+    space('incident-handbook', 'Incident Handbook', '📕'),
+    space('security-incident-handbook', 'Security Incident Handbook', '🛡️'),
+    space('product-support', 'Product Support', '🖐️'),
 ];
 
 export const pages: Page[] = [
-    {id: 'operational-procedures', title: 'Operational Procedures', spaceId: 'project-avalanche', spaceName: 'Project Avalanche'},
-    {id: 'overview-flight-comms', title: 'Overview of Flight Communication Protocols', spaceId: 'project-avalanche', spaceName: 'Project Avalanche'},
-    {id: 'communication-protocols', title: 'Communication Protocols', spaceId: 'project-avalanche', spaceName: 'Project Avalanche'},
+    page('operational-procedures', 'Operational Procedures', 'project-avalanche'),
+    page('overview-flight-comms', 'Overview of Flight Communication Protocols', 'project-avalanche'),
+    page('communication-protocols', 'Communication Protocols', 'project-avalanche'),
 ];
 
 export const recentSpaceIds = ['project-avalanche'];

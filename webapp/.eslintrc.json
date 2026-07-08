@@ -3,7 +3,28 @@
   "extends": [
     "plugin:@mattermost/react"
   ],
+  "plugins": [
+    "formatjs"
+  ],
   "rules": {
-    "header/header": "off"
-  }
+    "header/header": "off",
+    "formatjs/enforce-default-message": 2,
+    "formatjs/enforce-placeholders": 2,
+    "formatjs/no-literal-string-in-jsx": 2,
+    "formatjs/no-multiple-plurals": 2,
+    "formatjs/no-multiple-whitespaces": 2,
+    "formatjs/prefer-formatted-message": 2,
+    "formatjs/enforce-id": [2, {
+      "idInterpolationPattern": "[sha512:contenthash:base64:6]",
+      "idWhitelist": ["^docs\\."]
+    }]
+  },
+  "overrides": [
+    {
+      "files": ["**/*.test.{ts,tsx}", "tests/**"],
+      "rules": {
+        "formatjs/no-literal-string-in-jsx": "off"
+      }
+    }
+  ]
 }
