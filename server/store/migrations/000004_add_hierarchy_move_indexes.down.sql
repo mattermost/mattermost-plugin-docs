@@ -1,1 +1,2 @@
-DROP INDEX IF EXISTS idx_docs_page_originalid;
+-- morph:nontransactional
+DROP INDEX CONCURRENTLY IF EXISTS idx_docs_page_originalid;
