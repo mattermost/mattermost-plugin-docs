@@ -126,6 +126,29 @@ func (s *Store) CreatePage(page *model.Page, maxDepth int) (_ *model.Page, err e
 	return page, nil
 }
 
+// validatePageSubtreeSlice checks the slice shape before any I/O: no nil entries, no duplicate
+// IDs, and every descendant's ParentId must reference an earlier entry in the slice. The last
+// rule prevents a descendant from being inserted under an unrelated external page, which would
+// bypass the parent lock, sibling cap, and sort-order allocation that only cover pages[0].ParentId.
+func validatePageSubtreeSlice(pages []*model.Page) error {
+	seenIDs := make(map[string]struct{}, len(pages))
+	for i, p := range pages {
+		if p == nil {
+			return &ErrInvalidInput{Entity: "Page", Field: "pages", Value: "nil entry"}
+		}
+		if i > 0 {
+			if _, ok := seenIDs[p.ParentId]; !ok {
+				return &ErrInvalidInput{Entity: "Page", Field: "ParentId", Value: p.ParentId}
+			}
+		}
+		if _, dup := seenIDs[p.Id]; dup {
+			return &ErrInvalidInput{Entity: "Page", Field: "Id", Value: p.Id}
+		}
+		seenIDs[p.Id] = struct{}{}
+	}
+	return nil
+}
+
 // CreatePageSubtree inserts a root page plus its descendants atomically in a single transaction,
 // so a failure partway through cannot leave an orphaned partial subtree behind.
 // pages[0] is the root, with SpaceId/ParentId already set to the destination; every entry's Id must
@@ -137,6 +160,9 @@ func (s *Store) CreatePageSubtree(pages []*model.Page, maxDepth int) (_ []*model
 	}
 	if len(pages)-1 > MaxPageDescendantsLimit {
 		return nil, &ErrLimitExceeded{Resource: "Page subtree for page_id=" + pages[0].Id + " (size)", Limit: MaxPageDescendantsLimit}
+	}
+	if vErr := validatePageSubtreeSlice(pages); vErr != nil {
+		return nil, vErr
 	}
 	root := pages[0]
 
@@ -628,13 +654,13 @@ func (s *Store) reindexSiblingGroup(tx *sqlx.Tx, channelID, parentID, movedPageI
 }
 
 // MovePageToSpace moves a page and its entire live subtree to a different space in one
-// transaction: every live node's SpaceId/ChannelId is rewritten and
-// the moved root is reparented (parentPageID nil/"" = target root) and appended to the destination
-// sibling group. The target's ChannelId is derived from its locked row, never trusted from the
-// caller, so it always matches the target space's single backing channel. A subtree
-// deeper than MaxPageHierarchyDepth is rejected rather than silently truncated. Cross-owner
-// resources (page-comment Posts, FileInfo) are not re-homed here. The caller validates the target
-// space, parent, and depth before calling; cycle-safety is re-checked here.
+// transaction: every live node's SpaceId/ChannelId is rewritten and the moved root is
+// reparented (parentPageID nil/"" = target root) and appended to the destination sibling group.
+// The target's ChannelId is derived from its locked row, never trusted from the caller, so it
+// always matches the target space's single backing channel. Target space, parent, depth, and
+// cycle-safety are all re-validated under lock, so the move is safe regardless of concurrent
+// operations between the caller's pre-checks and this call. Cross-owner resources
+// (page-comment Posts, FileInfo) are not re-homed here.
 func (s *Store) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, parentPageID *string, expectedUpdateAt int64, force bool, maxDepth int) (_ *model.Page, err error) {
 	if pageID == "" {
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "Id", Value: pageID}
@@ -1119,7 +1145,6 @@ func (s *Store) DeletePage(pageID, spaceID, userID string) (err error) {
 				Update("DOCS_Page").
 				Set("SortOrder", sq.Expr("SortOrder + ?", n-1)).
 				Set("UpdateAt", sq.Expr("GREATEST(UpdateAt + 1, ?)", now)).
-				Set("EditAt", sq.Expr("GREATEST(EditAt + 1, ?)", now)).
 				Where(sq.And{
 					sq.Eq{"ChannelId": deleted.ChannelID, "ParentId": deleted.ParentID, "DeleteAt": 0},
 					// (SortOrder, CreateAt, Id ASC) ordering: SortOrder is non-unique, so also
@@ -1149,8 +1174,7 @@ func (s *Store) DeletePage(pageID, spaceID, userID string) (err error) {
 			Update("DOCS_Page").
 			Set("ParentId", deleted.ParentID).
 			Set("SortOrder", sortOrderCase).
-			Set("UpdateAt", now).
-			Set("EditAt", sq.Expr("GREATEST(EditAt + 1, ?)", now)).
+			Set("UpdateAt", sq.Expr("GREATEST(UpdateAt + 1, ?)", now)).
 			Where(sq.Eq{"Id": childIDs, "ParentId": pageID}).
 			Where(liveNonSnapshotFilter(""))
 		result, txErr := s.execBuilder(tx, blockQuery)
@@ -1437,8 +1461,8 @@ func (s *Store) GetPageAncestorDepth(pageID string) (int, error) {
 	return count, nil
 }
 
-// GetPageAncestorIDs returns ancestor IDs without full page content — same cap behavior as
-// GetPageAncestors. Returns []*model.Page with only Id populated.
+// GetPageAncestorIDs returns ancestor IDs without full page content, capped at
+// MaxPageHierarchyDepth. Returns []*model.Page with only Id populated.
 func (s *Store) GetPageAncestorIDs(pageID string) ([]*model.Page, error) {
 	if pageID == "" {
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
