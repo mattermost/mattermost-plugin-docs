@@ -89,7 +89,7 @@
   },
   {
     "id": "app.page.duplicate.max_depth_exceeded.app_error",
-    "translation": ""
+    "translation": "Pages cannot be nested more than {{.MaxDepth}} levels deep."
   },
   {
     "id": "app.page.duplicate.not_found.app_error",
