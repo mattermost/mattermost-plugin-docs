@@ -113,9 +113,8 @@ func (s *Service) sameTeamSpaces(sourceSpaceID, destSpaceID string) (bool, *mmmo
 	return sourceSpace.TeamId == destSpace.TeamId, nil
 }
 
-// normalizeTitle sanitizes and trims a title. Length and required-field validation are
-// enforced by Page.IsValid/Space.IsValid at the store boundary — the single source of truth
-// for that rule — so this only normalizes.
+// normalizeTitle trims whitespace and sanitizes Unicode from a title.
+// Length and required-field constraints are not checked here.
 func normalizeTitle(title string) string {
 	return strings.TrimSpace(mmmodel.SanitizeUnicode(title))
 }
@@ -145,7 +144,7 @@ const PerPageDefault = 60
 // clamped down, matching core's page-param convention.
 const PerPageMaximum = 200
 
-// paginationOffsetLimit converts a zero-based page/size into a SQL offset/limit. perPage <= 0
+// paginationOffsetLimit converts a zero-based page/size into an offset/limit. perPage <= 0
 // is clamped to PerPageDefault and perPage > PerPageMaximum is clamped down to PerPageMaximum,
 // so the returned limit is always positive and bounded — a caller can never request an
 // unbounded result this way.

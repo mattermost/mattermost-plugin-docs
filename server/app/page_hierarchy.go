@@ -166,8 +166,8 @@ func (s *Service) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, p
 		requestedParent = *parentPageID
 	}
 	// Short-circuit if source and target space are the same and the parent isn't changing. Every
-	// real move falls through to the store. The OCC check below is enforced manually because this
-	// path skips the store's CAS.
+	// real move falls through to the store. The optimistic-lock check below is enforced manually
+	// because this path doesn't reach the store write.
 	if sourceSpaceID == targetSpaceID && page.ParentId == requestedParent {
 		// Re-fetch rather than reuse the top-of-function read: concurrent UpdatePage could have
 		// bumped UpdateAt since then, making the stale value accept a baseline the store would reject.

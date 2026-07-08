@@ -1348,7 +1348,7 @@ func (s *Store) GetPageChildren(pageID, spaceID string, offset, limit int) ([]*m
 	query := s.getQueryBuilder().
 		Select(pageColumnsP...).
 		From("DOCS_Page p").
-		Where(sq.Eq{"p.ParentId": pageID}).
+		Where(sq.Eq{"p.ParentId": pageID, "p.SpaceId": spaceID}).
 		Where(liveNonSnapshotFilter("p.")).
 		Where(sq.Expr(
 			"EXISTS (SELECT 1 FROM DOCS_Page parent WHERE parent.Id = ? AND parent.SpaceId = ? AND parent.DeleteAt = 0)",

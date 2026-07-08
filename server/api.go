@@ -79,8 +79,7 @@ func (p *Plugin) MattermostAuthorizationRequired(next http.Handler) http.Handler
 }
 
 // EnableDocsRequired is a middleware that rejects all API requests with 501 Not Implemented when
-// the EnableDocs feature flag is off. This mirrors how mattermost-plugin-apps gates on AppsEnabled
-// and how core gates IntegratedBoards at the api4 registration layer.
+// the EnableDocs feature flag is off.
 func (p *Plugin) EnableDocsRequired(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !p.API.GetConfig().FeatureFlags.EnableDocs {
@@ -92,8 +91,7 @@ func (p *Plugin) EnableDocsRequired(next http.Handler) http.Handler {
 	})
 }
 
-// writeAppError serialises a *mmmodel.AppError as a JSON body using the AppError's StatusCode as
-// the HTTP status, mirroring how Mattermost core returns errors to clients.
+// writeAppError serialises a *mmmodel.AppError as a JSON body with its own StatusCode as the HTTP status.
 func writeAppError(w http.ResponseWriter, appErr *mmmodel.AppError) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(appErr.StatusCode)

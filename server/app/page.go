@@ -13,8 +13,8 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
-// MaxPageDepth is the hierarchy depth limit enforced at the store under a row lock.
-// store.MaxPageHierarchyDepth (50) is a separate, larger read-side CTE recursion bound.
+// MaxPageDepth is the hierarchy depth limit enforced atomically by the store.
+// store.MaxPageHierarchyDepth (50) is a separate, larger bound used by descendant/ancestor reads.
 const MaxPageDepth = 10
 
 // CreatePage creates a new page in spaceID. ChannelId is derived from the space, not supplied by the caller.
@@ -67,7 +67,7 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 		// and the new child one level deeper, at ancestorDepth + 2. Root pages have depth 1.
 		newDepth := ancestorDepth + 2
 		// Fast-fail before the insert; a concurrent move could change ancestorDepth here.
-		// CreatePage re-enforces this cap under its row lock, which is authoritative.
+		// CreatePage re-enforces this cap atomically, which is authoritative.
 		if newDepth > MaxPageDepth {
 			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest)
 		}
@@ -155,7 +155,7 @@ func (s *Service) UpdatePage(pageID, spaceID string, patch *model.PagePatch, bas
 	if store.IsErrConflict(storeErr) {
 		// Re-fetch for accurate EditAt/LastModifiedBy in the conflict response. If the re-read
 		// fails, return the conflict with no metadata rather than leaking a 404.
-		fresh, freshErr := s.GetPage(pageID)
+		fresh, freshErr := s.GetPageInSpace("UpdatePage", pageID, spaceID, false)
 		if freshErr != nil {
 			return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.conflict.app_error",
 				nil, "conflict", http.StatusConflict).Wrap(storeErr)
@@ -168,7 +168,7 @@ func (s *Service) UpdatePage(pageID, spaceID string, patch *model.PagePatch, bas
 }
 
 // GetPageWithDeleted returns a page by ID even when soft-deleted (DeleteAt != 0),
-// unlike GetPage which returns only live pages. Version snapshots are excluded.
+// unlike GetPage which returns only live pages.
 func (s *Service) GetPageWithDeleted(pageID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("GetPageWithDeleted", "app.page.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -185,8 +185,8 @@ func (s *Service) GetPageWithDeleted(pageID string) (*model.Page, *mmmodel.AppEr
 	return page, nil
 }
 
-// DeletePage soft-deletes a page. spaceID scopes the delete: a page moved to another space
-// since the caller's last check returns not-found.
+// DeletePage soft-deletes a page. spaceID prevents the delete from targeting a page that has
+// since moved to a different space.
 func (s *Service) DeletePage(pageID, spaceID, userID string) *mmmodel.AppError {
 	if !mmmodel.IsValidId(pageID) {
 		return mmmodel.NewAppError("DeletePage", "app.page.delete.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -205,9 +205,9 @@ func (s *Service) DeletePage(pageID, spaceID, userID string) *mmmodel.AppError {
 }
 
 // RestorePage un-deletes a soft-deleted page and returns it. Rejects snapshots (this is not a
-// version revert). The store decides not-found/not-restorable/already-live atomically under its
-// row lock, so there is no pre-fetch here. spaceID scopes the restore: a page moved to another
-// space since the caller's last check returns not-found.
+// version revert). Enforces not-found/not-restorable/already-live atomically, so there is no
+// pre-fetch here. spaceID prevents the restore from targeting a page that has since moved to
+// a different space.
 func (s *Service) RestorePage(pageID, spaceID, userID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("RestorePage", "app.page.restore.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -244,8 +244,8 @@ func (s *Service) RestorePage(pageID, spaceID, userID string) (*model.Page, *mmm
 // team). The root copy is titled "Copy of <title>"; descendants keep their original titles.
 // sourceSpaceID scopes the source read. targetParentID nil defaults to the source's parent (same
 // space) or the target root (cross-space); a non-nil "" always means the target root.
-// Depth is validated here and re-validated by the store. includeChildren copies the whole live
-// subtree in one transaction via CreatePageSubtree, so a partial failure cannot leave a partial tree.
+// Rejects depth cap breaches; a concurrent race past this check is still caught before committing.
+// includeChildren copies the whole live subtree atomically, so a partial failure cannot leave a partial tree.
 func (s *Service) DuplicatePage(pageID, sourceSpaceID, userID string, includeChildren bool, targetSpaceID string, targetParentID *string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.invalid_id.app_error", nil, "", http.StatusBadRequest)

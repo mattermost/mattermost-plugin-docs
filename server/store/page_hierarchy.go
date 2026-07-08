@@ -24,8 +24,7 @@ const MaxPageSiblingsLimit = MaxPageDescendantsLimit
 
 // MaxRowsPerQuery caps GetDraftsForSpace's unpaginated "return all" read (limit<=0) so it cannot
 // load an unbounded number of rows. Pages and spaces listings reject limit<=0 outright via
-// requirePositiveLimit instead of falling back to this cap; the HTTP API layer clamps per_page to
-// [1, perPageMaximum] before it ever reaches the store (cf. core's 60/200, server/channels/web/params.go).
+// requirePositiveLimit instead of falling back to this cap.
 const MaxRowsPerQuery = 5000
 
 var pageColListP = strings.Join(pageColumnsP, ", ")

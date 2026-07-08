@@ -53,13 +53,13 @@ func openTestPlugin(t *testing.T, mockAPI *plugintest.API) *apiTestHarness {
 		// Minimal stub: only satisfies the EnableDocsRequired middleware. No pluginapi client so
 		// the nil-client guard in DeleteSpace/RestoreSpace continues to skip the channel side-effect.
 		mockAPI = &plugintest.API{}
-		t.Cleanup(func() { mockAPI.AssertExpectations(t) })
 		mockAPI.On("GetConfig").Return(&mmmodel.Config{
 			FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true},
 		}).Maybe()
 	} else {
 		client = pluginapi.NewClient(mockAPI, nil)
 	}
+	t.Cleanup(func() { mockAPI.AssertExpectations(t) })
 
 	p := &Plugin{store: s, service: app.New(s, nil, client)}
 	p.API = mockAPI
