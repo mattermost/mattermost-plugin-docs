@@ -77,8 +77,7 @@ func (s *Store) CreatePage(page *model.Page, maxDepth int) (_ *model.Page, err e
 		}
 		return nil, errors.Wrap(spErr, "failed to lock space for page create")
 	}
-	// Derive ChannelId from the locked space row (single source of truth via
-	// uq_docs_space_channel_id) rather than trusting the caller-supplied value.
+	// Derive ChannelId from the locked space row (single source of truth) rather than trusting the caller-supplied value.
 	page.ChannelId = spaceChannelID
 
 	// Re-verify the parent is still live under the same transaction, and enforce maxDepth against
@@ -127,12 +126,11 @@ func (s *Store) CreatePage(page *model.Page, maxDepth int) (_ *model.Page, err e
 	return page, nil
 }
 
-// CreatePageSubtree inserts a root page plus its descendants (a DuplicatePage copy) atomically in a
-// single transaction, so a failure partway through cannot leave an orphaned partial subtree behind.
+// CreatePageSubtree inserts a root page plus its descendants atomically in a single transaction,
+// so a failure partway through cannot leave an orphaned partial subtree behind.
 // pages[0] is the root, with SpaceId/ParentId already set to the destination; every entry's Id must
 // already be assigned by the caller, since pages[1:]'s ParentId references an earlier entry's Id in
-// this same slice. pages[1:] must be in pre-order (mirroring GetPageDescendants). maxDepth <= 0
-// disables the depth re-check.
+// this same slice. pages[1:] must be in pre-order. maxDepth <= 0 disables the depth re-check.
 func (s *Store) CreatePageSubtree(pages []*model.Page, maxDepth int) (_ []*model.Page, err error) {
 	if len(pages) == 0 {
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "pages", Value: "empty"}
@@ -266,7 +264,7 @@ func (s *Store) GetPage(pageID string, includeDeleted bool) (*model.Page, error)
 	return &page, nil
 }
 
-// GetPageForDuplicate fetches the source page for DuplicatePage, scoped to sourceSpaceID, plus its
+// GetPageForDuplicate fetches the source page, scoped to sourceSpaceID, plus its
 // live descendants when includeChildren is set — all under one transaction. The root is locked
 // against a concurrent whole-subtree move (MovePageToSpace), so that move cannot interleave with
 // this read. Descendant rows are not locked, so a targeted mutation of a single descendant may land
@@ -769,11 +767,10 @@ func (s *Store) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, par
 	return &moved, nil
 }
 
-// collectLiveSubtreeIDs returns the ids of pageID's whole live subtree (the root included — every
-// node is re-homed by MovePageToSpace), run within tx so it observes locked, uncommitted state. It
-// errors — rather than silently truncating — when the subtree exceeds MaxPageDescendantsLimit or
-// MaxPageHierarchyDepth (see pageSubtreeCTE for the recursion/cap mechanics), re-enforcing the app
-// layer's own unlocked pre-check, which can be stale by the time this runs.
+// collectLiveSubtreeIDs returns the ids of pageID's whole live subtree (the root included), run
+// within tx so it observes locked, uncommitted state. It errors — rather than silently truncating —
+// when the subtree exceeds MaxPageDescendantsLimit or MaxPageHierarchyDepth (see pageSubtreeCTE
+// for the recursion/cap mechanics).
 func (s *Store) collectLiveSubtreeIDs(tx *sqlx.Tx, pageID string) ([]string, error) {
 	subtreeCTE := pageSubtreeCTE + fmt.Sprintf(`
 		SELECT Id, depth FROM page_subtree WHERE NOT is_cycle ORDER BY depth, Id LIMIT %d`, MaxPageDescendantsLimit+2)
@@ -801,7 +798,7 @@ func (s *Store) collectLiveSubtreeIDs(tx *sqlx.Tx, pageID string) ([]string, err
 	return ids, nil
 }
 
-// rewriteSubtreeSpace re-homes ids (a subtree collected by collectLiveSubtreeIDs) onto
+// rewriteSubtreeSpace re-homes the given page IDs onto
 // targetSpaceID/targetChannelID, chunked, within tx. It rewrites SpaceId/ChannelId across
 // live DOCS_Page rows, their version snapshots (OriginalId IN ids), and DOCS_Draft rows.
 func (s *Store) rewriteSubtreeSpace(tx *sqlx.Tx, ids []string, targetSpaceID, targetChannelID string, now int64) error {
@@ -857,8 +854,7 @@ func (s *Store) lockLiveSpace(tx *sqlx.Tx, spaceID string) error {
 }
 
 // lockLiveSpaceChannel is lockLiveSpace but also returns the space's backing ChannelId, so a
-// caller can derive it from the locked row (single source of truth via uq_docs_space_channel_id,
-// mirroring CreatePage) instead of trusting a separately-supplied value.
+// caller can derive it from the locked row (single source of truth) instead of trusting a separately-supplied value.
 func (s *Store) lockLiveSpaceChannel(tx *sqlx.Tx, spaceID string) (string, error) {
 	query := s.getQueryBuilder().
 		Select("ChannelId").
@@ -875,8 +871,7 @@ func (s *Store) lockLiveSpaceChannel(tx *sqlx.Tx, spaceID string) (string, error
 	return channelID, nil
 }
 
-// tryLockLiveParent FOR UPDATE-locks parentID and reports whether it is still a live,
-// non-snapshot page in spaceID.
+// tryLockLiveParent FOR UPDATE-locks parentID and reports whether it is still a live page in spaceID.
 func (s *Store) tryLockLiveParent(tx *sqlx.Tx, parentID, spaceID string) (bool, error) {
 	query := s.getQueryBuilder().
 		Select("1").
@@ -911,8 +906,7 @@ func (s *Store) lockLiveParent(tx *sqlx.Tx, parentID, spaceID, entity string) er
 
 // pageHasAncestor reports whether ancestorID is startID itself or any of its ancestors, walking
 // ParentId upward within tx so it observes locked, uncommitted state. The walk is bounded by
-// MaxPageHierarchyDepth; a missing/broken link ends it. Used as a cycle guard under lock by the
-// move operations.
+// MaxPageHierarchyDepth; a missing/broken link ends it.
 func (s *Store) pageHasAncestor(tx *sqlx.Tx, startID, ancestorID string) (bool, error) {
 	var found bool
 	cte := moveAncestorsCTE + `
@@ -936,9 +930,7 @@ func (s *Store) pageDepth(tx *sqlx.Tx, pageID string) (int, error) {
 }
 
 // pageSubtreeMaxDepth returns the depth of the deepest live descendant below rootID relative to
-// rootID (0 if it is a leaf), computed within tx so it observes locked, uncommitted state. Used to
-// re-check the move depth cap under lock, closing the window where the app layer's unlocked
-// pre-check sees a stale ancestor/subtree depth.
+// rootID (0 if it is a leaf), computed within tx so it observes locked, uncommitted state.
 func (s *Store) pageSubtreeMaxDepth(tx *sqlx.Tx, rootID string) (int, error) {
 	cte := pageSubtreeCTE + `
 		SELECT COALESCE(MAX(depth), 0) FROM page_subtree WHERE NOT is_cycle`
@@ -952,7 +944,7 @@ func (s *Store) pageSubtreeMaxDepth(tx *sqlx.Tx, rootID string) (int, error) {
 // checkMoveDepthUnderLock re-validates, under the held lock, that placing the page (whose subtree
 // extends subtreeMax levels below it) beneath destParentID would not exceed maxDepth. destParentID
 // "" (a move to the space root) can never deepen the tree, so it is a no-op; maxDepth <= 0 disables
-// the app-cap re-check (the MaxPageHierarchyDepth hard bound is still enforced elsewhere).
+// the configurable depth cap (the MaxPageHierarchyDepth hard bound is still enforced elsewhere).
 func (s *Store) checkMoveDepthUnderLock(tx *sqlx.Tx, destParentID, pageID string, maxDepth int) error {
 	if maxDepth <= 0 || destParentID == "" {
 		return nil
@@ -979,9 +971,8 @@ func (s *Store) checkMoveDepthUnderLock(tx *sqlx.Tx, destParentID, pageID string
 }
 
 // validateMoveDestination locks destParentID (live, in destSpaceID), then re-checks the cycle guard
-// and depth cap under that lock. Shared by MovePage and MovePageToSpace, whose app-layer callers
-// pre-check both on an unlocked read; re-running them here under lock closes the TOCTOU window
-// against a concurrent move that reparents or deepens the destination.
+// and depth cap under that lock, closing the TOCTOU window against a concurrent move that reparents
+// or deepens the destination.
 func (s *Store) validateMoveDestination(tx *sqlx.Tx, destParentID, destSpaceID, pageID string, maxDepth int) error {
 	if lockErr := s.lockLiveParent(tx, destParentID, destSpaceID, "Page"); lockErr != nil {
 		return lockErr
@@ -997,9 +988,8 @@ func (s *Store) validateMoveDestination(tx *sqlx.Tx, destParentID, destSpaceID, 
 }
 
 // lockSiblingGroup acquires the advisory lock for the (channelID, parentID) sibling group, held
-// until the transaction ends. Every SortOrder writer into a group takes it — the append path
-// (nextSortOrder) and the positional renumber (reindexSiblingGroup) — so concurrent writers
-// serialize and neither computes a stale MAX(SortOrder) against the other's uncommitted rows.
+// until the transaction ends. Every SortOrder write into a group — appends and positional renumbers —
+// must take this lock so concurrent writers serialize.
 // hashtextextended maps the key to a single bigint, so a hash collision only over-serializes two
 // unrelated sibling groups — added contention (each group still computes its own MAX), never
 // corruption, with negligible probability. Must be called inside tx.
@@ -1084,7 +1074,7 @@ func (s *Store) DeletePage(pageID, spaceID, userID string) (err error) {
 		return errors.Wrap(lockErr, "failed to lock page for delete")
 	}
 
-	// Read the live children in GetPageChildren's (SortOrder, CreateAt, Id) order, locking
+	// Read the live children in canonical sibling order (SortOrder, CreateAt, Id ASC), locking
 	// them FOR UPDATE; that order drives the block placement below.
 	childIDsQuery := s.getQueryBuilder().
 		Select("Id").
@@ -1102,11 +1092,10 @@ func (s *Store) DeletePage(pageID, spaceID, userID string) (err error) {
 	// relative order. The space lock serializes this and SortOrder is non-unique, so the
 	// renumber can't collide.
 	if n := len(childIDs); n > 0 {
-		// The promoted children join deleted.ParentID's sibling group. Enforce the same cap
-		// nextSortOrder/reindexSiblingGroup apply at every other point a group gains a member,
-		// otherwise repeated deletes of many-childed pages could grow a group past
-		// MaxPageSiblingsLimit with no cap check on this path. The lock serializes the count
-		// against a concurrent CreatePage/MovePage append into the same group.
+		// The promoted children join deleted.ParentID's sibling group. Enforce the sibling-group cap
+		// that every other insertion path applies, otherwise repeated deletes of many-childed pages
+		// could grow a group past MaxPageSiblingsLimit with no cap check on this path. The lock
+		// serializes the count against a concurrent CreatePage/MovePage append into the same group.
 		if lockErr := s.lockSiblingGroup(tx, deleted.ChannelID, deleted.ParentID); lockErr != nil {
 			return lockErr
 		}
@@ -1133,9 +1122,9 @@ func (s *Store) DeletePage(pageID, spaceID, userID string) (err error) {
 				Set("EditAt", sq.Expr("GREATEST(EditAt + 1, ?)", now)).
 				Where(sq.And{
 					sq.Eq{"ChannelId": deleted.ChannelID, "ParentId": deleted.ParentID, "DeleteAt": 0},
-					// Match GetPageChildren's (SortOrder, CreateAt, Id) order: SortOrder is
-					// non-unique, so also shift siblings that tie on SortOrder but sort after
-					// the deleted page on the CreateAt/Id tie-breakers.
+					// (SortOrder, CreateAt, Id ASC) ordering: SortOrder is non-unique, so also
+					// shift siblings that tie on SortOrder but sort after the deleted page on
+					// the CreateAt/Id tie-breakers.
 					sq.Or{
 						sq.Gt{"SortOrder": deleted.SortOrder},
 						sq.Expr("(SortOrder = ? AND (CreateAt > ? OR (CreateAt = ? AND Id > ?)))",
@@ -1197,10 +1186,9 @@ func (s *Store) DeletePage(pageID, spaceID, userID string) (err error) {
 		return rowsErr
 	}
 
-	// A draft is unpublished work on the page, so deleting the page ends its life (mirrors core
-	// deleting drafts associated with a deleted post); a new-page draft parented under this page
-	// is a pending child of it, so it is reparented rather than deleted (see
-	// reparentDraftsForPage). Both cascades run inside this transaction.
+	// A draft is unpublished work on the page, so deleting the page ends its life; a new-page
+	// draft parented under this page is a pending child of it, so it is reparented rather than
+	// deleted (see reparentDraftsForPage). Both cascades run inside this transaction.
 	if draftErr := s.deleteDraftsForPage(tx, pageID); draftErr != nil {
 		return draftErr
 	}
@@ -1437,8 +1425,7 @@ func (s *Store) GetSpacePages(spaceID string, offset, limit int) ([]*model.Page,
 	return pages, nil
 }
 
-// GetPageAncestorDepth returns the count of live ancestors (excluding the page itself). Depth checks
-// that run inside a move/create transaction use pageDepth against the locked rows instead.
+// GetPageAncestorDepth returns the count of live ancestors (excluding the page itself).
 func (s *Store) GetPageAncestorDepth(pageID string) (int, error) {
 	if pageID == "" {
 		return 0, &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
@@ -1450,10 +1437,8 @@ func (s *Store) GetPageAncestorDepth(pageID string) (int, error) {
 	return count, nil
 }
 
-// GetPageAncestorIDs is the {Id}-only counterpart to GetPageAncestors, for callers (MovePage/
-// MovePageToSpace's cycle and depth-cap pre-checks) that only need ancestor identity/count, not
-// full page content (Body/SearchText/Props) — same cap behavior as GetPageAncestors. Returned as
-// []*model.Page with only Id populated so callers can share code with GetPageAncestors callers.
+// GetPageAncestorIDs returns ancestor IDs without full page content — same cap behavior as
+// GetPageAncestors. Returns []*model.Page with only Id populated.
 func (s *Store) GetPageAncestorIDs(pageID string) ([]*model.Page, error) {
 	if pageID == "" {
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
@@ -1472,11 +1457,9 @@ func (s *Store) GetPageAncestorIDs(pageID string) ([]*model.Page, error) {
 	return pages, nil
 }
 
-// GetPageDescendantIDParents is the {Id, ParentId}-only counterpart to GetPageDescendants, for
-// callers (MovePage/MovePageToSpace's cycle and depth-cap pre-checks) that only need descendant
-// identity/shape, not full page content — same pre-order, cap, and error behavior as
-// GetPageDescendants. Returned as []*model.Page with only Id/ParentId populated so callers can
-// pass the result straight to model.MaxDepthOfPreOrderedPages.
+// GetPageDescendantIDParents returns descendant IDs and ParentIds in pre-order without full
+// page content — same cap and error behavior as GetPageDescendants. Returns []*model.Page
+// with only Id/ParentId populated.
 func (s *Store) GetPageDescendantIDParents(pageID string) ([]*model.Page, error) {
 	if pageID == "" {
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}

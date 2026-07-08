@@ -17,8 +17,7 @@ var draftSelectColumns = []string{
 	"UserId", "SpaceId", "PageId", "ParentId", "Title", "Body", "FileIds", "Props", "CreateAt", "UpdateAt",
 }
 
-// draftMetaColumns is the metadata column set for draft listings. Body is excluded: the
-// sidebar/tree listing needs only metadata, and Body can be up to PageBodyMaxBytes per draft.
+// draftMetaColumns is the metadata column set for draft queries — Body omitted because it can be up to PageBodyMaxBytes per draft.
 var draftMetaColumns = []string{
 	"UserId", "SpaceId", "PageId", "ParentId", "Title", "FileIds", "Props", "CreateAt", "UpdateAt",
 }
@@ -37,9 +36,8 @@ func applyDraftLivenessFilter(q sq.SelectBuilder) sq.SelectBuilder {
 		})
 }
 
-// deleteDraftsForPage hard-deletes every user's draft for pageID. Drafts are hard rows with no
-// soft-delete, so this is called from DeletePage (in the same transaction) rather than left for
-// the draft to go stale. Must run inside tx.
+// deleteDraftsForPage hard-deletes every user's draft for pageID. Drafts have no soft-delete
+// and must be cleaned up when the page is deleted. Must run inside tx.
 func (s *Store) deleteDraftsForPage(tx *sqlx.Tx, pageID string) error {
 	query := s.getQueryBuilder().
 		Delete("DOCS_Draft").
@@ -50,10 +48,8 @@ func (s *Store) deleteDraftsForPage(tx *sqlx.Tx, pageID string) error {
 	return nil
 }
 
-// reparentDraftsForPage reparents every new-page draft pointing at pageID (as its pending
-// parent) to newParentID. Called from DeletePage: the deleted page's own parent is live (or
-// root) by the "no live page under a deleted parent" invariant, so a draft that stays parented
-// under pageID would otherwise point at a soft-deleted parent. Must run inside tx.
+// reparentDraftsForPage reparents every new-page draft pointing at pageID to newParentID,
+// so drafts don't retain a soft-deleted page as their pending parent. Must run inside tx.
 func (s *Store) reparentDraftsForPage(tx *sqlx.Tx, pageID, newParentID string, now int64) error {
 	query := s.getQueryBuilder().
 		Update("DOCS_Draft").
@@ -196,9 +192,8 @@ func (s *Store) DeleteDraft(userID, pageID string) error {
 // GetDraftsForSpace returns the user's drafts in the given space, most-recently-updated first,
 // with Body omitted (metadata only — see draftMetaColumns). Results pass applyDraftLivenessFilter,
 // so a soft-deleted space lists no drafts (they survive the soft-delete and reappear after
-// RestoreSpace) and a draft whose page is soft-deleted is dropped rather than rendered as a
-// phantom tree node. The result is capped at MaxRowsPerQuery; ErrLimitExceeded is returned
-// rather than truncating when more rows match.
+// RestoreSpace) and a draft whose page is soft-deleted is excluded from results. The result is
+// capped at MaxRowsPerQuery; ErrLimitExceeded is returned rather than truncating when more rows match.
 func (s *Store) GetDraftsForSpace(userID, spaceID string) ([]*model.Draft, error) {
 	if userID == "" {
 		return nil, &ErrInvalidInput{Entity: "Draft", Field: "userId", Value: userID}

@@ -25,8 +25,7 @@ func (s *Store) spaceSelectQuery() sq.SelectBuilder {
 		From("DOCS_Space")
 }
 
-// CreateSpace inserts a space row. It fills in defaults and rejects an invalid space itself, so
-// the caller need not prepare or validate it beforehand.
+// CreateSpace inserts a space row, fills in defaults and validates before inserting.
 func (s *Store) CreateSpace(space *model.Space) (*model.Space, error) {
 	if space == nil {
 		return nil, &ErrInvalidInput{Entity: "Space", Field: "space", Value: nil}
@@ -194,7 +193,7 @@ func (s *Store) DeleteSpace(id string) (err error) {
 	// land an equal stamp after this read.
 	now := mmmodel.GetMillis()
 	var maxPageDeleteAt int64
-	// DeleteAt > 0 both matches idx_docs_page_spaceid_deleted's predicate (so the planner
+	// DeleteAt > 0 both matches the partial-index predicate on deleted pages (so the planner
 	// can use it) and is harmless: live rows contribute only 0 to the MAX anyway.
 	maxQuery := s.getQueryBuilder().
 		Select("COALESCE(MAX(DeleteAt), 0)").
@@ -239,7 +238,7 @@ func (s *Store) DeleteSpace(id string) (err error) {
 
 	// Drafts are left untouched: this soft-delete is reversible (RestoreSpace), so a user's
 	// in-progress work must survive the round trip. Drafts have no DeleteAt, so they are purged
-	// only when their page is deleted (DeletePage).
+	// only when their page is explicitly deleted.
 	if err = tx.Commit(); err != nil {
 		return errors.Wrap(err, "commit_transaction")
 	}
@@ -296,7 +295,7 @@ func (s *Store) RestoreSpace(id string) (err error) {
 		Where(sq.And{sq.Eq{"Id": id}, sq.NotEq{"DeleteAt": 0}})
 	result, txErr := s.execBuilder(tx, spaceQuery)
 	if txErr != nil {
-		// A live space already holds this channel: restoring would breach uq_docs_space_channel_id.
+		// A live space already holds this channel: restoring would breach the channel-uniqueness constraint.
 		if isUniqueViolation(txErr) {
 			return &ErrConflict{Resource: "Space channel_id=" + deleted.ChannelID}
 		}

@@ -97,10 +97,8 @@ func truncateToRunes(s string, maxRunes int) string {
 	return s
 }
 
-// sameTeamSpaces fetches sourceSpaceID and destSpaceID and reports whether they belong to the same
-// team. Shared by DuplicatePage and MovePageToSpace, which both reject moving/copying a page across
-// team boundaries; each caller builds its own AppError on a false result so the i18n extractor sees
-// a literal message key at the call site, not a value forwarded through this helper.
+// sameTeamSpaces reports whether sourceSpaceID and destSpaceID belong to the same team.
+// Returns bool (not AppError) on a cross-team result so each caller supplies its own message key.
 func (s *Service) sameTeamSpaces(sourceSpaceID, destSpaceID string) (bool, *mmmodel.AppError) {
 	sourceSpace, srcErr := s.GetSpace(sourceSpaceID)
 	if srcErr != nil {
@@ -113,16 +111,13 @@ func (s *Service) sameTeamSpaces(sourceSpaceID, destSpaceID string) (bool, *mmmo
 	return sourceSpace.TeamId == destSpace.TeamId, nil
 }
 
-// normalizeTitle trims whitespace and sanitizes Unicode from a title.
-// Length and required-field constraints are not checked here.
 func normalizeTitle(title string) string {
 	return strings.TrimSpace(mmmodel.SanitizeUnicode(title))
 }
 
 // normalizeAndValidatePagePatch normalizes a page update patch's Title (trimmed, with the
 // result written back into the patch); Body and SearchText are left as-is. A nil field means
-// "leave unchanged". Size caps and required-field checks are enforced by Page.IsValid at the
-// store boundary. It defers patch-shape validation to PagePatch.IsValid.
+// "leave unchanged". It defers patch-shape validation to PagePatch.IsValid.
 func normalizeAndValidatePagePatch(patch *model.PagePatch) *mmmodel.AppError {
 	// The patch.Title != nil guard below protects the title dereference; IsValid only
 	// rejects a nil or all-nil patch and can pass with Title == nil.

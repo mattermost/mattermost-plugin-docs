@@ -14,24 +14,21 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
-// archiveOrphanChannel archives a backing channel created earlier in CreateSpace when a later step
-// fails. pluginapi Channel.Delete soft-deletes (archives) the channel — the plugin API exposes no
-// hard delete — so the orphan remains as an archived channel; a warning is logged if the
-// compensating archive itself fails so it can be reconciled. reason describes the step that failed
-// and cause is its underlying error.
+// archiveOrphanChannel archives a backing channel when a later step in space creation fails,
+// to avoid an orphaned channel. reason describes the step that failed; cause is its error.
 func (s *Service) archiveOrphanChannel(channelID, reason string, cause error) {
 	if s.client == nil {
 		return
 	}
 	if delErr := s.client.Channel.Delete(channelID); delErr != nil {
-		s.logWarn("CreateSpace: compensating channel archive also failed; channel may be orphaned", "channel_id", channelID, "failure_reason", reason, "cause_err", cause.Error(), "delete_err", delErr.Error())
+		s.logWarn("compensating channel archive failed; channel may be orphaned", "channel_id", channelID, "failure_reason", reason, "cause_err", cause.Error(), "delete_err", delErr.Error())
 	}
 }
 
 // CreateSpace creates a ChannelTypeSpace ("S") backing channel via pluginapi, saves the
-// space row pointing at it, and adds the creator as a member. Callers must not supply a
-// ChannelId — it is derived from the created channel. If the row save fails, the backing
-// channel is archived to avoid an orphan.
+// space row pointing at it, and adds the creator as a member. space.ChannelId must be empty —
+// it is set from the created channel. If the row save fails, the backing channel is archived
+// to avoid an orphan.
 func (s *Service) CreateSpace(space *model.Space, userID string) (*model.Space, *mmmodel.AppError) {
 	if space == nil {
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.nil_input.app_error", nil, "", http.StatusBadRequest)
@@ -295,9 +292,8 @@ func (s *Service) RestoreSpace(spaceID string) (*model.Space, *mmmodel.AppError)
 // retryStuckChannelRestore checks whether spaceID's backing channel is still archived despite the
 // space row already being live — the signature of a prior RestoreSpace call that completed the DB
 // half but failed on the channel un-archive (restoreSpaceChannel below). If so, it completes the
-// channel restore now and reports retried=true. If the channel is already live too, there is
-// nothing to retry (retried=false), and the caller falls back to its normal not_deleted rejection
-// instead of this treating a genuinely never-deleted space as a silent success.
+// channel restore now and reports retried=true. If the channel is already live, reports retried=false;
+// the caller then handles the original not_deleted error normally.
 func (s *Service) retryStuckChannelRestore(spaceID string) (space *model.Space, appErr *mmmodel.AppError, retried bool) {
 	got, getErr := s.GetSpace(spaceID)
 	if getErr != nil {
@@ -319,8 +315,7 @@ func (s *Service) retryStuckChannelRestore(spaceID string) (space *model.Space, 
 	return got, nil, true
 }
 
-// restoreSpaceChannel un-archives space's backing channel. Guarded with a client nil-check so
-// store-only tests (which seed spaces directly) don't panic.
+// restoreSpaceChannel un-archives space's backing channel. No-op when client is nil or ChannelId is empty.
 func (s *Service) restoreSpaceChannel(space *model.Space) *mmmodel.AppError {
 	if s.client == nil || space.ChannelId == "" {
 		return nil

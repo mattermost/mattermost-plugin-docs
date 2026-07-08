@@ -14,17 +14,13 @@ const MaxPageHierarchyDepth = 50
 // MaxPageDescendantsLimit is the maximum number of descendants returned by GetPageDescendants.
 const MaxPageDescendantsLimit = 5000
 
-// MaxPageSiblingsLimit caps a single parent's direct live children. reindexSiblingGroup
-// renumbers the whole sibling group in one statement under a held lock on every explicit
-// reposition, so an unbounded group would let one request build an arbitrarily large statement
-// while blocking concurrent creates/moves in the group; nextSortOrder and reindexSiblingGroup both
-// enforce this cap at the points where a group gains a member. Matches MaxPageDescendantsLimit so a
-// full-fan-out subtree (root + all direct children) still fits the descendant cap.
+// MaxPageSiblingsLimit caps a single parent's direct live children so any reposition
+// operation (which renumbers the whole group atomically) stays bounded.
+// Matches MaxPageDescendantsLimit so a full-fan-out subtree still fits the descendant cap.
 const MaxPageSiblingsLimit = MaxPageDescendantsLimit
 
-// MaxRowsPerQuery caps GetDraftsForSpace's unpaginated "return all" read (limit<=0) so it cannot
-// load an unbounded number of rows. Pages and spaces listings reject limit<=0 outright via
-// requirePositiveLimit instead of falling back to this cap.
+// MaxRowsPerQuery caps unpaginated reads to prevent unbounded result sets.
+// Paginated listings reject a non-positive limit outright rather than falling back to this cap.
 const MaxRowsPerQuery = 5000
 
 var pageColListP = strings.Join(pageColumnsP, ", ")
@@ -57,7 +53,6 @@ var (
 	// must filter NOT is_cycle to drop the cycle sentinel row). The CYCLE clause matches the
 	// other recursive CTEs in this file (ancestorsRecursiveCTE/computeDescendantsCTE) so a
 	// corrupted ParentId loop is broken explicitly rather than relying on the depth bound alone.
-	// Shared by the cycle guard (pageHasAncestor) and the depth check (pageDepth).
 	moveAncestorsCTE = fmt.Sprintf(`
 	WITH RECURSIVE ancestors AS (
 		SELECT Id, ParentId, 1 AS depth FROM DOCS_Page WHERE Id = $1 AND DeleteAt = 0 AND OriginalId = ''
@@ -69,8 +64,7 @@ var (
 
 	// pageSubtreeCTE walks a page's live subtree downward (root at depth 0), bounded by
 	// MaxPageHierarchyDepth so a subtree one level past the cap still emits a row rather than being
-	// silently truncated. Callers append their own SELECT. Shared by the move-to-space subtree
-	// collection (MovePageToSpace) and the under-lock subtree depth check (pageSubtreeMaxDepth).
+	// silently truncated. Callers append their own SELECT.
 	pageSubtreeCTE = fmt.Sprintf(`
 	WITH RECURSIVE page_subtree AS (
 		SELECT Id, 0 AS depth FROM DOCS_Page WHERE Id = $1 AND DeleteAt = 0 AND OriginalId = ''
@@ -104,10 +98,9 @@ func ancestorsRecursiveCTE(maxDepth int) string {
 // computeDescendantsCTE generates the recursive CTE that walks the subtree below a page,
 // excluding the root node and returning full page columns plus the node's depth. depth counts
 // edges below the requested page: the root is seeded at 0, so a direct child is depth 1. The
-// recursion runs one level past MaxPageHierarchyDepth so a subtree deeper than the cap emits a
-// depth > MaxPageHierarchyDepth row, letting GetPageDescendants distinguish "at the cap" from
-// "truncated" instead of silently dropping. Uses the SQL CYCLE clause (requires PostgreSQL
-// 14+); the plugin does not verify the deployment's Postgres version.
+// recursion runs one level past MaxPageHierarchyDepth so an over-deep subtree row has depth >
+// MaxPageHierarchyDepth, enabling callers to detect truncation. Uses the SQL CYCLE clause
+// (requires PostgreSQL 14+); the plugin does not verify the deployment's Postgres version.
 func computeDescendantsCTE() string {
 	// sort_path/create_path/id_path accumulate each ancestor's ordering keys so the ORDER BY
 	// below yields a pre-order depth-first walk with sibling order matching GetPageChildren

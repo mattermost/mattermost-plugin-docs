@@ -41,8 +41,7 @@ func (p *Plugin) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Decode only the client-settable fields; Id/CreateAt/DeleteAt/SortOrder/Props are server-owned
-	// and must not be accepted from the request body (CreatorId/ChannelId are set by CreateSpace).
+	// Decode only the client-settable fields; Id, timestamps, SortOrder, Props, CreatorId, and ChannelId are server-owned.
 	space := &model.Space{
 		TeamId:      teamID,
 		Title:       req.Title,

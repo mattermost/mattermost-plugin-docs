@@ -71,8 +71,6 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// UpdatePage scopes the write to space_id, so no pre-check here.
-	// Nil fields are left unchanged; the app layer rejects no-op and search-text-without-body patches.
 	patch := &model.PagePatch{Title: req.Title, Body: req.Body, SearchText: req.SearchText}
 
 	updated, appErr := p.service.UpdatePage(vars["page_id"], vars["space_id"], patch, int64OrZero(req.BaseEditAt), req.Force, userID)
@@ -87,7 +85,6 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	// DeletePage already resolves the page scoped to space_id, so no pre-check here.
 	if appErr := p.service.DeletePage(vars["page_id"], vars["space_id"], userID); appErr != nil {
 		writeAppError(w, appErr)
 		return
@@ -99,8 +96,6 @@ func (p *Plugin) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	// RestorePage already resolves the page scoped to space_id (regardless of live/deleted state),
-	// so no pre-check here.
 	restored, appErr := p.service.RestorePage(vars["page_id"], vars["space_id"], userID)
 	if appErr != nil {
 		writeAppError(w, appErr)
@@ -126,7 +121,6 @@ func (p *Plugin) handleMovePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// MovePage already resolves the page scoped to space_id, so no pre-check here.
 	moved, appErr := p.service.MovePage(vars["page_id"], vars["space_id"], req.ParentId, req.SiblingIndex, int64OrZero(req.ExpectedUpdateAt), req.Force)
 	if appErr != nil {
 		writeAppError(w, appErr)
@@ -152,7 +146,6 @@ func (p *Plugin) handleDuplicatePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// DuplicatePage already resolves the source page scoped to space_id, so no pre-check here.
 	duplicated, appErr := p.service.DuplicatePage(vars["page_id"], vars["space_id"], userID, req.IncludeChildren, req.TargetSpaceId, req.ParentId)
 	if appErr != nil {
 		writeAppError(w, appErr)
@@ -166,7 +159,6 @@ func (p *Plugin) handleDuplicatePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleGetPageChildren(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	page, perPage := pageParam(r), perPageParam(r)
-	// GetPageChildren already resolves the page and checks its space, so no pre-check here.
 	children, appErr := p.service.GetPageChildren(vars["page_id"], vars["space_id"], page, perPage)
 	if appErr != nil {
 		writeAppError(w, appErr)
@@ -191,7 +183,6 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// MovePageToSpace already resolves the page scoped to space_id, so no pre-check here.
 	moved, appErr := p.service.MovePageToSpace(vars["page_id"], vars["space_id"], req.TargetSpaceId, req.ParentId, int64OrZero(req.ExpectedUpdateAt), req.Force)
 	if appErr != nil {
 		writeAppError(w, appErr)

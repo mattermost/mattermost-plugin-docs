@@ -5,6 +5,7 @@ package app
 
 import (
 	"errors"
+	"maps"
 	"net/http"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -18,7 +19,6 @@ import (
 const MaxPageDepth = 10
 
 // CreatePage creates a new page in spaceID. ChannelId is derived from the space, not supplied by the caller.
-// All parameters are plain strings with no compiler-enforced ordering; transposing any two is a silent bug.
 func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID, pageID string) (*model.Page, *mmmodel.AppError) {
 	if pageID != "" && !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -32,8 +32,7 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 	if parentID != "" && !mmmodel.IsValidId(parentID) {
 		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.invalid_parent_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	// Title required/length and body/searchText size caps are enforced by Page.IsValid at the
-	// store boundary; this only normalizes the title.
+	// Title is normalized here; length and size caps are enforced at the store boundary.
 	title = normalizeTitle(title)
 	// SearchText is the body's plain-text projection, so it makes no sense without a body
 	// (matches the update path's rule).
@@ -66,8 +65,7 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID,
 		// ancestorDepth excludes the parent itself, so the parent is at ancestorDepth + 1
 		// and the new child one level deeper, at ancestorDepth + 2. Root pages have depth 1.
 		newDepth := ancestorDepth + 2
-		// Fast-fail before the insert; a concurrent move could change ancestorDepth here.
-		// CreatePage re-enforces this cap atomically, which is authoritative.
+		// Optimistic fast-fail; a concurrent move could invalidate this before the insert.
 		if newDepth > MaxPageDepth {
 			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest)
 		}
@@ -167,8 +165,7 @@ func (s *Service) UpdatePage(pageID, spaceID string, patch *model.PagePatch, bas
 	return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.store_error.app_error", nil, "", http.StatusInternalServerError).Wrap(storeErr)
 }
 
-// GetPageWithDeleted returns a page by ID even when soft-deleted (DeleteAt != 0),
-// unlike GetPage which returns only live pages.
+// GetPageWithDeleted returns a page by ID even when soft-deleted (DeleteAt != 0).
 func (s *Service) GetPageWithDeleted(pageID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("GetPageWithDeleted", "app.page.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -302,13 +299,10 @@ func (s *Service) DuplicatePage(pageID, sourceSpaceID, userID string, includeChi
 	// descendants is nil (includeChildren false), so only the placement depth is checked in that case.
 	destinationDepth := 1
 	if destParentID != "" {
-		// Mirrors MovePage/MovePageToSpace: reject a destination parent that doesn't exist or lives
-		// outside destSpaceID before computing anything from it, so a cross-space/missing parent gets
-		// the same clear error those siblings give instead of a misleading depth-cap rejection.
-		// Unlike Move/MoveToSpace, pageID here is the source being copied, not the copy's own
-		// (as-yet ungenerated) id, so validateParentExists is used instead of validateDestinationParent:
-		// a destParentID equal to the source is a legitimate "nest the copy under the original", not a
-		// cycle.
+		// Reject a destination parent that doesn't exist or lives outside destSpaceID before computing
+		// anything from it, so a cross-space/missing parent gets a clear error instead of a misleading
+		// depth-cap rejection.
+		// destParentID equal to the source is a legitimate case (nesting the copy under the original), not a cycle.
 		if destErr := s.validateParentExists("DuplicatePage", destParentID, destSpaceID); destErr != nil {
 			return nil, destErr
 		}
@@ -338,7 +332,7 @@ func (s *Service) DuplicatePage(pageID, sourceSpaceID, userID string, includeChi
 		Title:          copyTitle(source.Title),
 		Body:           source.Body,
 		SearchText:     source.SearchText,
-		Props:          model.DeepCloneStringInterface(source.Props),
+		Props:          maps.Clone(source.Props),
 		UserId:         userID,
 		LastModifiedBy: userID,
 	})
@@ -352,7 +346,7 @@ func (s *Service) DuplicatePage(pageID, sourceSpaceID, userID string, includeChi
 			Title:          d.Title,
 			Body:           d.Body,
 			SearchText:     d.SearchText,
-			Props:          model.DeepCloneStringInterface(d.Props),
+			Props:          maps.Clone(d.Props),
 			UserId:         userID,
 			LastModifiedBy: userID,
 		})

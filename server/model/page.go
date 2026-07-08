@@ -4,6 +4,7 @@
 package model
 
 import (
+	"maps"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -60,17 +61,8 @@ func (p *Page) IsSnapshot() bool {
 	return p.OriginalId != ""
 }
 
-// MaxDepthOfPreOrderedPages returns the maximum depth found in pages relative to rootID (depth 0),
-// where each page's depth is one more than its parent's. pages must be pre-order sorted (a page's
-// parent already appears earlier in the slice, or is rootID itself) so each ParentId lookup resolves
-// before it's needed. If rootID's own Page appears in pages, it is treated as the root (depth 0) and
-// not recomputed from its ParentId.
-//
-// Precondition: every page's ParentId must already appear in the internal depth map by the time that
-// page is visited (guaranteed by the pre-order invariant). If the invariant is violated — e.g. an
-// out-of-order slice, an orphan, or a cycle — Go's map zero-value makes the missing parent appear at
-// depth 0, so the violating page is placed at depth 1 rather than its true depth, causing
-// under-counting. Callers are responsible for ensuring the input satisfies the pre-order invariant.
+// MaxDepthOfPreOrderedPages returns the maximum depth in pages relative to rootID (depth 0).
+// pages must be pre-order sorted: each page's parent appears earlier in the slice (or is rootID).
 func MaxDepthOfPreOrderedPages(pages []*Page, rootID string) int {
 	depthOf := map[string]int{rootID: 0}
 	maxDepth := 0
@@ -148,7 +140,7 @@ func (p *Page) Patch(patch *PagePatch) {
 		p.SearchText = *patch.SearchText
 	}
 	if patch.Props != nil {
-		p.Props = DeepCloneStringInterface(*patch.Props)
+		p.Props = maps.Clone(*patch.Props)
 	}
 }
 

@@ -46,8 +46,8 @@ var migrations embed.FS
 
 const defaultQueryTimeout = 30 * time.Second
 
-// migrationLockTimeout must exceed the statement timeout: the same context drives
-// morph's lock-refresh, so an early expiry could drop the lock mid-DDL.
+// migrationLockTimeout must exceed the statement timeout: an early expiry could drop the
+// distributed migration lock before DDL completes.
 const migrationLockTimeout = 70 * time.Minute
 
 // Store holds the database handle used by the Docs plugin.
@@ -77,8 +77,8 @@ func (s *Store) SetLogger(log *pluginapi.LogService) {
 }
 
 // RunMigrations applies all pending morph migrations. Concurrent runs across an HA
-// cluster are serialized internally by morph's distributed DB-table lock (WithLock,
-// below); no external cluster mutex is required.
+// cluster are serialized internally by a distributed DB-table lock; no external cluster
+// mutex is required.
 func (s *Store) RunMigrations() error {
 	ctx, cancel := context.WithTimeout(context.Background(), migrationLockTimeout)
 	defer cancel()
@@ -138,8 +138,7 @@ func (s *Store) getQueryBuilder() sq.StatementBuilderType {
 	return s.builder
 }
 
-// columnsWithAlias returns the given columns prefixed with a table alias, used when
-// joining tables to avoid ambiguous column references.
+// columnsWithAlias returns the given columns prefixed with alias (e.g. "p.Id" for alias "p").
 func columnsWithAlias(alias string, cols []string) []string {
 	out := make([]string, len(cols))
 	for i, c := range cols {
@@ -148,11 +147,9 @@ func columnsWithAlias(alias string, cols []string) []string {
 	return out
 }
 
-// finalizeTransaction rolls tx back unless already committed. Callers defer this
-// immediately after Beginx and commit explicitly on the success path (Rollback then
-// returns sql.ErrTxDone and is ignored). When the body failed (*perr != nil) the
-// original typed error stays at the head of a merror chain so the app layer can still
-// classify it with errors.As, while a rollback failure is appended rather than dropped.
+// finalizeTransaction rolls tx back unless already committed (Rollback returns sql.ErrTxDone
+// when already committed, which is ignored). On failure, preserves the original typed error
+// as the head of a merror chain so errors.As classification still works even if rollback also fails.
 func (s *Store) finalizeTransaction(tx *sqlx.Tx, perr *error) {
 	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
 		if *perr == nil {
@@ -223,8 +220,7 @@ func nextMonotonic(now, prev int64) int64 {
 	return now
 }
 
-// requirePositiveLimit returns ErrInvalidInput when limit is not positive, for the
-// callers of applyLimitOffset that must reject limit <= 0 before querying.
+// requirePositiveLimit returns ErrInvalidInput when limit is not positive.
 func requirePositiveLimit(entity string, limit int) error {
 	if limit <= 0 {
 		return &ErrInvalidInput{Entity: entity, Field: "limit", Value: limit}
@@ -277,13 +273,13 @@ type ErrInvalidInput struct {
 	Field  string
 	Value  any
 	// Reason optionally carries either the originating AppError.Id (e.g. from a model IsValid
-	// check) or one of the short Reason* codes below, so the app layer can surface the specific
-	// validation key instead of a generic one.
+	// check) or one of the short Reason* codes below, enabling callers to surface a specific
+	// error key instead of a generic one.
 	Reason string
 }
 
 // Reason codes for invariants decided atomically under a row lock (see RestorePage, RestoreSpace,
-// CreatePage); the app layer maps these to its own app-facing error keys.
+// CreatePage). Callers map these to their own error keys.
 const (
 	ReasonNotRestorable           = "not_restorable"
 	ReasonNotDeleted              = "not_deleted"
@@ -322,9 +318,8 @@ type ErrLimitExceeded struct {
 	Limit    int
 	// Reason optionally carries the app-facing AppError.Id this specific limit violation should
 	// map to (e.g. one of checkDepthCap's two depth-exceeded keys), so a limit re-checked under
-	// lock surfaces the same id/status the app layer's own unlocked pre-check would have given for
-	// the identical condition, instead of a generic fallback. Empty means storeAppError falls back
-	// to app.store.too_large.app_error.
+	// lock produces the same error key as the caller's pre-check for the same condition.
+	// Empty means storeAppError falls back to app.store.too_large.app_error.
 	Reason string
 }
 
