@@ -1332,8 +1332,10 @@ func (s *Store) RestorePage(pageID, spaceID string, maxDepth int) (err error) {
 
 // GetPageChildren fetches direct live children of a page, ordered by the
 // caller-maintained SortOrder (ascending), with CreateAt then Id as stable tie-breakers.
-// limit must be > 0.
-func (s *Store) GetPageChildren(pageID string, offset, limit int) ([]*model.Page, error) {
+// spaceID scopes the query: if the parent page is not live in that space (e.g. because it
+// was concurrently moved), the query returns an empty result rather than children from the
+// wrong space. limit must be > 0.
+func (s *Store) GetPageChildren(pageID, spaceID string, offset, limit int) ([]*model.Page, error) {
 	if pageID == "" {
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
 	}
@@ -1346,6 +1348,10 @@ func (s *Store) GetPageChildren(pageID string, offset, limit int) ([]*model.Page
 		From("DOCS_Page p").
 		Where(sq.Eq{"p.ParentId": pageID}).
 		Where(liveNonSnapshotFilter("p.")).
+		Where(sq.Expr(
+			"EXISTS (SELECT 1 FROM DOCS_Page parent WHERE parent.Id = ? AND parent.SpaceId = ? AND parent.DeleteAt = 0)",
+			pageID, spaceID,
+		)).
 		OrderBy("p.SortOrder ASC", "p.CreateAt ASC", "p.Id ASC")
 
 	query = applyLimitOffset(query, offset, limit)

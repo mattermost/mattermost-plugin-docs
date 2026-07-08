@@ -204,21 +204,18 @@ func invalidInputAppError(where string, err error) *mmmodel.AppError {
 }
 
 // restoreReasonAppError maps a store.Reason* restore-failure code (see RestorePage, RestoreSpace)
-// to its app-facing error key via reasonKeys, so the store communicates which condition failed
-// without naming the app-facing message key itself. Returns nil if err isn't an ErrInvalidInput
-// carrying one of reasonKeys, leaving the caller to fall back to storeAppError.
-func restoreReasonAppError(where string, err error, reasonKeys map[string]string) *mmmodel.AppError {
+// to a pre-built AppError via appErrors, so the store communicates which condition failed without
+// naming the app-facing message key itself. Callers construct AppErrors with string-literal IDs so
+// the i18n extraction tool can discover them. Returns nil if err is not an ErrInvalidInput carrying
+// one of the mapped reasons, leaving the caller to fall back to storeAppError.
+func restoreReasonAppError(err error, appErrors map[string]*mmmodel.AppError) *mmmodel.AppError {
 	var invErr *store.ErrInvalidInput
 	if !errors.As(err, &invErr) {
 		return nil
 	}
-	key, ok := reasonKeys[invErr.Reason]
+	appErr, ok := appErrors[invErr.Reason]
 	if !ok {
 		return nil
 	}
-	status := http.StatusBadRequest
-	if invErr.Reason == store.ReasonNotDeleted {
-		status = http.StatusConflict
-	}
-	return mmmodel.NewAppError(where, key, nil, "", status).Wrap(err)
+	return appErr.Wrap(err)
 }

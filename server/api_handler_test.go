@@ -39,6 +39,7 @@ type apiTestHarness struct {
 
 // openTestPlugin wires a real *Plugin over an isolated test DB. When mockAPI is non-nil the
 // service gets a pluginapi client backed by it (needed for CreateSpace's backing channel).
+// A nil mockAPI creates a minimal stub that satisfies the EnableDocsRequired middleware.
 func openTestPlugin(t *testing.T, mockAPI *plugintest.API) *apiTestHarness {
 	t.Helper()
 	db := testutil.OpenTestDB(t)
@@ -48,10 +49,20 @@ func openTestPlugin(t *testing.T, mockAPI *plugintest.API) *apiTestHarness {
 	require.NoError(t, s.RunMigrations())
 
 	var client *pluginapi.Client
-	if mockAPI != nil {
+	if mockAPI == nil {
+		// Minimal stub: only satisfies the EnableDocsRequired middleware. No pluginapi client so
+		// the nil-client guard in DeleteSpace/RestoreSpace continues to skip the channel side-effect.
+		mockAPI = &plugintest.API{}
+		t.Cleanup(func() { mockAPI.AssertExpectations(t) })
+		mockAPI.On("GetConfig").Return(&mmmodel.Config{
+			FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true},
+		}).Maybe()
+	} else {
 		client = pluginapi.NewClient(mockAPI, nil)
 	}
+
 	p := &Plugin{store: s, service: app.New(s, nil, client)}
+	p.API = mockAPI
 	p.router = p.initRouter()
 	return &apiTestHarness{plugin: p, store: s}
 }
@@ -95,10 +106,24 @@ func TestHandler_RequiresAuth(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
+// TestHandler_EnableDocsRequired verifies that all routes return 501 when the EnableDocs
+// feature flag is off, regardless of the authenticated user.
+func TestHandler_EnableDocsRequired(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	t.Cleanup(func() { mockAPI.AssertExpectations(t) })
+	mockAPI.On("GetConfig").Return(&mmmodel.Config{
+		FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: false},
+	}).Maybe()
+	h := openTestPlugin(t, mockAPI)
+
+	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+mmmodel.NewId(), mmmodel.NewId(), nil)
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
+}
+
 // TestHandler_CreateSpace drives POST /spaces through the backing-channel mock.
 func TestHandler_CreateSpace(t *testing.T) {
 	mockAPI := &plugintest.API{}
-	mockAPI.On("GetConfig").Return(&mmmodel.Config{}).Maybe()
+	mockAPI.On("GetConfig").Return(&mmmodel.Config{FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true}}).Maybe()
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
@@ -124,7 +149,7 @@ func TestHandler_CreateSpace(t *testing.T) {
 // sort_order must be ignored so a caller cannot, e.g., create an already-soft-deleted space.
 func TestHandler_CreateSpace_IgnoresServerOwnedFields(t *testing.T) {
 	mockAPI := &plugintest.API{}
-	mockAPI.On("GetConfig").Return(&mmmodel.Config{}).Maybe()
+	mockAPI.On("GetConfig").Return(&mmmodel.Config{FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true}}).Maybe()
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).

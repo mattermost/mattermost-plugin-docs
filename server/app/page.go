@@ -233,21 +233,21 @@ func (s *Service) RestorePage(pageID, spaceID string) (*model.Page, *mmmodel.App
 	}
 	s.logDebug("Restoring page", "page_id", pageID)
 	if restoreErr := s.store.RestorePage(pageID, spaceID, MaxPageDepth); restoreErr != nil {
-		if appErr := restoreReasonAppError("RestorePage", restoreErr, map[string]string{
-			store.ReasonNotRestorable: "app.page.restore.not_restorable.app_error",
-			store.ReasonNotDeleted:    "app.page.restore.not_deleted.app_error",
+		if appErr := restoreReasonAppError(restoreErr, map[string]*mmmodel.AppError{
+			store.ReasonNotRestorable: mmmodel.NewAppError("RestorePage", "app.page.restore.not_restorable.app_error", nil, "", http.StatusBadRequest),
+			store.ReasonNotDeleted:    mmmodel.NewAppError("RestorePage", "app.page.restore.not_deleted.app_error", nil, "", http.StatusConflict),
 		}); appErr != nil {
 			return nil, appErr
 		}
 		return nil, storeAppError("RestorePage", restoreErr)
 	}
-	restored, getErr := s.store.GetPage(pageID, false)
+	restored, getErr := s.GetPageInSpace("RestorePage", pageID, spaceID, false)
 	if getErr != nil {
 		// The restore committed successfully; retry once in case of a transient read error, as
 		// a permanent 500 here would cause retries to hit "not deleted" (400) instead.
-		restored, getErr = s.store.GetPage(pageID, false)
+		restored, getErr = s.GetPageInSpace("RestorePage", pageID, spaceID, false)
 		if getErr != nil {
-			return nil, storeAppError("RestorePage", getErr)
+			return nil, getErr
 		}
 	}
 	return restored, nil

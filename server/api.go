@@ -27,6 +27,7 @@ import (
 func (p *Plugin) initRouter() *mux.Router {
 	router := mux.NewRouter()
 	router.Use(p.MattermostAuthorizationRequired)
+	router.Use(p.EnableDocsRequired)
 
 	api := router.PathPrefix("/api/v1").Subrouter()
 
@@ -70,6 +71,20 @@ func (p *Plugin) MattermostAuthorizationRequired(next http.Handler) http.Handler
 		userID := r.Header.Get("Mattermost-User-ID")
 		if userID == "" {
 			http.Error(w, "Not authorized", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// EnableDocsRequired is a middleware that rejects all API requests with 501 Not Implemented when
+// the EnableDocs feature flag is off. This mirrors how mattermost-plugin-apps gates on AppsEnabled
+// and how core gates IntegratedBoards at the api4 registration layer.
+func (p *Plugin) EnableDocsRequired(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !p.API.GetConfig().FeatureFlags.EnableDocs {
+			http.Error(w, "Docs is not enabled", http.StatusNotImplemented)
 			return
 		}
 

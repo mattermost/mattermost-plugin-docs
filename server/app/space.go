@@ -190,7 +190,25 @@ func (s *Service) UpdateSpace(spaceID string, patch *model.SpacePatch, expectedU
 	if err != nil {
 		return nil, storeAppError("UpdateSpace", err)
 	}
+	if updated.ChannelId != "" && s.client != nil {
+		if chanErr := s.syncSpaceChannelMetadata(updated); chanErr != nil {
+			s.logWarn("UpdateSpace: failed to sync backing channel metadata; display name/header may be stale", "channel_id", updated.ChannelId, "space_id", spaceID, "err", chanErr.Error())
+		}
+	}
 	return updated, nil
+}
+
+// syncSpaceChannelMetadata updates the backing channel's display name and header to match the
+// space's current Title and Description. Called after UpdateSpace succeeds; errors are logged
+// and suppressed by the caller since the space row is the source of truth.
+func (s *Service) syncSpaceChannelMetadata(space *model.Space) error {
+	channel, err := s.client.Channel.GetSpaceBackingChannel(space.ChannelId)
+	if err != nil {
+		return err
+	}
+	channel.DisplayName = truncateToRunes(space.Title, mmmodel.ChannelDisplayNameMaxRunes)
+	channel.Header = space.Description
+	return s.client.Channel.Update(channel)
 }
 
 // DeleteSpace soft-deletes a space and its pages (reversible via RestoreSpace), then archives the
@@ -253,8 +271,8 @@ func (s *Service) RestoreSpace(spaceID string) (*model.Space, *mmmodel.AppError)
 				return space, appErr
 			}
 		}
-		if appErr := restoreReasonAppError("RestoreSpace", err, map[string]string{
-			store.ReasonNotDeleted: "app.space.restore.not_deleted.app_error",
+		if appErr := restoreReasonAppError(err, map[string]*mmmodel.AppError{
+			store.ReasonNotDeleted: mmmodel.NewAppError("RestoreSpace", "app.space.restore.not_deleted.app_error", nil, "", http.StatusConflict),
 		}); appErr != nil {
 			return nil, appErr
 		}

@@ -61,9 +61,9 @@ func newPage(spaceID, channelID, userID, parentID string) *model.Page {
 }
 
 // mustChildren returns a page's live children, failing the test on error.
-func mustChildren(t *testing.T, s *store.Store, pageID string) []*model.Page {
+func mustChildren(t *testing.T, s *store.Store, pageID, spaceID string) []*model.Page {
 	t.Helper()
-	children, err := s.GetPageChildren(pageID, 0, 100)
+	children, err := s.GetPageChildren(pageID, spaceID, 0, 100)
 	require.NoError(t, err)
 	return children
 }
@@ -200,7 +200,7 @@ func TestGetPageChildren(t *testing.T) {
 	_, err = s.CreatePage(child, testDefaultMaxDepth)
 	require.NoError(t, err)
 
-	children, err := s.GetPageChildren(createdParent.Id, 0, 100)
+	children, err := s.GetPageChildren(createdParent.Id, savedSpace.Id, 0, 100)
 	require.NoError(t, err)
 	require.Len(t, children, 1)
 	require.Equal(t, "Child", children[0].Title)
@@ -218,7 +218,7 @@ func TestGetPageChildren_NonPositiveLimit(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, limit := range []int{0, -1} {
-		_, err := s.GetPageChildren(parent.Id, 0, limit)
+		_, err := s.GetPageChildren(parent.Id, space.Id, 0, limit)
 		require.Error(t, err)
 		require.True(t, store.IsErrInvalidInput(err), "limit=%d must return ErrInvalidInput; got %v", limit, err)
 	}
@@ -246,7 +246,7 @@ func TestGetPageChildrenOrderedBySortOrder(t *testing.T) {
 	require.NoError(t, err)
 
 	// Children come back in SortOrder order (here, creation order), not newest-first.
-	children, err := s.GetPageChildren(parent.Id, 0, 100)
+	children, err := s.GetPageChildren(parent.Id, savedSpace.Id, 0, 100)
 	require.NoError(t, err)
 	require.Len(t, children, 2)
 	require.Equal(t, "First", children[0].Title)
@@ -260,7 +260,7 @@ func TestGetPageChildrenOrderedBySortOrder(t *testing.T) {
 		Update("DOCS_Page").Set("SortOrder", newSortOrder).Where(sq.Eq{"Id": createdFirst.Id}))
 	require.NoError(t, err)
 
-	reordered, err := s.GetPageChildren(parent.Id, 0, 100)
+	reordered, err := s.GetPageChildren(parent.Id, savedSpace.Id, 0, 100)
 	require.NoError(t, err)
 	require.Len(t, reordered, 2)
 	require.Equal(t, "Second", reordered[0].Title)
@@ -1102,12 +1102,12 @@ func TestRestorePageAppendsAtEndOfSiblingGroup(t *testing.T) {
 
 	// Delete p: c1, c2 are promoted into p's old slot, so g's children become a, c1, c2.
 	require.NoError(t, s.DeletePage(p.Id, p.SpaceId))
-	require.Equal(t, []string{a.Id, c1.Id, c2.Id}, idsOf(mustChildren(t, s, g.Id)),
+	require.Equal(t, []string{a.Id, c1.Id, c2.Id}, idsOf(mustChildren(t, s, g.Id, space.Id)),
 		"sanity: promoted children take the deleted page's slot")
 
 	// Restore p: it must append at the end (a, c1, c2, p), not reclaim its stale slot 2.
 	require.NoError(t, s.RestorePage(p.Id, p.SpaceId, testDefaultMaxDepth))
-	children := mustChildren(t, s, g.Id)
+	children := mustChildren(t, s, g.Id, space.Id)
 	require.Equal(t, []string{a.Id, c1.Id, c2.Id, p.Id}, idsOf(children),
 		"restored page must be appended at the end of the sibling group")
 
@@ -1182,7 +1182,7 @@ func TestDeletePageCreateChildConcurrency(t *testing.T) {
 				"losing create must return invalid-parent; got %v (iteration %d)", createErr, i)
 		}
 
-		children, err := s.GetPageChildren(parent.Id, 0, 100)
+		children, err := s.GetPageChildren(parent.Id, space.Id, 0, 100)
 		require.NoError(t, err)
 		require.Empty(t, children, "a live child must never remain under a deleted parent (iteration %d)", i)
 	}
@@ -1217,7 +1217,7 @@ func TestCreatePageConcurrentSortOrderUnique(t *testing.T) {
 		require.NoError(t, cErr, "concurrent create %d must succeed", i)
 	}
 
-	children, err := s.GetPageChildren(parent.Id, 0, 100)
+	children, err := s.GetPageChildren(parent.Id, space.Id, 0, 100)
 	require.NoError(t, err)
 	require.Len(t, children, n)
 	seen := make(map[int64]bool, len(children))
@@ -1256,7 +1256,7 @@ func TestDeletePagePromotedChildrenTakeDeletedPosition(t *testing.T) {
 
 	require.NoError(t, s.DeletePage(p.Id, p.SpaceId))
 
-	children, err := s.GetPageChildren(g.Id, 0, 100)
+	children, err := s.GetPageChildren(g.Id, space.Id, 0, 100)
 	require.NoError(t, err)
 	got := make([]string, len(children))
 	for i, c := range children {
@@ -1294,7 +1294,7 @@ func TestDeletePagePreservesReorderedChildBlock(t *testing.T) {
 	c2, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
 
-	pChildren, err := s.GetPageChildren(p.Id, 0, 100)
+	pChildren, err := s.GetPageChildren(p.Id, space.Id, 0, 100)
 	require.NoError(t, err)
 	require.Equal(t, []string{c1.Id, c2.Id}, idsOf(pChildren), "sanity: creation order before reorder")
 	// Move c1 after c2 by raising its SortOrder directly (reorder is not a generic-patch
@@ -1303,12 +1303,12 @@ func TestDeletePagePreservesReorderedChildBlock(t *testing.T) {
 	_, err = s.ExecBuilderForTest(s.QueryBuilderForTest().
 		Update("DOCS_Page").Set("SortOrder", newSortOrder).Where(sq.Eq{"Id": pChildren[0].Id}))
 	require.NoError(t, err)
-	require.Equal(t, []string{c2.Id, c1.Id}, idsOf(mustChildren(t, s, p.Id)), "sanity: reordered to c2, c1")
+	require.Equal(t, []string{c2.Id, c1.Id}, idsOf(mustChildren(t, s, p.Id, space.Id)), "sanity: reordered to c2, c1")
 
 	require.NoError(t, s.DeletePage(p.Id, p.SpaceId))
 
 	// The reordered block (c2, c1) lands at p's old slot, and d is shifted after it.
-	require.Equal(t, []string{a.Id, c2.Id, c1.Id, d.Id}, idsOf(mustChildren(t, s, g.Id)),
+	require.Equal(t, []string{a.Id, c2.Id, c1.Id, d.Id}, idsOf(mustChildren(t, s, g.Id, space.Id)),
 		"reordered children must keep their order as a block at the deleted page's position")
 }
 

@@ -11,9 +11,9 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-// GetPageChildren fetches direct live children of a page. spaceID scopes the read to the page's
-// expected space; the internal page-in-space check (GetPageInSpace below) and the store read after
-// it are separate, unlocked queries, so this narrows but does not fully close the race between them.
+// GetPageChildren fetches direct live children of a page. spaceID scopes the read: the store
+// query atomically verifies the parent is still live in that space before returning its children,
+// so a concurrent MovePageToSpace cannot cause children from the wrong space to be returned.
 // perPage <= 0 defaults to PerPageDefault; larger values are capped at PerPageMaximum.
 func (s *Service) GetPageChildren(pageID, spaceID string, page, perPage int) ([]*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
@@ -23,7 +23,7 @@ func (s *Service) GetPageChildren(pageID, spaceID string, page, perPage int) ([]
 		return nil, err
 	}
 	offset, limit := paginationOffsetLimit(page, perPage)
-	pages, storeErr := s.store.GetPageChildren(pageID, offset, limit)
+	pages, storeErr := s.store.GetPageChildren(pageID, spaceID, offset, limit)
 	if storeErr != nil {
 		return nil, storeAppError("GetPageChildren", storeErr)
 	}

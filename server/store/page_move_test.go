@@ -99,7 +99,7 @@ func TestMovePage_StoreEdgeCases(t *testing.T) {
 		moved, err := s.MovePage(page.Id, page.SpaceId, &parent.Id, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.NoError(t, err)
 		require.Equal(t, parent.Id, moved.ParentId)
-		require.Contains(t, idsOf(mustChildren(t, s, parent.Id)), page.Id)
+		require.Contains(t, idsOf(mustChildren(t, s, parent.Id, parent.SpaceId)), page.Id)
 	})
 }
 
@@ -254,7 +254,7 @@ func TestMovePage_StoreReindexClampSingleSibling(t *testing.T) {
 	moved, err := s.MovePage(child.Id, child.SpaceId, &sameParent, &large, child.UpdateAt, false, store.MaxPageHierarchyDepth)
 	require.NoError(t, err)
 	require.Equal(t, parent.Id, moved.ParentId)
-	require.Equal(t, []string{child.Id}, idsOf(mustChildren(t, s, parent.Id)))
+	require.Equal(t, []string{child.Id}, idsOf(mustChildren(t, s, parent.Id, parent.SpaceId)))
 }
 
 // TestCreatePage_SiblingCapEnforced verifies CreatePage rejects once a parent's live child count
