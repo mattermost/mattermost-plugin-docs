@@ -361,6 +361,12 @@ func (s *Service) DuplicatePage(pageID, sourceSpaceID, userID string, includeChi
 		if store.IsErrInvalidInput(createErr) {
 			return nil, invalidInputAppError("DuplicatePage", createErr)
 		}
+		if store.IsErrLimitExceeded(createErr) {
+			var limErr *store.ErrLimitExceeded
+			if errors.As(createErr, &limErr) && limErr.Reason == store.ReasonMaxDepthExceeded {
+				return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest).Wrap(createErr)
+			}
+		}
 		return nil, storeAppError("DuplicatePage", createErr)
 	}
 

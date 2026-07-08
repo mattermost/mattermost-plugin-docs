@@ -92,12 +92,15 @@ func (p *Plugin) EnableDocsRequired(next http.Handler) http.Handler {
 }
 
 // writeAppError serialises a *mmmodel.AppError as a JSON body with its own StatusCode as the HTTP status.
+// DetailedError is cleared before encoding so internal store/DB details are never sent to clients.
 func writeAppError(w http.ResponseWriter, appErr *mmmodel.AppError) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(appErr.StatusCode)
+	safe := *appErr
+	safe.DetailedError = ""
 	// The status header is already written, so an encode failure here can't change the response,
 	// and these free functions have no logger to report it to.
-	_ = json.NewEncoder(w).Encode(appErr)
+	_ = json.NewEncoder(w).Encode(&safe)
 }
 
 // writeJSON serialises v as a JSON body with the given status.

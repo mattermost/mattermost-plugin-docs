@@ -88,6 +88,10 @@
     "translation": "Invalid user ID."
   },
   {
+    "id": "app.page.duplicate.max_depth_exceeded.app_error",
+    "translation": ""
+  },
+  {
     "id": "app.page.duplicate.not_found.app_error",
     "translation": "The page could not be found."
   },

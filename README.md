@@ -27,7 +27,7 @@ make test
 make check-style
 ```
 
-`make test` requires a reachable Postgres instance; point `TEST_DATABASE_DSN` at it, or run against the standard local dev Postgres if unset. Tests fail (rather than skip) when the DSN is unreachable.
+`make test` requires a reachable Postgres instance; point `TEST_DATABASE_POSTGRESQL_DSN` at it, or run against the standard local dev Postgres if unset. Tests fail (rather than skip) when the DSN is unreachable.
 
 ## Documentation
 
