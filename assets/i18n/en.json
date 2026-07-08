@@ -60,6 +60,10 @@
     "translation": "Invalid space ID."
   },
   {
+    "id": "app.page.delete.invalid_user_id.app_error",
+    "translation": "Invalid user ID."
+  },
+  {
     "id": "app.page.duplicate.cross_team.app_error",
     "translation": "A page cannot be duplicated into a space on a different team."
   },
@@ -162,6 +166,10 @@
   {
     "id": "app.page.restore.invalid_space_id.app_error",
     "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.page.restore.invalid_user_id.app_error",
+    "translation": "Invalid user ID."
   },
   {
     "id": "app.page.restore.not_deleted.app_error",

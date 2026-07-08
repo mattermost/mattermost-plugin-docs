@@ -1040,7 +1040,7 @@ func (s *Store) nextSortOrder(tx *sqlx.Tx, channelID, parentID string) (int64, e
 // parent as a contiguous block in the page's slot so their relative order survives. It
 // rejects snapshots (OriginalId != ""). The invariant that no live page sits under a
 // deleted parent holds even under concurrent CreatePage calls.
-func (s *Store) DeletePage(pageID, spaceID string) (err error) {
+func (s *Store) DeletePage(pageID, spaceID, userID string) (err error) {
 	if pageID == "" {
 		return &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
 	}
@@ -1186,6 +1186,7 @@ func (s *Store) DeletePage(pageID, spaceID string) (err error) {
 		Set("DeleteAt", now).
 		Set("UpdateAt", sq.Expr("GREATEST(UpdateAt + 1, ?)", now)).
 		Set("EditAt", sq.Expr("GREATEST(EditAt + 1, ?)", now)).
+		Set("LastModifiedBy", userID).
 		Where(sq.Eq{"Id": pageID}).
 		Where(liveNonSnapshotFilter(""))
 	result, txErr := s.execBuilder(tx, deleteQuery)
@@ -1219,7 +1220,7 @@ func (s *Store) DeletePage(pageID, spaceID string) (err error) {
 // never fails for a deleted or now-too-deep parent. Only a soft-deleted original page
 // (OriginalId == "", DeleteAt > 0) in a live space is restorable; the space is locked FOR UPDATE,
 // and the parent (when non-root) is also locked, in space→parent order.
-func (s *Store) RestorePage(pageID, spaceID string, maxDepth int) (err error) {
+func (s *Store) RestorePage(pageID, spaceID, userID string, maxDepth int) (err error) {
 	if pageID == "" {
 		return &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
 	}
@@ -1308,6 +1309,7 @@ func (s *Store) RestorePage(pageID, spaceID string, maxDepth int) (err error) {
 		Set("DeleteAt", 0).
 		Set("UpdateAt", sq.Expr("GREATEST(UpdateAt + 1, ?)", now)).
 		Set("EditAt", sq.Expr("GREATEST(EditAt + 1, ?)", now)).
+		Set("LastModifiedBy", userID).
 		Set("ParentId", restoreParentID).
 		Set("SortOrder", sortOrder)
 

@@ -752,7 +752,7 @@ func TestHandler_RestorePage_WrongSpaceIs404(t *testing.T) {
 	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
 
 	// Soft-delete the page so restore has something to act on.
-	require.NoError(t, h.store.DeletePage(page.Id, space.Id))
+	require.NoError(t, h.store.DeletePage(page.Id, space.Id, user))
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+otherSpace.Id+"/pages/"+page.Id+"/restore", user, nil)
 	require.Equal(t, http.StatusNotFound, rec.Code)

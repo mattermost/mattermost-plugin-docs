@@ -11,10 +11,8 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-// GetPageChildren fetches direct live children of a page. spaceID scopes the read: the store
-// query atomically verifies the parent is still live in that space before returning its children,
-// so a concurrent MovePageToSpace cannot cause children from the wrong space to be returned.
-// perPage <= 0 defaults to PerPageDefault; larger values are capped at PerPageMaximum.
+// GetPageChildren returns direct live children of a page, scoped to spaceID.
+// perPage <= 0 defaults to PerPageDefault; larger values cap at PerPageMaximum.
 func (s *Service) GetPageChildren(pageID, spaceID string, page, perPage int) ([]*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("GetPageChildren", "app.page.get_children.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -30,11 +28,8 @@ func (s *Service) GetPageChildren(pageID, spaceID string, page, perPage int) ([]
 	return pages, nil
 }
 
-// GetPageInSpace fetches pageID (including soft-deleted rows when includeDeleted is set) and
-// rejects with a not-found AppError — rather than leaking that the page exists elsewhere — when it
-// does not belong to spaceID. where identifies the calling operation for the returned error id.
-// Shared by GetPageChildren and by the API layer's pre-checks ahead of a mutation,
-// so the page-in-space check lives in one place instead of being reimplemented per caller.
+// GetPageInSpace fetches a page and rejects with not-found (not "wrong space") when it isn't in
+// spaceID. includeDeleted surfaces soft-deleted rows. where names the calling operation for error ids.
 func (s *Service) GetPageInSpace(where, pageID, spaceID string, includeDeleted bool) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(spaceID) {
 		return nil, mmmodel.NewAppError(where, "app.page.invalid_space_id.app_error", nil, "", http.StatusBadRequest)
@@ -55,11 +50,9 @@ func (s *Service) GetPageInSpace(where, pageID, spaceID string, includeDeleted b
 	return page, nil
 }
 
-// validateDestinationParent rejects a destination parent that is the page itself, does not exist,
-// or lives outside expectedSpaceID. where identifies the calling operation for the returned error.
-// Shared by MovePage and MovePageToSpace, where pageID is the very page being relocated, so a
-// destination equal to pageID is always a direct self-parent cycle. The cycle-via-subtree walk is
-// left to the caller, as it differs by direction between an in-space move and a cross-space move.
+// validateDestinationParent rejects a parent that is the page itself, doesn't exist, or lives
+// outside expectedSpaceID. Subtree-cycle checks are left to the caller (they differ between
+// in-space and cross-space moves).
 func (s *Service) validateDestinationParent(where, pageID, destParentID, expectedSpaceID string) *mmmodel.AppError {
 	if destParentID == pageID {
 		return mmmodel.NewAppError(where, "app.page.move.circular_reference.app_error", nil, "", http.StatusBadRequest)
@@ -67,10 +60,9 @@ func (s *Service) validateDestinationParent(where, pageID, destParentID, expecte
 	return s.validateParentExists(where, destParentID, expectedSpaceID)
 }
 
-// validateParentExists rejects a destination parent that does not exist or lives outside
-// expectedSpaceID. Used by DuplicatePage, where pageID identifies the source page being copied, not
-// the copy's (as-yet ungenerated) id, so a destParentID equal to the source is not a cycle and the
-// self-parent check validateDestinationParent adds is not applicable.
+// validateParentExists rejects a parent that doesn't exist or lives outside expectedSpaceID.
+// Unlike validateDestinationParent, it doesn't check for self-parenting (DuplicatePage may
+// legitimately place the copy under its source).
 func (s *Service) validateParentExists(where, destParentID, expectedSpaceID string) *mmmodel.AppError {
 	parent, parentErr := s.GetPage(destParentID)
 	if parentErr != nil {
@@ -87,13 +79,10 @@ func (s *Service) validateParentExists(where, destParentID, expectedSpaceID stri
 	return nil
 }
 
-// MovePage reparents a page under newParentID (nil leaves the parent unchanged) within its own
-// space and positions it in the destination sibling group (newIndex nil appends; non-nil places
-// it at that index, clamped to the group's bounds rather than rejected if out of range). It rejects
-// a move that would create a cycle (the destination is the page itself or one of its descendants),
-// cross a space boundary, or breach the depth cap, then performs the move optimistically-locked on
-// expectedUpdateAt (force overrides a stale baseline). Cycle/depth checks apply only when the
-// parent actually changes.
+// MovePage reparents a page within its space. newParentID nil = no reparent; "" = move to root.
+// newIndex nil appends; non-nil places at that index, clamped to bounds. Rejects cycles, cross-space
+// targets, and depth cap breaches. Optimistic-locked on expectedUpdateAt (force overrides).
+// Cycle and depth checks run only when the parent actually changes.
 func (s *Service) MovePage(pageID, spaceID string, newParentID *string, newIndex *int64, expectedUpdateAt int64, force bool) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("MovePage", "app.page.move.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -123,10 +112,8 @@ func (s *Service) MovePage(pageID, spaceID string, newParentID *string, newIndex
 				return nil, mmmodel.NewAppError("MovePage", "app.page.move.circular_reference.app_error", nil, "", http.StatusBadRequest)
 			}
 		}
-		// The moved page becomes a child of the destination, mirroring CreatePage's depth rule:
-		// ancestors counts the destination's ancestors (not itself), so the destination is at
-		// len(ancestors)+1 and the moved page one deeper, len(ancestors)+2; the cap also covers the
-		// deepest descendant below the moved page.
+		// Mirrors CreatePage's depth rule: destination is at len(ancestors)+1, moved page at
+		// len(ancestors)+2. The cap also covers the deepest descendant below the moved page.
 		descendants, descErr := s.store.GetPageDescendantIDParents(pageID)
 		if descErr != nil {
 			return nil, storeAppError("MovePage", descErr)
@@ -143,11 +130,9 @@ func (s *Service) MovePage(pageID, spaceID string, newParentID *string, newIndex
 	return moved, nil
 }
 
-// MovePageToSpace moves a page and its whole subtree to another space within the same team
-// (parentPageID nil/"" places it at the target root). It rejects a cross-team move, a destination
-// parent in the wrong space, a cycle (the destination parent inside the moving subtree), and a move
-// whose subtree would breach the depth cap, then performs the move. Returns the moved page.
-// Per-page restriction re-derivation and redirects are not handled here yet.
+// MovePageToSpace moves a page and its subtree to another space in the same team. parentPageID
+// nil/"" places it at the target root. Rejects cross-team moves, wrong-space parents, destination-
+// inside-subtree cycles, and depth cap breaches. Per-page restrictions and redirects are not handled yet.
 func (s *Service) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, parentPageID *string, expectedUpdateAt int64, force bool) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -180,18 +165,12 @@ func (s *Service) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, p
 	if parentPageID != nil {
 		requestedParent = *parentPageID
 	}
-	// Only a genuine no-op — source and target space are the same and the page is already under
-	// exactly the requested parent — short-circuits here; every real relocation, including a
-	// same-space move to the root, falls through to the store, which enforces the optimistic-lock
-	// CAS. This no-op path bypasses that store CAS, so the block below re-enforces the
-	// optimistic-lock baseline manually.
+	// Short-circuit if source and target space are the same and the parent isn't changing. Every
+	// real move falls through to the store. The OCC check below is enforced manually because this
+	// path skips the store's CAS.
 	if sourceSpaceID == targetSpaceID && page.ParentId == requestedParent {
-		// This no-op path never reaches the store CAS, so enforce the optimistic-lock baseline here
-		// rather than silently succeeding against a stale baseline. force skips it, matching the store.
-		// Re-fetch immediately before the check rather than reusing the read from the top of this
-		// function: two GetSpace round-trips elapsed since then, during which a concurrent UpdatePage
-		// could have bumped page.UpdateAt, and comparing against the stale value would let this no-op
-		// succeed where the store's locked CAS would have reported a conflict.
+		// Re-fetch rather than reuse the top-of-function read: concurrent UpdatePage could have
+		// bumped UpdateAt since then, making the stale value accept a baseline the store would reject.
 		if !force {
 			fresh, freshErr := s.GetPage(pageID)
 			if freshErr != nil {
@@ -243,9 +222,8 @@ func (s *Service) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, p
 	return moved, nil
 }
 
-// checkDepthCap rejects placing a page at destinationDepth, or a subtree whose deepest descendant
-// (subtreeMax levels below it) would breach MaxPageDepth. where identifies the caller. Shared by
-// MovePage, MovePageToSpace, and DuplicatePage.
+// checkDepthCap rejects placing a page deeper than MaxPageDepth, or a subtree whose deepest
+// point (subtreeMax levels below the landing page) would exceed it.
 func checkDepthCap(where string, destinationDepth, subtreeMax int) *mmmodel.AppError {
 	if destinationDepth > MaxPageDepth {
 		return mmmodel.NewAppError(where, "app.page.move.max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest)

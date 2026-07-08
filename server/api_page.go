@@ -11,16 +11,13 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-// maxPageBodyBytes caps the raw HTTP request body for page create/update. A request at both
-// service-level maxes (model.PageBodyMaxBytes + model.PageSearchTextMaxBytes, 4 MiB) still needs
-// room for the JSON envelope, field names, and any characters needing \-escaping inside
-// Body/SearchText — all of which only grow the wire size beyond the decoded byte length the model
-// validates. Doubling the combined max gives that headroom so a model-valid payload is never
-// rejected here before reaching validation.
+// maxPageBodyBytes caps the raw request body for page create/update. The model enforces byte-length
+// caps on Body and SearchText; JSON encoding adds overhead (envelope, field names, escaping), so we
+// allow 2× the combined model limit to avoid rejecting valid payloads before model validation.
 const maxPageBodyBytes = 2 * (model.PageBodyMaxBytes + model.PageSearchTextMaxBytes) // 8 MiB
 
-// maxPageStructBodyBytes caps request bodies for structural page operations (move, duplicate,
-// move-to-space) that carry only UUID strings, booleans, and int64 timestamps — no content fields.
+// maxPageStructBodyBytes caps request bodies for move/duplicate/move-to-space, which carry only
+// IDs, booleans, and timestamps — no content fields.
 const maxPageStructBodyBytes = 4 * 1024 // 4 KiB
 
 // handleCreatePage handles POST /api/v1/spaces/{space_id}/pages.
@@ -74,9 +71,8 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// UpdatePage already resolves the page scoped to space_id, so no pre-check here.
-	// The request's "body" maps onto the page body; nil fields are left unchanged. The app
-	// layer validates the patch (rejecting a nil/no-op or search-text-without-body patch).
+	// UpdatePage scopes the write to space_id, so no pre-check here.
+	// Nil fields are left unchanged; the app layer rejects no-op and search-text-without-body patches.
 	patch := &model.PagePatch{Title: req.Title, Body: req.Body, SearchText: req.SearchText}
 
 	updated, appErr := p.service.UpdatePage(vars["page_id"], vars["space_id"], patch, int64OrZero(req.BaseEditAt), req.Force, userID)
@@ -90,8 +86,9 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 // handleDeletePage handles DELETE /api/v1/spaces/{space_id}/pages/{page_id}.
 func (p *Plugin) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
+	userID := userIDFromRequest(r)
 	// DeletePage already resolves the page scoped to space_id, so no pre-check here.
-	if appErr := p.service.DeletePage(vars["page_id"], vars["space_id"]); appErr != nil {
+	if appErr := p.service.DeletePage(vars["page_id"], vars["space_id"], userID); appErr != nil {
 		writeAppError(w, appErr)
 		return
 	}
@@ -101,9 +98,10 @@ func (p *Plugin) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 // handleRestorePage handles PATCH /api/v1/spaces/{space_id}/pages/{page_id}/restore.
 func (p *Plugin) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
+	userID := userIDFromRequest(r)
 	// RestorePage already resolves the page scoped to space_id (regardless of live/deleted state),
 	// so no pre-check here.
-	restored, appErr := p.service.RestorePage(vars["page_id"], vars["space_id"])
+	restored, appErr := p.service.RestorePage(vars["page_id"], vars["space_id"], userID)
 	if appErr != nil {
 		writeAppError(w, appErr)
 		return

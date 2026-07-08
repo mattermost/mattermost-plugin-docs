@@ -331,7 +331,7 @@ func TestRestoreSpaceUncascadesCascadedPages(t *testing.T) {
 	// A page deleted before the space must stay deleted after restore.
 	preDeleted, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
-	require.NoError(t, s.DeletePage(preDeleted.Id, preDeleted.SpaceId))
+	require.NoError(t, s.DeletePage(preDeleted.Id, preDeleted.SpaceId, userID))
 
 	require.NoError(t, s.DeleteSpace(space.Id))
 	require.NoError(t, s.RestoreSpace(space.Id))
@@ -423,7 +423,7 @@ func TestRestoreSpaceStampExceedsExistingDeleteAt(t *testing.T) {
 
 	// Delete one page individually, then force its DeleteAt above the wall clock so a now-based
 	// cascade stamp would collide with (or trail) it.
-	require.NoError(t, s.DeletePage(individual.Id, individual.SpaceId))
+	require.NoError(t, s.DeletePage(individual.Id, individual.SpaceId, userID))
 	collisionStamp := mmmodel.GetMillis() + 1_000_000
 	_, rawErr := s.RawExecForTest("UPDATE DOCS_Page SET DeleteAt = $2 WHERE Id = $1", individual.Id, collisionStamp)
 	require.NoError(t, rawErr)
@@ -914,7 +914,7 @@ func TestDeletePage(t *testing.T) {
 		_, err = s.UpsertDraft(newDraft(otherUserID, space.Id, created.Id, ""))
 		require.NoError(t, err)
 
-		require.NoError(t, s.DeletePage(created.Id, created.SpaceId))
+		require.NoError(t, s.DeletePage(created.Id, created.SpaceId, userID))
 
 		_, err = s.GetPage(created.Id, false)
 		require.True(t, store.IsErrNotFound(err), "expected not-found after delete")
@@ -936,7 +936,7 @@ func TestDeletePage(t *testing.T) {
 		child, err := s.CreatePage(newPage(space.Id, channelID, userID, parent.Id), testDefaultMaxDepth)
 		require.NoError(t, err)
 
-		require.NoError(t, s.DeletePage(parent.Id, parent.SpaceId))
+		require.NoError(t, s.DeletePage(parent.Id, parent.SpaceId, userID))
 
 		gotChild, err := s.GetPage(child.Id, false)
 		require.NoError(t, err)
@@ -944,11 +944,11 @@ func TestDeletePage(t *testing.T) {
 	})
 
 	t.Run("missing page returns not-found", func(t *testing.T) {
-		require.True(t, store.IsErrNotFound(s.DeletePage(mmmodel.NewId(), space.Id)))
+		require.True(t, store.IsErrNotFound(s.DeletePage(mmmodel.NewId(), space.Id, userID)))
 	})
 
 	t.Run("empty id returns invalid-input", func(t *testing.T) {
-		require.True(t, store.IsErrInvalidInput(s.DeletePage("", space.Id)))
+		require.True(t, store.IsErrInvalidInput(s.DeletePage("", space.Id, userID)))
 	})
 }
 
@@ -966,8 +966,8 @@ func TestRestorePage(t *testing.T) {
 		created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 
-		require.NoError(t, s.DeletePage(created.Id, created.SpaceId))
-		require.NoError(t, s.RestorePage(created.Id, created.SpaceId, testDefaultMaxDepth))
+		require.NoError(t, s.DeletePage(created.Id, created.SpaceId, userID))
+		require.NoError(t, s.RestorePage(created.Id, created.SpaceId, userID, testDefaultMaxDepth))
 
 		got, err := s.GetPage(created.Id, false)
 		require.NoError(t, err)
@@ -980,12 +980,12 @@ func TestRestorePage(t *testing.T) {
 		child, err := s.CreatePage(newPage(space.Id, channelID, userID, parent.Id), testDefaultMaxDepth)
 		require.NoError(t, err)
 
-		require.NoError(t, s.DeletePage(parent.Id, parent.SpaceId))
+		require.NoError(t, s.DeletePage(parent.Id, parent.SpaceId, userID))
 		promoted, err := s.GetPage(child.Id, false)
 		require.NoError(t, err)
 		require.Equal(t, parent.ParentId, promoted.ParentId)
 
-		require.NoError(t, s.RestorePage(parent.Id, parent.SpaceId, testDefaultMaxDepth))
+		require.NoError(t, s.RestorePage(parent.Id, parent.SpaceId, userID, testDefaultMaxDepth))
 
 		restored, err := s.GetPage(parent.Id, false)
 		require.NoError(t, err)
@@ -1002,7 +1002,7 @@ func TestRestorePage(t *testing.T) {
 		require.NoError(t, err)
 		// Decided atomically under the page's row lock (see RestorePage), matching
 		// RestoreSpace's already-live convention — not a generic not-found.
-		require.True(t, store.IsErrInvalidInput(s.RestorePage(live.Id, live.SpaceId, testDefaultMaxDepth)))
+		require.True(t, store.IsErrInvalidInput(s.RestorePage(live.Id, live.SpaceId, userID, testDefaultMaxDepth)))
 	})
 }
 
@@ -1018,10 +1018,10 @@ func TestRestorePageRejectsDeletedSpace(t *testing.T) {
 	page, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
-	require.NoError(t, s.DeletePage(page.Id, page.SpaceId))
+	require.NoError(t, s.DeletePage(page.Id, page.SpaceId, userID))
 	require.NoError(t, s.DeleteSpace(space.Id))
 
-	require.True(t, store.IsErrNotFound(s.RestorePage(page.Id, page.SpaceId, testDefaultMaxDepth)), "must not restore into a deleted space")
+	require.True(t, store.IsErrNotFound(s.RestorePage(page.Id, page.SpaceId, userID, testDefaultMaxDepth)), "must not restore into a deleted space")
 }
 
 // TestRestorePageFallsBackToRootWhenParentDeleted verifies that if the original parent is
@@ -1039,10 +1039,10 @@ func TestRestorePageFallsBackToRootWhenParentDeleted(t *testing.T) {
 	require.NoError(t, err)
 
 	// Delete the child, then the parent; restoring the child now falls back to root.
-	require.NoError(t, s.DeletePage(child.Id, child.SpaceId))
-	require.NoError(t, s.DeletePage(parent.Id, parent.SpaceId))
+	require.NoError(t, s.DeletePage(child.Id, child.SpaceId, userID))
+	require.NoError(t, s.DeletePage(parent.Id, parent.SpaceId, userID))
 
-	require.NoError(t, s.RestorePage(child.Id, child.SpaceId, testDefaultMaxDepth), "restore must succeed by falling back to root")
+	require.NoError(t, s.RestorePage(child.Id, child.SpaceId, userID, testDefaultMaxDepth), "restore must succeed by falling back to root")
 
 	restored, err := s.GetPage(child.Id, false)
 	require.NoError(t, err)
@@ -1066,11 +1066,11 @@ func TestRestorePageFallsBackToRootWhenParentTooDeep(t *testing.T) {
 	child, err := s.CreatePage(newPage(space.Id, channelID, userID, parent.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
 
-	require.NoError(t, s.DeletePage(child.Id, child.SpaceId))
+	require.NoError(t, s.DeletePage(child.Id, child.SpaceId, userID))
 
 	// parent is live at depth 1, so restoring the child under it would land at depth 2 — over a
 	// cap of 1.
-	require.NoError(t, s.RestorePage(child.Id, child.SpaceId, 1), "restore must succeed by falling back to root")
+	require.NoError(t, s.RestorePage(child.Id, child.SpaceId, userID, 1), "restore must succeed by falling back to root")
 
 	restored, err := s.GetPage(child.Id, false)
 	require.NoError(t, err)
@@ -1101,12 +1101,12 @@ func TestRestorePageAppendsAtEndOfSiblingGroup(t *testing.T) {
 	require.NoError(t, err)
 
 	// Delete p: c1, c2 are promoted into p's old slot, so g's children become a, c1, c2.
-	require.NoError(t, s.DeletePage(p.Id, p.SpaceId))
+	require.NoError(t, s.DeletePage(p.Id, p.SpaceId, userID))
 	require.Equal(t, []string{a.Id, c1.Id, c2.Id}, idsOf(mustChildren(t, s, g.Id, space.Id)),
 		"sanity: promoted children take the deleted page's slot")
 
 	// Restore p: it must append at the end (a, c1, c2, p), not reclaim its stale slot 2.
-	require.NoError(t, s.RestorePage(p.Id, p.SpaceId, testDefaultMaxDepth))
+	require.NoError(t, s.RestorePage(p.Id, p.SpaceId, userID, testDefaultMaxDepth))
 	children := mustChildren(t, s, g.Id, space.Id)
 	require.Equal(t, []string{a.Id, c1.Id, c2.Id, p.Id}, idsOf(children),
 		"restored page must be appended at the end of the sibling group")
@@ -1132,8 +1132,8 @@ func TestDeleteRestoreAdvancesEditAt(t *testing.T) {
 	created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
 
-	require.NoError(t, s.DeletePage(created.Id, created.SpaceId))
-	require.NoError(t, s.RestorePage(created.Id, created.SpaceId, testDefaultMaxDepth))
+	require.NoError(t, s.DeletePage(created.Id, created.SpaceId, userID))
+	require.NoError(t, s.RestorePage(created.Id, created.SpaceId, userID, testDefaultMaxDepth))
 
 	restored, err := s.GetPage(created.Id, false)
 	require.NoError(t, err)
@@ -1166,7 +1166,7 @@ func TestDeletePageCreateChildConcurrency(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			delErr = s.DeletePage(parent.Id, parent.SpaceId)
+			delErr = s.DeletePage(parent.Id, parent.SpaceId, userID)
 		}()
 		go func() {
 			defer wg.Done()
@@ -1254,7 +1254,7 @@ func TestDeletePagePromotedChildrenTakeDeletedPosition(t *testing.T) {
 	c2, err := s.CreatePage(newPage(space.Id, channelID, userID, p.Id), testDefaultMaxDepth)
 	require.NoError(t, err)
 
-	require.NoError(t, s.DeletePage(p.Id, p.SpaceId))
+	require.NoError(t, s.DeletePage(p.Id, p.SpaceId, userID))
 
 	children, err := s.GetPageChildren(g.Id, space.Id, 0, 100)
 	require.NoError(t, err)
@@ -1305,7 +1305,7 @@ func TestDeletePagePreservesReorderedChildBlock(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{c2.Id, c1.Id}, idsOf(mustChildren(t, s, p.Id, space.Id)), "sanity: reordered to c2, c1")
 
-	require.NoError(t, s.DeletePage(p.Id, p.SpaceId))
+	require.NoError(t, s.DeletePage(p.Id, p.SpaceId, userID))
 
 	// The reordered block (c2, c1) lands at p's old slot, and d is shifted after it.
 	require.Equal(t, []string{a.Id, c2.Id, c1.Id, d.Id}, idsOf(mustChildren(t, s, g.Id, space.Id)),
@@ -1334,7 +1334,7 @@ func TestDeletePageDeleteSpaceNoDeadlock(t *testing.T) {
 		var wg sync.WaitGroup
 		errs := make([]error, 2)
 		wg.Add(2)
-		go func() { defer wg.Done(); errs[0] = s.DeletePage(parent.Id, parent.SpaceId) }()
+		go func() { defer wg.Done(); errs[0] = s.DeletePage(parent.Id, parent.SpaceId, userID) }()
 		go func() { defer wg.Done(); errs[1] = s.DeleteSpace(space.Id) }()
 		wg.Wait()
 
@@ -1678,7 +1678,7 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, err)
 		_, err = s.UpsertDraft(newDraft(userID, space.Id, deleted.Id, ""))
 		require.NoError(t, err)
-		require.NoError(t, s.DeletePage(deleted.Id, deleted.SpaceId))
+		require.NoError(t, s.DeletePage(deleted.Id, deleted.SpaceId, userID))
 
 		drafts, err := s.GetDraftsForSpace(userID, space.Id)
 		require.NoError(t, err)
@@ -1723,7 +1723,7 @@ func TestDraft(t *testing.T) {
 
 		page, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
-		require.NoError(t, s.DeletePage(page.Id, page.SpaceId))
+		require.NoError(t, s.DeletePage(page.Id, page.SpaceId, userID))
 
 		// An autosave landing after the page was deleted must not recreate a draft for it.
 		_, err = s.UpsertDraft(newDraft(userID, space.Id, page.Id, ""))
@@ -1773,7 +1773,7 @@ func TestDraft(t *testing.T) {
 
 		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
-		require.NoError(t, s.DeletePage(parent.Id, parent.SpaceId))
+		require.NoError(t, s.DeletePage(parent.Id, parent.SpaceId, userID))
 
 		_, err = s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), parent.Id))
 		require.True(t, store.IsErrInvalidInput(err), "expected invalid input for a deleted parent, got %v", err)
@@ -1965,7 +1965,7 @@ func TestDeletePageReparentsPendingDrafts(t *testing.T) {
 	_, err = s.UpsertDraft(newDraft(userID, space.Id, newPageID, parent.Id))
 	require.NoError(t, err)
 
-	require.NoError(t, s.DeletePage(parent.Id, parent.SpaceId))
+	require.NoError(t, s.DeletePage(parent.Id, parent.SpaceId, userID))
 
 	// The draft survives and is reparented to the deleted page's parent (the grandparent),
 	// which the invariant guarantees is live.
@@ -2031,7 +2031,7 @@ func TestGetSpacePages(t *testing.T) {
 	// A soft-deleted page in the target space must not appear.
 	deleted, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 	require.NoError(t, err)
-	require.NoError(t, s.DeletePage(deleted.Id, deleted.SpaceId))
+	require.NoError(t, s.DeletePage(deleted.Id, deleted.SpaceId, userID))
 
 	pages, err := s.GetSpacePages(space.Id, 0, 100)
 	require.NoError(t, err)

@@ -658,8 +658,9 @@ func TestServiceGetPageWithDeleted(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, channelID)
-	created := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
-	require.NoError(t, h.store.DeletePage(created.Id, created.SpaceId))
+	actorID := mmmodel.NewId()
+	created := mustCreatePage(t, h.store, space.Id, channelID, actorID, "")
+	require.NoError(t, h.store.DeletePage(created.Id, created.SpaceId, actorID))
 
 	t.Run("live get fails, with-deleted get returns the page", func(t *testing.T) {
 		_, liveErr := h.svc.GetPage(created.Id)
@@ -704,7 +705,7 @@ func TestServiceDeletePage(t *testing.T) {
 	t.Run("deletes a page so the live get returns 404", func(t *testing.T) {
 		created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
-		require.Nil(t, h.svc.DeletePage(created.Id, created.SpaceId))
+		require.Nil(t, h.svc.DeletePage(created.Id, created.SpaceId, userID))
 
 		_, err := h.svc.GetPage(created.Id)
 		require.NotNil(t, err)
@@ -715,7 +716,7 @@ func TestServiceDeletePage(t *testing.T) {
 		parent := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 		child := mustCreatePage(t, h.store, space.Id, channelID, userID, parent.Id)
 
-		require.Nil(t, h.svc.DeletePage(parent.Id, parent.SpaceId))
+		require.Nil(t, h.svc.DeletePage(parent.Id, parent.SpaceId, userID))
 
 		gotChild, err := h.svc.GetPage(child.Id)
 		require.Nil(t, err)
@@ -723,13 +724,13 @@ func TestServiceDeletePage(t *testing.T) {
 	})
 
 	t.Run("missing page returns 404", func(t *testing.T) {
-		err := h.svc.DeletePage(mmmodel.NewId(), space.Id)
+		err := h.svc.DeletePage(mmmodel.NewId(), space.Id, userID)
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusNotFound, err.StatusCode)
 	})
 
 	t.Run("invalid id returns 400", func(t *testing.T) {
-		err := h.svc.DeletePage("not-an-id", space.Id)
+		err := h.svc.DeletePage("not-an-id", space.Id, userID)
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	})
@@ -746,9 +747,9 @@ func TestServiceRestorePage(t *testing.T) {
 
 	t.Run("restores a soft-deleted page", func(t *testing.T) {
 		created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
-		require.NoError(t, h.store.DeletePage(created.Id, created.SpaceId))
+		require.NoError(t, h.store.DeletePage(created.Id, created.SpaceId, userID))
 
-		restored, err := h.svc.RestorePage(created.Id, created.SpaceId)
+		restored, err := h.svc.RestorePage(created.Id, created.SpaceId, userID)
 		require.Nil(t, err)
 		require.Zero(t, restored.DeleteAt)
 
@@ -761,8 +762,8 @@ func TestServiceRestorePage(t *testing.T) {
 		parent := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 		child := mustCreatePage(t, h.store, space.Id, channelID, userID, parent.Id)
 
-		require.Nil(t, h.svc.DeletePage(parent.Id, parent.SpaceId))
-		_, err := h.svc.RestorePage(parent.Id, parent.SpaceId)
+		require.Nil(t, h.svc.DeletePage(parent.Id, parent.SpaceId, userID))
+		_, err := h.svc.RestorePage(parent.Id, parent.SpaceId, userID)
 		require.Nil(t, err)
 
 		// Matching Confluence: the promoted child stays put after restore, not pulled back.
@@ -773,7 +774,7 @@ func TestServiceRestorePage(t *testing.T) {
 
 	t.Run("a non-deleted page returns 409", func(t *testing.T) {
 		live := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
-		_, err := h.svc.RestorePage(live.Id, live.SpaceId)
+		_, err := h.svc.RestorePage(live.Id, live.SpaceId, userID)
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusConflict, err.StatusCode)
 		require.Equal(t, "app.page.restore.not_deleted.app_error", err.Id)
@@ -786,14 +787,14 @@ func TestServiceRestorePage(t *testing.T) {
 			snap.Id, mmmodel.NewId(), mmmodel.GetMillis())
 		require.NoError(t, rawErr)
 
-		_, err := h.svc.RestorePage(snap.Id, snap.SpaceId)
+		_, err := h.svc.RestorePage(snap.Id, snap.SpaceId, userID)
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
 		require.Equal(t, "app.page.restore.not_restorable.app_error", err.Id)
 	})
 
 	t.Run("invalid id returns 400", func(t *testing.T) {
-		_, err := h.svc.RestorePage("not-an-id", space.Id)
+		_, err := h.svc.RestorePage("not-an-id", space.Id, userID)
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	})
