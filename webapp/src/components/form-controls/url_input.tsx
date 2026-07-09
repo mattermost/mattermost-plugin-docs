@@ -40,6 +40,7 @@ const UrlInput = forwardRef<UrlInputHandle, Props>(({id, baseUrl, value, onChang
     }), []);
 
     const label = formatMessage({id: 'docs.form.url.label', defaultMessage: 'URL:'});
+    const errorId = error ? `${id}-error` : undefined;
 
     const stopEditing = () => {
         setEditing(false);
@@ -59,6 +60,7 @@ const UrlInput = forwardRef<UrlInputHandle, Props>(({id, baseUrl, value, onChang
                         value={value}
                         aria-label={formatMessage({id: 'docs.form.url.editLabel', defaultMessage: 'Space URL'})}
                         aria-invalid={Boolean(error)}
+                        aria-describedby={errorId}
                         autoFocus={true}
                         onChange={(e) => onChange(e.target.value)}
                         onBlur={stopEditing}
@@ -85,7 +87,14 @@ const UrlInput = forwardRef<UrlInputHandle, Props>(({id, baseUrl, value, onChang
                     </button>
                 </div>
             )}
-            {error && <div className={styles.error}>{error}</div>}
+            {error && (
+                <div
+                    id={errorId}
+                    className={styles.error}
+                >
+                    {error}
+                </div>
+            )}
         </div>
     );
 });

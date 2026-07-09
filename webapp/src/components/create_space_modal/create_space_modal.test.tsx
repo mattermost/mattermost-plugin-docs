@@ -2,17 +2,20 @@
 // See LICENSE.txt for license information.
 
 import {fireEvent, screen, waitFor} from '@testing-library/react';
+import {docsDataSource} from 'data';
 import React from 'react';
 
-import {makeSpace} from 'store/test_fixtures';
+import {makeSpace, makeTeam} from 'store/test_fixtures';
 
 import CreateSpaceModal from './create_space_modal';
 
 import {renderWithContext} from '../../../tests/react_testing_utils';
 
+const team = makeTeam('team1', 'myteam');
+
 const takenSpaceState = {
     docs: {spaces: {byId: {taken: makeSpace('taken', 'Taken')}, order: ['taken']}, pages: {byId: {}, bySpace: {}}},
-    currentTeam: {id: 'team1', name: 'myteam'},
+    currentTeam: team,
 };
 
 function typeName(value: string) {
@@ -20,8 +23,18 @@ function typeName(value: string) {
 }
 
 describe('CreateSpaceModal', () => {
+    // Isolate the create path from the mock data source's module-level fixture
+    // store so the "valid submit" test doesn't mutate shared state.
+    beforeEach(() => {
+        jest.spyOn(docsDataSource, 'createSpace').mockImplementation((input) => makeSpace(input.slug, input.title.trim()));
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
     it('renders the form fields and disables Create until a name is entered', () => {
-        renderWithContext(<CreateSpaceModal onClose={jest.fn()}/>, {state: {currentTeam: {id: 'team1', name: 'myteam'}}});
+        renderWithContext(<CreateSpaceModal onClose={jest.fn()}/>, {state: {currentTeam: team}});
 
         expect(screen.getByLabelText('Space name')).toBeInTheDocument();
         expect(screen.getByRole('radiogroup', {name: 'Space visibility'})).toBeInTheDocument();
@@ -54,7 +67,7 @@ describe('CreateSpaceModal', () => {
                 onClose={onClose}
                 onCreated={onCreated}
             />,
-            {state: {currentTeam: {id: 'team1', name: 'myteam'}}},
+            {state: {currentTeam: team}},
         );
 
         typeName('Fresh Space');
@@ -67,7 +80,7 @@ describe('CreateSpaceModal', () => {
 
     it('invokes onClose from the Cancel button', () => {
         const onClose = jest.fn();
-        renderWithContext(<CreateSpaceModal onClose={onClose}/>, {state: {currentTeam: {id: 'team1', name: 'myteam'}}});
+        renderWithContext(<CreateSpaceModal onClose={onClose}/>, {state: {currentTeam: team}});
 
         fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
         expect(onClose).toHaveBeenCalledTimes(1);

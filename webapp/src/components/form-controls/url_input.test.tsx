@@ -67,14 +67,20 @@ describe('UrlInput', () => {
         expect(screen.queryByLabelText(EDIT_LABEL)).not.toBeInTheDocument();
     });
 
-    it('renders an error message', () => {
+    it('renders an error message and associates it with the input for assistive tech', () => {
         renderWithContext(
             <UrlInput
                 {...baseProps}
                 error='That URL is already taken'
             />,
         );
-        expect(screen.getByText('That URL is already taken')).toBeInTheDocument();
+
+        expect(screen.getByText('That URL is already taken')).toHaveAttribute('id', 'url-error');
+
+        fireEvent.click(screen.getByRole('button', {name: 'Edit'}));
+        const input = screen.getByLabelText(EDIT_LABEL);
+        expect(input).toHaveAttribute('aria-invalid', 'true');
+        expect(input).toHaveAttribute('aria-describedby', 'url-error');
     });
 
     it('enters edit mode and focuses the field via the imperative focus() handle', () => {

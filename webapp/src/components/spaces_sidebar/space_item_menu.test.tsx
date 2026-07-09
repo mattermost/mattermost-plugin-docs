@@ -5,7 +5,7 @@ import {fireEvent, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 import {copyToClipboard} from 'utils/clipboard';
 
-import {makeSpace} from 'store/test_fixtures';
+import {makeSpace, makeTeam} from 'store/test_fixtures';
 
 import SpaceItemMenu from './space_item_menu';
 
@@ -25,7 +25,7 @@ function renderMenu(props: Partial<React.ComponentProps<typeof SpaceItemMenu>> =
             onToggleFavorite={jest.fn()}
             {...props}
         />,
-        {state: {currentTeam: {id: 'team1', name: 'myteam'}}},
+        {state: {currentTeam: makeTeam('team1', 'myteam')}},
     );
 }
 

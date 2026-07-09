@@ -3,6 +3,8 @@
 
 import type {Page, Space} from 'types/docs';
 
+export const makeTeam = (id: string, name: string) => ({id, name});
+
 export const makeSpace = (id: string, title: string): Space => ({
     id,
     team_id: '',

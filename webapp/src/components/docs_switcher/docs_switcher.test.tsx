@@ -4,7 +4,7 @@
 import {fireEvent, screen} from '@testing-library/react';
 import React from 'react';
 
-import {makeSpace} from 'store/test_fixtures';
+import {makePage, makeSpace, makeTeam} from 'store/test_fixtures';
 
 import DocsSwitcher from './docs_switcher';
 
@@ -15,7 +15,15 @@ const state = {
         spaces: {byId: {eng: makeSpace('eng', 'Engineering'), sales: makeSpace('sales', 'Sales')}, order: ['eng', 'sales']},
         pages: {byId: {}, bySpace: {}},
     },
-    currentTeam: {id: 'team1', name: 'myteam'},
+    currentTeam: makeTeam('team1', 'myteam'),
+};
+
+const stateWithPage = {
+    docs: {
+        spaces: {byId: {eng: makeSpace('eng', 'Engineering')}, order: ['eng']},
+        pages: {byId: {onboarding: makePage('onboarding', 'eng', 'Onboarding')}, bySpace: {eng: ['onboarding']}},
+    },
+    currentTeam: makeTeam('team1', 'myteam'),
 };
 
 function renderSwitcher(onClose = jest.fn()) {
@@ -65,5 +73,14 @@ describe('DocsSwitcher', () => {
         fireEvent.keyDown(combobox, {key: 'Enter'});
 
         expect(history.location.pathname).toBe('/myteam/spaces/sales');
+    });
+
+    it('navigates to a page result within its space', () => {
+        const {history} = renderWithContext(<DocsSwitcher onClose={jest.fn()}/>, {state: stateWithPage});
+
+        fireEvent.change(screen.getByRole('combobox'), {target: {value: 'onboard'}});
+        fireEvent.click(screen.getByRole('option', {name: /Onboarding/}));
+
+        expect(history.location.pathname).toBe('/myteam/spaces/eng/onboarding');
     });
 });
