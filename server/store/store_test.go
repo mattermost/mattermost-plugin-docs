@@ -31,7 +31,7 @@ func openTestDB(t *testing.T) *store.Store {
 
 	db := testutil.OpenTestDB(t)
 
-	s, err := store.New(db, "postgres")
+	s, err := store.New(db, "postgres", nil)
 	require.NoError(t, err, "create store")
 	t.Cleanup(func() { _ = s.Close() })
 	require.NoError(t, s.RunMigrations(), "run migrations")
@@ -757,6 +757,55 @@ func TestGetSpacesForTeam_NonPositiveLimit(t *testing.T) {
 	}
 }
 
+func TestGetSpacesForTeamVisibleTo(t *testing.T) {
+	s := openTestDB(t)
+
+	teamID := mmmodel.NewId()
+	chVisible := mmmodel.NewId()
+	chHidden := mmmodel.NewId()
+
+	visible := newSpace(chVisible)
+	visible.TeamId = teamID
+	_, err := s.CreateSpace(visible)
+	require.NoError(t, err)
+
+	hidden := newSpace(chHidden)
+	hidden.TeamId = teamID
+	_, err = s.CreateSpace(hidden)
+	require.NoError(t, err)
+
+	// Space in a different team must not be returned.
+	other := newSpace(mmmodel.NewId())
+	_, err = s.CreateSpace(other)
+	require.NoError(t, err)
+
+	t.Run("filters to visible channel only", func(t *testing.T) {
+		spaces, err := s.GetSpacesForTeamVisibleTo(teamID, []string{chVisible}, 0, 100)
+		require.NoError(t, err)
+		require.Len(t, spaces, 1)
+		require.Equal(t, visible.Id, spaces[0].Id)
+	})
+
+	t.Run("empty channelIDs returns empty without querying", func(t *testing.T) {
+		spaces, err := s.GetSpacesForTeamVisibleTo(teamID, []string{}, 0, 100)
+		require.NoError(t, err)
+		require.Empty(t, spaces)
+	})
+
+	t.Run("pagination excludes hidden spaces before offset/limit", func(t *testing.T) {
+		// Only 1 visible space; with per_page=10 and 2 total, hidden must not count toward has_more.
+		spaces, err := s.GetSpacesForTeamVisibleTo(teamID, []string{chVisible}, 0, 10)
+		require.NoError(t, err)
+		require.Len(t, spaces, 1)
+	})
+
+	t.Run("rejects non-positive limit", func(t *testing.T) {
+		_, err := s.GetSpacesForTeamVisibleTo(teamID, []string{chVisible}, 0, 0)
+		require.Error(t, err)
+		require.True(t, store.IsErrInvalidInput(err))
+	})
+}
+
 // TestGetSpacePages_NonPositiveLimit verifies that GetSpacePages rejects limit <= 0
 // with ErrInvalidInput instead of silently returning an unbounded result.
 func TestGetSpacePages_NonPositiveLimit(t *testing.T) {
@@ -819,8 +868,8 @@ func TestPageIsValidSelfParent(t *testing.T) {
 // present in the database (which cannot be created via the public API but can occur from
 // raw SQL or data corruption).
 //
-// The CYCLE clause in the CTE marks each revisited node with is_cycle=true and stops
-// recursing that branch; the WHERE NOT is_cycle filter then drops the sentinel row.
+// The path array in the CTE accumulates visited IDs; NOT (p.Id = ANY(path)) stops recursion
+// on any revisited node, preventing an infinite loop.
 // This test creates a self-referential cycle (page.ParentId = page.Id) via raw SQL —
 // bypassing the IsValid check — and asserts that both hierarchy queries return bounded
 // results rather than looping.
@@ -844,7 +893,7 @@ func TestCTECycleDetection(t *testing.T) {
 
 	// GetPageDescendants must terminate and return a bounded (possibly empty) result.
 	descendants, descErr := s.GetPageDescendants(created.Id)
-	// The self-cycle row is filtered by NOT is_cycle, so the result is empty.
+	// The self-cycle is broken by the path guard, so the result is empty.
 	// We only care that it did NOT hang or panic — an empty result is correct.
 	require.NoError(t, descErr, "GetPageDescendants must not error on a cycle")
 	_ = descendants
@@ -2139,8 +2188,8 @@ func TestGetPageAncestorIDs(t *testing.T) {
 	ancestors, err = s.GetPageAncestorIDs(grandchild.Id)
 	require.NoError(t, err)
 	require.Len(t, ancestors, 2)
-	require.Equal(t, child.Id, ancestors[0].Id, "first ancestor must be direct parent")
-	require.Equal(t, root.Id, ancestors[1].Id, "second ancestor must be grandparent")
+	require.Equal(t, child.Id, ancestors[0], "first ancestor must be direct parent")
+	require.Equal(t, root.Id, ancestors[1], "second ancestor must be grandparent")
 
 	// Empty ID must be rejected.
 	_, err = s.GetPageAncestorIDs("")

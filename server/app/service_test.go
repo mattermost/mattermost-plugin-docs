@@ -42,7 +42,7 @@ func openTestService(t *testing.T) *testHarness {
 
 	db := testutil.OpenTestDB(t)
 
-	s, err := store.New(db, "postgres")
+	s, err := store.New(db, "postgres", nil)
 	require.NoError(t, err, "create store")
 	t.Cleanup(func() { _ = s.Close() })
 	require.NoError(t, s.RunMigrations(), "run migrations")
@@ -124,7 +124,7 @@ func TestServiceCreatePageParentDifferentSpace(t *testing.T) {
 	otherSpace := mustCreateSpace(t, h.store, otherChannelID)
 	rogueParent := mustCreatePage(t, h.store, otherSpace.Id, otherChannelID, userID, "")
 
-	_, err := h.svc.CreatePage(space.Id, rogueParent.Id, "Child", "", "", userID, "")
+	_, err := h.svc.CreatePage(space.Id, rogueParent.Id, "Child", "", "", userID)
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	require.Contains(t, err.Id, "parent_different_space")
@@ -340,23 +340,6 @@ func TestServiceUpdatePageInvalidUserID(t *testing.T) {
 	})
 }
 
-func TestServiceCreatePageDuplicateIDConflict(t *testing.T) {
-	h := openTestService(t)
-
-	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
-	userID := mmmodel.NewId()
-	pageID := mmmodel.NewId()
-
-	_, err := h.svc.CreatePage(space.Id, "", "First", `{"type":"doc","content":[]}`, "", userID, pageID)
-	require.Nil(t, err)
-
-	// Re-using the same caller-supplied page Id must surface as a 409 conflict, not a 500.
-	_, err = h.svc.CreatePage(space.Id, "", "Second", `{"type":"doc","content":[]}`, "", userID, pageID)
-	require.NotNil(t, err)
-	require.Equal(t, http.StatusConflict, err.StatusCode)
-}
-
 func TestServiceGetPageChildren(t *testing.T) {
 	h := openTestService(t)
 
@@ -446,7 +429,7 @@ func TestServiceCreatePageDerivesChannelFromSpace(t *testing.T) {
 	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
-	created, err := h.svc.CreatePage(space.Id, "", "My Page", "", "", userID, "")
+	created, err := h.svc.CreatePage(space.Id, "", "My Page", "", "", userID)
 	require.Nil(t, err)
 	require.Equal(t, "My Page", created.Title)
 	require.Equal(t, space.Id, created.SpaceId)
@@ -459,41 +442,35 @@ func TestServiceCreatePage(t *testing.T) {
 	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
-	t.Run("rejects invalid page id", func(t *testing.T) {
-		_, err := h.svc.CreatePage(space.Id, "", "Title", "", "", userID, "not-a-valid-id")
-		require.NotNil(t, err)
-		require.Equal(t, 400, err.StatusCode)
-	})
-
 	t.Run("rejects invalid space id", func(t *testing.T) {
-		_, err := h.svc.CreatePage("not-a-valid-id", "", "Title", "", "", userID, "")
+		_, err := h.svc.CreatePage("not-a-valid-id", "", "Title", "", "", userID)
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
 		require.Equal(t, "app.page.create.invalid_space_id.app_error", err.Id)
 	})
 
 	t.Run("rejects invalid user id", func(t *testing.T) {
-		_, err := h.svc.CreatePage(space.Id, "", "Title", "", "", "not-a-valid-id", "")
+		_, err := h.svc.CreatePage(space.Id, "", "Title", "", "", "not-a-valid-id")
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
 		require.Equal(t, "app.page.create.invalid_user_id.app_error", err.Id)
 	})
 
 	t.Run("rejects empty title", func(t *testing.T) {
-		_, err := h.svc.CreatePage(space.Id, "", "   ", "", "", userID, "")
+		_, err := h.svc.CreatePage(space.Id, "", "   ", "", "", userID)
 		require.NotNil(t, err)
 		require.Equal(t, 400, err.StatusCode)
 	})
 
 	t.Run("rejects title too long", func(t *testing.T) {
 		long := strings.Repeat("x", model.PageTitleMaxRunes+1)
-		_, err := h.svc.CreatePage(space.Id, "", long, "", "", userID, "")
+		_, err := h.svc.CreatePage(space.Id, "", long, "", "", userID)
 		require.NotNil(t, err)
 		require.Equal(t, 400, err.StatusCode)
 	})
 
 	t.Run("rejects nonexistent parent", func(t *testing.T) {
-		_, err := h.svc.CreatePage(space.Id, mmmodel.NewId(), "Title", "", "", userID, "")
+		_, err := h.svc.CreatePage(space.Id, mmmodel.NewId(), "Title", "", "", userID)
 		require.NotNil(t, err)
 		require.Equal(t, 400, err.StatusCode)
 	})
@@ -502,7 +479,7 @@ func TestServiceCreatePage(t *testing.T) {
 		otherChannelID := mmmodel.NewId()
 		otherSpace := mustCreateSpace(t, h.store, otherChannelID)
 		parent := mustCreatePage(t, h.store, otherSpace.Id, otherChannelID, userID, "")
-		_, err := h.svc.CreatePage(space.Id, parent.Id, "Title", "", "", userID, "")
+		_, err := h.svc.CreatePage(space.Id, parent.Id, "Title", "", "", userID)
 		require.NotNil(t, err)
 		require.Equal(t, 400, err.StatusCode)
 	})
@@ -515,17 +492,17 @@ func TestServiceCreatePage(t *testing.T) {
 		// child would be at depth MaxPageDepth+1 and must be rejected.
 		parentID := ""
 		for range app.MaxPageDepth {
-			p, err := h.svc.CreatePage(depthSpace.Id, parentID, "d", "", "", userID, "")
+			p, err := h.svc.CreatePage(depthSpace.Id, parentID, "d", "", "", userID)
 			require.Nil(t, err)
 			parentID = p.Id
 		}
-		_, err := h.svc.CreatePage(depthSpace.Id, parentID, "too deep", "", "", userID, "")
+		_, err := h.svc.CreatePage(depthSpace.Id, parentID, "too deep", "", "", userID)
 		require.NotNil(t, err)
 		require.Equal(t, 400, err.StatusCode)
 	})
 
 	t.Run("creates a valid page", func(t *testing.T) {
-		created, err := h.svc.CreatePage(space.Id, "", "My Page", "", "", userID, "")
+		created, err := h.svc.CreatePage(space.Id, "", "My Page", "", "", userID)
 		require.Nil(t, err)
 		require.Equal(t, "My Page", created.Title)
 	})
@@ -608,7 +585,7 @@ func TestServiceCreatePageOversizedBody(t *testing.T) {
 	space := mustCreateSpace(t, h.store, channelID)
 
 	oversized := strings.Repeat("x", model.PageBodyMaxBytes+1)
-	_, err := h.svc.CreatePage(space.Id, "", "Title", oversized, "", mmmodel.NewId(), "")
+	_, err := h.svc.CreatePage(space.Id, "", "Title", oversized, "", mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	require.Equal(t, "model.page.is_valid.body.app_error", err.Id)
@@ -645,7 +622,7 @@ func TestServiceCreatePageSearchTextWithoutBody(t *testing.T) {
 	channelID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, channelID)
 
-	_, err := h.svc.CreatePage(space.Id, "", "Title", "", "searchtext", mmmodel.NewId(), "")
+	_, err := h.svc.CreatePage(space.Id, "", "Title", "", "searchtext", mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	require.Equal(t, "app.page.create.search_text_without_content.app_error", err.Id)

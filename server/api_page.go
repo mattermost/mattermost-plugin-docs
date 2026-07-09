@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
@@ -16,6 +17,35 @@ import (
 // allow 2× the combined model limit to avoid rejecting valid payloads before model validation.
 const maxPageBodyBytes = 2 * (model.PageBodyMaxBytes + model.PageSearchTextMaxBytes) // 8 MiB
 
+// WebSocket event names published after structural page-tree mutations so clients on all cluster
+// nodes can refresh the affected tree without a full reload.
+const (
+	wsEventPageMoved        = "docs_page_moved"
+	wsEventPageDuplicated   = "docs_page_duplicated"
+	wsEventPageMovedToSpace = "docs_page_moved_to_space"
+)
+
+// publishToChannels publishes a WebSocket event broadcast to each non-empty, distinct channel ID.
+// WS events are best-effort and must not fail the primary mutation response.
+func (p *Plugin) publishToChannels(event string, payload map[string]any, channelIDs ...string) {
+	seen := make(map[string]bool, len(channelIDs))
+	for _, chID := range channelIDs {
+		if chID == "" || seen[chID] {
+			continue
+		}
+		seen[chID] = true
+		p.API.PublishWebSocketEvent(event, payload, &mmmodel.WebsocketBroadcast{ChannelId: chID})
+	}
+}
+
+// spaceChannelID returns the backing channel ID of the space, or "" when s is nil (system caller path).
+func spaceChannelID(s *model.Space) string {
+	if s == nil {
+		return ""
+	}
+	return s.ChannelId
+}
+
 // maxPageStructBodyBytes caps request bodies for move/duplicate/move-to-space, which carry only
 // IDs, booleans, and timestamps — no content fields.
 const maxPageStructBodyBytes = 4 * 1024 // 4 KiB
@@ -24,6 +54,9 @@ const maxPageStructBodyBytes = 4 * 1024 // 4 KiB
 func (p *Plugin) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
+	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
+		return
+	}
 
 	var req struct {
 		Title      string `json:"title"`
@@ -35,7 +68,7 @@ func (p *Plugin) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page, appErr := p.service.CreatePage(vars["space_id"], req.ParentId, req.Title, req.Body, req.SearchText, userID, "")
+	page, appErr := p.service.CreatePage(vars["space_id"], req.ParentId, req.Title, req.Body, req.SearchText, userID)
 	if appErr != nil {
 		writeAppError(w, appErr)
 		return
@@ -43,10 +76,14 @@ func (p *Plugin) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, page)
 }
 
-// handleGetSpacePage handles GET /api/v1/spaces/{space_id}/pages/{page_id}.
-func (p *Plugin) handleGetSpacePage(w http.ResponseWriter, r *http.Request) {
+// handleGetPage handles GET /api/v1/spaces/{space_id}/pages/{page_id}.
+func (p *Plugin) handleGetPage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	page, appErr := p.service.GetPageInSpace("handleGetSpacePage", vars["page_id"], vars["space_id"], false)
+	userID := userIDFromRequest(r)
+	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
+		return
+	}
+	page, appErr := p.service.GetPageInSpace("handleGetPage", vars["page_id"], vars["space_id"], false)
 	if appErr != nil {
 		writeAppError(w, appErr)
 		return
@@ -59,21 +96,25 @@ func (p *Plugin) handleGetSpacePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
+	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
+		return
+	}
 
 	var req struct {
-		Title      *string `json:"title,omitempty"`
-		Body       *string `json:"body,omitempty"`
-		SearchText *string `json:"search_text,omitempty"`
-		BaseEditAt *int64  `json:"base_edit_at,omitempty"`
-		Force      bool    `json:"force,omitempty"`
+		Title      *string                  `json:"title,omitempty"`
+		Body       *string                  `json:"body,omitempty"`
+		SearchText *string                  `json:"search_text,omitempty"`
+		Props      *mmmodel.StringInterface `json:"props,omitempty"`
+		BaseEditAt *int64                   `json:"base_edit_at,omitempty"`
+		Force      bool                     `json:"force,omitempty"`
 	}
 	if !decodeJSONBody(w, r, maxPageBodyBytes, &req, "handleUpdatePage", false) {
 		return
 	}
 
-	patch := &model.PagePatch{Title: req.Title, Body: req.Body, SearchText: req.SearchText}
+	patch := &model.PagePatch{Title: req.Title, Body: req.Body, SearchText: req.SearchText, Props: req.Props}
 
-	updated, appErr := p.service.UpdatePage(vars["page_id"], vars["space_id"], patch, int64OrZero(req.BaseEditAt), req.Force, userID)
+	updated, appErr := p.service.UpdatePage(vars["page_id"], vars["space_id"], patch, mmmodel.SafeDereference(req.BaseEditAt), req.Force, userID)
 	if appErr != nil {
 		writeAppError(w, appErr)
 		return
@@ -85,6 +126,9 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
+	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
+		return
+	}
 	if appErr := p.service.DeletePage(vars["page_id"], vars["space_id"], userID); appErr != nil {
 		writeAppError(w, appErr)
 		return
@@ -96,6 +140,9 @@ func (p *Plugin) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
+	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
+		return
+	}
 	restored, appErr := p.service.RestorePage(vars["page_id"], vars["space_id"], userID)
 	if appErr != nil {
 		writeAppError(w, appErr)
@@ -110,6 +157,11 @@ func (p *Plugin) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 // rejected if out of range), optimistic-locked on expected_update_at unless force.
 func (p *Plugin) handleMovePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
+	userID := userIDFromRequest(r)
+	space, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false)
+	if !ok {
+		return
+	}
 
 	var req struct {
 		ParentId         *string `json:"parent_id,omitempty"`
@@ -120,11 +172,18 @@ func (p *Plugin) handleMovePage(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, maxPageStructBodyBytes, &req, "handleMovePage", false) {
 		return
 	}
+	if req.ParentId != nil && *req.ParentId != "" && !mmmodel.IsValidId(*req.ParentId) {
+		writeAppError(w, mmmodel.NewAppError("handleMovePage", "api.page.move.invalid_parent_id.app_error", nil, "", http.StatusBadRequest))
+		return
+	}
 
-	moved, appErr := p.service.MovePage(vars["page_id"], vars["space_id"], req.ParentId, req.SiblingIndex, int64OrZero(req.ExpectedUpdateAt), req.Force)
+	moved, didMove, appErr := p.service.MovePage(vars["page_id"], vars["space_id"], req.ParentId, req.SiblingIndex, mmmodel.SafeDereference(req.ExpectedUpdateAt), req.Force)
 	if appErr != nil {
 		writeAppError(w, appErr)
 		return
+	}
+	if didMove {
+		p.publishToChannels(wsEventPageMoved, map[string]any{"page_id": moved.Id, "space_id": vars["space_id"]}, spaceChannelID(space))
 	}
 	writeJSON(w, http.StatusOK, moved)
 }
@@ -136,6 +195,10 @@ func (p *Plugin) handleMovePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleDuplicatePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
+	sourceSpace, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false)
+	if !ok {
+		return
+	}
 
 	var req struct {
 		IncludeChildren bool    `json:"include_children,omitempty"`
@@ -145,12 +208,35 @@ func (p *Plugin) handleDuplicatePage(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, maxPageStructBodyBytes, &req, "handleDuplicatePage", true) {
 		return
 	}
+	if req.ParentId != nil && *req.ParentId != "" && !mmmodel.IsValidId(*req.ParentId) {
+		writeAppError(w, mmmodel.NewAppError("handleDuplicatePage", "api.page.duplicate.invalid_parent_id.app_error", nil, "", http.StatusBadRequest))
+		return
+	}
+	// Target space ID comes from the request body, not the URL, so it cannot be covered by a
+	// subrouter middleware and must be checked inline.
+	crossSpace := req.TargetSpaceId != "" && req.TargetSpaceId != vars["space_id"]
+	var targetSpace *model.Space
+	if crossSpace {
+		if !mmmodel.IsValidId(req.TargetSpaceId) {
+			writeAppError(w, mmmodel.NewAppError("handleDuplicatePage", "api.page.duplicate.invalid_target_space_id.app_error", nil, "", http.StatusBadRequest))
+			return
+		}
+		targetSpace, ok = p.requireSpaceMembership(w, req.TargetSpaceId, userID, false)
+		if !ok {
+			return
+		}
+	}
 
 	duplicated, appErr := p.service.DuplicatePage(vars["page_id"], vars["space_id"], userID, req.IncludeChildren, req.TargetSpaceId, req.ParentId)
 	if appErr != nil {
 		writeAppError(w, appErr)
 		return
 	}
+	publishSpaceID, publishSpace := vars["space_id"], sourceSpace
+	if crossSpace {
+		publishSpaceID, publishSpace = req.TargetSpaceId, targetSpace
+	}
+	p.publishToChannels(wsEventPageDuplicated, map[string]any{"page_id": duplicated.Id, "space_id": publishSpaceID}, spaceChannelID(publishSpace))
 	writeJSON(w, http.StatusCreated, duplicated)
 }
 
@@ -158,6 +244,10 @@ func (p *Plugin) handleDuplicatePage(w http.ResponseWriter, r *http.Request) {
 // the page's direct live children (paginated).
 func (p *Plugin) handleGetPageChildren(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
+	userID := userIDFromRequest(r)
+	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
+		return
+	}
 	page, perPage := pageParam(r), perPageParam(r)
 	children, appErr := p.service.GetPageChildren(vars["page_id"], vars["space_id"], page, perPage)
 	if appErr != nil {
@@ -172,6 +262,11 @@ func (p *Plugin) handleGetPageChildren(w http.ResponseWriter, r *http.Request) {
 // Optimistic-locked on expected_update_at (the moved root's last-seen UpdateAt) unless force is set.
 func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
+	userID := userIDFromRequest(r)
+	sourceSpace, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false)
+	if !ok {
+		return
+	}
 
 	var req struct {
 		TargetSpaceId    string  `json:"target_space_id"`
@@ -182,11 +277,32 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, maxPageStructBodyBytes, &req, "handleMovePageToSpace", false) {
 		return
 	}
+	if req.TargetSpaceId == "" {
+		writeAppError(w, mmmodel.NewAppError("handleMovePageToSpace", "api.page.move_to_space.missing_target_space_id.app_error", nil, "", http.StatusBadRequest))
+		return
+	}
+	if !mmmodel.IsValidId(req.TargetSpaceId) {
+		writeAppError(w, mmmodel.NewAppError("handleMovePageToSpace", "api.page.move_to_space.invalid_target_space_id.app_error", nil, "", http.StatusBadRequest))
+		return
+	}
+	if req.ParentId != nil && *req.ParentId != "" && !mmmodel.IsValidId(*req.ParentId) {
+		writeAppError(w, mmmodel.NewAppError("handleMovePageToSpace", "api.page.move_to_space.invalid_parent_id.app_error", nil, "", http.StatusBadRequest))
+		return
+	}
+	// Target space ID comes from the request body, not the URL, so it cannot be covered by a
+	// subrouter middleware and must be checked inline.
+	targetSpace, ok := p.requireSpaceMembership(w, req.TargetSpaceId, userID, false)
+	if !ok {
+		return
+	}
 
-	moved, appErr := p.service.MovePageToSpace(vars["page_id"], vars["space_id"], req.TargetSpaceId, req.ParentId, int64OrZero(req.ExpectedUpdateAt), req.Force)
+	moved, didMove, appErr := p.service.MovePageToSpace(vars["page_id"], vars["space_id"], req.TargetSpaceId, req.ParentId, mmmodel.SafeDereference(req.ExpectedUpdateAt), req.Force)
 	if appErr != nil {
 		writeAppError(w, appErr)
 		return
+	}
+	if didMove {
+		p.publishToChannels(wsEventPageMovedToSpace, map[string]any{"page_id": moved.Id, "source_space_id": vars["space_id"], "target_space_id": req.TargetSpaceId}, spaceChannelID(sourceSpace), spaceChannelID(targetSpace))
 	}
 	writeJSON(w, http.StatusOK, moved)
 }

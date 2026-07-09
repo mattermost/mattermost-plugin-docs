@@ -6,10 +6,47 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestDecodeJSONBody_TrailingDataRejected(t *testing.T) {
+	// A valid first JSON object followed by a second value is treated as a malformed body.
+	body := strings.NewReader(`{"foo":"bar"}{"extra":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/", body)
+	w := httptest.NewRecorder()
+	var v struct {
+		Foo string `json:"foo"`
+	}
+	ok := decodeJSONBody(w, req, 1024, &v, "test", false)
+	require.False(t, ok)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestDecodeJSONBody_ValidConsumed(t *testing.T) {
+	body := strings.NewReader(`{"foo":"bar"}`)
+	req := httptest.NewRequest(http.MethodPost, "/", body)
+	w := httptest.NewRecorder()
+	var v struct {
+		Foo string `json:"foo"`
+	}
+	ok := decodeJSONBody(w, req, 1024, &v, "test", false)
+	require.True(t, ok)
+	require.Equal(t, "bar", v.Foo)
+}
+
+func TestDecodeJSONBody_WhitespaceTrailing(t *testing.T) {
+	body := strings.NewReader("{\"foo\":\"bar\"} \n\t")
+	req := httptest.NewRequest(http.MethodPost, "/", body)
+	w := httptest.NewRecorder()
+	var v struct {
+		Foo string `json:"foo"`
+	}
+	ok := decodeJSONBody(w, req, 1024, &v, "test", false)
+	require.True(t, ok)
+}
 
 func TestPageParam(t *testing.T) {
 	cases := map[string]int{

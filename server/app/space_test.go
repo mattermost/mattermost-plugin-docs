@@ -296,9 +296,6 @@ func TestServiceCreateSpace_CompensatingDeleteAlsoFails(t *testing.T) {
 	mockAPI.On("AddChannelMember", collisionChannelID, userID).Return(&mmmodel.ChannelMember{}, nil)
 	mockAPI.On("DeleteChannel", collisionChannelID).
 		Return(&mmmodel.AppError{Message: "archive also failed", StatusCode: http.StatusInternalServerError})
-	// archiveOrphanChannel's LogWarn carries failure_reason as its own field (not concatenated into
-	// the message), one field pair more than DeleteSpace/RestoreSpace's warn logs.
-	mockAPI.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 
 	space := &model.Space{TeamId: teamID, Title: "Doomed Space"}
 
@@ -395,6 +392,19 @@ func TestServiceUpdateSpace(t *testing.T) {
 	require.Nil(t, appErr)
 	require.Equal(t, "Forced", forced.Title)
 
+	// A whitespace-only title is rejected.
+	_, appErr = h.svc.UpdateSpace(space.Id, &model.SpacePatch{Title: mmmodel.NewPointer("   ")}, 0, true)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+	require.Equal(t, "app.shared.title_required.app_error", appErr.Id)
+
+	// A title that exceeds SpaceTitleMaxRunes is rejected.
+	longTitle := strings.Repeat("x", model.SpaceTitleMaxRunes+1)
+	_, appErr = h.svc.UpdateSpace(space.Id, &model.SpacePatch{Title: mmmodel.NewPointer(longTitle)}, 0, true)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+	require.Equal(t, "app.shared.title_too_long.app_error", appErr.Id)
+
 	// A description that exceeds SpaceDescriptionMaxRunes is rejected with the documented error ID.
 	longDesc := strings.Repeat("x", model.SpaceDescriptionMaxRunes+1)
 	_, appErr = h.svc.UpdateSpace(space.Id, &model.SpacePatch{Description: mmmodel.NewPointer(longDesc)}, 0, true)
@@ -425,4 +435,164 @@ func TestServiceUpdateSpace_NoChangesRejected(t *testing.T) {
 	got, getErr := h.svc.GetSpace(space.Id)
 	require.Nil(t, getErr)
 	require.Equal(t, space.UpdateAt, got.UpdateAt)
+}
+
+// TestGetSpaceWithDeleted verifies that GetSpaceWithDeleted returns both live and soft-deleted
+// spaces, unlike GetSpace which filters out deleted rows.
+func TestGetSpaceWithDeleted(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+
+	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
+		Return(&mmmodel.Channel{Id: channelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
+	mockAPI.On("AddChannelMember", channelID, userID).Return(&mmmodel.ChannelMember{}, nil)
+	mockAPI.On("DeleteChannel", channelID).Return(nil)
+
+	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Test"}, userID)
+	require.Nil(t, appErr)
+	require.Nil(t, h.svc.DeleteSpace(space.Id))
+
+	// GetSpace excludes deleted rows.
+	_, appErr = h.svc.GetSpace(space.Id)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusNotFound, appErr.StatusCode)
+
+	// GetSpaceWithDeleted still returns the soft-deleted row.
+	got, appErr := h.svc.GetSpaceWithDeleted(space.Id)
+	require.Nil(t, appErr)
+	require.Equal(t, space.Id, got.Id)
+	require.NotZero(t, got.DeleteAt)
+}
+
+// TestCheckSpaceMembership_MemberAllowed verifies that a user who is a member of the
+// space's backing channel is allowed through.
+func TestCheckSpaceMembership_MemberAllowed(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+
+	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
+		Return(&mmmodel.Channel{Id: channelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
+	mockAPI.On("AddChannelMember", channelID, userID).Return(&mmmodel.ChannelMember{}, nil)
+
+	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Test"}, userID)
+	require.Nil(t, appErr)
+
+	mockAPI.On("GetChannelMember", space.ChannelId, userID).Return(&mmmodel.ChannelMember{}, nil)
+
+	_, appErr = h.svc.CheckSpaceMembership(space.Id, userID, false)
+	require.Nil(t, appErr)
+}
+
+// TestCheckSpaceMembership_NonMemberBlocked verifies that a user who is not a member of the
+// space's backing channel receives a 403 Forbidden.
+func TestCheckSpaceMembership_NonMemberBlocked(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+
+	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
+		Return(&mmmodel.Channel{Id: channelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
+	mockAPI.On("AddChannelMember", channelID, userID).Return(&mmmodel.ChannelMember{}, nil)
+
+	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Test"}, userID)
+	require.Nil(t, appErr)
+
+	strangerID := mmmodel.NewId()
+	mockAPI.On("GetChannelMember", space.ChannelId, strangerID).
+		Return(nil, &mmmodel.AppError{StatusCode: http.StatusNotFound})
+
+	_, appErr = h.svc.CheckSpaceMembership(space.Id, strangerID, false)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+	require.Equal(t, "app.space.access.forbidden.app_error", appErr.Id)
+}
+
+// TestCheckSpaceMembership_SystemCallerSkipsCheck verifies that an empty userID (system
+// caller) bypasses the membership check without any API call.
+func TestCheckSpaceMembership_SystemCallerSkipsCheck(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+
+	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
+		Return(&mmmodel.Channel{Id: channelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
+	mockAPI.On("AddChannelMember", channelID, userID).Return(&mmmodel.ChannelMember{}, nil)
+
+	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Test"}, userID)
+	require.Nil(t, appErr)
+
+	// Empty userID = system caller; no GetChannelMember call must be made.
+	_, appErr = h.svc.CheckSpaceMembership(space.Id, "", false)
+	require.Nil(t, appErr)
+}
+
+// TestCheckSpaceMembership_IncludeDeleted verifies that includeDeleted=true reaches a
+// soft-deleted space for the membership check, while includeDeleted=false returns 404.
+func TestCheckSpaceMembership_IncludeDeleted(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+
+	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
+		Return(&mmmodel.Channel{Id: channelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
+	mockAPI.On("AddChannelMember", channelID, userID).Return(&mmmodel.ChannelMember{}, nil)
+	mockAPI.On("DeleteChannel", channelID).Return(nil)
+
+	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Test"}, userID)
+	require.Nil(t, appErr)
+	require.Nil(t, h.svc.DeleteSpace(space.Id))
+
+	// includeDeleted=false → GetSpace returns 404, which CheckSpaceMembership converts to 403
+	// to prevent existence probing by non-members.
+	_, appErr = h.svc.CheckSpaceMembership(space.Id, userID, false)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+
+	// includeDeleted=true → GetSpaceWithDeleted finds the space; membership check proceeds.
+	mockAPI.On("GetChannelMember", space.ChannelId, userID).Return(&mmmodel.ChannelMember{}, nil)
+	_, appErr = h.svc.CheckSpaceMembership(space.Id, userID, true)
+	require.Nil(t, appErr)
+}
+
+// TestCheckSpaceMembership_ChannelLookupFailed verifies that a non-404 error from
+// GetChannelMember propagates as a 500 with the channel_lookup_failed error key.
+func TestCheckSpaceMembership_ChannelLookupFailed(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+
+	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
+		Return(&mmmodel.Channel{Id: channelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
+	mockAPI.On("AddChannelMember", channelID, userID).Return(&mmmodel.ChannelMember{}, nil)
+
+	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Test"}, userID)
+	require.Nil(t, appErr)
+
+	mockAPI.On("GetChannelMember", space.ChannelId, userID).
+		Return(nil, &mmmodel.AppError{Id: "store.sql_channel.get_member.missing.app_error", StatusCode: http.StatusInternalServerError})
+
+	_, appErr = h.svc.CheckSpaceMembership(space.Id, userID, false)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
+	require.Equal(t, "app.space.access.channel_lookup_failed.app_error", appErr.Id)
 }

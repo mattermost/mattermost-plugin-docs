@@ -54,18 +54,10 @@ func New(s *store.Store, log Logger, client *pluginapi.Client) *Service {
 	}
 }
 
-func (s *Service) logDebug(message string, keyValuePairs ...any) {
-	s.log.Debug(message, keyValuePairs...)
-}
-
-func (s *Service) logWarn(message string, keyValuePairs ...any) {
-	s.log.Warn(message, keyValuePairs...)
-}
-
 // validateTitle sanitizes and validates an entity title, returning the normalized form.
 // where identifies the calling operation for logs; the message keys are shared across callers.
 func validateTitle(where, title string, maxRunes int) (string, *mmmodel.AppError) {
-	title = strings.TrimSpace(mmmodel.SanitizeUnicode(title))
+	title = normalizeTitle(title)
 	if title == "" {
 		return "", mmmodel.NewAppError(where, "app.shared.title_required.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -91,9 +83,7 @@ func validateSpaceMutableFields(where, description, icon string) *mmmodel.AppErr
 // truncateToRunes caps s to at most maxRunes runes (multi-byte safe), returning it unchanged when
 // already within the cap.
 func truncateToRunes(s string, maxRunes int) string {
-	if utf8.RuneCountInString(s) > maxRunes {
-		return string([]rune(s)[:maxRunes])
-	}
+	s, _ = mmmodel.LimitRunes(s, maxRunes)
 	return s
 }
 
@@ -115,9 +105,9 @@ func normalizeTitle(title string) string {
 	return strings.TrimSpace(mmmodel.SanitizeUnicode(title))
 }
 
-// normalizeAndValidatePagePatch normalizes a page update patch's Title (trimmed, with the
-// result written back into the patch); Body and SearchText are left as-is. A nil field means
-// "leave unchanged". It defers patch-shape validation to PagePatch.IsValid.
+// normalizeAndValidatePagePatch normalizes a page update patch's Title (trimmed, empty rejected),
+// with the result written back into the patch; Body and SearchText are left as-is. A nil field
+// means "leave unchanged". It defers patch-shape validation to PagePatch.IsValid.
 func normalizeAndValidatePagePatch(patch *model.PagePatch) *mmmodel.AppError {
 	// The patch.Title != nil guard below protects the title dereference; IsValid only
 	// rejects a nil or all-nil patch and can pass with Title == nil.
@@ -125,7 +115,10 @@ func normalizeAndValidatePagePatch(patch *model.PagePatch) *mmmodel.AppError {
 		return validErr
 	}
 	if patch.Title != nil {
-		normalized := normalizeTitle(*patch.Title)
+		normalized, titleErr := validateTitle("UpdatePage", *patch.Title, model.PageTitleMaxRunes)
+		if titleErr != nil {
+			return titleErr
+		}
 		patch.Title = &normalized
 	}
 	return nil
@@ -139,21 +132,29 @@ const PerPageDefault = 60
 // clamped down, matching core's page-param convention.
 const PerPageMaximum = 200
 
+// ClampPerPage normalizes a requested page size: non-positive values default to PerPageDefault
+// and values above PerPageMaximum are capped. The result is always in [1, PerPageMaximum].
+func ClampPerPage(perPage int) int {
+	if perPage <= 0 {
+		return PerPageDefault
+	}
+	if perPage > PerPageMaximum {
+		return PerPageMaximum
+	}
+	return perPage
+}
+
 // paginationOffsetLimit converts a zero-based page/size into an offset/limit. perPage <= 0
-// is clamped to PerPageDefault and perPage > PerPageMaximum is clamped down to PerPageMaximum,
-// so the returned limit is always positive and bounded — a caller can never request an
-// unbounded result this way.
+// is clamped to PerPageDefault and perPage > PerPageMaximum is clamped down to PerPageMaximum.
+// The returned limit is perPage+1 so callers can pass the result directly to the store and
+// detect has_more by checking whether the store returned more than perPage rows. writePaginatedJSON
+// trims the slice and sets HasMore precisely using this convention.
 func paginationOffsetLimit(page, perPage int) (offset, limit int) {
 	if page < 0 {
 		page = 0
 	}
-	switch {
-	case perPage <= 0:
-		perPage = PerPageDefault
-	case perPage > PerPageMaximum:
-		perPage = PerPageMaximum
-	}
-	return page * perPage, perPage
+	perPage = ClampPerPage(perPage)
+	return page * perPage, perPage + 1
 }
 
 // storeAppError maps a store sentinel error to an *AppError with the conventional status code

@@ -58,8 +58,9 @@ type Store struct {
 	log *pluginapi.LogService
 }
 
-// New creates a Store wrapping the given master DB handle.
-func New(db *sql.DB, driverName string) (*Store, error) {
+// New creates a Store wrapping the given master DB handle. log may be nil in tests
+// that do not exercise migration warnings.
+func New(db *sql.DB, driverName string, log *pluginapi.LogService) (*Store, error) {
 	if driverName != "postgres" {
 		return nil, fmt.Errorf("docs plugin only supports PostgreSQL; got %q", driverName)
 	}
@@ -67,13 +68,9 @@ func New(db *sql.DB, driverName string) (*Store, error) {
 	s := &Store{
 		db:      sqlx.NewDb(db, driverName),
 		builder: sq.StatementBuilder.PlaceholderFormat(sq.Dollar),
+		log:     log,
 	}
 	return s, nil
-}
-
-// SetLogger wires a logger into the store for non-fatal warnings.
-func (s *Store) SetLogger(log *pluginapi.LogService) {
-	s.log = log
 }
 
 // RunMigrations applies all pending morph migrations. Concurrent runs across an HA

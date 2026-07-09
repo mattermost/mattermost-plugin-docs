@@ -42,7 +42,7 @@ func TestServiceMovePage_PositionalReorder(t *testing.T) {
 
 	// Move c to the front.
 	front := int64(0)
-	moved, appErr := h.svc.MovePage(c.Id, c.SpaceId, &parent.Id, &front, c.UpdateAt, false)
+	moved, _, appErr := h.svc.MovePage(c.Id, c.SpaceId, &parent.Id, &front, c.UpdateAt, false)
 	require.Nil(t, appErr)
 	require.Equal(t, parent.Id, moved.ParentId)
 	require.Equal(t, []string{c.Id, a.Id, b.Id}, childOrder(t, h, parent.Id, space.Id))
@@ -51,7 +51,7 @@ func TestServiceMovePage_PositionalReorder(t *testing.T) {
 	end := int64(100)
 	cAfter, getErr := h.svc.GetPage(c.Id)
 	require.Nil(t, getErr)
-	_, appErr = h.svc.MovePage(c.Id, cAfter.SpaceId, &parent.Id, &end, cAfter.UpdateAt, false)
+	_, _, appErr = h.svc.MovePage(c.Id, cAfter.SpaceId, &parent.Id, &end, cAfter.UpdateAt, false)
 	require.Nil(t, appErr)
 	require.Equal(t, []string{a.Id, b.Id, c.Id}, childOrder(t, h, parent.Id, space.Id))
 
@@ -59,7 +59,7 @@ func TestServiceMovePage_PositionalReorder(t *testing.T) {
 	bAfter, getErr := h.svc.GetPage(b.Id)
 	require.Nil(t, getErr)
 	negative := int64(-5)
-	_, appErr = h.svc.MovePage(b.Id, bAfter.SpaceId, &parent.Id, &negative, bAfter.UpdateAt, false)
+	_, _, appErr = h.svc.MovePage(b.Id, bAfter.SpaceId, &parent.Id, &negative, bAfter.UpdateAt, false)
 	require.Nil(t, appErr)
 	require.Equal(t, []string{b.Id, a.Id, c.Id}, childOrder(t, h, parent.Id, space.Id))
 }
@@ -80,7 +80,7 @@ func TestServiceMovePage_ReparentAtIndex(t *testing.T) {
 
 	// Move `moving` under dest, between x and y.
 	idx := int64(1)
-	moved, appErr := h.svc.MovePage(moving.Id, moving.SpaceId, &dest.Id, &idx, moving.UpdateAt, false)
+	moved, _, appErr := h.svc.MovePage(moving.Id, moving.SpaceId, &dest.Id, &idx, moving.UpdateAt, false)
 	require.Nil(t, appErr)
 	require.Equal(t, dest.Id, moved.ParentId)
 	require.Equal(t, []string{x.Id, moving.Id, y.Id}, childOrder(t, h, dest.Id, space.Id))

@@ -57,7 +57,7 @@ func TestServiceDuplicatePage_CopiesSearchText(t *testing.T) {
 	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
-	source, appErr := h.svc.CreatePage(space.Id, "", "Searchable", "body text", "search text", userID, "")
+	source, appErr := h.svc.CreatePage(space.Id, "", "Searchable", "body text", "search text", userID)
 	require.Nil(t, appErr)
 	require.Equal(t, "search text", source.SearchText)
 
@@ -74,7 +74,7 @@ func TestServiceDuplicatePage_CopiesProps(t *testing.T) {
 	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
-	source, appErr := h.svc.CreatePage(space.Id, "", "Has Props", "body text", "", userID, "")
+	source, appErr := h.svc.CreatePage(space.Id, "", "Has Props", "body text", "", userID)
 	require.Nil(t, appErr)
 
 	// "nested" round-trips through the store as a plain map[string]any (JSON decoding never
@@ -102,7 +102,7 @@ func TestServiceDuplicatePage_TruncatesLongTitle(t *testing.T) {
 	userID := mmmodel.NewId()
 
 	longTitle := strings.Repeat("x", model.PageTitleMaxRunes)
-	source, appErr := h.svc.CreatePage(space.Id, "", longTitle, "", "", userID, "")
+	source, appErr := h.svc.CreatePage(space.Id, "", longTitle, "", "", userID)
 	require.Nil(t, appErr)
 
 	dup, appErr := h.svc.DuplicatePage(source.Id, space.Id, userID, false, "", nil)
@@ -200,7 +200,7 @@ func TestServiceDuplicatePage_MaxDepthExceeded(t *testing.T) {
 	_, appErr := h.svc.DuplicatePage(source.Id, space.Id, userID, false, "", &deepest.Id)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
-	require.Equal(t, "app.page.move.max_depth_exceeded.app_error", appErr.Id)
+	require.Equal(t, "app.page.duplicate.max_depth_exceeded.app_error", appErr.Id)
 }
 
 // TestServiceDuplicatePage_TargetParentNotFound rejects a targetParentID that doesn't exist,
@@ -341,4 +341,21 @@ func TestServiceDuplicatePage_IncludeChildren_MaxDepthExceeded(t *testing.T) {
 	_, appErr := h.svc.DuplicatePage(source.Id, space.Id, userID, true, "", &deepest.Id)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
+	require.Equal(t, "app.page.duplicate.subtree_max_depth_exceeded.app_error", appErr.Id)
+}
+
+// TestServiceDuplicatePage_InvalidParentID rejects a targetParentID that is not a valid Mattermost
+// 26-char ID, before any store call is made.
+func TestServiceDuplicatePage_InvalidParentID(t *testing.T) {
+	h := openTestService(t)
+	channelID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+	userID := mmmodel.NewId()
+	source := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
+
+	bad := "not-a-valid-id"
+	_, appErr := h.svc.DuplicatePage(source.Id, space.Id, userID, false, "", &bad)
+	require.NotNil(t, appErr)
+	require.Equal(t, 400, appErr.StatusCode)
+	require.Equal(t, "app.page.duplicate.invalid_parent_id.app_error", appErr.Id)
 }

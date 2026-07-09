@@ -68,22 +68,39 @@ func (p *Page) IsSnapshot() bool {
 	return p.OriginalId != ""
 }
 
-// MaxDepthOfPreOrderedPages returns the maximum depth in pages relative to rootID (depth 0).
-// pages must be pre-order sorted: each page's parent appears earlier in the slice (or is rootID).
-func MaxDepthOfPreOrderedPages(pages []*Page, rootID string) int {
+// PageIDParentRef is a narrow view of Page returned by store methods that need only
+// Id and ParentId, preventing callers from accidentally reading zero-valued fields.
+type PageIDParentRef struct {
+	Id       string `db:"id"`
+	ParentId string `db:"parentid"`
+}
+
+// MaxDepthOfPreOrderedIDParents is the narrow-type variant of MaxDepthOfPreOrderedPages,
+// operating on []PageIDParentRef instead of []*Page.
+func MaxDepthOfPreOrderedIDParents(refs []PageIDParentRef, rootID string) int {
 	depthOf := map[string]int{rootID: 0}
 	maxDepth := 0
-	for _, p := range pages {
-		if p.Id == rootID {
+	for _, r := range refs {
+		if r.Id == rootID {
 			continue
 		}
-		depth := depthOf[p.ParentId] + 1
-		depthOf[p.Id] = depth
+		depth := depthOf[r.ParentId] + 1
+		depthOf[r.Id] = depth
 		if depth > maxDepth {
 			maxDepth = depth
 		}
 	}
 	return maxDepth
+}
+
+// MaxDepthOfPreOrderedPages returns the maximum depth in pages relative to rootID (depth 0).
+// pages must be pre-order sorted: each page's parent appears earlier in the slice (or is rootID).
+func MaxDepthOfPreOrderedPages(pages []*Page, rootID string) int {
+	refs := make([]PageIDParentRef, len(pages))
+	for i, p := range pages {
+		refs[i] = PageIDParentRef{Id: p.Id, ParentId: p.ParentId}
+	}
+	return MaxDepthOfPreOrderedIDParents(refs, rootID)
 }
 
 // PreSave sanitizes Page and defaults its Id-independent fields before insert.
@@ -107,6 +124,7 @@ func (p *Page) PreSave() {
 		p.CreateAt = now
 	}
 	p.UpdateAt = now
+	p.EditAt = now
 }
 
 // PreUpdate sanitizes Page and stamps UpdateAt before an update is persisted.
@@ -192,6 +210,10 @@ func (p *Page) IsValid() *mmmodel.AppError {
 
 	if p.UpdateAt == 0 {
 		return mmmodel.NewAppError("Page.IsValid", "model.page.is_valid.update_at.app_error", nil, "id="+p.Id, http.StatusBadRequest)
+	}
+
+	if p.EditAt == 0 {
+		return mmmodel.NewAppError("Page.IsValid", "model.page.is_valid.edit_at.app_error", nil, "id="+p.Id, http.StatusBadRequest)
 	}
 
 	if p.Type != PageTypePage && p.Type != PageTypeFolder {

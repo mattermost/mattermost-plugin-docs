@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
@@ -58,7 +59,9 @@ func (p *Plugin) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 
 // handleGetSpace handles GET /api/v1/spaces/{space_id}.
 func (p *Plugin) handleGetSpace(w http.ResponseWriter, r *http.Request) {
-	space, appErr := p.service.GetSpace(mux.Vars(r)["space_id"])
+	userID := userIDFromRequest(r)
+	spaceID := mux.Vars(r)["space_id"]
+	space, appErr := p.service.GetSpaceForUser(spaceID, userID)
 	if appErr != nil {
 		writeAppError(w, appErr)
 		return
@@ -70,21 +73,26 @@ func (p *Plugin) handleGetSpace(w http.ResponseWriter, r *http.Request) {
 // (title, description, icon) are applied onto the existing space; a supplied empty string clears the
 // field. The update is optimistic-locked on the client-supplied expected_update_at unless force.
 func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
+	if _, ok := p.requireSpaceMembership(w, spaceID, userID, false); !ok {
+		return
+	}
 
 	var req struct {
-		Title            *string `json:"title,omitempty"`
-		Description      *string `json:"description,omitempty"`
-		Icon             *string `json:"icon,omitempty"`
-		ExpectedUpdateAt *int64  `json:"expected_update_at,omitempty"`
-		Force            bool    `json:"force,omitempty"`
+		Title            *string                  `json:"title,omitempty"`
+		Description      *string                  `json:"description,omitempty"`
+		Icon             *string                  `json:"icon,omitempty"`
+		Props            *mmmodel.StringInterface `json:"props,omitempty"`
+		ExpectedUpdateAt *int64                   `json:"expected_update_at,omitempty"`
+		Force            bool                     `json:"force,omitempty"`
 	}
 	if !decodeJSONBody(w, r, maxSpaceBodyBytes, &req, "handleUpdateSpace", false) {
 		return
 	}
 
-	patch := &model.SpacePatch{Title: req.Title, Description: req.Description, Icon: req.Icon}
-	updated, appErr := p.service.UpdateSpace(spaceID, patch, int64OrZero(req.ExpectedUpdateAt), req.Force)
+	patch := &model.SpacePatch{Title: req.Title, Description: req.Description, Icon: req.Icon, Props: req.Props}
+	updated, appErr := p.service.UpdateSpace(spaceID, patch, mmmodel.SafeDereference(req.ExpectedUpdateAt), req.Force)
 	if appErr != nil {
 		writeAppError(w, appErr)
 		return
@@ -94,7 +102,12 @@ func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteSpace handles DELETE /api/v1/spaces/{space_id}.
 func (p *Plugin) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
-	if appErr := p.service.DeleteSpace(mux.Vars(r)["space_id"]); appErr != nil {
+	userID := userIDFromRequest(r)
+	spaceID := mux.Vars(r)["space_id"]
+	if _, ok := p.requireSpaceMembership(w, spaceID, userID, false); !ok {
+		return
+	}
+	if appErr := p.service.DeleteSpace(spaceID); appErr != nil {
 		writeAppError(w, appErr)
 		return
 	}
@@ -102,8 +115,13 @@ func (p *Plugin) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRestoreSpace handles PATCH /api/v1/spaces/{space_id}/restore.
+// includeDeleted=true is required here because the space is soft-deleted at the time of lookup.
 func (p *Plugin) handleRestoreSpace(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
+	if _, ok := p.requireSpaceMembership(w, spaceID, userID, true); !ok {
+		return
+	}
 	restored, appErr := p.service.RestoreSpace(spaceID)
 	if appErr != nil {
 		writeAppError(w, appErr)
@@ -114,7 +132,11 @@ func (p *Plugin) handleRestoreSpace(w http.ResponseWriter, r *http.Request) {
 
 // handleGetSpacePages handles GET /api/v1/spaces/{space_id}/pages.
 func (p *Plugin) handleGetSpacePages(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
+	if _, ok := p.requireSpaceMembership(w, spaceID, userID, false); !ok {
+		return
+	}
 	page, perPage := pageParam(r), perPageParam(r)
 	pages, appErr := p.service.GetSpacePages(spaceID, page, perPage)
 	if appErr != nil {

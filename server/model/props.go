@@ -12,7 +12,7 @@ import (
 )
 
 // ensureProps returns a shallow clone of props, or a new empty map when props is nil.
-// Callers own the returned map and may mutate it freely without aliasing the source.
+// Callers may add or remove keys without affecting the source; mutations of the values themselves still alias the source.
 func ensureProps(props mmmodel.StringInterface) mmmodel.StringInterface {
 	if props == nil {
 		return make(mmmodel.StringInterface)

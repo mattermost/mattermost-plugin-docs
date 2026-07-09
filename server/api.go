@@ -15,15 +15,16 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/app"
+	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
 // initRouter initializes the HTTP router for the plugin. Routes are served under the plugin's
 // /api/v1 prefix (full root: <siteUrl>/plugins/com.mattermost.docs/api/v1/).
 //
-// Authorization (interim): every route requires an authenticated user via
-// MattermostAuthorizationRequired, but does NOT yet gate per space/page. Any logged-in user can
-// reach any space — a known cross-space access hole closed once space membership and per-page
-// restriction are layered onto these routes.
+// Authorization: every route requires an authenticated user via MattermostAuthorizationRequired.
+// All space- and page-scoped handlers additionally gate on backing-channel membership via
+// CheckSpaceMembership (implemented). Per-page role ACLs (author vs. editor within a space)
+// are not yet implemented and are deferred to a follow-up.
 func (p *Plugin) initRouter() *mux.Router {
 	router := mux.NewRouter()
 	router.Use(p.MattermostAuthorizationRequired)
@@ -45,7 +46,7 @@ func (p *Plugin) initRouter() *mux.Router {
 	api.HandleFunc("/spaces/{space_id}/pages", p.handleCreatePage).Methods(http.MethodPost)
 
 	// Page resource + tree actions.
-	api.HandleFunc("/spaces/{space_id}/pages/{page_id}", p.handleGetSpacePage).Methods(http.MethodGet)
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}", p.handleGetPage).Methods(http.MethodGet)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}", p.handleUpdatePage).Methods(http.MethodPatch)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}", p.handleDeletePage).Methods(http.MethodDelete)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/restore", p.handleRestorePage).Methods(http.MethodPatch)
@@ -76,6 +77,19 @@ func (p *Plugin) MattermostAuthorizationRequired(next http.Handler) http.Handler
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// requireSpaceMembership calls CheckSpaceMembership and writes the error response when access is
+// denied. Returns the fetched space and true on success so callers can reuse the already-loaded
+// record (e.g. to extract ChannelId for WS events). includeDeleted must be true for restore
+// operations where the space is soft-deleted at lookup time.
+func (p *Plugin) requireSpaceMembership(w http.ResponseWriter, spaceID, userID string, includeDeleted bool) (*model.Space, bool) {
+	space, appErr := p.service.CheckSpaceMembership(spaceID, userID, includeDeleted)
+	if appErr != nil {
+		writeAppError(w, appErr)
+		return nil, false
+	}
+	return space, true
 }
 
 // EnableDocsRequired is a middleware that rejects all API requests with 501 Not Implemented when
@@ -126,18 +140,23 @@ type paginatedResponse[T any] struct {
 	HasMore bool `json:"has_more"`
 }
 
-// writePaginatedJSON wraps items in a paginatedResponse and writes it as a 200 JSON body. HasMore is
-// a "did this page come back full" heuristic, not an exact count: a result set that ends exactly on
-// a perPage boundary reports has_more=true until the next page comes back empty.
+// writePaginatedJSON wraps items in a paginatedResponse and writes it as a 200 JSON body.
+// Callers must pass perPage+1 items from the store (via paginationOffsetLimit) or the app layer
+// accumulation logic: if len(items) > perPage the slice is trimmed to perPage and HasMore is true;
+// otherwise HasMore is false, meaning the store was exhausted before the extra probe row arrived.
 func writePaginatedJSON[T any](w http.ResponseWriter, items []T, page, perPage int) {
 	if items == nil {
 		items = []T{}
+	}
+	hasMore := len(items) > perPage
+	if hasMore {
+		items = items[:perPage]
 	}
 	writeJSON(w, http.StatusOK, paginatedResponse[T]{
 		Items:   items,
 		Page:    page,
 		PerPage: perPage,
-		HasMore: len(items) >= perPage,
+		HasMore: hasMore,
 	})
 }
 
@@ -160,6 +179,11 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, v an
 		writeAppError(w, mmmodel.NewAppError(where, "api.invalid_json.app_error", nil, "", http.StatusBadRequest))
 		return false
 	}
+	// Reject trailing data after the first JSON value (e.g. two concatenated objects).
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeAppError(w, mmmodel.NewAppError(where, "api.invalid_json.app_error", nil, "", http.StatusBadRequest))
+		return false
+	}
 	return true
 }
 
@@ -177,40 +201,19 @@ const pageMaximum = 1 << 20
 func pageParam(r *http.Request) int {
 	if v := r.URL.Query().Get("page"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil && p >= 0 {
-			if p > pageMaximum {
-				return pageMaximum
-			}
-			return p
+			return min(p, pageMaximum)
 		}
 	}
 	return 0
 }
 
 // perPageParam returns a per-page count from "per_page" (default app.PerPageDefault, clamped to
-// [1, app.PerPageMaximum]), matching core's PerPageDefault/PerPageMaximum. A non-positive or
-// unparseable value yields the default; the foundation's perPage<=0 "return all" path is never
-// exposed to HTTP clients.
+// [1, app.PerPageMaximum]). A non-positive or unparseable value yields the default.
 func perPageParam(r *http.Request) int {
-	pp := app.PerPageDefault
+	n := 0
 	if v := r.URL.Query().Get("per_page"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			pp = n
-		}
+		n, _ = strconv.Atoi(v)
 	}
-	if pp > app.PerPageMaximum {
-		pp = app.PerPageMaximum
-	}
-	return pp
+	return app.ClampPerPage(n)
 }
 
-// int64OrZero dereferences p, or returns 0 if nil. Used for optimistic-lock baseline request
-// fields (base_edit_at/expected_update_at), which are *int64 so an omitted field is
-// distinguishable from an explicit 0 in the JSON body — matching the ParentId/SiblingIndex
-// pointer convention used elsewhere in these request structs. 0 is a safe default either way:
-// EditAt/UpdateAt are never legitimately 0 post-creation.
-func int64OrZero(p *int64) int64 {
-	if p == nil {
-		return 0
-	}
-	return *p
-}

@@ -50,13 +50,13 @@ func (p *Plugin) OnActivate() error {
 	if err != nil {
 		return errors.Wrap(err, "failed to get master DB")
 	}
-	s, err := store.New(masterDB, p.client.Store.DriverName())
+	s, err := store.New(masterDB, p.client.Store.DriverName(), &p.client.Log)
 	if err != nil {
 		return errors.Wrap(err, "failed to create store")
 	}
-	s.SetLogger(&p.client.Log)
 
 	if migErr := s.RunMigrations(); migErr != nil {
+		_ = s.Close()
 		return errors.Wrap(migErr, "failed to run docs migrations")
 	}
 	p.store = s
@@ -67,10 +67,12 @@ func (p *Plugin) OnActivate() error {
 	return nil
 }
 
-// OnDeactivate is a no-op. It does not close the store's DB handle: that handle is the server's
-// shared master DB obtained via GetMasterDB, not one this plugin owns. It also does not clear
+// OnDeactivate closes the plugin-owned DB connection pool opened by GetMasterDB. It does not nil
 // store/service/router: those fields are read without synchronization by ServeHTTP and handlers,
 // so niling them here would race an in-flight request against deactivation.
 func (p *Plugin) OnDeactivate() error {
+	if p.store != nil {
+		_ = p.store.Close()
+	}
 	return nil
 }

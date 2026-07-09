@@ -50,7 +50,7 @@ func TestServiceMovePageToSpace(t *testing.T) {
 	root := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
 	child := mustCreatePage(t, h.store, spaceA.Id, chA, user, root.Id)
 
-	moved, appErr := h.svc.MovePageToSpace(root.Id, spaceA.Id, spaceB.Id, nil, root.UpdateAt, false)
+	moved, _, appErr := h.svc.MovePageToSpace(root.Id, spaceA.Id, spaceB.Id, nil, root.UpdateAt, false)
 	require.Nil(t, appErr)
 	require.Equal(t, spaceB.Id, moved.SpaceId)
 	require.Equal(t, chB, moved.ChannelId)
@@ -89,7 +89,7 @@ func TestServiceMovePageToSpace_ReturnsMovedPage(t *testing.T) {
 	page := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
 
 	parentID := target.Id
-	moved, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, &parentID, page.UpdateAt, false)
+	moved, _, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, &parentID, page.UpdateAt, false)
 	require.Nil(t, appErr)
 	require.Equal(t, spaceB.Id, moved.SpaceId)
 	require.Equal(t, chB, moved.ChannelId)
@@ -114,7 +114,7 @@ func TestServiceMovePageToSpace_RejectsCrossTeam(t *testing.T) {
 	spaceB := seedSpaceInTeam(t, h.store, chB, mmmodel.NewId())
 
 	page := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
-	_, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, nil, 0, true)
+	_, _, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, nil, 0, true)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
 	require.Equal(t, "app.page.move_to_space.cross_team.app_error", appErr.Id)
@@ -125,21 +125,21 @@ func TestServiceMovePageToSpace_InvalidIDs(t *testing.T) {
 	h := openTestService(t)
 
 	t.Run("invalid pageID", func(t *testing.T) {
-		_, appErr := h.svc.MovePageToSpace("not-an-id", mmmodel.NewId(), mmmodel.NewId(), nil, 0, false)
+		_, _, appErr := h.svc.MovePageToSpace("not-an-id", mmmodel.NewId(), mmmodel.NewId(), nil, 0, false)
 		require.NotNil(t, appErr)
 		require.Equal(t, 400, appErr.StatusCode)
 		require.Equal(t, "app.page.move_to_space.invalid_id.app_error", appErr.Id)
 	})
 
 	t.Run("invalid sourceSpaceID", func(t *testing.T) {
-		_, appErr := h.svc.MovePageToSpace(mmmodel.NewId(), "not-an-id", mmmodel.NewId(), nil, 0, false)
+		_, _, appErr := h.svc.MovePageToSpace(mmmodel.NewId(), "not-an-id", mmmodel.NewId(), nil, 0, false)
 		require.NotNil(t, appErr)
 		require.Equal(t, 400, appErr.StatusCode)
 		require.Equal(t, "app.page.move_to_space.invalid_source_space.app_error", appErr.Id)
 	})
 
 	t.Run("invalid targetSpaceID", func(t *testing.T) {
-		_, appErr := h.svc.MovePageToSpace(mmmodel.NewId(), mmmodel.NewId(), "not-an-id", nil, 0, false)
+		_, _, appErr := h.svc.MovePageToSpace(mmmodel.NewId(), mmmodel.NewId(), "not-an-id", nil, 0, false)
 		require.NotNil(t, appErr)
 		require.Equal(t, 400, appErr.StatusCode)
 		require.Equal(t, "app.page.move_to_space.invalid_target_space.app_error", appErr.Id)
@@ -162,7 +162,7 @@ func TestServiceMovePageToSpace_RejectsParentInWrongSpace(t *testing.T) {
 	parentInA := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
 
 	parentID := parentInA.Id
-	_, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, &parentID, 0, true)
+	_, _, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, &parentID, 0, true)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
 	require.Equal(t, "app.page.move.parent_different_space.app_error", appErr.Id)
@@ -184,7 +184,7 @@ func TestServiceMovePageToSpace_RejectsMissingParent(t *testing.T) {
 	page := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
 
 	ghost := mmmodel.NewId()
-	_, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, &ghost, 0, true)
+	_, _, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, &ghost, 0, true)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
 	require.Equal(t, "app.page.move.invalid_parent.app_error", appErr.Id)
@@ -210,7 +210,7 @@ func TestServiceMovePageToSpace_RejectsDepthExceeded(t *testing.T) {
 	}
 
 	page := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
-	_, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, &parentID, 0, true)
+	_, _, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, &parentID, 0, true)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
 	require.Equal(t, "app.page.move.max_depth_exceeded.app_error", appErr.Id)
@@ -237,7 +237,7 @@ func TestServiceMovePageToSpace_RewritesSnapshots(t *testing.T) {
 		snap.Id, root.Id, mmmodel.GetMillis())
 	require.NoError(t, rawErr)
 
-	_, appErr := h.svc.MovePageToSpace(root.Id, spaceA.Id, spaceB.Id, nil, 0, true)
+	_, _, appErr := h.svc.MovePageToSpace(root.Id, spaceA.Id, spaceB.Id, nil, 0, true)
 	require.Nil(t, appErr)
 
 	var spaceID, channelID string
@@ -260,7 +260,7 @@ func TestServiceMovePageToSpace_RejectsCycle(t *testing.T) {
 	child := mustCreatePage(t, h.store, spaceA.Id, chA, user, root.Id)
 
 	childID := child.Id
-	_, appErr := h.svc.MovePageToSpace(root.Id, spaceA.Id, spaceA.Id, &childID, 0, true)
+	_, _, appErr := h.svc.MovePageToSpace(root.Id, spaceA.Id, spaceA.Id, &childID, 0, true)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
 	require.Equal(t, "app.page.move.circular_reference.app_error", appErr.Id)
@@ -283,11 +283,11 @@ func TestServiceMovePageToSpace_StaleBaselineConflicts(t *testing.T) {
 
 	// A cross-space move falls through to the store CAS (the no-op short-circuit only applies when
 	// the page is already in the target space under the requested parent).
-	_, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, nil, page.UpdateAt-1, false)
+	_, _, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, nil, page.UpdateAt-1, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, 409, appErr.StatusCode)
 
-	moved, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, nil, page.UpdateAt-1, true)
+	moved, _, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, nil, page.UpdateAt-1, true)
 	require.Nil(t, appErr)
 	require.Equal(t, spaceB.Id, moved.SpaceId)
 }
@@ -309,16 +309,16 @@ func TestServiceMovePageToSpace_NoOpEnforcesBaseline(t *testing.T) {
 	// no-op (already in the target space, already at the root).
 	page := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
 
-	_, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceA.Id, nil, page.UpdateAt-1, false)
+	_, _, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceA.Id, nil, page.UpdateAt-1, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, 409, appErr.StatusCode)
 
-	same, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceA.Id, nil, page.UpdateAt, false)
+	same, _, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceA.Id, nil, page.UpdateAt, false)
 	require.Nil(t, appErr)
 	require.Equal(t, page.Id, same.Id)
 	require.Equal(t, spaceA.Id, same.SpaceId)
 
-	_, appErr = h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceA.Id, nil, page.UpdateAt-1, true)
+	_, _, appErr = h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceA.Id, nil, page.UpdateAt-1, true)
 	require.Nil(t, appErr)
 }
 
@@ -340,13 +340,13 @@ func TestServiceMovePageToSpace_NoOpRejectsStaleSource(t *testing.T) {
 	page := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
 
 	// Concurrently relocate the page to spaceB, out from under the caller's stale spaceA route.
-	_, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, nil, page.UpdateAt, false)
+	_, _, appErr := h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, nil, page.UpdateAt, false)
 	require.Nil(t, appErr)
 
 	// The stale request still names spaceA as the source and spaceB as the target; the page is
 	// already in spaceB at the root, which matches the no-op's SpaceId/ParentId check, but not its
 	// sourceSpaceID.
-	_, appErr = h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, nil, page.UpdateAt, false)
+	_, _, appErr = h.svc.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, nil, page.UpdateAt, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, 404, appErr.StatusCode)
 }

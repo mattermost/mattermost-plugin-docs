@@ -5,8 +5,9 @@
 // router) over an isolated Postgres schema and drive handlers via httptest. CreateSpace needs a
 // pluginapi client, so that path uses a plugintest.API mock; the rest seed via the store directly.
 //
-// Handlers use the authenticated-only access stub (full permission gating is deferred), so these
-// verify auth-only behaviour: 401 without a user, the CRUD round-trip, and the not-in-space 404.
+// Every space- and page-scoped handler enforces backing-channel membership (CheckSpaceMembership),
+// returning 403 Forbidden for non-members. Per-page role ACLs (author vs. editor) are not yet
+// implemented and are deferred to a follow-up.
 package main
 
 import (
@@ -43,7 +44,7 @@ type apiTestHarness struct {
 func openTestPlugin(t *testing.T, mockAPI *plugintest.API) *apiTestHarness {
 	t.Helper()
 	db := testutil.OpenTestDB(t)
-	s, err := store.New(db, "postgres")
+	s, err := store.New(db, "postgres", nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 	require.NoError(t, s.RunMigrations())
@@ -87,7 +88,12 @@ func (h *apiTestHarness) do(t *testing.T, method, path, userID string, body any)
 
 func seedSpace(t *testing.T, s *store.Store, channelID string) *model.Space {
 	t.Helper()
-	space, err := s.CreateSpace(&model.Space{ChannelId: channelID, TeamId: mmmodel.NewId(), CreatorId: mmmodel.NewId(), Title: "Test Space"})
+	return seedSpaceInTeam(t, s, mmmodel.NewId(), channelID)
+}
+
+func seedSpaceInTeam(t *testing.T, s *store.Store, teamID, channelID string) *model.Space {
+	t.Helper()
+	space, err := s.CreateSpace(&model.Space{ChannelId: channelID, TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "Test Space"})
 	require.NoError(t, err)
 	return space
 }
@@ -155,6 +161,8 @@ func TestHandler_CreateSpace_IgnoresServerOwnedFields(t *testing.T) {
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Return(&mmmodel.Channel{Id: mmmodel.NewId(), Type: mmmodel.ChannelTypeSpace}, nil)
 	mockAPI.On("AddChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.ChannelMember{}, nil)
+	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.ChannelMember{}, nil)
 	h := openTestPlugin(t, mockAPI)
 
@@ -364,6 +372,27 @@ func TestHandler_UpdatePage(t *testing.T) {
 	require.Equal(t, http.StatusConflict, rec.Code)
 }
 
+// TestHandler_UpdatePage_Props verifies that props supplied in the PATCH body are persisted and
+// returned in the response.
+func TestHandler_UpdatePage_Props(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	page := seedPage(t, h.store, space.Id, channelID, "")
+
+	body := map[string]any{
+		"props":        map[string]any{"key": "value"},
+		"base_edit_at": page.EditAt,
+	}
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, body)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var updated model.Page
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updated))
+	require.Equal(t, "value", updated.Props["key"])
+}
+
 // TestHandler_RestorePage deletes then restores a page.
 func TestHandler_RestorePage(t *testing.T) {
 	h := openTestPlugin(t, nil)
@@ -446,6 +475,24 @@ func TestHandler_MovePageToSpace(t *testing.T) {
 	var moved model.Page
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &moved))
 	require.Equal(t, spaceB.Id, moved.SpaceId)
+}
+
+// TestHandler_MovePageToSpace_MissingTargetSpaceId verifies that omitting target_space_id returns
+// the handler-specific 400 before any app-layer call is made.
+func TestHandler_MovePageToSpace_MissingTargetSpaceId(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelA := mmmodel.NewId()
+	spaceA := seedSpace(t, h.store, channelA)
+	page := seedPage(t, h.store, spaceA.Id, channelA, "")
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/move-to-space", user, map[string]any{
+		"expected_update_at": page.UpdateAt,
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	var appErr mmmodel.AppError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+	require.Equal(t, "api.page.move_to_space.missing_target_space_id.app_error", appErr.Id)
 }
 
 // TestHandler_MovePageToSpace_CrossTeamRejected drives the cross-team rejection through the real
@@ -690,10 +737,8 @@ func TestHandler_DuplicatePage_WithParent(t *testing.T) {
 	space := seedSpace(t, h.store, channelID)
 	parent := seedPage(t, h.store, space.Id, channelID, "")
 	page := seedPage(t, h.store, space.Id, channelID, "")
-	parentID := parent.Id
-
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id+"/duplicate", user, map[string]any{
-		"parent_id": parentID,
+		"parent_id": parent.Id,
 	})
 	require.Equal(t, http.StatusCreated, rec.Code)
 	var dup model.Page
@@ -758,6 +803,146 @@ func TestHandler_RestorePage_WrongSpaceIs404(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// TestHandler_SpaceMembershipRequired verifies that all space- and page-scoped handlers
+// reject callers who are not members of the space's backing channel with 403 Forbidden.
+func TestHandler_SpaceMembershipRequired(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	mockAPI.On("GetConfig").Return(&mmmodel.Config{
+		FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true},
+	}).Maybe()
+	h := openTestPlugin(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	page := seedPage(t, h.store, space.Id, channelID, "")
+	stranger := mmmodel.NewId()
+
+	mockAPI.On("GetChannelMember", channelID, stranger).
+		Return(nil, &mmmodel.AppError{StatusCode: http.StatusNotFound})
+
+	cases := []struct {
+		method string
+		path   string
+		body   any
+	}{
+		// Space-scoped handlers.
+		{http.MethodGet, "/api/v1/spaces/" + space.Id, nil},
+		{http.MethodPatch, "/api/v1/spaces/" + space.Id, map[string]any{"title": "X"}},
+		{http.MethodDelete, "/api/v1/spaces/" + space.Id, nil},
+		{http.MethodPatch, "/api/v1/spaces/" + space.Id + "/restore", nil},
+		{http.MethodGet, "/api/v1/spaces/" + space.Id + "/pages", nil},
+		// Page-scoped handlers.
+		{http.MethodPost, "/api/v1/spaces/" + space.Id + "/pages", map[string]any{"title": "P"}},
+		{http.MethodGet, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id, nil},
+		{http.MethodPatch, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id, map[string]any{"title": "P"}},
+		{http.MethodDelete, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id, nil},
+		{http.MethodGet, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/children", nil},
+		{http.MethodPatch, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/restore", nil},
+		{http.MethodPatch, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/move", nil},
+		{http.MethodPatch, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/move-to-space", nil},
+		{http.MethodPost, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/duplicate", nil},
+	}
+	for _, tc := range cases {
+		rec := h.do(t, tc.method, tc.path, stranger, tc.body)
+		require.Equal(t, http.StatusForbidden, rec.Code, "expected 403 for %s %s", tc.method, tc.path)
+	}
+}
+
+// TestHandler_TeamSpacesPrivacy verifies that GET /teams/{team_id}/spaces filters out spaces
+// whose backing channel the caller does not belong to.
+func TestHandler_TeamSpacesPrivacy(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	mockAPI.On("GetConfig").Return(&mmmodel.Config{
+		FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true},
+	}).Maybe()
+	h := openTestPlugin(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	visibleChannelID := mmmodel.NewId()
+	hiddenChannelID := mmmodel.NewId()
+	visible := seedSpaceInTeam(t, h.store, teamID, visibleChannelID)
+	_ = seedSpaceInTeam(t, h.store, teamID, hiddenChannelID)
+	caller := mmmodel.NewId()
+
+	mockAPI.On("GetTeamMember", teamID, caller).
+		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: caller}, nil)
+	mockAPI.On("GetChannelsForTeamForUser", teamID, caller, false).
+		Return([]*mmmodel.Channel{{Id: visibleChannelID}}, nil)
+
+	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Items []*model.Space `json:"items"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp.Items, 1)
+	require.Equal(t, visible.Id, resp.Items[0].Id)
+}
+
+// TestHandler_TeamSpacesHiddenPageBoundary verifies that spaces the caller cannot access are
+// filtered at the SQL level: the store receives only the caller's channel IDs and excludes
+// hidden spaces before applying offset/limit, so pagination never delivers invisible spaces.
+func TestHandler_TeamSpacesHiddenPageBoundary(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	mockAPI.On("GetConfig").Return(&mmmodel.Config{
+		FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true},
+	}).Maybe()
+	h := openTestPlugin(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	visibleChannelID := mmmodel.NewId()
+	hidden1ChannelID := mmmodel.NewId()
+	hidden2ChannelID := mmmodel.NewId()
+	caller := mmmodel.NewId()
+
+	visible := seedSpaceInTeam(t, h.store, teamID, visibleChannelID)
+	_ = seedSpaceInTeam(t, h.store, teamID, hidden1ChannelID)
+	_ = seedSpaceInTeam(t, h.store, teamID, hidden2ChannelID)
+
+	mockAPI.On("GetTeamMember", teamID, caller).
+		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: caller}, nil)
+	// ListForTeamForUser returns only the channels the caller belongs to; hidden channels are
+	// absent from this list, so the SQL-level IN-filter excludes their spaces entirely.
+	mockAPI.On("GetChannelsForTeamForUser", teamID, caller, false).
+		Return([]*mmmodel.Channel{{Id: visibleChannelID}}, nil)
+
+	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces?per_page=2", caller, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Items   []*model.Space `json:"items"`
+		HasMore bool           `json:"has_more"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp.Items, 1)
+	require.Equal(t, visible.Id, resp.Items[0].Id)
+	require.False(t, resp.HasMore)
+}
+
+// TestHandler_TeamSpacesChannelLookupError verifies that a backend error from
+// GetChannelsForTeamForUser during the space list filter propagates as 500.
+func TestHandler_TeamSpacesChannelLookupError(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	mockAPI.On("GetConfig").Return(&mmmodel.Config{
+		FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true},
+	}).Maybe()
+	h := openTestPlugin(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	_ = seedSpaceInTeam(t, h.store, teamID, channelID)
+	caller := mmmodel.NewId()
+
+	mockAPI.On("GetTeamMember", teamID, caller).
+		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: caller}, nil)
+	mockAPI.On("GetChannelsForTeamForUser", teamID, caller, false).
+		Return(nil, &mmmodel.AppError{StatusCode: http.StatusInternalServerError})
+
+	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
 // TestHandler_InvalidJSON returns 400 on a malformed request body.
 func TestHandler_InvalidJSON(t *testing.T) {
 	h := openTestPlugin(t, nil)
@@ -796,4 +981,65 @@ func TestHandler_RequestTooLarge(t *testing.T) {
 	var appErr mmmodel.AppError
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
 	require.Equal(t, "api.request_too_large.app_error", appErr.Id)
+}
+
+// TestHandler_MovePage_InvalidParentID verifies that a malformed parent_id in the move request
+// body is rejected before any store call is made.
+func TestHandler_MovePage_InvalidParentID(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	page := seedPage(t, h.store, space.Id, channelID, "")
+
+	bad := "not-a-valid-id"
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id+"/move", user, map[string]any{
+		"parent_id": bad,
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	var appErr mmmodel.AppError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+	require.Equal(t, "api.page.move.invalid_parent_id.app_error", appErr.Id)
+}
+
+// TestHandler_DuplicatePage_InvalidParentID verifies that a malformed parent_id in the duplicate
+// request body is rejected before any store call is made.
+func TestHandler_DuplicatePage_InvalidParentID(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	page := seedPage(t, h.store, space.Id, channelID, "")
+
+	bad := "not-a-valid-id"
+	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id+"/duplicate", user, map[string]any{
+		"parent_id": bad,
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	var appErr mmmodel.AppError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+	require.Equal(t, "api.page.duplicate.invalid_parent_id.app_error", appErr.Id)
+}
+
+// TestHandler_MovePageToSpace_InvalidParentID verifies that a malformed parent_id in the
+// move-to-space request body is rejected before any store call is made.
+func TestHandler_MovePageToSpace_InvalidParentID(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelA := mmmodel.NewId()
+	spaceA := seedSpace(t, h.store, channelA)
+	page := seedPage(t, h.store, spaceA.Id, channelA, "")
+
+	spaceB, err := h.store.CreateSpace(&model.Space{ChannelId: mmmodel.NewId(), TeamId: spaceA.TeamId, CreatorId: user, Title: "B"})
+	require.NoError(t, err)
+
+	bad := "not-a-valid-id"
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/move-to-space", user, map[string]any{
+		"target_space_id": spaceB.Id,
+		"parent_id":       bad,
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	var appErr mmmodel.AppError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+	require.Equal(t, "api.page.move_to_space.invalid_parent_id.app_error", appErr.Id)
 }

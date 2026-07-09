@@ -36,7 +36,7 @@ func TestMovePage_StoreEdgeCases(t *testing.T) {
 		parent, err := s.CreatePage(newPage(page.SpaceId, channelID, mmmodel.NewId(), ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 
-		_, err = s.MovePage(page.Id, page.SpaceId, &parent.Id, nil, page.UpdateAt-1, false, store.MaxPageHierarchyDepth)
+		_, _, err = s.MovePage(page.Id, page.SpaceId, &parent.Id, nil, page.UpdateAt-1, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		require.True(t, store.IsErrConflict(err), "expected ErrConflict, got %T: %v", err, err)
 	})
@@ -46,7 +46,7 @@ func TestMovePage_StoreEdgeCases(t *testing.T) {
 		_, page := seedSpaceAndPage(t, s)
 
 		self := page.Id
-		_, err := s.MovePage(page.Id, page.SpaceId, &self, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, err := s.MovePage(page.Id, page.SpaceId, &self, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		require.True(t, store.IsErrCircularReference(err), "expected ErrCircularReference, got %T: %v", err, err)
 	})
@@ -56,7 +56,7 @@ func TestMovePage_StoreEdgeCases(t *testing.T) {
 		_, page := seedSpaceAndPage(t, s)
 
 		ghost := mmmodel.NewId()
-		_, err := s.MovePage(page.Id, page.SpaceId, &ghost, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, err := s.MovePage(page.Id, page.SpaceId, &ghost, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		var inv *store.ErrInvalidInput
 		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
@@ -64,7 +64,7 @@ func TestMovePage_StoreEdgeCases(t *testing.T) {
 
 	t.Run("empty pageID returns invalid-input on Id", func(t *testing.T) {
 		s := openTestDB(t)
-		_, err := s.MovePage("", mmmodel.NewId(), nil, nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err := s.MovePage("", mmmodel.NewId(), nil, nil, 0, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		var inv *store.ErrInvalidInput
 		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
@@ -73,7 +73,7 @@ func TestMovePage_StoreEdgeCases(t *testing.T) {
 
 	t.Run("missing page returns not-found", func(t *testing.T) {
 		s := openTestDB(t)
-		_, err := s.MovePage(mmmodel.NewId(), mmmodel.NewId(), nil, nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err := s.MovePage(mmmodel.NewId(), mmmodel.NewId(), nil, nil, 0, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		require.True(t, store.IsErrNotFound(err), "expected ErrNotFound, got %T: %v", err, err)
 	})
@@ -85,7 +85,7 @@ func TestMovePage_StoreEdgeCases(t *testing.T) {
 		require.NoError(t, err)
 
 		root := ""
-		moved, err := s.MovePage(child.Id, child.SpaceId, &root, nil, child.UpdateAt, false, store.MaxPageHierarchyDepth)
+		moved, _, err := s.MovePage(child.Id, child.SpaceId, &root, nil, child.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.NoError(t, err)
 		require.Equal(t, "", moved.ParentId)
 	})
@@ -96,7 +96,7 @@ func TestMovePage_StoreEdgeCases(t *testing.T) {
 		parent, err := s.CreatePage(newPage(page.SpaceId, channelID, mmmodel.NewId(), ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 
-		moved, err := s.MovePage(page.Id, page.SpaceId, &parent.Id, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		moved, _, err := s.MovePage(page.Id, page.SpaceId, &parent.Id, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.NoError(t, err)
 		require.Equal(t, parent.Id, moved.ParentId)
 		require.Contains(t, idsOf(mustChildren(t, s, parent.Id, parent.SpaceId)), page.Id)
@@ -188,7 +188,7 @@ func TestMovePage_StoreUnderLockGuards(t *testing.T) {
 		require.NoError(t, err)
 
 		dest := grandchild.Id
-		_, err = s.MovePage(root.Id, root.SpaceId, &dest, nil, root.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, err = s.MovePage(root.Id, root.SpaceId, &dest, nil, root.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		require.True(t, store.IsErrCircularReference(err), "expected ErrCircularReference, got %T: %v", err, err)
 	})
@@ -206,7 +206,7 @@ func TestMovePage_StoreUnderLockGuards(t *testing.T) {
 		require.NoError(t, err)
 
 		dest := c.Id
-		_, err = s.MovePage(p.Id, p.SpaceId, &dest, nil, p.UpdateAt, false, 3)
+		_, _, err = s.MovePage(p.Id, p.SpaceId, &dest, nil, p.UpdateAt, false, 3)
 		require.Error(t, err)
 		require.True(t, store.IsErrLimitExceeded(err), "expected ErrLimitExceeded, got %T: %v", err, err)
 	})
@@ -251,7 +251,7 @@ func TestMovePage_StoreReindexClampSingleSibling(t *testing.T) {
 
 	sameParent := parent.Id
 	large := int64(5)
-	moved, err := s.MovePage(child.Id, child.SpaceId, &sameParent, &large, child.UpdateAt, false, store.MaxPageHierarchyDepth)
+	moved, _, err := s.MovePage(child.Id, child.SpaceId, &sameParent, &large, child.UpdateAt, false, store.MaxPageHierarchyDepth)
 	require.NoError(t, err)
 	require.Equal(t, parent.Id, moved.ParentId)
 	require.Equal(t, []string{child.Id}, idsOf(mustChildren(t, s, parent.Id, parent.SpaceId)))
@@ -302,7 +302,7 @@ func TestPageMutations_ScopedToSpace(t *testing.T) {
 
 	t.Run("move with wrong space is not found", func(t *testing.T) {
 		root := ""
-		_, mErr := s.MovePage(page.Id, spaceB.Id, &root, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, mErr := s.MovePage(page.Id, spaceB.Id, &root, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.True(t, store.IsErrNotFound(mErr))
 	})
 

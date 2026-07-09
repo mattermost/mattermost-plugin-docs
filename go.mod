@@ -2,11 +2,13 @@ module github.com/mattermost/mattermost-plugin-docs
 
 go 1.26.3
 
-// Dev-only: server/public pinned to a pre-release commit providing ChannelTypeSpace "S",
-// which is not yet in a released server/public.
-// server/v8 (test harness only) is pinned to the same commit the branch is based on,
-// so it stays version-consistent without a replace directive.
-// Bump both core deps to a release once the core change is merged and released.
+// Dev-only pins: server/public is pinned to a pre-release commit (2026-07-06) that provides
+// ChannelTypeSpace ("S") and GetSpaceBackingChannel — APIs not yet in a released server/public.
+// server/v8 is the test harness only (storetest helpers); it does not contribute any runtime
+// symbols and is pinned independently to a slightly older commit (2026-06-23). The two modules
+// live in the same monorepo but are versioned independently, so their pseudo-version timestamps
+// will always differ; what matters is that server/public has the APIs this plugin calls.
+// Bump both to a release tag once the core space-channel changes merge and ship.
 require (
 	github.com/gorilla/mux v1.8.1
 	github.com/jmoiron/sqlx v1.4.0

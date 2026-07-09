@@ -41,8 +41,7 @@ func TestServiceMovePage_Reparent(t *testing.T) {
 	parent := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
-	parentID := parent.Id
-	moved, appErr := h.svc.MovePage(page.Id, page.SpaceId, &parentID, nil, page.UpdateAt, false)
+	moved, _, appErr := h.svc.MovePage(page.Id, page.SpaceId, &parent.Id, nil, page.UpdateAt, false)
 	require.Nil(t, appErr)
 	require.Equal(t, parent.Id, moved.ParentId)
 
@@ -62,8 +61,7 @@ func TestServiceMovePage_SameParentNoOp(t *testing.T) {
 	parent := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 	child := mustCreatePage(t, h.store, space.Id, channelID, userID, parent.Id)
 
-	sameParent := parent.Id
-	_, appErr := h.svc.MovePage(child.Id, child.SpaceId, &sameParent, nil, child.UpdateAt, false)
+	_, _, appErr := h.svc.MovePage(child.Id, child.SpaceId, &parent.Id, nil, child.UpdateAt, false)
 	require.Nil(t, appErr)
 
 	got, getErr := h.svc.GetPage(child.Id)
@@ -82,7 +80,7 @@ func TestServiceMovePage_ToRootLevel(t *testing.T) {
 	child := mustCreatePage(t, h.store, space.Id, channelID, userID, parent.Id)
 
 	empty := ""
-	moved, appErr := h.svc.MovePage(child.Id, child.SpaceId, &empty, nil, child.UpdateAt, false)
+	moved, _, appErr := h.svc.MovePage(child.Id, child.SpaceId, &empty, nil, child.UpdateAt, false)
 	require.Nil(t, appErr)
 	require.Empty(t, moved.ParentId)
 }
@@ -90,7 +88,7 @@ func TestServiceMovePage_ToRootLevel(t *testing.T) {
 // TestServiceMovePage_PageNotFound moving a non-existent page returns 404.
 func TestServiceMovePage_PageNotFound(t *testing.T) {
 	h := openTestService(t)
-	_, appErr := h.svc.MovePage(mmmodel.NewId(), mmmodel.NewId(), nil, nil, 0, false)
+	_, _, appErr := h.svc.MovePage(mmmodel.NewId(), mmmodel.NewId(), nil, nil, 0, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, 404, appErr.StatusCode)
 }
@@ -100,7 +98,7 @@ func TestServiceMovePage_PageNotFound(t *testing.T) {
 func TestServiceMovePage_MalformedIDs(t *testing.T) {
 	t.Run("malformed page id", func(t *testing.T) {
 		h := openTestService(t)
-		_, appErr := h.svc.MovePage("not-an-id", mmmodel.NewId(), nil, nil, 0, false)
+		_, _, appErr := h.svc.MovePage("not-an-id", mmmodel.NewId(), nil, nil, 0, false)
 		require.NotNil(t, appErr)
 		require.Equal(t, 400, appErr.StatusCode)
 		require.Equal(t, "app.page.move.invalid_id.app_error", appErr.Id)
@@ -108,7 +106,7 @@ func TestServiceMovePage_MalformedIDs(t *testing.T) {
 
 	t.Run("malformed space id", func(t *testing.T) {
 		h := openTestService(t)
-		_, appErr := h.svc.MovePage(mmmodel.NewId(), "not-an-id", nil, nil, 0, false)
+		_, _, appErr := h.svc.MovePage(mmmodel.NewId(), "not-an-id", nil, nil, 0, false)
 		require.NotNil(t, appErr)
 		require.Equal(t, 400, appErr.StatusCode)
 		require.Equal(t, "app.page.move.invalid_space_id.app_error", appErr.Id)
@@ -132,7 +130,7 @@ func TestServiceMovePage_ErrorPaths(t *testing.T) {
 		parentInB := mustCreatePage(t, h.store, spaceB.Id, channelB, userID, "")
 
 		newParent := parentInB.Id
-		_, appErr := h.svc.MovePage(page.Id, page.SpaceId, &newParent, nil, page.UpdateAt, false)
+		_, _, appErr := h.svc.MovePage(page.Id, page.SpaceId, &newParent, nil, page.UpdateAt, false)
 		require.NotNil(t, appErr)
 		require.Equal(t, 400, appErr.StatusCode)
 		require.Equal(t, "app.page.move.parent_different_space.app_error", appErr.Id)
@@ -145,7 +143,7 @@ func TestServiceMovePage_ErrorPaths(t *testing.T) {
 		page := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 		ghost := mmmodel.NewId()
-		_, appErr := h.svc.MovePage(page.Id, page.SpaceId, &ghost, nil, page.UpdateAt, false)
+		_, _, appErr := h.svc.MovePage(page.Id, page.SpaceId, &ghost, nil, page.UpdateAt, false)
 		require.NotNil(t, appErr)
 		require.Equal(t, 400, appErr.StatusCode)
 		require.Equal(t, "app.page.move.invalid_parent.app_error", appErr.Id)
@@ -158,7 +156,7 @@ func TestServiceMovePage_ErrorPaths(t *testing.T) {
 		page := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 		self := page.Id
-		_, appErr := h.svc.MovePage(page.Id, page.SpaceId, &self, nil, page.UpdateAt, false)
+		_, _, appErr := h.svc.MovePage(page.Id, page.SpaceId, &self, nil, page.UpdateAt, false)
 		require.NotNil(t, appErr)
 		require.Equal(t, 400, appErr.StatusCode)
 		require.Equal(t, "app.page.move.circular_reference.app_error", appErr.Id)
@@ -174,7 +172,7 @@ func TestServiceMovePage_ErrorPaths(t *testing.T) {
 		grandchild := mustCreatePage(t, h.store, space.Id, channelID, userID, child.Id)
 
 		newParent := grandchild.Id
-		_, appErr := h.svc.MovePage(root.Id, root.SpaceId, &newParent, nil, root.UpdateAt, false)
+		_, _, appErr := h.svc.MovePage(root.Id, root.SpaceId, &newParent, nil, root.UpdateAt, false)
 		require.NotNil(t, appErr)
 		require.Equal(t, 400, appErr.StatusCode)
 		require.Equal(t, "app.page.move.circular_reference.app_error", appErr.Id)
@@ -193,7 +191,7 @@ func TestServiceMovePage_ErrorPaths(t *testing.T) {
 		leaf := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
 		newParent := deepest.Id
-		_, appErr := h.svc.MovePage(leaf.Id, leaf.SpaceId, &newParent, nil, leaf.UpdateAt, false)
+		_, _, appErr := h.svc.MovePage(leaf.Id, leaf.SpaceId, &newParent, nil, leaf.UpdateAt, false)
 		require.NotNil(t, appErr)
 		require.Equal(t, 400, appErr.StatusCode)
 		require.Equal(t, "app.page.move.max_depth_exceeded.app_error", appErr.Id)
@@ -215,7 +213,7 @@ func TestServiceMovePage_ErrorPaths(t *testing.T) {
 		mustCreatePage(t, h.store, space.Id, channelID, userID, subtreeRoot.Id)
 
 		newParent := anchor.Id
-		_, appErr := h.svc.MovePage(subtreeRoot.Id, subtreeRoot.SpaceId, &newParent, nil, subtreeRoot.UpdateAt, false)
+		_, _, appErr := h.svc.MovePage(subtreeRoot.Id, subtreeRoot.SpaceId, &newParent, nil, subtreeRoot.UpdateAt, false)
 		require.NotNil(t, appErr)
 		require.Equal(t, 400, appErr.StatusCode)
 		require.Equal(t, "app.page.move.subtree_max_depth_exceeded.app_error", appErr.Id)
@@ -235,11 +233,11 @@ func TestServiceMovePage_StaleBaselineConflicts(t *testing.T) {
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
 	parentID := parent.Id
-	_, appErr := h.svc.MovePage(page.Id, page.SpaceId, &parentID, nil, page.UpdateAt-1, false)
+	_, _, appErr := h.svc.MovePage(page.Id, page.SpaceId, &parentID, nil, page.UpdateAt-1, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, 409, appErr.StatusCode)
 
-	moved, appErr := h.svc.MovePage(page.Id, page.SpaceId, &parentID, nil, page.UpdateAt-1, true)
+	moved, _, appErr := h.svc.MovePage(page.Id, page.SpaceId, &parentID, nil, page.UpdateAt-1, true)
 	require.Nil(t, appErr)
 	require.Equal(t, parent.Id, moved.ParentId)
 }

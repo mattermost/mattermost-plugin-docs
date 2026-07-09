@@ -39,40 +39,45 @@ var (
 	SELECT a.Id
 	FROM ancestors a
 	INNER JOIN DOCS_Page p ON p.Id = a.Id
-	WHERE a.Id != $1 AND NOT a.is_cycle AND p.DeleteAt = 0
+	WHERE a.Id != $1 AND p.DeleteAt = 0
 	ORDER BY a.depth ASC`
 
-	pageAncestorCountCTE = ancestorsRecursiveCTE(MaxPageHierarchyDepth) + `
+	pageAncestorCountCTE = ancestorsRecursiveCTE(MaxPageHierarchyDepth+1) + `
 	SELECT COUNT(*)
 	FROM ancestors a
-	WHERE a.Id != $1 AND NOT a.is_cycle`
+	WHERE a.Id != $1`
 
 	// moveAncestorsCTE walks a page's parent chain upward, excluding snapshot rows
 	// (OriginalId != ''), bounded by MaxPageHierarchyDepth. Callers run it within the move
-	// transaction so it observes locked, uncommitted state, and append their own SELECT (which
-	// must filter NOT is_cycle to drop the cycle sentinel row). The CYCLE clause matches the
-	// other recursive CTEs in this file (ancestorsRecursiveCTE/computeDescendantsCTE) so a
-	// corrupted ParentId loop is broken explicitly rather than relying on the depth bound alone.
+	// transaction so it observes locked, uncommitted state, and append their own SELECT.
+	// path breaks any corrupted ParentId cycle explicitly rather than relying on the depth
+	// bound alone.
 	moveAncestorsCTE = fmt.Sprintf(`
 	WITH RECURSIVE ancestors AS (
-		SELECT Id, ParentId, 1 AS depth FROM DOCS_Page WHERE Id = $1 AND DeleteAt = 0 AND OriginalId = ''
+		SELECT Id, ParentId, 1 AS depth, ARRAY[Id]::text[] AS path
+		FROM DOCS_Page WHERE Id = $1 AND DeleteAt = 0 AND OriginalId = ''
 		UNION ALL
-		SELECT p.Id, p.ParentId, a.depth + 1 FROM DOCS_Page p
+		SELECT p.Id, p.ParentId, a.depth + 1, a.path || p.Id
+		FROM DOCS_Page p
 		INNER JOIN ancestors a ON p.Id = a.ParentId
 		WHERE p.DeleteAt = 0 AND p.OriginalId = '' AND a.depth <= %d
-	) CYCLE Id SET is_cycle USING cycle_path`, MaxPageHierarchyDepth)
+		  AND NOT (p.Id = ANY(a.path))
+	)`, MaxPageHierarchyDepth)
 
 	// pageSubtreeCTE walks a page's live subtree downward (root at depth 0), bounded by
 	// MaxPageHierarchyDepth so a subtree one level past the cap still emits a row rather than being
-	// silently truncated. Callers append their own SELECT.
+	// silently truncated. path breaks any corrupted ParentId cycle. Callers append their own SELECT.
 	pageSubtreeCTE = fmt.Sprintf(`
 	WITH RECURSIVE page_subtree AS (
-		SELECT Id, 0 AS depth FROM DOCS_Page WHERE Id = $1 AND DeleteAt = 0 AND OriginalId = ''
+		SELECT Id, 0 AS depth, ARRAY[Id]::text[] AS path
+		FROM DOCS_Page WHERE Id = $1 AND DeleteAt = 0 AND OriginalId = ''
 		UNION ALL
-		SELECT p.Id, ps.depth + 1 FROM DOCS_Page p
+		SELECT p.Id, ps.depth + 1, ps.path || p.Id
+		FROM DOCS_Page p
 		INNER JOIN page_subtree ps ON p.ParentId = ps.Id
 		WHERE p.DeleteAt = 0 AND p.OriginalId = '' AND ps.depth <= %d
-	) CYCLE Id SET is_cycle USING cycle_path`, MaxPageHierarchyDepth)
+		  AND NOT (p.Id = ANY(ps.path))
+	)`, MaxPageHierarchyDepth)
 )
 
 // ancestorsRecursiveCTE returns the recursive WITH clause that walks the parent chain
@@ -81,26 +86,27 @@ var (
 // depth is 1-indexed at the queried page itself (excluded from ancestor output), accounting
 // for +1, and the second +1 lets the chain emit one row beyond MaxPageHierarchyDepth so
 // GetPageAncestorIDs can distinguish "at limit" from "truncated".
+// path accumulates visited IDs; NOT (p.Id = ANY(a.path)) breaks any ParentId cycle.
 func ancestorsRecursiveCTE(maxDepth int) string {
 	return fmt.Sprintf(`
 	WITH RECURSIVE ancestors AS (
-		SELECT Id, ParentId, 1 AS depth
+		SELECT Id, ParentId, 1 AS depth, ARRAY[Id]::text[] AS path
 		FROM DOCS_Page WHERE Id = $1 AND DeleteAt = 0
 		UNION ALL
-		SELECT p.Id, p.ParentId, a.depth + 1
+		SELECT p.Id, p.ParentId, a.depth + 1, a.path || p.Id
 		FROM DOCS_Page p
 		INNER JOIN ancestors a ON p.Id = a.ParentId
 		WHERE a.ParentId != ''
 		  AND p.DeleteAt = 0 AND a.depth < %d
-	) CYCLE Id SET is_cycle USING cycle_path`, maxDepth)
+		  AND NOT (p.Id = ANY(a.path))
+	)`, maxDepth)
 }
 
 // computeDescendantsCTE generates the recursive CTE that walks the subtree below a page,
 // excluding the root node and returning full page columns plus the node's depth. depth counts
 // edges below the requested page: the root is seeded at 0, so a direct child is depth 1. The
 // recursion runs one level past MaxPageHierarchyDepth so an over-deep subtree row has depth >
-// MaxPageHierarchyDepth, enabling callers to detect truncation. Uses the SQL CYCLE clause
-// (requires PostgreSQL 14+); the plugin does not verify the deployment's Postgres version.
+// MaxPageHierarchyDepth, enabling callers to detect truncation.
 func computeDescendantsCTE() string {
 	// sort_path/create_path/id_path accumulate each ancestor's ordering keys so the ORDER BY
 	// below yields a pre-order depth-first walk with sibling order matching GetPageChildren
@@ -109,7 +115,7 @@ func computeDescendantsCTE() string {
 	SELECT ` + pageColListP + `, d.depth
 	FROM descendants d
 	INNER JOIN DOCS_Page p ON p.Id = d.Id
-	WHERE d.Id != $1 AND NOT d.is_cycle AND p.DeleteAt = 0
+	WHERE d.Id != $1 AND p.DeleteAt = 0
 	ORDER BY d.sort_path, d.create_path, d.id_path`
 }
 
@@ -120,24 +126,23 @@ func computeDescendantIDsCTE() string {
 	SELECT d.Id, d.ParentId, d.depth
 	FROM descendants d
 	INNER JOIN DOCS_Page p ON p.Id = d.Id
-	WHERE d.Id != $1 AND NOT d.is_cycle AND p.DeleteAt = 0
+	WHERE d.Id != $1 AND p.DeleteAt = 0
 	ORDER BY d.sort_path, d.create_path, d.id_path`
 }
 
 // descendantsRecursiveCTE returns the recursive WITH clause that walks the subtree below a page,
 // excluding the root node, bounded one level past MaxPageHierarchyDepth so an over-deep subtree
 // emits a depth > MaxPageHierarchyDepth row instead of being silently truncated. Shared by the
-// full-row and id-only queries. Uses the SQL CYCLE clause (requires PostgreSQL 14+); the plugin
-// does not verify the deployment's Postgres version.
+// full-row and id-only queries.
+// id_path is seeded with the root ID so NOT (p.Id = ANY(d.id_path)) breaks any corrupted
+// ParentId cycle on the first repeated visit.
 func descendantsRecursiveCTE() string {
-	// CYCLE stops recursion on a ParentId loop; NOT is_cycle (in the caller's SELECT) drops the
-	// sentinel row.
 	return fmt.Sprintf(`
 		WITH RECURSIVE descendants AS (
 			SELECT Id, ParentId, 0 AS depth,
 				ARRAY[]::bigint[] AS sort_path,
 				ARRAY[]::bigint[] AS create_path,
-				ARRAY[]::text[] AS id_path
+				ARRAY[Id]::text[] AS id_path
 			FROM DOCS_Page WHERE Id = $1 AND DeleteAt = 0
 			UNION ALL
 			SELECT p.Id, p.ParentId, d.depth + 1,
@@ -147,5 +152,6 @@ func descendantsRecursiveCTE() string {
 			FROM DOCS_Page p
 			INNER JOIN descendants d ON p.ParentId = d.Id
 			WHERE p.DeleteAt = 0 AND d.depth < %d
-		) CYCLE Id SET is_cycle USING cycle_path`, MaxPageHierarchyDepth+1)
+			  AND NOT (p.Id = ANY(d.id_path))
+		)`, MaxPageHierarchyDepth+1)
 }

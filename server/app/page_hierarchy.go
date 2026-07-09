@@ -5,6 +5,7 @@ package app
 
 import (
 	"net/http"
+	"slices"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
@@ -83,80 +84,78 @@ func (s *Service) validateParentExists(where, destParentID, expectedSpaceID stri
 // newIndex nil appends; non-nil places at that index, clamped to bounds. Rejects cycles, cross-space
 // targets, and depth cap breaches. Optimistic-locked on expectedUpdateAt (force overrides).
 // Cycle and depth checks run only when the parent actually changes.
-func (s *Service) MovePage(pageID, spaceID string, newParentID *string, newIndex *int64, expectedUpdateAt int64, force bool) (*model.Page, *mmmodel.AppError) {
+func (s *Service) MovePage(pageID, spaceID string, newParentID *string, newIndex *int64, expectedUpdateAt int64, force bool) (*model.Page, bool, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
-		return nil, mmmodel.NewAppError("MovePage", "app.page.move.invalid_id.app_error", nil, "", http.StatusBadRequest)
+		return nil, false, mmmodel.NewAppError("MovePage", "app.page.move.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	if !mmmodel.IsValidId(spaceID) {
-		return nil, mmmodel.NewAppError("MovePage", "app.page.move.invalid_space_id.app_error", nil, "", http.StatusBadRequest)
+		return nil, false, mmmodel.NewAppError("MovePage", "app.page.move.invalid_space_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	page, getErr := s.GetPageInSpace("MovePage", pageID, spaceID, false)
 	if getErr != nil {
-		return nil, getErr
+		return nil, false, getErr
 	}
 
 	// Validate the destination only when reparenting to a non-root parent that actually changes.
 	if newParentID != nil && *newParentID != "" && *newParentID != page.ParentId {
 		destParentID := *newParentID
 		if destErr := s.validateDestinationParent("MovePage", pageID, destParentID, page.SpaceId); destErr != nil {
-			return nil, destErr
+			return nil, false, destErr
 		}
 		// Cycle guard: the page may not move under one of its own descendants. Walking the
 		// destination's ancestors and rejecting pageID covers the whole descendant set.
 		ancestors, ancErr := s.store.GetPageAncestorIDs(destParentID)
 		if ancErr != nil {
-			return nil, storeAppError("MovePage", ancErr)
+			return nil, false, storeAppError("MovePage", ancErr)
 		}
-		for _, a := range ancestors {
-			if a.Id == pageID {
-				return nil, mmmodel.NewAppError("MovePage", "app.page.move.circular_reference.app_error", nil, "", http.StatusBadRequest)
-			}
+		if slices.Contains(ancestors, pageID) {
+			return nil, false, mmmodel.NewAppError("MovePage", "app.page.move.circular_reference.app_error", nil, "", http.StatusBadRequest)
 		}
 		// Mirrors CreatePage's depth rule: destination is at len(ancestors)+1, moved page at
 		// len(ancestors)+2. The cap also covers the deepest descendant below the moved page.
 		descendants, descErr := s.store.GetPageDescendantIDParents(pageID)
 		if descErr != nil {
-			return nil, storeAppError("MovePage", descErr)
+			return nil, false, storeAppError("MovePage", descErr)
 		}
-		if capErr := checkDepthCap("MovePage", len(ancestors)+2, model.MaxDepthOfPreOrderedPages(descendants, pageID)); capErr != nil {
-			return nil, capErr
+		if capErr := checkDepthCap("MovePage", len(ancestors)+2, model.MaxDepthOfPreOrderedIDParents(descendants, pageID)); capErr != nil {
+			return nil, false, capErr
 		}
 	}
 
-	moved, storeErr := s.store.MovePage(pageID, spaceID, newParentID, newIndex, expectedUpdateAt, force, MaxPageDepth)
+	moved, didMove, storeErr := s.store.MovePage(pageID, spaceID, newParentID, newIndex, expectedUpdateAt, force, MaxPageDepth)
 	if storeErr != nil {
-		return nil, storeAppError("MovePage", storeErr)
+		return nil, false, storeAppError("MovePage", storeErr)
 	}
-	return moved, nil
+	return moved, didMove, nil
 }
 
 // MovePageToSpace moves a page and its subtree to another space in the same team. parentPageID
 // nil/"" places it at the target root. Rejects cross-team moves, wrong-space parents, destination-
 // inside-subtree cycles, and depth cap breaches. Per-page restrictions and redirects are not handled yet.
-func (s *Service) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, parentPageID *string, expectedUpdateAt int64, force bool) (*model.Page, *mmmodel.AppError) {
+func (s *Service) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, parentPageID *string, expectedUpdateAt int64, force bool) (*model.Page, bool, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
-		return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.invalid_id.app_error", nil, "", http.StatusBadRequest)
+		return nil, false, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	if !mmmodel.IsValidId(sourceSpaceID) {
-		return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.invalid_source_space.app_error", nil, "", http.StatusBadRequest)
+		return nil, false, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.invalid_source_space.app_error", nil, "", http.StatusBadRequest)
 	}
 	if !mmmodel.IsValidId(targetSpaceID) {
-		return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.invalid_target_space.app_error", nil, "", http.StatusBadRequest)
+		return nil, false, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.invalid_target_space.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	page, getErr := s.GetPageInSpace("MovePageToSpace", pageID, sourceSpaceID, false)
 	if getErr != nil {
-		return nil, getErr
+		return nil, false, getErr
 	}
 	sameTeam, crossErr := s.sameTeamSpaces(page.SpaceId, targetSpaceID)
 	if crossErr != nil {
 		if crossErr.StatusCode == http.StatusNotFound {
-			return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.target_not_found.app_error", nil, "", http.StatusNotFound).Wrap(crossErr)
+			return nil, false, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.target_not_found.app_error", nil, "", http.StatusNotFound).Wrap(crossErr)
 		}
-		return nil, crossErr
+		return nil, false, crossErr
 	}
 	if !sameTeam {
-		return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.cross_team.app_error", nil, "", http.StatusBadRequest)
+		return nil, false, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.cross_team.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	// Resolve the requested parent: nil and "" both mean the target root (a cross-space move can't
@@ -169,25 +168,25 @@ func (s *Service) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, p
 	// real move falls through to the store. The optimistic-lock check below is enforced manually
 	// because this path doesn't reach the store write.
 	if sourceSpaceID == targetSpaceID && page.ParentId == requestedParent {
-		// Re-fetch rather than reuse the top-of-function read: concurrent UpdatePage could have
-		// bumped UpdateAt since then, making the stale value accept a baseline the store would reject.
-		if !force {
-			fresh, freshErr := s.GetPage(pageID)
-			if freshErr != nil {
-				return nil, freshErr
-			}
-			if fresh.UpdateAt != expectedUpdateAt {
-				return nil, mmmodel.NewAppError("MovePageToSpace", "app.store.conflict.app_error", nil, "", http.StatusConflict)
-			}
-			return fresh, nil
+		if force {
+			return page, false, nil
 		}
-		return page, nil
+		// Re-fetch within the source space: picks up any concurrent UpdatePage that bumped
+		// UpdateAt since the top-of-function read, so the optimistic-lock check is current.
+		fresh, freshErr := s.GetPageInSpace("MovePageToSpace", pageID, sourceSpaceID, false)
+		if freshErr != nil {
+			return nil, false, freshErr
+		}
+		if fresh.UpdateAt != expectedUpdateAt {
+			return nil, false, mmmodel.NewAppError("MovePageToSpace", "app.store.conflict.app_error", nil, "", http.StatusConflict)
+		}
+		return fresh, false, nil
 	}
 
 	// Fetch the moving subtree once; both the cycle guard and the depth cap below need it.
 	descendants, descErr := s.store.GetPageDescendantIDParents(pageID)
 	if descErr != nil {
-		return nil, storeAppError("MovePageToSpace", descErr)
+		return nil, false, storeAppError("MovePageToSpace", descErr)
 	}
 
 	// Depth cap (parity with MovePage): the moved page lands at destinationDepth (1 at the target
@@ -196,30 +195,28 @@ func (s *Service) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, p
 	if parentPageID != nil && *parentPageID != "" {
 		destParentID := *parentPageID
 		if destErr := s.validateDestinationParent("MovePageToSpace", pageID, destParentID, targetSpaceID); destErr != nil {
-			return nil, destErr
+			return nil, false, destErr
 		}
 		// The destination parent may not live inside the moving subtree, or the move would detach
 		// the subtree into a cycle.
-		for _, d := range descendants {
-			if d.Id == destParentID {
-				return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move.circular_reference.app_error", nil, "", http.StatusBadRequest)
-			}
+		if slices.ContainsFunc(descendants, func(d model.PageIDParentRef) bool { return d.Id == destParentID }) {
+			return nil, false, mmmodel.NewAppError("MovePageToSpace", "app.page.move.circular_reference.app_error", nil, "", http.StatusBadRequest)
 		}
 		ancestors, ancErr := s.store.GetPageAncestorIDs(destParentID)
 		if ancErr != nil {
-			return nil, storeAppError("MovePageToSpace", ancErr)
+			return nil, false, storeAppError("MovePageToSpace", ancErr)
 		}
 		destinationDepth = len(ancestors) + 2
 	}
-	if capErr := checkDepthCap("MovePageToSpace", destinationDepth, model.MaxDepthOfPreOrderedPages(descendants, pageID)); capErr != nil {
-		return nil, capErr
+	if capErr := checkDepthCap("MovePageToSpace", destinationDepth, model.MaxDepthOfPreOrderedIDParents(descendants, pageID)); capErr != nil {
+		return nil, false, capErr
 	}
 
 	moved, storeErr := s.store.MovePageToSpace(pageID, sourceSpaceID, targetSpaceID, parentPageID, expectedUpdateAt, force, MaxPageDepth)
 	if storeErr != nil {
-		return nil, storeAppError("MovePageToSpace", storeErr)
+		return nil, false, storeAppError("MovePageToSpace", storeErr)
 	}
-	return moved, nil
+	return moved, true, nil
 }
 
 // checkDepthCap rejects placing a page deeper than MaxPageDepth, or a subtree whose deepest
