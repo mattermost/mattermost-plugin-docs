@@ -10,7 +10,8 @@
     "test": "jest --forceExit --detectOpenHandles --verbose",
     "test:watch": "jest --watch",
     "test-ci": "jest --forceExit --detectOpenHandles --maxWorkers=2",
-    "check-types": "tsc"
+    "check-types": "tsc",
+    "extract": "formatjs extract \"src/**/*.{ts,tsx}\" --ignore \"**/*.d.ts\" --id-interpolation-pattern '[sha512:contenthash:base64:6]' --format simple --out-file i18n/en.json"
   },
   "devDependencies": {
     "@babel/cli": "7.25.6",
@@ -21,6 +22,7 @@
     "@babel/runtime": "7.25.6",
     "@emotion/babel-preset-css-prop": "11.2.0",
     "@emotion/react": "11.9.0",
+    "@formatjs/cli": "4.7.0",
     "@mattermost/client": "11.1.0",
     "@mattermost/eslint-plugin": "1.1.0-0",
     "@mattermost/types": "11.1.0",

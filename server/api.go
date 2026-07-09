@@ -1,3 +1,6 @@
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
+// See LICENSE.txt for license information.
+
 package main
 
 import (
@@ -14,19 +17,18 @@ func (p *Plugin) initRouter() *mux.Router {
 	// Middleware to require that the user is logged in
 	router.Use(p.MattermostAuthorizationRequired)
 
-	apiRouter := router.PathPrefix("/api/v1").Subrouter()
-
-	apiRouter.HandleFunc("/hello", p.HelloWorld).Methods(http.MethodGet)
-
 	return router
 }
 
-// ServeHTTP demonstrates a plugin that handles HTTP requests by greeting the world.
-// The root URL is currently <siteUrl>/plugins/com.mattermost.plugin-starter-template/api/v1/. Replace com.mattermost.plugin-starter-template with the plugin ID.
+// ServeHTTP routes plugin HTTP requests. The root URL is
+// <siteUrl>/plugins/com.mattermost.docs/api/v1/.
 func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Request) {
 	p.router.ServeHTTP(w, r)
 }
 
+// MattermostAuthorizationRequired is a middleware that rejects unauthenticated
+// requests. It reads the Mattermost-User-ID header set by the platform and
+// rejects the request as unauthorized if the header is absent.
 func (p *Plugin) MattermostAuthorizationRequired(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		userID := r.Header.Get("Mattermost-User-ID")
@@ -37,11 +39,4 @@ func (p *Plugin) MattermostAuthorizationRequired(next http.Handler) http.Handler
 
 		next.ServeHTTP(w, r)
 	})
-}
-
-func (p *Plugin) HelloWorld(w http.ResponseWriter, r *http.Request) {
-	if _, err := w.Write([]byte("Hello, world!")); err != nil {
-		p.API.LogError("Failed to write response", "error", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
 }

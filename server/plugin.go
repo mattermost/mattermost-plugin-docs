@@ -1,40 +1,32 @@
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
+// See LICENSE.txt for license information.
+
 package main
 
 import (
-	"net/http"
+	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
-	"github.com/mattermost/mattermost/server/public/pluginapi/cluster"
+	"github.com/mattermost/mattermost/server/public/shared/i18n"
 	"github.com/pkg/errors"
 
-	"github.com/mattermost/mattermost-plugin-starter-template/server/command"
-	"github.com/mattermost/mattermost-plugin-starter-template/server/store/kvstore"
+	"github.com/mattermost/mattermost-plugin-docs/server/app"
+	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
-// Plugin implements the interface expected by the Mattermost server to communicate between the server and plugin processes.
+// Plugin implements the Mattermost plugin interface.
 type Plugin struct {
 	plugin.MattermostPlugin
 
-	// kvstore is the client used to read/write KV records for this plugin.
-	kvstore kvstore.KVStore
+	store   *store.Store
+	service *app.Service
+	client  *pluginapi.Client
+	router  *mux.Router
 
-	// client is the Mattermost server API client.
-	client *pluginapi.Client
-
-	// commandClient is the client used to register and execute slash commands.
-	commandClient command.Command
-
-	// router is the HTTP router for handling API requests.
-	router *mux.Router
-
-	backgroundJob *cluster.Job
-
-	// configurationLock synchronizes access to the configuration.
+	// configurationLock synchronizes access to configuration.
 	configurationLock sync.RWMutex
 
 	// configuration is the active plugin configuration. Consult getConfiguration and
@@ -42,48 +34,57 @@ type Plugin struct {
 	configuration *configuration
 }
 
-// OnActivate is invoked when the plugin is activated. If an error is returned, the plugin will be deactivated.
+// OnActivate initializes the store, runs migrations, and wires up the service and router.
 func (p *Plugin) OnActivate() error {
+	bundlePath, err := p.API.GetBundlePath()
+	if err != nil {
+		return errors.Wrap(err, "failed to get bundle path")
+	}
+	if translErr := i18n.TranslationsPreInit(filepath.Join(bundlePath, "assets", "i18n")); translErr != nil {
+		return errors.Wrap(translErr, "failed to load translation files")
+	}
+
 	p.client = pluginapi.NewClient(p.API, p.Driver)
 
-	p.kvstore = kvstore.NewKVStore(p.client)
+	masterDB, err := p.client.Store.GetMasterDB()
+	if err != nil {
+		return errors.Wrap(err, "failed to get master DB")
+	}
+	s, err := store.New(masterDB, p.client.Store.DriverName())
+	if err != nil {
+		return errors.Wrap(err, "failed to create store")
+	}
+	s.SetLogger(&p.client.Log)
 
-	p.commandClient = command.NewCommandHandler(p.client)
+	// OnDeactivate is not called when OnActivate fails, so close the store
+	// on any error to avoid leaking the DB pool.
+	activated := false
+	defer func() {
+		if !activated {
+			if closeErr := s.Close(); closeErr != nil {
+				p.API.LogError("Failed to close store after failed activation", "err", closeErr)
+			}
+		}
+	}()
+
+	if migErr := s.RunMigrations(); migErr != nil {
+		return errors.Wrap(migErr, "failed to run docs migrations")
+	}
+	p.store = s
+	p.service = app.New(p.store, &p.client.Log)
 
 	p.router = p.initRouter()
 
-	job, err := cluster.Schedule(
-		p.API,
-		"BackgroundJob",
-		cluster.MakeWaitForRoundedInterval(1*time.Hour),
-		p.runJob,
-	)
-	if err != nil {
-		return errors.Wrap(err, "failed to schedule background job")
-	}
-
-	p.backgroundJob = job
-
+	activated = true
 	return nil
 }
 
-// OnDeactivate is invoked when the plugin is deactivated.
+// OnDeactivate closes the store.
 func (p *Plugin) OnDeactivate() error {
-	if p.backgroundJob != nil {
-		if err := p.backgroundJob.Close(); err != nil {
-			p.API.LogError("Failed to close background job", "err", err)
+	if p.store != nil {
+		if err := p.store.Close(); err != nil {
+			p.API.LogError("Failed to close store", "err", err)
 		}
 	}
 	return nil
 }
-
-// This will execute the commands that were registered in the NewCommandHandler function.
-func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*model.CommandResponse, *model.AppError) {
-	response, err := p.commandClient.Handle(args)
-	if err != nil {
-		return nil, model.NewAppError("ExecuteCommand", "plugin.command.execute_command.app_error", nil, err.Error(), http.StatusInternalServerError)
-	}
-	return response, nil
-}
-
-// See https://developers.mattermost.com/extend/plugins/server/reference/
