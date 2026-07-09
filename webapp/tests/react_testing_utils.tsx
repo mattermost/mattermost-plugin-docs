@@ -1,0 +1,108 @@
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
+// See LICENSE.txt for license information.
+
+import {render} from '@testing-library/react';
+import type {RenderOptions, RenderResult} from '@testing-library/react';
+import {createMemoryHistory} from 'history';
+import type {MemoryHistory} from 'history';
+import manifest from 'manifest';
+import React from 'react';
+import {IntlProvider} from 'react-intl';
+import {Provider} from 'react-redux';
+import {Router} from 'react-router-dom';
+import {applyMiddleware, legacy_createStore as createStore} from 'redux';
+import type {Middleware, Store} from 'redux';
+
+import type {GlobalState} from '@mattermost/types/store';
+
+import type {DocsPluginState} from 'store/types';
+
+const EMPTY_DOCS_STATE: DocsPluginState = {
+    spaces: {byId: {}, order: []},
+    pages: {byId: {}, bySpace: {}},
+};
+
+type TestTeam = {id: string; name: string; display_name?: string};
+type TestUser = {id: string; username?: string; first_name?: string; last_name?: string; nickname?: string};
+
+export type TestStateOptions = {
+    docs?: Partial<DocsPluginState>;
+    currentTeam?: TestTeam;
+    currentUser?: TestUser;
+};
+
+// Builds a host-shaped GlobalState with the Docs plugin subtree under
+// `plugins-<id>` (where the plugin's registered reducer mounts) plus the minimal
+// entities the Docs hooks read (current team + current user).
+export function makeTestState({docs, currentTeam, currentUser}: TestStateOptions = {}): GlobalState {
+    const teamId = currentTeam?.id ?? '';
+    const userId = currentUser?.id ?? '';
+
+    return {
+        ['plugins-' + manifest.id]: {...EMPTY_DOCS_STATE, ...docs},
+        entities: {
+            teams: {
+                currentTeamId: teamId,
+                teams: currentTeam ? {[teamId]: currentTeam} : {},
+                myMembers: {},
+            },
+            users: {
+                currentUserId: userId,
+                profiles: currentUser ? {[userId]: currentUser} : {},
+            },
+        },
+    } as unknown as GlobalState;
+}
+
+// Docs actions are thunks (createSpace etc.); a minimal thunk middleware lets
+// them dispatch without pulling in redux-thunk.
+const thunk: Middleware = ({dispatch, getState}) => (next) => (action) =>
+    (typeof action === 'function' ? action(dispatch, getState) : next(action));
+
+// A fixed-state store (identity reducer) is enough for component tests: they
+// assert rendering and callbacks, not reducer transitions. For store-reactivity
+// seams, build a store from the real reducer instead (see store tests).
+export function makeTestStore(options?: TestStateOptions): Store<GlobalState> {
+    const state = makeTestState(options);
+    return createStore((s: GlobalState = state) => s, applyMiddleware(thunk));
+}
+
+type RenderWithContextOptions = RenderOptions & {
+    store?: Store<GlobalState>;
+    state?: TestStateOptions;
+    history?: MemoryHistory;
+    route?: string;
+};
+
+export type RenderWithContextResult = RenderResult & {
+    store: Store<GlobalState>;
+    history: MemoryHistory;
+};
+
+// Wraps `ui` in the providers Docs components expect: Redux store, react-intl
+// (defaultMessage fallbacks; i18n is mocked to {}), and a react-router history.
+export function renderWithContext(ui: React.ReactElement, options: RenderWithContextOptions = {}): RenderWithContextResult {
+    const {store: providedStore, state, history: providedHistory, route, ...renderOptions} = options;
+
+    const store = providedStore ?? makeTestStore(state);
+    const history = providedHistory ?? createMemoryHistory({initialEntries: [route ?? '/']});
+
+    const Wrapper = ({children}: {children: React.ReactNode}) => (
+        <Provider store={store}>
+            <IntlProvider
+                locale='en'
+                messages={{}}
+            >
+                <Router history={history}>
+                    {children}
+                </Router>
+            </IntlProvider>
+        </Provider>
+    );
+
+    return {
+        ...render(ui, {wrapper: Wrapper, ...renderOptions}),
+        store,
+        history,
+    };
+}

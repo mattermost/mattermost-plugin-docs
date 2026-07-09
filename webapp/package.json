@@ -33,6 +33,7 @@
     "@types/jest": "27.4.0",
     "@types/node": "20.17.6",
     "@types/react": "18.2.64",
+    "@types/react-dom": "18.2.0",
     "@types/react-redux": "7.1.22",
     "@types/react-router": "5.1.20",
     "@types/react-router-dom": "5.3.3",
@@ -74,6 +75,7 @@
     "core-js": "3.26.0",
     "mattermost-redux": "11.8.0",
     "react": "18.2.0",
+    "react-dom": "18.2.0",
     "react-hotkeys-hook": "5.3.3",
     "react-intl": "7.1.14",
     "react-redux": "9.2.0",
@@ -88,6 +90,7 @@
       "/non_npm_dependencies/"
     ],
     "clearMocks": true,
+    "testEnvironment": "jsdom",
     "collectCoverageFrom": [
       "src/**/*.{js,jsx}"
     ],
@@ -100,7 +103,9 @@
       "^.+\\.(css|less|scss)$": "identity-obj-proxy",
       "^.*i18n.*\\.(json)$": "<rootDir>/tests/i18n_mock.json",
       "^bundle-loader\\?lazy\\!(.*)$": "$1",
-      "^mattermost-redux\\/(.*)$": "<rootDir>/node_modules/mattermost-redux/lib/$1"
+      "^mattermost-redux\\/(.*)$": "<rootDir>/node_modules/mattermost-redux/lib/$1",
+      "^@mattermost/types/(.*)$": "<rootDir>/node_modules/@mattermost/types/lib/$1",
+      "^@mattermost/shared/(.*)$": "<rootDir>/node_modules/@mattermost/shared/dist/$1/index.main.js"
     },
     "moduleDirectories": [
       "src",
