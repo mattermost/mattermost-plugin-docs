@@ -11,6 +11,8 @@ import {createSpaceFormSchema, slugify} from 'validation/space_schema';
 import {createSpace} from 'store/actions';
 import {getRecentSpaceSummaries, getSpace, getSpaces, isSlugAvailable} from 'store/selectors';
 
+import type {UrlInputHandle} from 'components/form-controls/url_input';
+
 import type {Space, SpaceSummary, SpaceVisibility} from 'types/docs';
 
 export function useSpaces(): Space[] {
@@ -61,6 +63,8 @@ export function useCreateSpace({onCreated}: CreateSpaceOptions = {}) {
     // Stop deriving the slug from the name once the user edits the slug directly.
     const slugEdited = useRef(false);
 
+    const urlInputRef = useRef<UrlInputHandle>(null);
+
     const form = useForm({
         defaultValues: INITIAL_VALUES,
         validators: {onSubmitAsync: formSchema},
@@ -87,7 +91,16 @@ export function useCreateSpace({onCreated}: CreateSpaceOptions = {}) {
         form.setFieldValue('slug', slug);
     }, [form]);
 
+    // Submits, then surfaces a rejected slug (e.g. a taken URL) by focusing the
+    // URL input — otherwise the error lands on the field's read-only preview.
+    const submit = useCallback(async () => {
+        await form.handleSubmit();
+        if ((form.getFieldMeta('slug')?.errors.length ?? 0) > 0) {
+            urlInputRef.current?.focus();
+        }
+    }, [form]);
+
     const baseUrl = useMemo(() => `${window.location.origin}/${teamName}/${DOCS_KEYWORD}`, [teamName]);
 
-    return {form, slugSchema, baseUrl, changeName, changeSlug};
+    return {form, slugSchema, baseUrl, changeName, changeSlug, submit, urlInputRef};
 }

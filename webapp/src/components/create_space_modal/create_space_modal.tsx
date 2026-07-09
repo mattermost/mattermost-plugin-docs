@@ -32,7 +32,7 @@ const DEFAULT_SPACE_EMOJI = '📄';
 const CreateSpaceModal = ({onClose, onCreated}: Props) => {
     const {formatMessage} = useIntl();
 
-    const {form, slugSchema, baseUrl, changeName, changeSlug} = useCreateSpace({
+    const {form, slugSchema, baseUrl, changeName, changeSlug, submit, urlInputRef} = useCreateSpace({
         onCreated: (space) => {
             onCreated?.(space);
             onClose();
@@ -72,7 +72,7 @@ const CreateSpaceModal = ({onClose, onCreated}: Props) => {
                     <PrimaryButton
                         type='button'
                         disabled={!canSubmit || !nameFilled}
-                        onClick={() => form.handleSubmit()}
+                        onClick={submit}
                     >
                         {formatMessage({id: 'docs.createSpace.create', defaultMessage: 'Create'})}
                     </PrimaryButton>
@@ -102,7 +102,7 @@ const CreateSpaceModal = ({onClose, onCreated}: Props) => {
                                 error={firstSpaceValidationError(field.state.meta.errors, formatMessage)}
                                 maxLength={SPACE_NAME_MAX_LENGTH}
                                 autoFocus={true}
-                                onEnter={() => form.handleSubmit()}
+                                onEnter={submit}
                             />
                         )}
                     </form.Field>
@@ -112,6 +112,7 @@ const CreateSpaceModal = ({onClose, onCreated}: Props) => {
                     >
                         {(field) => (
                             <UrlInput
+                                ref={urlInputRef}
                                 id='docs-create-space-url'
                                 baseUrl={baseUrl}
                                 value={field.state.value}
