@@ -11,6 +11,8 @@ import (
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 )
 
+// ensureProps returns a shallow clone of props, or a new empty map when props is nil.
+// Callers own the returned map and may mutate it freely without aliasing the source.
 func ensureProps(props mmmodel.StringInterface) mmmodel.StringInterface {
 	if props == nil {
 		return make(mmmodel.StringInterface)
