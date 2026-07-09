@@ -13,13 +13,14 @@
 //   /{team}/spaces/:spaceId/:pageId         ← page
 //   /{team}/spaces/:spaceId/drafts/:pageId  ← per-user draft
 //
-// registerProduct() mounts at DOCS_BASE_URL. The leading '/:team/' activates
-// core's team-scoped mounting + team-context init (MM-69728); switcherLinkURL
-// stays global (DOCS_SWITCHER_LINK_URL) and core prepends the current team.
+// registerProduct() is called with isTeamScoped: true, so core mounts the
+// product at `/:team${DOCS_BASE_URL}` and initializes team context from the URL
+// (MM-69728). Both DOCS_BASE_URL and DOCS_SWITCHER_LINK_URL are the plain
+// keyword path; core prepends the current team to the switcher link.
 
 export const DOCS_KEYWORD = 'spaces';
 
-export const DOCS_BASE_URL = `/:team/${DOCS_KEYWORD}`;
+export const DOCS_BASE_URL = `/${DOCS_KEYWORD}`;
 export const DOCS_SWITCHER_LINK_URL = `/${DOCS_KEYWORD}`;
 
 // A space/page id in the URL is the platform's 26-char opaque id (the canonical,

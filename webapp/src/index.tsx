@@ -49,6 +49,7 @@ export default class Plugin {
             headerCentreComponent: DocsHeaderCentre,
             headerRightComponent: DocsSettingsButton,
             showTeamSidebar: true,
+            isTeamScoped: true,
         });
     }
 }
