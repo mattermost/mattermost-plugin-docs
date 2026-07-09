@@ -44,9 +44,7 @@ func (s *Service) CreateSpace(space *model.Space, userID string) (*model.Space, 
 	if userID != "" && !mmmodel.IsValidId(userID) {
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	// DeleteSpace can complete without a client — it removes the space row regardless and
-	// only archives the backing channel as a best-effort side effect. CreateSpace cannot:
-	// the backing channel must exist before the space row is saved, so a nil client is a
+	// The backing channel must exist before the space row is saved; a nil client is a
 	// hard precondition failure, not a recoverable skip.
 	if s.client == nil {
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.no_client.app_error", nil, "", http.StatusInternalServerError)
@@ -79,7 +77,7 @@ func (s *Service) CreateSpace(space *model.Space, userID string) (*model.Space, 
 	space.Description = mmmodel.SanitizeUnicode(space.Description)
 	space.CreatorId = userID
 
-	displayName := truncateToRunes(space.Title, mmmodel.ChannelDisplayNameMaxRunes)
+	displayName, _ := mmmodel.LimitRunes(space.Title, mmmodel.ChannelDisplayNameMaxRunes)
 
 	backingChannel := &mmmodel.Channel{
 		TeamId:      space.TeamId,
@@ -142,16 +140,15 @@ func (s *Service) GetSpaceWithDeleted(spaceID string) (*model.Space, *mmmodel.Ap
 // returns the fetched space on success so callers can avoid a redundant read. When
 // includeDeleted is true the space row is fetched regardless of its DeleteAt state, which is
 // required for operations that run against a soft-deleted space (e.g. restore). Returns
-// (nil, nil) for system callers (userID == "") and when the pluginapi client is not wired.
-// Non-members and non-existent spaces both yield 403 to prevent callers from probing
-// space existence via the error code.
+// (nil, nil) for system callers (userID == ""). Non-members and non-existent spaces both yield
+// 403 to prevent callers from probing space existence via the error code.
 func (s *Service) CheckSpaceMembership(spaceID, userID string, includeDeleted bool) (*model.Space, *mmmodel.AppError) {
 	if userID == "" {
 		return nil, nil
 	}
 	if s.client == nil {
-		s.log.Warn("CheckSpaceMembership: pluginapi client not wired; treating as system caller", "space_id", spaceID, "user_id", userID)
-		return nil, nil
+		s.log.Warn("CheckSpaceMembership: pluginapi client not wired for authenticated request; denying access", "space_id", spaceID, "user_id", userID)
+		return nil, mmmodel.NewAppError("CheckSpaceMembership", "app.space.access.client_not_wired.app_error", nil, "", http.StatusInternalServerError)
 	}
 	if !mmmodel.IsValidId(userID) {
 		return nil, mmmodel.NewAppError("CheckSpaceMembership", "app.space.access.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
@@ -198,10 +195,9 @@ func (s *Service) GetSpaceForUser(spaceID, userID string) (*model.Space, *mmmode
 	return s.GetSpace(spaceID)
 }
 
-// GetSpacesForTeam returns paginated live spaces for a team. perPage <= 0 defaults to
-// PerPageDefault; larger values are capped at PerPageMaximum. A non-empty userID is verified to be
+// GetSpacesForTeam returns paginated live spaces for a team. A non-empty userID is verified to be
 // a team member and the result is filtered to spaces whose backing channel the caller belongs to
-// (skipped for system callers with userID == "" or when the client is not wired).
+// (skipped for system callers with userID == "").
 func (s *Service) GetSpacesForTeam(teamID, userID string, page, perPage int) ([]*model.Space, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(teamID) {
 		return nil, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.invalid_team_id.app_error", nil, "", http.StatusBadRequest)
@@ -210,7 +206,11 @@ func (s *Service) GetSpacesForTeam(teamID, userID string, page, perPage int) ([]
 		return nil, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	offset, limit := paginationOffsetLimit(page, perPage)
-	if userID != "" && s.client != nil {
+	if userID != "" && s.client == nil {
+		s.log.Warn("GetSpacesForTeam: pluginapi client not wired for authenticated request; denying access", "team_id", teamID, "user_id", userID)
+		return nil, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.client_not_wired.app_error", nil, "", http.StatusInternalServerError)
+	}
+	if userID != "" {
 		if _, memberErr := s.client.Team.GetMember(teamID, userID); memberErr != nil {
 			if errors.Is(memberErr, pluginapi.ErrNotFound) {
 				return nil, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.not_team_member.app_error", nil, "", http.StatusForbidden).Wrap(memberErr)
@@ -291,14 +291,14 @@ func (s *Service) syncSpaceChannelMetadata(space *model.Space) error {
 	if channel == nil {
 		return nil
 	}
-	channel.DisplayName = truncateToRunes(space.Title, mmmodel.ChannelDisplayNameMaxRunes)
+	channel.DisplayName, _ = mmmodel.LimitRunes(space.Title, mmmodel.ChannelDisplayNameMaxRunes)
 	channel.Header = space.Description
 	return s.client.Channel.Update(channel)
 }
 
 // DeleteSpace soft-deletes a space and its pages (reversible via RestoreSpace), then archives the
 // backing channel best-effort; RestoreSpace un-archives it on restore. The channel archive runs
-// under the plugin's own elevated pluginapi identity.
+// with elevated plugin permissions, independently of the requesting user.
 func (s *Service) DeleteSpace(spaceID string) *mmmodel.AppError {
 	if !mmmodel.IsValidId(spaceID) {
 		return mmmodel.NewAppError("DeleteSpace", "app.space.delete.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -331,7 +331,7 @@ func (s *Service) DeleteSpace(spaceID string) *mmmodel.AppError {
 // so the two are not symmetric. The space row itself is left restored; the caller can retry the
 // restore (or un-archive the channel directly) rather than the operation silently reporting success.
 //
-// The channel unarchive runs under the plugin's own elevated pluginapi identity.
+// The channel unarchive runs with elevated plugin permissions, independently of the requesting user.
 func (s *Service) RestoreSpace(spaceID string) (*model.Space, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(spaceID) {
 		return nil, mmmodel.NewAppError("RestoreSpace", "app.space.restore.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -408,8 +408,7 @@ func (s *Service) restoreSpaceChannel(space *model.Space) *mmmodel.AppError {
 	return nil
 }
 
-// GetSpacePages returns paginated live pages for a space. perPage <= 0 defaults to
-// PerPageDefault; larger values are capped at PerPageMaximum.
+// GetSpacePages returns paginated live pages for a space.
 func (s *Service) GetSpacePages(spaceID string, page, perPage int) ([]*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(spaceID) {
 		return nil, mmmodel.NewAppError("GetSpacePages", "app.space.get_pages.invalid_space_id.app_error", nil, "", http.StatusBadRequest)

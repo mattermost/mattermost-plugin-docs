@@ -13,7 +13,6 @@ import (
 )
 
 // GetPageChildren returns direct live children of a page, scoped to spaceID.
-// perPage <= 0 defaults to PerPageDefault; larger values cap at PerPageMaximum.
 func (s *Service) GetPageChildren(pageID, spaceID string, page, perPage int) ([]*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("GetPageChildren", "app.page.get_children.invalid_id.app_error", nil, "", http.StatusBadRequest)

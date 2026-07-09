@@ -314,9 +314,8 @@ type ErrLimitExceeded struct {
 	Resource string
 	Limit    int
 	// Reason optionally carries the app-facing AppError.Id this specific limit violation should
-	// map to (e.g. one of checkDepthCap's two depth-exceeded keys), so a limit re-checked under
-	// lock produces the same error key as the caller's pre-check for the same condition.
-	// Empty means storeAppError falls back to app.store.too_large.app_error.
+	// map to, so a limit re-checked under lock can return the same error key as any earlier
+	// pre-check for the same condition. Empty means storeAppError falls back to app.store.too_large.app_error.
 	Reason string
 }
 

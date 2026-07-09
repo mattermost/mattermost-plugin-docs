@@ -35,7 +35,10 @@ var (
 	// columns, for callers (MovePage/MovePageToSpace's cycle and depth-cap pre-checks) that don't
 	// need page content — avoids pulling Body/SearchText/Props for a subtree just to compute a depth.
 	pageDescendantIDsCTE = computeDescendantIDsCTE()
-	pageAncestorIDsCTE   = ancestorsRecursiveCTE(MaxPageHierarchyDepth+2) + `
+	// +2: depth is 1-indexed at the queried page itself (excluded from output, hence +1), and the
+	// extra +1 lets the chain emit one row beyond MaxPageHierarchyDepth so GetPageAncestorIDs can
+	// distinguish "at limit" from "truncated at limit".
+	pageAncestorIDsCTE = ancestorsRecursiveCTE(MaxPageHierarchyDepth+2) + `
 	SELECT a.Id
 	FROM ancestors a
 	INNER JOIN DOCS_Page p ON p.Id = a.Id
@@ -81,11 +84,7 @@ var (
 )
 
 // ancestorsRecursiveCTE returns the recursive WITH clause that walks the parent chain
-// to the root while depth < maxDepth. Shared by the id-only and count-only queries.
-// The id-only caller (GetPageAncestorIDs) passes maxDepth = MaxPageHierarchyDepth+2:
-// depth is 1-indexed at the queried page itself (excluded from ancestor output), accounting
-// for +1, and the second +1 lets the chain emit one row beyond MaxPageHierarchyDepth so
-// GetPageAncestorIDs can distinguish "at limit" from "truncated".
+// to the root while depth < maxDepth. Callers append their own SELECT.
 // path accumulates visited IDs; NOT (p.Id = ANY(a.path)) breaks any ParentId cycle.
 func ancestorsRecursiveCTE(maxDepth int) string {
 	return fmt.Sprintf(`

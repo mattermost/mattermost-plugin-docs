@@ -204,8 +204,8 @@ func (s *Store) CreatePageSubtree(pages []*model.Page, maxDepth int) (_ []*model
 		}
 		// Computed from the slice's own ParentId links rather than the DB: the pages are not yet
 		// inserted, so pageSubtreeMaxDepth (which queries live rows) cannot see them. Checked in two
-		// steps — mirroring the app layer's checkDepthCap — so the Reason carried back matches the
-		// id checkDepthCap itself would have given for the same condition, not a generic fallback.
+		// steps so the Reason carried back matches the app pre-check's error key for the same
+		// condition, not a generic fallback.
 		if destDepth+1 > maxDepth {
 			return nil, &ErrLimitExceeded{Resource: "Page subtree for page_id=" + root.Id + " (depth)", Limit: maxDepth, Reason: ReasonMaxDepthExceeded}
 		}
@@ -288,9 +288,8 @@ func (s *Store) GetPage(pageID string, includeDeleted bool) (*model.Page, error)
 }
 
 // GetPageForDuplicate fetches the source page, scoped to sourceSpaceID, plus its
-// live descendants when includeChildren is set — all under one transaction. The root is locked
-// against a concurrent whole-subtree move (MovePageToSpace). REPEATABLE READ isolation ensures
-// the descendant reads form a consistent snapshot with the root read.
+// live descendants when includeChildren is set, as a consistent snapshot — concurrent subtree
+// moves cannot interleave with the descendant reads.
 func (s *Store) GetPageForDuplicate(pageID, sourceSpaceID string, includeChildren bool) (_ *model.Page, _ []*model.Page, err error) {
 	if pageID == "" {
 		return nil, nil, &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
@@ -337,12 +336,11 @@ func (s *Store) GetPageForDuplicate(pageID, sourceSpaceID string, includeChildre
 	return &page, descendants, nil
 }
 
-// UpdatePage applies patch to a live page under a row lock. baseEditAt is the EditAt the
-// caller last saw. When force is false it compare-and-swaps on EditAt, returning ErrConflict
-// if a concurrent writer has advanced it. When force is true the CAS is skipped, but the
-// patch is still merged into the freshly-locked row, so fields the patch leaves untouched
-// keep any concurrent edit rather than being clobbered by a stale snapshot. lastModifiedBy
-// records the editor.
+// UpdatePage applies patch to a live page. baseEditAt is the EditAt the caller last saw.
+// When force is false it compare-and-swaps on EditAt, returning ErrConflict if a concurrent
+// writer has advanced it. When force is true the CAS is skipped, but the patch is still merged
+// into the current row, so fields the patch leaves untouched keep any concurrent edit rather
+// than being clobbered by a stale snapshot. lastModifiedBy records the editor.
 func (s *Store) UpdatePage(pageID, spaceID string, patch *model.PagePatch, baseEditAt int64, force bool, lastModifiedBy string) (_ *model.Page, err error) {
 	if pageID == "" {
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "Id", Value: pageID}
@@ -462,8 +460,7 @@ func (s *Store) MovePage(pageID, spaceID string, newParentID *string, newIndex *
 	// every other structural mutation in the space for that duration. The group is capped at
 	// MaxPageSiblingsLimit (5000) and renumbered in one statement (not a per-row loop), so this is a
 	// bounded, accepted contention window rather than an unbounded stall; narrowing it further would
-	// require replacing this row lock with a different concurrency-control mechanism, which is a
-	// larger redesign than this fix.
+	// require replacing this row lock with a different concurrency-control mechanism.
 	if lockErr := s.lockLiveSpace(tx, spaceID); lockErr != nil {
 		return nil, false, lockErr
 	}
@@ -508,8 +505,8 @@ func (s *Store) MovePage(pageID, spaceID string, newParentID *string, newIndex *
 			return nil, false, &ErrCircularReference{PageID: pageID, DestParentID: destParentID}
 		}
 		// A non-root destination parent must be a live page in the same space. Cycle and depth-cap
-		// are re-checked under the held lock: the app layer's pre-check ran on an unlocked read and
-		// can be stale if a concurrent same-space move deepened the destination's ancestry.
+		// are re-checked under the held lock: a concurrent same-space move could have deepened the
+		// destination's ancestry between the initial check and now.
 		if err = s.validateMoveDestination(tx, destParentID, page.SpaceId, pageID, maxDepth); err != nil {
 			return nil, false, err
 		}
@@ -1226,8 +1223,7 @@ func (s *Store) DeletePage(pageID, spaceID, userID string) (err error) {
 // (matching Confluence). The page returns under its original parent, or falls back to the
 // space root if that parent is gone or restoring under it would exceed maxDepth — so un-deleting
 // never fails for a deleted or now-too-deep parent. Only a soft-deleted original page
-// (OriginalId == "", DeleteAt > 0) in a live space is restorable; the space is locked FOR UPDATE,
-// and the parent (when non-root) is also locked, in space→parent order.
+// (OriginalId == "", DeleteAt > 0) in a live space is restorable.
 func (s *Store) RestorePage(pageID, spaceID, userID string, maxDepth int) (err error) {
 	if pageID == "" {
 		return &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
@@ -1386,9 +1382,8 @@ func (s *Store) GetPageDescendants(pageID string) ([]*model.Page, error) {
 	return s.fetchDescendantRows(s.db, pageID)
 }
 
-// fetchDescendantRows runs the descendants CTE and its cap checks against e (the plain db handle or
-// a transaction, e.g. GetPageForDuplicate's locked snapshot), shared so both callers stay in sync on
-// the query and the ErrLimitExceeded bounds.
+// fetchDescendantRows runs the descendants CTE and its cap checks against e (a db handle or
+// transaction). Returns ErrLimitExceeded when the size or depth cap is reached.
 func (s *Store) fetchDescendantRows(e sqlx.ExtContext, pageID string) ([]*model.Page, error) {
 	query := pageDescendantsCTE +
 		fmt.Sprintf(" LIMIT %d", MaxPageDescendantsLimit+1)

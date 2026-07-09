@@ -80,13 +80,6 @@ func validateSpaceMutableFields(where, description, icon string) *mmmodel.AppErr
 	return nil
 }
 
-// truncateToRunes caps s to at most maxRunes runes (multi-byte safe), returning it unchanged when
-// already within the cap.
-func truncateToRunes(s string, maxRunes int) string {
-	s, _ = mmmodel.LimitRunes(s, maxRunes)
-	return s
-}
-
 // sameTeamSpaces reports whether sourceSpaceID and destSpaceID belong to the same team.
 // Returns bool (not AppError) on a cross-team result so each caller supplies its own message key.
 func (s *Service) sameTeamSpaces(sourceSpaceID, destSpaceID string) (bool, *mmmodel.AppError) {
@@ -108,14 +101,14 @@ func normalizeTitle(title string) string {
 // normalizeAndValidatePagePatch normalizes a page update patch's Title (trimmed, empty rejected),
 // with the result written back into the patch; Body and SearchText are left as-is. A nil field
 // means "leave unchanged". It defers patch-shape validation to PagePatch.IsValid.
-func normalizeAndValidatePagePatch(patch *model.PagePatch) *mmmodel.AppError {
+func normalizeAndValidatePagePatch(where string, patch *model.PagePatch) *mmmodel.AppError {
 	// The patch.Title != nil guard below protects the title dereference; IsValid only
 	// rejects a nil or all-nil patch and can pass with Title == nil.
 	if validErr := patch.IsValid(); validErr != nil {
 		return validErr
 	}
 	if patch.Title != nil {
-		normalized, titleErr := validateTitle("UpdatePage", *patch.Title, model.PageTitleMaxRunes)
+		normalized, titleErr := validateTitle(where, *patch.Title, model.PageTitleMaxRunes)
 		if titleErr != nil {
 			return titleErr
 		}
