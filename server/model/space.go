@@ -73,8 +73,8 @@ func (s *Space) PreUpdate() {
 	}
 }
 
-// AuditFields returns Space's fields safe to include in an audit log.
-func (s *Space) AuditFields() map[string]any {
+// Auditable returns Space's fields safe to include in an audit log.
+func (s *Space) Auditable() map[string]any {
 	return map[string]any{
 		"id":          s.Id,
 		"channel_id":  s.ChannelId,
