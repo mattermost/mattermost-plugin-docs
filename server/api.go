@@ -216,4 +216,3 @@ func perPageParam(r *http.Request) int {
 	}
 	return app.ClampPerPage(n)
 }
-
