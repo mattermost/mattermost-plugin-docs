@@ -314,5 +314,9 @@
   {
     "id": "model.space.is_valid.update_at.app_error",
     "translation": "Invalid space update time."
+  },
+  {
+    "id": "model.space.patch.nothing_to_update.app_error",
+    "translation": "The update contains no changes."
   }
 ]

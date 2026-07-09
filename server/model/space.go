@@ -4,6 +4,7 @@
 package model
 
 import (
+	"maps"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -38,6 +39,46 @@ type Space struct {
 	SortOrder   int64                   `json:"sort_order"`
 }
 
+// SpacePatch carries a partial update to a space's mutable fields. A nil field is left unchanged; a
+// non-nil field (including an empty string) overwrites the current value, so a field can be cleared.
+type SpacePatch struct {
+	Title       *string                  `json:"title"`
+	Description *string                  `json:"description"`
+	Icon        *string                  `json:"icon"`
+	Props       *mmmodel.StringInterface `json:"props,omitempty"`
+}
+
+// IsValid rejects a nil patch and an all-nil-fields patch — both no-ops that would otherwise bump
+// UpdateAt and consume the optimistic-lock baseline without a real change. Enforced here, not just
+// in the service, so callers that bypass the service still uphold it — mirroring PagePatch.IsValid.
+func (p *SpacePatch) IsValid() *mmmodel.AppError {
+	if p == nil || (p.Title == nil && p.Description == nil && p.Icon == nil && p.Props == nil) {
+		return mmmodel.NewAppError("SpacePatch.IsValid", "model.space.patch.nothing_to_update.app_error", nil, "", http.StatusBadRequest)
+	}
+	return nil
+}
+
+// Patch applies the non-nil fields of patch to the space. Normalization (title trim, etc.) happens
+// in PreUpdate. Callers must call patch.IsValid() first — a nil patch is a no-op here rather than a
+// panic, but produces no changes, silently defeating the caller's intent.
+func (s *Space) Patch(patch *SpacePatch) {
+	if patch == nil {
+		return
+	}
+	if patch.Title != nil {
+		s.Title = *patch.Title
+	}
+	if patch.Description != nil {
+		s.Description = *patch.Description
+	}
+	if patch.Icon != nil {
+		s.Icon = *patch.Icon
+	}
+	if patch.Props != nil {
+		s.Props = maps.Clone(*patch.Props)
+	}
+}
+
 // PreSave sanitizes Space and defaults its Id-independent fields before insert.
 func (s *Space) PreSave() {
 	if s.Id == "" {
@@ -46,6 +87,7 @@ func (s *Space) PreSave() {
 
 	s.Title = strings.TrimSpace(mmmodel.SanitizeUnicode(s.Title))
 	s.Description = mmmodel.SanitizeUnicode(s.Description)
+	s.Icon = mmmodel.SanitizeUnicode(s.Icon)
 
 	if s.Props == nil {
 		s.Props = make(mmmodel.StringInterface)
@@ -67,6 +109,7 @@ func (s *Space) PreUpdate() {
 	s.UpdateAt = mmmodel.GetMillis()
 	s.Title = strings.TrimSpace(mmmodel.SanitizeUnicode(s.Title))
 	s.Description = mmmodel.SanitizeUnicode(s.Description)
+	s.Icon = mmmodel.SanitizeUnicode(s.Icon)
 
 	if s.Props == nil {
 		s.Props = make(mmmodel.StringInterface)
