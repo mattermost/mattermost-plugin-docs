@@ -29,18 +29,11 @@ const (
 	PageSearchTextMaxBytes = 2 * 1024 * 1024
 )
 
-// Auditable is implemented by every model type that exposes a safe, redacted
-// representation for audit logs. The returned map must exclude sensitive fields
-// (e.g. Body, SearchText) and must not share references with the receiver.
-type Auditable interface {
-	AuditFields() map[string]any
-}
-
-// Compile-time interface-satisfaction checks.
+// Compile-time checks that plugin model types satisfy the upstream audit interface.
 var (
-	_ Auditable = (*Page)(nil)
-	_ Auditable = (*Space)(nil)
-	_ Auditable = (*Draft)(nil)
+	_ mmmodel.Auditable = (*Page)(nil)
+	_ mmmodel.Auditable = (*Space)(nil)
+	_ mmmodel.Auditable = (*Draft)(nil)
 )
 
 // Page is stored in the DOCS_Page table. Live pages have (DeleteAt=0, OriginalId="");
@@ -262,8 +255,8 @@ func (p *Page) IsValid() *mmmodel.AppError {
 	return nil
 }
 
-// AuditFields returns Page's fields safe to include in an audit log, excluding Body and SearchText.
-func (p *Page) AuditFields() map[string]any {
+// Auditable returns Page's fields safe to include in an audit log, excluding Body and SearchText.
+func (p *Page) Auditable() map[string]any {
 	return map[string]any{
 		"id":               p.Id,
 		"space_id":         p.SpaceId,

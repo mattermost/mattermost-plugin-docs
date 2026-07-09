@@ -55,8 +55,8 @@ func (d *Draft) PreSave() {
 	d.UpdateAt = now
 }
 
-// AuditFields returns Draft's fields safe to include in an audit log, excluding Body.
-func (d *Draft) AuditFields() map[string]any {
+// Auditable returns Draft's fields safe to include in an audit log, excluding Body.
+func (d *Draft) Auditable() map[string]any {
 	return map[string]any{
 		"user_id":   d.UserId,
 		"space_id":  d.SpaceId,

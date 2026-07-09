@@ -4,6 +4,7 @@
 package model
 
 import (
+	"maps"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -41,16 +42,17 @@ type Space struct {
 // SpacePatch carries a partial update to a space's mutable fields. A nil field is left unchanged; a
 // non-nil field (including an empty string) overwrites the current value, so a field can be cleared.
 type SpacePatch struct {
-	Title       *string `json:"title"`
-	Description *string `json:"description"`
-	Icon        *string `json:"icon"`
+	Title       *string                  `json:"title"`
+	Description *string                  `json:"description"`
+	Icon        *string                  `json:"icon"`
+	Props       *mmmodel.StringInterface `json:"props,omitempty"`
 }
 
 // IsValid rejects a nil patch and an all-nil-fields patch — both no-ops that would otherwise bump
 // UpdateAt and consume the optimistic-lock baseline without a real change. Enforced here, not just
 // in the service, so callers that bypass the service still uphold it — mirroring PagePatch.IsValid.
 func (p *SpacePatch) IsValid() *mmmodel.AppError {
-	if p == nil || (p.Title == nil && p.Description == nil && p.Icon == nil) {
+	if p == nil || (p.Title == nil && p.Description == nil && p.Icon == nil && p.Props == nil) {
 		return mmmodel.NewAppError("SpacePatch.IsValid", "model.space.patch.nothing_to_update.app_error", nil, "", http.StatusBadRequest)
 	}
 	return nil
@@ -71,6 +73,9 @@ func (s *Space) Patch(patch *SpacePatch) {
 	}
 	if patch.Icon != nil {
 		s.Icon = *patch.Icon
+	}
+	if patch.Props != nil {
+		s.Props = maps.Clone(*patch.Props)
 	}
 }
 
@@ -111,8 +116,8 @@ func (s *Space) PreUpdate() {
 	}
 }
 
-// AuditFields returns Space's fields safe to include in an audit log.
-func (s *Space) AuditFields() map[string]any {
+// Auditable returns Space's fields safe to include in an audit log.
+func (s *Space) Auditable() map[string]any {
 	return map[string]any{
 		"id":          s.Id,
 		"channel_id":  s.ChannelId,
