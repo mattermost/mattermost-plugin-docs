@@ -9,14 +9,15 @@ import type {UrlInputHandle} from './url_input';
 
 import {renderWithContext} from '../../../tests/react_testing_utils';
 
+const EDIT_LABEL = 'Space URL';
+
 const baseProps = {
     id: 'url',
+    ariaLabel: EDIT_LABEL,
     baseUrl: 'https://example.com/myteam/spaces',
     value: 'my-space',
     onChange: jest.fn(),
 };
-
-const EDIT_LABEL = 'Space URL';
 
 describe('UrlInput', () => {
     it('shows a read-only preview with an Edit affordance by default', () => {

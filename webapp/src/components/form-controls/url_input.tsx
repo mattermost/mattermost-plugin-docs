@@ -9,6 +9,10 @@ import styles from './url_input.module.scss';
 
 type Props = {
     id: string;
+
+    // Accessible name for the editable input (the caller's domain term, e.g.
+    // "Space URL"), keeping this control generic.
+    ariaLabel: string;
     baseUrl: string;
     value: string;
     onChange: (value: string) => void;
@@ -24,7 +28,7 @@ export type UrlInputHandle = {
     focus: () => void;
 };
 
-const UrlInput = forwardRef<UrlInputHandle, Props>(({id, baseUrl, value, onChange, onBlur, error}, ref) => {
+const UrlInput = forwardRef<UrlInputHandle, Props>(({id, ariaLabel, baseUrl, value, onChange, onBlur, error}, ref) => {
     const {formatMessage} = useIntl();
     const [editing, setEditing] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
@@ -58,7 +62,7 @@ const UrlInput = forwardRef<UrlInputHandle, Props>(({id, baseUrl, value, onChang
                         id={id}
                         className={styles.input}
                         value={value}
-                        aria-label={formatMessage({id: 'docs.form.url.editLabel', defaultMessage: 'Space URL'})}
+                        aria-label={ariaLabel}
                         aria-invalid={Boolean(error)}
                         aria-describedby={errorId}
                         autoFocus={true}

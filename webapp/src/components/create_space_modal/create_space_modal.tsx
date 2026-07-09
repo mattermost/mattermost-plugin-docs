@@ -114,6 +114,7 @@ const CreateSpaceModal = ({onClose, onCreated}: Props) => {
                             <UrlInput
                                 ref={urlInputRef}
                                 id='docs-create-space-url'
+                                ariaLabel={formatMessage({id: 'docs.createSpace.urlAriaLabel', defaultMessage: 'Space URL'})}
                                 baseUrl={baseUrl}
                                 value={field.state.value}
                                 onChange={changeSlug}
