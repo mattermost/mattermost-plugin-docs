@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {hostOpenModalAction} from 'webapp_globals';
+import {hostCanOpenModal, hostOpenModalAction} from 'webapp_globals';
 
 import type {DocsThunkAction} from 'types/store';
 
@@ -13,7 +13,13 @@ export const HostModalIds = {
     LEAVE_TEAM: 'leave_team',
 } as const;
 
-export const openHostModal = (modalId: string, dialogProps?: Record<string, unknown>): DocsThunkAction => (dispatch) => {
+type HostModalId = typeof HostModalIds[keyof typeof HostModalIds];
+
+export const openHostModal = (modalId: HostModalId, dialogProps?: Record<string, unknown>): DocsThunkAction => (dispatch) => {
+    if (!hostCanOpenModal(modalId)) {
+        return;
+    }
+
     const action = hostOpenModalAction(modalId, dialogProps);
     if (action) {
         dispatch(action);
