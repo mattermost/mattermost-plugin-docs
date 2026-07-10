@@ -1,5 +1,9 @@
 [
   {
+    "id": "api.docs_not_enabled.app_error",
+    "translation": "Docs is not enabled."
+  },
+  {
     "id": "api.invalid_json.app_error",
     "translation": "The request body could not be parsed."
   },
@@ -256,6 +260,10 @@
     "translation": "Failed to verify space membership."
   },
   {
+    "id": "app.space.access.client_not_wired.app_error",
+    "translation": "Unable to verify space membership due to a server configuration error."
+  },
+  {
     "id": "app.space.access.forbidden.app_error",
     "translation": "You do not have permission to access this space."
   },
@@ -310,6 +318,10 @@
   {
     "id": "app.space.get_for_team.channel_list_failed.app_error",
     "translation": "Unable to retrieve channels for the team."
+  },
+  {
+    "id": "app.space.get_for_team.client_not_wired.app_error",
+    "translation": "Unable to list spaces due to a server configuration error."
   },
   {
     "id": "app.space.get_for_team.invalid_team_id.app_error",

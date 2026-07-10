@@ -97,7 +97,7 @@ func (p *Plugin) requireSpaceMembership(w http.ResponseWriter, spaceID, userID s
 func (p *Plugin) EnableDocsRequired(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !p.API.GetConfig().FeatureFlags.EnableDocs {
-			http.Error(w, "Docs is not enabled", http.StatusNotImplemented)
+			writeAppError(w, mmmodel.NewAppError("EnableDocsRequired", "api.docs_not_enabled.app_error", nil, "", http.StatusNotImplemented))
 			return
 		}
 

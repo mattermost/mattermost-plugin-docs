@@ -241,8 +241,8 @@ func TestCreatePageSubtree_StoreUnderLockDepthGuard(t *testing.T) {
 // a timing-dependent test.
 
 // TestMovePage_StoreReindexClampSingleSibling positions a page within a one-element sibling group
-// with an out-of-range index; the reindex must clamp to 0 without underflow and keep the page as
-// the group's sole, correctly-ordered child.
+// with an index past the end; the reindex must clamp it down to the group's only slot and keep the
+// page as its sole, correctly-ordered child.
 func TestMovePage_StoreReindexClampSingleSibling(t *testing.T) {
 	s := openTestDB(t)
 	channelID, parent := seedSpaceAndPage(t, s)

@@ -38,6 +38,11 @@ func openTestServiceWithAPI(t *testing.T, mockAPI *plugintest.API) *testHarness 
 	// stub. TestServiceCreateSpace_NotTeamMember overrides this to exercise the rejection path.
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil).Maybe()
+	// plugintest flattens LogWarn's variadic pairs into the mock's argument list, so a stub only
+	// matches calls with exactly that many arguments. Cover both shapes the service emits: message
+	// plus three key/value pairs (DeleteSpace, restoreSpaceChannel) and plus four
+	// (archiveOrphanChannel).
+	mockAPI.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	mockAPI.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	client := pluginapi.NewClient(mockAPI, nil)
 	h.svc = app.New(h.store, &client.Log, client)
@@ -233,6 +238,9 @@ func TestServiceRestoreSpace_ChannelRestoreFailurePropagates(t *testing.T) {
 	mockAPI.On("DeleteChannel", backingChannelID).Return(nil)
 	mockAPI.On("RestoreChannel", backingChannelID).
 		Return(&mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
+	// The channel is still archived, so the un-archive genuinely failed and must propagate.
+	mockAPI.On("GetSpaceBackingChannel", backingChannelID).
+		Return(&mmmodel.Channel{Id: backingChannelID, Type: mmmodel.ChannelTypeSpace, DeleteAt: 100}, nil)
 
 	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Round Trip"}, userID)
 	require.Nil(t, appErr)
@@ -244,6 +252,44 @@ func TestServiceRestoreSpace_ChannelRestoreFailurePropagates(t *testing.T) {
 	mockAPI.AssertCalled(t, "RestoreChannel", backingChannelID)
 
 	// The space row itself is left restored even though the channel-restore call failed.
+	got, appErr := h.svc.GetSpace(space.Id)
+	require.Nil(t, appErr)
+	require.Zero(t, got.DeleteAt)
+}
+
+// TestServiceRestoreSpace_ChannelNeverArchived verifies a space whose backing channel failed to
+// archive during DeleteSpace can still be restored. DeleteSpace archives best-effort and swallows
+// the failure, so the space row is soft-deleted while the channel stays live; core then rejects
+// un-archiving that live channel. Restore must treat "already live" as nothing to do rather than
+// leaving the space permanently un-restorable.
+func TestServiceRestoreSpace_ChannelNeverArchived(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	backingChannelID := mmmodel.NewId()
+
+	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
+		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
+	mockAPI.On("AddChannelMember", backingChannelID, userID).Return(&mmmodel.ChannelMember{}, nil)
+	// The archive fails transiently: the space row is soft-deleted, the channel stays live.
+	mockAPI.On("DeleteChannel", backingChannelID).
+		Return(&mmmodel.AppError{Message: "transient", StatusCode: http.StatusInternalServerError})
+	// Core rejects un-archiving a channel that was never archived.
+	mockAPI.On("RestoreChannel", backingChannelID).
+		Return(&mmmodel.AppError{Message: "channel is not archived", StatusCode: http.StatusBadRequest})
+	mockAPI.On("GetSpaceBackingChannel", backingChannelID).
+		Return(&mmmodel.Channel{Id: backingChannelID, Type: mmmodel.ChannelTypeSpace, DeleteAt: 0}, nil)
+
+	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Never Archived"}, userID)
+	require.Nil(t, appErr)
+	require.Nil(t, h.svc.DeleteSpace(space.Id))
+
+	restored, appErr := h.svc.RestoreSpace(space.Id)
+	require.Nil(t, appErr, "RestoreSpace must succeed when the backing channel was never archived")
+	require.Zero(t, restored.DeleteAt)
+
 	got, appErr := h.svc.GetSpace(space.Id)
 	require.Nil(t, appErr)
 	require.Zero(t, got.DeleteAt)

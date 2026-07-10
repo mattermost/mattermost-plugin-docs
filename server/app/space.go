@@ -146,6 +146,10 @@ func (s *Service) CheckSpaceMembership(spaceID, userID string, includeDeleted bo
 	if userID == "" {
 		return nil, nil
 	}
+	if s.client == nil {
+		s.log.Warn("CheckSpaceMembership: pluginapi client not wired for authenticated request; denying access", "space_id", spaceID, "user_id", userID)
+		return nil, mmmodel.NewAppError("CheckSpaceMembership", "app.space.access.client_not_wired.app_error", nil, "", http.StatusInternalServerError)
+	}
 	if !mmmodel.IsValidId(userID) {
 		return nil, mmmodel.NewAppError("CheckSpaceMembership", "app.space.access.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -182,7 +186,7 @@ func (s *Service) CheckSpaceMembership(spaceID, userID string, includeDeleted bo
 
 // GetSpaceForUser returns the space for an authenticated or system caller. For authenticated
 // callers it verifies channel membership via CheckSpaceMembership and returns the fetched space;
-// for system callers (empty userID or no client) it falls back to a direct GetSpace read.
+// for system callers (empty userID) it falls back to a direct GetSpace read.
 func (s *Service) GetSpaceForUser(spaceID, userID string) (*model.Space, *mmmodel.AppError) {
 	space, appErr := s.CheckSpaceMembership(spaceID, userID, false)
 	if appErr != nil || space != nil {
@@ -202,6 +206,10 @@ func (s *Service) GetSpacesForTeam(teamID, userID string, page, perPage int) ([]
 		return nil, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	offset, limit := paginationOffsetLimit(page, perPage)
+	if userID != "" && s.client == nil {
+		s.log.Warn("GetSpacesForTeam: pluginapi client not wired for authenticated request; denying access", "team_id", teamID, "user_id", userID)
+		return nil, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.client_not_wired.app_error", nil, "", http.StatusInternalServerError)
+	}
 	if userID != "" {
 		if _, memberErr := s.client.Team.GetMember(teamID, userID); memberErr != nil {
 			if errors.Is(memberErr, pluginapi.ErrNotFound) {
@@ -376,11 +384,11 @@ func (s *Service) retryStuckChannelRestore(spaceID string) (space *model.Space, 
 	if s.client == nil || got.ChannelId == "" {
 		return nil, nil, false
 	}
-	channel, getChanErr := s.client.Channel.GetSpaceBackingChannel(got.ChannelId)
+	archived, getChanErr := s.backingChannelArchived(got.ChannelId)
 	if getChanErr != nil {
 		return nil, mmmodel.NewAppError("RestoreSpace", "app.space.restore.channel_restore_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(getChanErr), true
 	}
-	if channel == nil || channel.DeleteAt == 0 {
+	if !archived {
 		return nil, nil, false
 	}
 	if appErr := s.restoreSpaceChannel(got); appErr != nil {
@@ -389,12 +397,34 @@ func (s *Service) retryStuckChannelRestore(spaceID string) (space *model.Space, 
 	return got, nil, true
 }
 
-// restoreSpaceChannel un-archives space's backing channel. No-op when client is nil or ChannelId is empty.
+// backingChannelArchived reports whether channelID resolves to a channel that is currently
+// archived. A channel that no longer exists reports false: there is nothing left to un-archive.
+func (s *Service) backingChannelArchived(channelID string) (bool, error) {
+	channel, err := s.client.Channel.GetSpaceBackingChannel(channelID)
+	if err != nil {
+		return false, err
+	}
+	return channel != nil && channel.DeleteAt != 0, nil
+}
+
+// restoreSpaceChannel un-archives space's backing channel. No-op when client is nil or ChannelId is
+// empty. A channel that is already live is treated as success rather than an error: DeleteSpace
+// archives the channel best-effort, so a soft-deleted space can legitimately own a channel that was
+// never archived, and core rejects un-archiving a live channel with a 400. Failing here would leave
+// such a space permanently un-restorable — the row restores, the channel call fails, and a retry is
+// then rejected because the row is already live.
 func (s *Service) restoreSpaceChannel(space *model.Space) *mmmodel.AppError {
 	if s.client == nil || space.ChannelId == "" {
 		return nil
 	}
 	if err := s.client.Channel.Restore(space.ChannelId); err != nil {
+		// Distinguish "nothing to un-archive" from a genuine failure. Only a live (or absent)
+		// channel is benign; if it is still archived the un-archive really did fail.
+		archived, checkErr := s.backingChannelArchived(space.ChannelId)
+		if checkErr == nil && !archived {
+			s.log.Warn("RestoreSpace: backing channel was already live; treating un-archive as a no-op", "channel_id", space.ChannelId, "space_id", space.Id, "err", err)
+			return nil
+		}
 		return mmmodel.NewAppError("RestoreSpace", "app.space.restore.channel_restore_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
 	return nil
