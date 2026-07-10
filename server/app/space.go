@@ -146,10 +146,6 @@ func (s *Service) CheckSpaceMembership(spaceID, userID string, includeDeleted bo
 	if userID == "" {
 		return nil, nil
 	}
-	if s.client == nil {
-		s.log.Warn("CheckSpaceMembership: pluginapi client not wired for authenticated request; denying access", "space_id", spaceID, "user_id", userID)
-		return nil, mmmodel.NewAppError("CheckSpaceMembership", "app.space.access.client_not_wired.app_error", nil, "", http.StatusInternalServerError)
-	}
 	if !mmmodel.IsValidId(userID) {
 		return nil, mmmodel.NewAppError("CheckSpaceMembership", "app.space.access.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -206,10 +202,6 @@ func (s *Service) GetSpacesForTeam(teamID, userID string, page, perPage int) ([]
 		return nil, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	offset, limit := paginationOffsetLimit(page, perPage)
-	if userID != "" && s.client == nil {
-		s.log.Warn("GetSpacesForTeam: pluginapi client not wired for authenticated request; denying access", "team_id", teamID, "user_id", userID)
-		return nil, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.client_not_wired.app_error", nil, "", http.StatusInternalServerError)
-	}
 	if userID != "" {
 		if _, memberErr := s.client.Team.GetMember(teamID, userID); memberErr != nil {
 			if errors.Is(memberErr, pluginapi.ErrNotFound) {

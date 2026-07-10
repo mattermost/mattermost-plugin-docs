@@ -51,15 +51,22 @@ func openTestPlugin(t *testing.T, mockAPI *plugintest.API) *apiTestHarness {
 
 	var client *pluginapi.Client
 	if mockAPI == nil {
-		// Minimal stub: only satisfies the EnableDocsRequired middleware. No pluginapi client so
-		// the nil-client guard in DeleteSpace/RestoreSpace continues to skip the channel side-effect.
+		// Minimal stub: satisfies the EnableDocsRequired middleware and grants any user membership
+		// to any channel/team so space-scoped tests pass membership checks without a real server.
+		// Channel side-effects (archive/restore) are no-ops so store-only tests don't need to
+		// set up specific channel expectations.
 		mockAPI = &plugintest.API{}
 		mockAPI.On("GetConfig").Return(&mmmodel.Config{
 			FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true},
 		}).Maybe()
-	} else {
-		client = pluginapi.NewClient(mockAPI, nil)
+		mockAPI.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+		mockAPI.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
+		mockAPI.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
+		mockAPI.On("DeleteChannel", mock.Anything).Return(nil).Maybe()
+		mockAPI.On("RestoreChannel", mock.Anything).Return(nil).Maybe()
+		mockAPI.On("GetSpaceBackingChannel", mock.Anything).Return((*mmmodel.Channel)(nil), nil).Maybe()
 	}
+	client = pluginapi.NewClient(mockAPI, nil)
 	t.Cleanup(func() { mockAPI.AssertExpectations(t) })
 
 	p := &Plugin{store: s, service: app.New(s, nil, client)}
@@ -274,7 +281,8 @@ func TestHandler_UpdateSpace(t *testing.T) {
 	require.Equal(t, http.StatusConflict, rec.Code)
 }
 
-// TestHandler_DeleteSpace deletes a space; a follow-up read 404s.
+// TestHandler_DeleteSpace deletes a space; a follow-up read returns 403 (CheckSpaceMembership
+// masks deleted-space existence to prevent probing via the status code).
 func TestHandler_DeleteSpace(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
@@ -284,7 +292,7 @@ func TestHandler_DeleteSpace(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	rec = h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id, user, nil)
-	require.Equal(t, http.StatusNotFound, rec.Code)
+	require.Equal(t, http.StatusForbidden, rec.Code)
 }
 
 // TestHandler_RestoreSpace deletes then restores a space; a second restore of an already-live
@@ -335,18 +343,28 @@ func TestHandler_GetSpacePages(t *testing.T) {
 	require.False(t, resp.HasMore)
 }
 
-// TestHandler_GetTeamSpaces lists the spaces on a team.
+// TestHandler_GetTeamSpaces lists the spaces on a team visible to the caller.
 func TestHandler_GetTeamSpaces(t *testing.T) {
-	h := openTestPlugin(t, nil)
-	space := seedSpace(t, h.store, mmmodel.NewId())
+	channelID := mmmodel.NewId()
+	teamID := mmmodel.NewId()
+	caller := mmmodel.NewId()
 
-	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+space.TeamId+"/spaces", mmmodel.NewId(), nil)
+	mockAPI := &plugintest.API{}
+	mockAPI.On("GetConfig").Return(&mmmodel.Config{FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true}}).Maybe()
+	mockAPI.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	mockAPI.On("GetTeamMember", teamID, caller).Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("GetChannelsForTeamForUser", teamID, caller, false).Return([]*mmmodel.Channel{{Id: channelID}}, nil)
+	h := openTestPlugin(t, mockAPI)
+
+	seedSpaceInTeam(t, h.store, teamID, channelID)
+
+	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 	var resp struct {
 		Items []*model.Space `json:"items"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.GreaterOrEqual(t, len(resp.Items), 1)
+	require.Len(t, resp.Items, 1)
 }
 
 // TestHandler_UpdatePage updates a page and verifies the optimistic-lock 409 on a stale baseline.

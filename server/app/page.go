@@ -88,7 +88,12 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID 
 
 	created, storeErr := s.store.CreatePage(page, MaxPageDepth)
 	if storeErr != nil {
-		if store.IsErrNotFound(storeErr) {
+		var notFound *store.ErrNotFound
+		if errors.As(storeErr, &notFound) {
+			if notFound.EntityName == "Page" {
+				// The parent was deleted between the pre-check above and the transactional lock.
+				return nil, mmmodel.NewAppError("CreatePage", "app.page.create.invalid_parent.app_error", nil, "", http.StatusBadRequest).Wrap(storeErr)
+			}
 			// The space was soft-deleted between the check above and the insert.
 			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.space_not_found.app_error", nil, "", http.StatusNotFound).Wrap(storeErr)
 		}
