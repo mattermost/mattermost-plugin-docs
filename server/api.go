@@ -179,8 +179,14 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, v an
 		writeAppError(w, mmmodel.NewAppError(where, "api.invalid_json.app_error", nil, "", http.StatusBadRequest))
 		return false
 	}
-	// Reject trailing data after the first JSON value (e.g. two concatenated objects).
+	// Reject trailing data after the first JSON value (e.g. two concatenated objects). Reading the
+	// trailing bytes can itself trip the body cap, which is a too-large body, not a malformed one.
 	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeAppError(w, mmmodel.NewAppError(where, "api.request_too_large.app_error", map[string]any{"MaxBytes": maxBytes}, "", http.StatusRequestEntityTooLarge))
+			return false
+		}
 		writeAppError(w, mmmodel.NewAppError(where, "api.invalid_json.app_error", nil, "", http.StatusBadRequest))
 		return false
 	}

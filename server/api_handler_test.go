@@ -1001,6 +1001,37 @@ func TestHandler_RequestTooLarge(t *testing.T) {
 	require.Equal(t, "api.request_too_large.app_error", appErr.Id)
 }
 
+// TestDecodeJSONBody_TrailingDataTooLarge covers a body whose first JSON value decodes within the
+// cap but whose trailing bytes push the read past it: the size check must win over the
+// trailing-data check, so the caller sees 413 rather than 400.
+func TestDecodeJSONBody_TrailingDataTooLarge(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"a":1}{"b":2}`))
+	rec := httptest.NewRecorder()
+
+	var v map[string]any
+	require.False(t, decodeJSONBody(rec, req, 8, &v, "testWhere", false))
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+
+	var appErr mmmodel.AppError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+	require.Equal(t, "api.request_too_large.app_error", appErr.Id)
+}
+
+// TestDecodeJSONBody_TrailingDataWithinCap pins the complementary case: trailing data that fits
+// under the cap is malformed input, not an oversized body, so it stays a 400.
+func TestDecodeJSONBody_TrailingDataWithinCap(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"a":1}{"b":2}`))
+	rec := httptest.NewRecorder()
+
+	var v map[string]any
+	require.False(t, decodeJSONBody(rec, req, 1024, &v, "testWhere", false))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var appErr mmmodel.AppError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+	require.Equal(t, "api.invalid_json.app_error", appErr.Id)
+}
+
 // TestHandler_MovePage_InvalidParentID verifies that a malformed parent_id in the move request
 // body is rejected before any store call is made.
 func TestHandler_MovePage_InvalidParentID(t *testing.T) {

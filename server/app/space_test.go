@@ -257,6 +257,48 @@ func TestServiceRestoreSpace_ChannelRestoreFailurePropagates(t *testing.T) {
 	require.Zero(t, got.DeleteAt)
 }
 
+// TestServiceRestoreSpace_RetriesStuckChannelRestore verifies that a space left in the partial state
+// created by TestServiceRestoreSpace_ChannelRestoreFailurePropagates — row live, backing channel
+// still archived — is not permanently stuck. The second RestoreSpace sees the row is already live,
+// finds the channel still archived, and finishes the un-archive instead of rejecting the caller with
+// not_deleted.
+func TestServiceRestoreSpace_RetriesStuckChannelRestore(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	backingChannelID := mmmodel.NewId()
+
+	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
+		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
+	mockAPI.On("AddChannelMember", backingChannelID, userID).Return(&mmmodel.ChannelMember{}, nil)
+	mockAPI.On("DeleteChannel", backingChannelID).Return(nil)
+	// The first un-archive fails, stranding the restore half-done; the retry succeeds.
+	mockAPI.On("RestoreChannel", backingChannelID).
+		Return(&mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError}).Once()
+	mockAPI.On("RestoreChannel", backingChannelID).Return(nil).Once()
+	// The channel stays archived throughout, so both the failure check and the retry see it as
+	// genuinely needing an un-archive.
+	mockAPI.On("GetSpaceBackingChannel", backingChannelID).
+		Return(&mmmodel.Channel{Id: backingChannelID, Type: mmmodel.ChannelTypeSpace, DeleteAt: 100}, nil)
+
+	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Stuck Restore"}, userID)
+	require.Nil(t, appErr)
+	require.Nil(t, h.svc.DeleteSpace(space.Id))
+
+	_, appErr = h.svc.RestoreSpace(space.Id)
+	require.NotNil(t, appErr, "the first RestoreSpace must fail on the channel un-archive")
+	require.Equal(t, "app.space.restore.channel_restore_failed.app_error", appErr.Id)
+
+	restored, appErr := h.svc.RestoreSpace(space.Id)
+	require.Nil(t, appErr, "the retry must finish the channel un-archive, not reject with not_deleted")
+	require.Equal(t, space.Id, restored.Id)
+	require.Zero(t, restored.DeleteAt)
+
+	mockAPI.AssertNumberOfCalls(t, "RestoreChannel", 2)
+}
+
 // TestServiceRestoreSpace_ChannelNeverArchived verifies a space whose backing channel failed to
 // archive during DeleteSpace can still be restored. DeleteSpace archives best-effort and swallows
 // the failure, so the space row is soft-deleted while the channel stays live; core then rejects

@@ -12,10 +12,11 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-// maxPageBodyBytes caps the raw request body for page create/update. The model enforces byte-length
-// caps on Body and SearchText; JSON encoding adds overhead (envelope, field names, escaping), so we
-// allow 2× the combined model limit to avoid rejecting valid payloads before model validation.
-const maxPageBodyBytes = 2 * (model.PageBodyMaxBytes + model.PageSearchTextMaxBytes) // 8 MiB
+// maxPageBodyBytes caps the raw request body for page create/update, sized with headroom over the
+// model's Body and SearchText limits so ordinary payloads reach model validation. A body whose JSON
+// encoding is dominated by escape sequences can still exceed this and be rejected with 413 rather
+// than the model's 400; that is an intentional transport-level guard.
+const maxPageBodyBytes = 8 << 20 // 8 MiB
 
 // WebSocket event names published after structural page-tree mutations so clients on all cluster
 // nodes can refresh the affected tree without a full reload.

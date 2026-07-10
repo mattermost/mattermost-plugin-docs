@@ -56,7 +56,9 @@ func (p *Plugin) OnActivate() error {
 	}
 
 	if migErr := s.RunMigrations(); migErr != nil {
-		_ = s.Close()
+		if closeErr := s.Close(); closeErr != nil {
+			p.API.LogError("Failed to close store after failed activation", "err", closeErr)
+		}
 		return errors.Wrap(migErr, "failed to run docs migrations")
 	}
 	p.store = s
@@ -72,7 +74,9 @@ func (p *Plugin) OnActivate() error {
 // so niling them here would race an in-flight request against deactivation.
 func (p *Plugin) OnDeactivate() error {
 	if p.store != nil {
-		_ = p.store.Close()
+		if err := p.store.Close(); err != nil {
+			p.API.LogError("Failed to close store", "err", err)
+		}
 	}
 	return nil
 }
