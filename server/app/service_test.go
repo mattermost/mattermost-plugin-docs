@@ -16,12 +16,21 @@ import (
 	"github.com/stretchr/testify/require"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/app"
 	"github.com/mattermost/mattermost-plugin-docs/server/internal/testutil"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
+
+// requireStoreDeletePage soft-deletes a page directly at the store layer, discarding the
+// returned channel id.
+func requireStoreDeletePage(t *testing.T, s *store.Store, pageID, spaceID, userID string) {
+	t.Helper()
+	_, err := s.DeletePage(pageID, spaceID, userID)
+	require.NoError(t, err)
+}
 
 // --- harness ---
 
@@ -40,12 +49,7 @@ type testHarness struct {
 func openTestService(t *testing.T) *testHarness {
 	t.Helper()
 
-	db := testutil.OpenTestDB(t)
-
-	s, err := store.New(db, "postgres", nil)
-	require.NoError(t, err, "create store")
-	t.Cleanup(func() { _ = s.Close() })
-	require.NoError(t, s.RunMigrations(), "run migrations")
+	s, db := testutil.OpenTestStore(t)
 
 	// nil pluginapi client: these tests seed data directly through the store and
 	// never exercise the client, so no mock is needed.
@@ -58,34 +62,12 @@ func openTestService(t *testing.T) *testHarness {
 // higher-level Create methods need channel/space state that may not exist).
 func mustCreateSpace(t *testing.T, s *store.Store, channelID string) *model.Space {
 	t.Helper()
-	w := &model.Space{
-		ChannelId: channelID,
-		TeamId:    mmmodel.NewId(),
-		CreatorId: mmmodel.NewId(),
-		Title:     "Test Space",
-	}
-	saved, err := s.CreateSpace(w)
-	require.NoError(t, err)
-	return saved
+	return seedSpaceForTeam(t, s, channelID, mmmodel.NewId())
 }
 
 func mustCreatePage(t *testing.T, s *store.Store, spaceID, channelID, userID, parentID string) *model.Page {
 	t.Helper()
-	p := &model.Page{
-		SpaceId:   spaceID,
-		ChannelId: channelID,
-		UserId:    userID,
-		ParentId:  parentID,
-		Type:      model.PageTypePage,
-		Title:     "Test Page",
-		Body:      `{"type":"doc","content":[]}`,
-	}
-	// This fixture helper isn't exercising the depth cap (some callers build chains deeper than
-	// MaxPageDepth to test store.MaxPageHierarchyDepth instead), so bypass it with a value well
-	// past the store's own read-side limit.
-	created, err := s.CreatePage(p, store.MaxPageHierarchyDepth+10)
-	require.NoError(t, err)
-	return created
+	return testutil.MustCreatePage(t, s, spaceID, channelID, userID, parentID)
 }
 
 func TestServiceGetSpace(t *testing.T) {
@@ -127,14 +109,14 @@ func TestServiceCreatePageParentDifferentSpace(t *testing.T) {
 	_, err := h.svc.CreatePage(space.Id, rogueParent.Id, "Child", "", "", userID)
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	require.Contains(t, err.Id, "parent_different_space")
+	require.Equal(t, "app.page.invalid_parent.app_error", err.Id)
 }
 
 // TestServiceUpdatePageNotFound verifies the 404 path: a well-formed but absent page ID.
 func TestServiceUpdatePageNotFound(t *testing.T) {
 	h := openTestService(t)
 
-	_, err := h.svc.UpdatePage(mmmodel.NewId(), mmmodel.NewId(), &model.PagePatch{Title: mmmodel.NewPointer("Title")}, 0, false, mmmodel.NewId())
+	_, err := h.svc.UpdatePage(mmmodel.NewId(), mmmodel.NewId(), &model.PagePatch{Title: mmmodel.NewPointer("Title")}, new(int64(0)), false, mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusNotFound, err.StatusCode)
 }
@@ -142,7 +124,7 @@ func TestServiceUpdatePageNotFound(t *testing.T) {
 func TestServiceUpdatePageInvalidID(t *testing.T) {
 	h := openTestService(t)
 
-	_, err := h.svc.UpdatePage("not-an-id", mmmodel.NewId(), &model.PagePatch{Title: mmmodel.NewPointer("Title")}, 0, false, mmmodel.NewId())
+	_, err := h.svc.UpdatePage("not-an-id", mmmodel.NewId(), &model.PagePatch{Title: mmmodel.NewPointer("Title")}, new(int64(0)), false, mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 }
@@ -153,7 +135,7 @@ func TestServiceDeleteSpace(t *testing.T) {
 	channelID := mmmodel.NewId()
 	saved := mustCreateSpace(t, h.store, channelID)
 
-	require.Nil(t, h.svc.DeleteSpace(saved.Id))
+	require.Nil(t, h.svc.DeleteSpace(saved))
 
 	_, err := h.svc.GetSpace(saved.Id)
 	require.NotNil(t, err)
@@ -191,14 +173,14 @@ func TestServiceUpdatePage(t *testing.T) {
 	t.Run("first update succeeds", func(t *testing.T) {
 		// First update — baseEditAt matches (0 since freshly created)
 		updated, err := h.svc.UpdatePage(
-			created.Id, created.SpaceId, &model.PagePatch{Title: mmmodel.NewPointer("Locked Title"), Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`), SearchText: mmmodel.NewPointer("")}, created.EditAt, false, userID,
+			created.Id, created.SpaceId, &model.PagePatch{Title: mmmodel.NewPointer("Locked Title"), Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`), SearchText: mmmodel.NewPointer("")}, new(created.EditAt), false, userID,
 		)
 		require.Nil(t, err)
 		require.Equal(t, "Locked Title", updated.Title)
 
 		// Second update with stale baseEditAt — must conflict
 		_, err2 := h.svc.UpdatePage(
-			updated.Id, updated.SpaceId, &model.PagePatch{Title: mmmodel.NewPointer("Conflict Title"), Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`), SearchText: mmmodel.NewPointer("")}, created.EditAt, false, userID,
+			updated.Id, updated.SpaceId, &model.PagePatch{Title: mmmodel.NewPointer("Conflict Title"), Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`), SearchText: mmmodel.NewPointer("")}, new(created.EditAt), false, userID,
 		)
 		require.NotNil(t, err2)
 		require.Equal(t, 409, err2.StatusCode)
@@ -217,7 +199,7 @@ func TestServiceUpdatePageSearchTextWithoutBody(t *testing.T) {
 	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
 	_, err := h.svc.UpdatePage(
-		created.Id, created.SpaceId, &model.PagePatch{SearchText: mmmodel.NewPointer("some text")}, created.EditAt, false, userID,
+		created.Id, created.SpaceId, &model.PagePatch{SearchText: mmmodel.NewPointer("some text")}, new(created.EditAt), false, userID,
 	)
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
@@ -236,7 +218,7 @@ func TestServiceUpdatePageBodyWithoutSearchText(t *testing.T) {
 	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
 	_, err := h.svc.UpdatePage(
-		created.Id, created.SpaceId, &model.PagePatch{Body: mmmodel.NewPointer("new body")}, created.EditAt, false, userID,
+		created.Id, created.SpaceId, &model.PagePatch{Body: mmmodel.NewPointer("new body")}, new(created.EditAt), false, userID,
 	)
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
@@ -257,7 +239,7 @@ func TestServiceUpdatePageSearchTextWithBodyCleared(t *testing.T) {
 	_, err := h.svc.UpdatePage(
 		created.Id, created.SpaceId,
 		&model.PagePatch{Body: mmmodel.NewPointer(""), SearchText: mmmodel.NewPointer("some text")},
-		created.EditAt, false, userID,
+		new(created.EditAt), false, userID,
 	)
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
@@ -278,7 +260,7 @@ func TestServiceUpdatePageClearSearchTextAlone(t *testing.T) {
 	_, err := h.svc.UpdatePage(
 		created.Id, created.SpaceId,
 		&model.PagePatch{SearchText: mmmodel.NewPointer("")},
-		created.EditAt, false, userID,
+		new(created.EditAt), false, userID,
 	)
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
@@ -297,14 +279,14 @@ func TestServiceUpdatePageForce(t *testing.T) {
 	// EditAt would stay at created.EditAt and the force path below would pass
 	// trivially (nothing to override), proving nothing.
 	first, firstErr := h.svc.UpdatePage(
-		created.Id, created.SpaceId, &model.PagePatch{Title: mmmodel.NewPointer("First"), Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`), SearchText: mmmodel.NewPointer("")}, created.EditAt, false, userID,
+		created.Id, created.SpaceId, &model.PagePatch{Title: mmmodel.NewPointer("First"), Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`), SearchText: mmmodel.NewPointer("")}, new(created.EditAt), false, userID,
 	)
 	require.Nil(t, firstErr, "first update must succeed to establish a stale baseEditAt")
 	require.Greater(t, first.EditAt, created.EditAt, "EditAt must advance after the first update")
 
 	// Force update with the now-stale baseEditAt must still succeed.
 	forced, err := h.svc.UpdatePage(
-		created.Id, created.SpaceId, &model.PagePatch{Title: mmmodel.NewPointer("Forced"), Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`), SearchText: mmmodel.NewPointer("")}, created.EditAt, true, userID,
+		created.Id, created.SpaceId, &model.PagePatch{Title: mmmodel.NewPointer("Forced"), Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`), SearchText: mmmodel.NewPointer("")}, new(created.EditAt), true, userID,
 	)
 	require.Nil(t, err)
 	require.Equal(t, "Forced", forced.Title)
@@ -321,7 +303,7 @@ func TestServiceGetPageInvalidID(t *testing.T) {
 func TestServiceDeleteSpaceInvalidID(t *testing.T) {
 	h := openTestService(t)
 
-	err := h.svc.DeleteSpace("not-an-id")
+	err := h.svc.DeleteSpace(nil)
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 }
@@ -334,7 +316,7 @@ func TestServiceUpdatePageInvalidUserID(t *testing.T) {
 	created := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 	t.Run("UpdatePage rejects malformed userID", func(t *testing.T) {
-		_, err := h.svc.UpdatePage(created.Id, created.SpaceId, &model.PagePatch{Title: mmmodel.NewPointer("Title")}, created.EditAt, false, "not-an-id")
+		_, err := h.svc.UpdatePage(created.Id, created.SpaceId, &model.PagePatch{Title: mmmodel.NewPointer("Title")}, new(created.EditAt), false, "not-an-id")
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	})
@@ -349,7 +331,7 @@ func TestServiceGetPageChildren(t *testing.T) {
 	parent := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 	child := mustCreatePage(t, h.store, space.Id, channelID, userID, parent.Id)
 
-	children, err := h.svc.GetPageChildren(parent.Id, space.Id, 0, 0)
+	children, _, err := h.svc.GetPageChildren(parent.Id, space.Id, 0, 0)
 	require.Nil(t, err)
 	require.Len(t, children, 1)
 	require.Equal(t, child.Id, children[0].Id)
@@ -365,7 +347,7 @@ func TestServiceGetSpacePages(t *testing.T) {
 		mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 	}
 
-	pages, err := h.svc.GetSpacePages(space.Id, 0, 0)
+	pages, _, err := h.svc.GetSpacePages(space, 0, 0)
 	require.Nil(t, err)
 	require.Len(t, pages, 3)
 
@@ -373,40 +355,43 @@ func TestServiceGetSpacePages(t *testing.T) {
 		// Soft-delete the first space (which cascades its 3 pages to soft-deleted),
 		// then create a second live space on the SAME channel. GetSpacePages for the
 		// new space must not leak the old space's pages.
-		require.Nil(t, h.svc.DeleteSpace(space.Id))
+		require.Nil(t, h.svc.DeleteSpace(space))
 
 		space2 := mustCreateSpace(t, h.store, channelID)
 		mustCreatePage(t, h.store, space2.Id, channelID, userID, "")
 
-		pages2, err := h.svc.GetSpacePages(space2.Id, 0, 0)
+		pages2, _, err := h.svc.GetSpacePages(space2, 0, 0)
 		require.Nil(t, err)
 		require.Len(t, pages2, 1, "new space must only see its own page, not the prior space's pages on the reused channel")
 		require.Equal(t, space2.Id, pages2[0].SpaceId)
 	})
 }
 
-// TestServiceGetSpacePagesInvalidID verifies that GetSpacePages with a malformed space ID
+// TestServiceGetSpacePagesInvalidID verifies that GetSpacePages with a nil space
 // returns 400 with the expected error key.
 func TestServiceGetSpacePagesInvalidID(t *testing.T) {
 	h := openTestService(t)
 
-	_, err := h.svc.GetSpacePages("not-a-valid-id", 0, 0)
+	_, _, err := h.svc.GetSpacePages(nil, 0, 0)
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	require.Equal(t, "app.space.get_pages.invalid_space_id.app_error", err.Id)
 }
 
 func TestServiceGetTeamSpaces(t *testing.T) {
-	h := openTestService(t)
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
 
 	teamID := mmmodel.NewId()
+	userID := mmmodel.NewId()
 	for range 2 {
 		sp := &model.Space{ChannelId: mmmodel.NewId(), TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "Test Space"}
 		_, err := h.store.CreateSpace(sp)
 		require.NoError(t, err)
+		testutil.MustAddChannelMember(t, h.db, sp.ChannelId, userID)
 	}
 
-	spaces, err := h.svc.GetSpacesForTeam(teamID, "", 0, 0)
+	spaces, _, err := h.svc.GetSpacesForTeam(teamID, userID, 0, 0)
 	require.Nil(t, err)
 	require.Len(t, spaces, 2)
 }
@@ -414,7 +399,7 @@ func TestServiceGetTeamSpaces(t *testing.T) {
 // TestServiceGetTeamSpacesInvalidID verifies a malformed team id is rejected with 400.
 func TestServiceGetTeamSpacesInvalidID(t *testing.T) {
 	h := openTestService(t)
-	_, err := h.svc.GetSpacesForTeam("not-a-valid-id", "", 0, 0)
+	_, _, err := h.svc.GetSpacesForTeam("not-a-valid-id", mmmodel.NewId(), 0, 0)
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	require.Equal(t, "app.space.get_for_team.invalid_team_id.app_error", err.Id)
@@ -538,7 +523,7 @@ func TestServiceUpdatePageNothingToUpdate(t *testing.T) {
 	space := mustCreateSpace(t, h.store, channelID)
 	created := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
-	_, err := h.svc.UpdatePage(created.Id, created.SpaceId, &model.PagePatch{}, created.EditAt, false, mmmodel.NewId())
+	_, err := h.svc.UpdatePage(created.Id, created.SpaceId, &model.PagePatch{}, new(created.EditAt), false, mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	require.Equal(t, "model.page.patch.nothing_to_update.app_error", err.Id)
@@ -554,7 +539,7 @@ func TestServiceUpdatePageOversizedBody(t *testing.T) {
 	created := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 	oversized := strings.Repeat("x", model.PageBodyMaxBytes+1)
-	_, err := h.svc.UpdatePage(created.Id, created.SpaceId, &model.PagePatch{Body: mmmodel.NewPointer(oversized), SearchText: mmmodel.NewPointer("")}, created.EditAt, false, mmmodel.NewId())
+	_, err := h.svc.UpdatePage(created.Id, created.SpaceId, &model.PagePatch{Body: mmmodel.NewPointer(oversized), SearchText: mmmodel.NewPointer("")}, new(created.EditAt), false, mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	require.Equal(t, "model.page.is_valid.body.app_error", err.Id)
@@ -570,7 +555,7 @@ func TestServiceUpdatePageOversizedSearchText(t *testing.T) {
 	created := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 	oversized := strings.Repeat("x", model.PageSearchTextMaxBytes+1)
-	_, err := h.svc.UpdatePage(created.Id, created.SpaceId, &model.PagePatch{Title: mmmodel.NewPointer("Title"), Body: mmmodel.NewPointer("body"), SearchText: mmmodel.NewPointer(oversized)}, created.EditAt, false, mmmodel.NewId())
+	_, err := h.svc.UpdatePage(created.Id, created.SpaceId, &model.PagePatch{Title: mmmodel.NewPointer("Title"), Body: mmmodel.NewPointer("body"), SearchText: mmmodel.NewPointer(oversized)}, new(created.EditAt), false, mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	require.Equal(t, "model.page.is_valid.search_text.app_error", err.Id)
@@ -602,13 +587,13 @@ func TestServiceUpdatePageCanSetEmptyBody(t *testing.T) {
 	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
 	withBody, err := h.svc.UpdatePage(
-		created.Id, created.SpaceId, &model.PagePatch{Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`), SearchText: mmmodel.NewPointer("text")}, created.EditAt, false, userID,
+		created.Id, created.SpaceId, &model.PagePatch{Body: mmmodel.NewPointer(`{"type":"doc","content":[]}`), SearchText: mmmodel.NewPointer("text")}, new(created.EditAt), false, userID,
 	)
 	require.Nil(t, err)
 	require.NotEqual(t, "", withBody.Body)
 
 	emptied, err := h.svc.UpdatePage(
-		created.Id, created.SpaceId, &model.PagePatch{Body: mmmodel.NewPointer(""), SearchText: mmmodel.NewPointer("")}, withBody.EditAt, false, userID,
+		created.Id, created.SpaceId, &model.PagePatch{Body: mmmodel.NewPointer(""), SearchText: mmmodel.NewPointer("")}, new(withBody.EditAt), false, userID,
 	)
 	require.Nil(t, err)
 	require.Equal(t, "", emptied.Body, "an explicit empty Body must clear the stored body")
@@ -637,7 +622,7 @@ func TestServiceGetPageWithDeleted(t *testing.T) {
 	space := mustCreateSpace(t, h.store, channelID)
 	actorID := mmmodel.NewId()
 	created := mustCreatePage(t, h.store, space.Id, channelID, actorID, "")
-	require.NoError(t, h.store.DeletePage(created.Id, created.SpaceId, actorID))
+	requireStoreDeletePage(t, h.store, created.Id, created.SpaceId, actorID)
 
 	t.Run("live get fails, with-deleted get returns the page", func(t *testing.T) {
 		_, liveErr := h.svc.GetPage(created.Id)
@@ -724,7 +709,7 @@ func TestServiceRestorePage(t *testing.T) {
 
 	t.Run("restores a soft-deleted page", func(t *testing.T) {
 		created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
-		require.NoError(t, h.store.DeletePage(created.Id, created.SpaceId, userID))
+		requireStoreDeletePage(t, h.store, created.Id, created.SpaceId, userID)
 
 		restored, err := h.svc.RestorePage(created.Id, created.SpaceId, userID)
 		require.Nil(t, err)
@@ -785,7 +770,7 @@ func TestServiceRestoreSpace(t *testing.T) {
 
 	t.Run("restores a soft-deleted space", func(t *testing.T) {
 		space := mustCreateSpace(t, h.store, mmmodel.NewId())
-		require.Nil(t, h.svc.DeleteSpace(space.Id))
+		require.Nil(t, h.svc.DeleteSpace(space))
 
 		got, err := h.svc.RestoreSpace(space.Id)
 		require.Nil(t, err)
@@ -810,7 +795,7 @@ func TestServiceRestoreSpace(t *testing.T) {
 	t.Run("restoring over a channel a new live space owns returns 409", func(t *testing.T) {
 		channelID := mmmodel.NewId()
 		original := mustCreateSpace(t, h.store, channelID)
-		require.Nil(t, h.svc.DeleteSpace(original.Id))
+		require.Nil(t, h.svc.DeleteSpace(original))
 
 		// A new live space now owns the backing channel; restoring the original would breach
 		// the partial unique index uq_docs_space_channel_id.

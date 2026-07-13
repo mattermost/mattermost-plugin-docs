@@ -4,6 +4,7 @@
 package model_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -184,6 +185,31 @@ func TestPageGetProps(t *testing.T) {
 	require.NotNil(t, p.GetProps(), "GetProps must return a non-nil map even when Props is nil")
 }
 
+func TestPageSummaryJSONOmitsContentAndProps(t *testing.T) {
+	summary := model.PageSummary{
+		Id:             mmmodel.NewId(),
+		SpaceId:        mmmodel.NewId(),
+		ParentId:       mmmodel.NewId(),
+		Type:           model.PageTypePage,
+		Title:          "Summary",
+		UserId:         mmmodel.NewId(),
+		LastModifiedBy: mmmodel.NewId(),
+		SortOrder:      1000,
+		CreateAt:       1,
+		UpdateAt:       2,
+		EditAt:         3,
+	}
+
+	encoded, err := json.Marshal(summary)
+	require.NoError(t, err)
+	var fields map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(encoded, &fields))
+	require.Contains(t, fields, "title")
+	require.NotContains(t, fields, "body")
+	require.NotContains(t, fields, "search_text")
+	require.NotContains(t, fields, "props")
+}
+
 func TestPagePatch(t *testing.T) {
 	base := func() *model.Page {
 		return &model.Page{Title: "orig", Body: "origbody", SearchText: "origsearch"}
@@ -258,5 +284,32 @@ func TestPagePatchIsValid(t *testing.T) {
 			SearchText: mmmodel.NewPointer("search"),
 		}).IsValid()
 		require.Nil(t, aerr)
+	})
+}
+
+// TestMaxDepthOfPages verifies depth computation does not depend on slice order: a
+// children-before-parents ordering yields the same depth as pre-order.
+func TestMaxDepthOfPages(t *testing.T) {
+	rootID := mmmodel.NewId()
+	childID := mmmodel.NewId()
+	grandchildID := mmmodel.NewId()
+	child := &model.Page{Id: childID, ParentId: rootID}
+	grandchild := &model.Page{Id: grandchildID, ParentId: childID}
+
+	t.Run("pre-order", func(t *testing.T) {
+		require.Equal(t, 2, model.MaxDepthOfPages([]*model.Page{child, grandchild}, rootID))
+	})
+
+	t.Run("children before parents", func(t *testing.T) {
+		require.Equal(t, 2, model.MaxDepthOfPages([]*model.Page{grandchild, child}, rootID))
+	})
+
+	t.Run("direct children only", func(t *testing.T) {
+		other := &model.Page{Id: mmmodel.NewId(), ParentId: rootID}
+		require.Equal(t, 1, model.MaxDepthOfPages([]*model.Page{child, other}, rootID))
+	})
+
+	t.Run("empty slice", func(t *testing.T) {
+		require.Equal(t, 0, model.MaxDepthOfPages(nil, rootID))
 	})
 }

@@ -4,8 +4,11 @@
 package store
 
 import (
+	"context"
 	"database/sql"
-	"maps"
+	"time"
+
+	"github.com/jmoiron/sqlx"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	sq "github.com/mattermost/squirrel"
@@ -55,13 +58,17 @@ func (s *Store) CreateSpace(space *model.Space) (*model.Space, error) {
 	return space, nil
 }
 
-// GetSpace returns the space with the given ID, returning ErrNotFound if not found or deleted.
-func (s *Store) GetSpace(spaceID string) (*model.Space, error) {
+// GetSpace returns the space with the given ID, returning ErrNotFound if not found. When
+// includeDeleted is false, soft-deleted spaces are also treated as not found.
+func (s *Store) GetSpace(spaceID string, includeDeleted bool) (*model.Space, error) {
 	if spaceID == "" {
 		return nil, &ErrInvalidInput{Entity: "Space", Field: "id", Value: spaceID}
 	}
 
-	builder := s.spaceSelectQuery().Where(sq.Eq{"Id": spaceID, "DeleteAt": 0})
+	builder := s.spaceSelectQuery().Where(sq.Eq{"Id": spaceID})
+	if !includeDeleted {
+		builder = builder.Where(sq.Eq{"DeleteAt": 0})
+	}
 
 	var space model.Space
 	if err := s.getBuilder(s.db, &space, builder); err != nil {
@@ -73,39 +80,29 @@ func (s *Store) GetSpace(spaceID string) (*model.Space, error) {
 	return &space, nil
 }
 
-// GetSpaceWithDeleted returns the space with the given ID, including soft-deleted spaces.
-// Use GetSpace for ordinary reads that must exclude deleted spaces.
-func (s *Store) GetSpaceWithDeleted(spaceID string) (*model.Space, error) {
-	if spaceID == "" {
-		return nil, &ErrInvalidInput{Entity: "Space", Field: "id", Value: spaceID}
-	}
-
-	builder := s.spaceSelectQuery().Where(sq.Eq{"Id": spaceID})
-
-	var space model.Space
-	if err := s.getBuilder(s.db, &space, builder); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, &ErrNotFound{EntityName: "Space", ID: spaceID}
-		}
-		return nil, errors.Wrap(err, "unable_to_get_space_with_deleted")
-	}
-	return &space, nil
-}
-
-// GetSpacesForTeam returns live spaces for the given team, ordered by SortOrder ascending,
-// with CreateAt then Id as stable tie-breakers. limit must be > 0.
-func (s *Store) GetSpacesForTeam(teamID string, offset, limit int) ([]*model.Space, error) {
+// GetSpacesForTeam returns live spaces for the given team visible to userID, ordered by
+// SortOrder ascending with CreateAt then Id as stable tie-breakers. Visibility is membership
+// of the space's backing channel, resolved by a read-only join against core's ChannelMembers
+// table: space ("S") channels are excluded from the generic channel-listing plugin APIs, so
+// the caller cannot supply its visible-channel set. There is deliberately no unfiltered
+// variant, so a listing can never bypass the membership filter. limit must be > 0.
+func (s *Store) GetSpacesForTeam(teamID, userID string, offset, limit int) ([]*model.Space, error) {
 	if teamID == "" {
 		return nil, &ErrInvalidInput{Entity: "Space", Field: "teamID", Value: teamID}
+	}
+	if userID == "" {
+		return nil, &ErrInvalidInput{Entity: "Space", Field: "userID", Value: userID}
 	}
 	if err := requirePositiveLimit("Space", limit); err != nil {
 		return nil, err
 	}
 
-	builder := s.spaceSelectQuery().
-		Where(sq.Eq{"TeamId": teamID, "DeleteAt": 0}).
-		OrderBy("SortOrder ASC", "CreateAt DESC", "Id ASC")
-
+	builder := s.getQueryBuilder().
+		Select(columnsWithAlias("sp", spaceSelectColumns)...).
+		From("DOCS_Space sp").
+		Join("ChannelMembers cm ON cm.ChannelId = sp.ChannelId").
+		Where(sq.Eq{"sp.TeamId": teamID, "sp.DeleteAt": 0, "cm.UserId": userID}).
+		OrderBy("sp.SortOrder ASC", "sp.CreateAt DESC", "sp.Id ASC")
 	builder = applyLimitOffset(builder, offset, limit)
 
 	spaces := []*model.Space{}
@@ -115,42 +112,21 @@ func (s *Store) GetSpacesForTeam(teamID string, offset, limit int) ([]*model.Spa
 	return spaces, nil
 }
 
-// GetSpacesForTeamVisibleTo returns live spaces for the given team whose ChannelId is in
-// channelIDs, ordered by SortOrder ascending with CreateAt then Id as stable tie-breakers.
-// An empty channelIDs slice returns an empty result without querying the database. limit must be > 0.
-func (s *Store) GetSpacesForTeamVisibleTo(teamID string, channelIDs []string, offset, limit int) ([]*model.Space, error) {
-	if teamID == "" {
-		return nil, &ErrInvalidInput{Entity: "Space", Field: "teamID", Value: teamID}
+// UpdateSpace applies patch to a live space's mutable fields (Title, Description, Icon,
+// Props). The patch is merged into the row read under lock, so fields the patch leaves nil
+// keep any concurrent writer's value rather than being clobbered by the caller's stale
+// snapshot. expectedUpdateAt is the optimistic-lock baseline (first-one-wins): a mismatch
+// returns ErrConflict. Passing force skips the check (last-write-wins), but the merge into
+// the locked row still applies.
+func (s *Store) UpdateSpace(spaceID string, patch *model.SpacePatch, expectedUpdateAt int64, force bool) (_ *model.Space, err error) {
+	if spaceID == "" {
+		return nil, &ErrInvalidInput{Entity: "Space", Field: "Id", Value: spaceID}
 	}
-	if err := requirePositiveLimit("Space", limit); err != nil {
-		return nil, err
-	}
-	if len(channelIDs) == 0 {
-		return []*model.Space{}, nil
-	}
-
-	builder := s.spaceSelectQuery().
-		Where(sq.Eq{"TeamId": teamID, "DeleteAt": 0, "ChannelId": channelIDs}).
-		OrderBy("SortOrder ASC", "CreateAt DESC", "Id ASC")
-	builder = applyLimitOffset(builder, offset, limit)
-
-	spaces := []*model.Space{}
-	if err := s.selectBuilder(s.db, &spaces, builder); err != nil {
-		return nil, errors.Wrap(err, "unable_to_get_spaces_for_team_visible_to")
-	}
-	return spaces, nil
-}
-
-// UpdateSpace replaces a space's mutable fields (Title, Description, Icon, Props).
-// Full-replacement: zero-valued fields overwrite stored values, so callers must supply
-// a complete row. space.UpdateAt is the optimistic-lock baseline (first-one-wins): a
-// mismatch returns ErrConflict. Passing force skips the check (last-write-wins).
-func (s *Store) UpdateSpace(space *model.Space, force bool) (_ *model.Space, err error) {
-	if space == nil {
-		return nil, &ErrInvalidInput{Entity: "Space", Field: "space", Value: nil}
-	}
-	if space.Id == "" {
-		return nil, &ErrInvalidInput{Entity: "Space", Field: "Id", Value: space.Id}
+	// Validate the patch before opening the transaction, so an invalid or empty patch never
+	// locks the row or bumps UpdateAt. Enforced here, not only in the service, so any store
+	// caller upholds the contract.
+	if validErr := patch.IsValid(); validErr != nil {
+		return nil, &ErrInvalidInput{Entity: "Space", Field: "Patch", Value: validErr.Error(), Reason: validErr.Id}
 	}
 
 	tx, err := s.db.Beginx()
@@ -161,24 +137,21 @@ func (s *Store) UpdateSpace(space *model.Space, force bool) (_ *model.Space, err
 
 	var existing model.Space
 	selectQuery := s.spaceSelectQuery().
-		Where(sq.Eq{"Id": space.Id, "DeleteAt": 0}).
+		Where(sq.Eq{"Id": spaceID, "DeleteAt": 0}).
 		Suffix("FOR UPDATE")
 	if txErr := s.getBuilder(tx, &existing, selectQuery); txErr != nil {
 		if errors.Is(txErr, sql.ErrNoRows) {
-			return nil, &ErrNotFound{EntityName: "Space", ID: space.Id}
+			return nil, &ErrNotFound{EntityName: "Space", ID: spaceID}
 		}
 		return nil, errors.Wrap(txErr, "failed to get space for update")
 	}
 
-	if !force && space.UpdateAt != existing.UpdateAt {
-		return nil, &ErrConflict{Resource: "Space id=" + space.Id}
+	if !force && expectedUpdateAt != existing.UpdateAt {
+		return nil, &ErrConflict{Resource: "Space id=" + spaceID}
 	}
 
 	oldUpdateAt := existing.UpdateAt
-	existing.Title = space.Title
-	existing.Description = space.Description
-	existing.Icon = space.Icon
-	existing.Props = maps.Clone(space.Props)
+	existing.Patch(patch)
 
 	existing.PreUpdate()
 	// Keep UpdateAt strictly monotonic (same-millisecond writes still advance the CAS token).
@@ -257,8 +230,8 @@ func (s *Store) DeleteSpace(spaceID string) (err error) {
 		Update("DOCS_Space").
 		Set("DeleteAt", cascadeAt).
 		// Advance the CAS token (UpdateSpace optimistic-locks on UpdateAt) so a delete
-		// invalidates stale client baselines. GREATEST(UpdateAt+1, ?) is nextMonotonic in SQL.
-		Set("UpdateAt", sq.Expr("GREATEST(UpdateAt + 1, ?)", cascadeAt)).
+		// invalidates stale client baselines.
+		Set("UpdateAt", monotonicBump("UpdateAt", cascadeAt)).
 		Where(sq.Eq{"Id": spaceID, "DeleteAt": 0})
 	result, txErr := s.execBuilder(tx, spaceQuery)
 	if txErr != nil {
@@ -273,8 +246,8 @@ func (s *Store) DeleteSpace(spaceID string) (err error) {
 	pagesQuery := s.getQueryBuilder().
 		Update("DOCS_Page").
 		Set("DeleteAt", cascadeAt).
-		Set("UpdateAt", sq.Expr("GREATEST(UpdateAt + 1, ?)", cascadeAt)).
-		Set("EditAt", sq.Expr("GREATEST(EditAt + 1, ?)", cascadeAt)).
+		Set("UpdateAt", monotonicBump("UpdateAt", cascadeAt)).
+		Set("EditAt", monotonicBump("EditAt", cascadeAt)).
 		Where(sq.Eq{"SpaceId": spaceID, "OriginalId": "", "DeleteAt": 0})
 
 	if _, pErr := s.execBuilder(tx, pagesQuery); pErr != nil {
@@ -334,9 +307,9 @@ func (s *Store) RestoreSpace(spaceID string) (err error) {
 	spaceQuery := s.getQueryBuilder().
 		Update("DOCS_Space").
 		Set("DeleteAt", 0).
-		// Advance the CAS token monotonically so a delete→restore round trip — even within one
-		// millisecond, or after a prior synthetic UpdateAt — invalidates stale client baselines.
-		Set("UpdateAt", sq.Expr("GREATEST(UpdateAt + 1, ?)", now)).
+		// Advance the CAS token so a delete→restore round trip — even within one millisecond,
+		// or after a prior synthetic UpdateAt — invalidates stale client baselines.
+		Set("UpdateAt", monotonicBump("UpdateAt", now)).
 		Where(sq.And{sq.Eq{"Id": spaceID}, sq.NotEq{"DeleteAt": 0}})
 	result, txErr := s.execBuilder(tx, spaceQuery)
 	if txErr != nil {
@@ -355,8 +328,8 @@ func (s *Store) RestoreSpace(spaceID string) (err error) {
 	pagesQuery := s.getQueryBuilder().
 		Update("DOCS_Page").
 		Set("DeleteAt", 0).
-		Set("UpdateAt", sq.Expr("GREATEST(UpdateAt + 1, ?)", now)).
-		Set("EditAt", sq.Expr("GREATEST(EditAt + 1, ?)", now)).
+		Set("UpdateAt", monotonicBump("UpdateAt", now)).
+		Set("EditAt", monotonicBump("EditAt", now)).
 		Where(sq.Eq{"SpaceId": spaceID, "OriginalId": "", "DeleteAt": deleted.DeleteAt})
 	if _, pErr := s.execBuilder(tx, pagesQuery); pErr != nil {
 		return errors.Wrap(pErr, "unable_to_restore_space_pages")
@@ -366,4 +339,104 @@ func (s *Store) RestoreSpace(spaceID string) (err error) {
 		return errors.Wrap(err, "commit_transaction")
 	}
 	return nil
+}
+
+const (
+	// spaceMembershipLockAcquireTimeout bounds how long a membership mutation waits for another
+	// holder of the same space's advisory lock. The current holder may be off making remote
+	// channel calls, so an unbounded wait would let blocked waiters pile up, each holding a
+	// pooled connection; on timeout the waiter gives up with a retryable ErrConflict instead.
+	spaceMembershipLockAcquireTimeout = 10 * time.Second
+	// spaceMembershipLockRetryInterval paces the try-lock polling loop below.
+	spaceMembershipLockRetryInterval = 100 * time.Millisecond
+)
+
+// WithSpaceMembershipLock runs fn while holding spaceID's membership advisory lock, serializing
+// membership mutations for one space across processes. Guards that span multiple non-database
+// calls — read the member list, then mutate it — are atomic with respect to each other only
+// under this lock. The lock is session-scoped on a dedicated pooled connection, with no open
+// transaction: fn does no database work of its own, so wrapping it in a transaction would only
+// expose the guard to idle-in-transaction timeouts. The connection is still intentionally held
+// for fn's whole duration — cross-process serialization of a read-modify-write that spans
+// non-database calls has no cheaper primitive — so fn must stay short. fn's error is returned
+// unchanged. When the lock cannot be acquired within spaceMembershipLockAcquireTimeout,
+// ErrConflict is returned so the caller can surface a retryable conflict.
+func (s *Store) WithSpaceMembershipLock(spaceID string, fn func() error) error {
+	return s.withSpaceMembershipLock(spaceID, spaceMembershipLockAcquireTimeout, fn)
+}
+
+func (s *Store) withSpaceMembershipLock(spaceID string, acquireTimeout time.Duration, fn func() error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), acquireTimeout)
+	defer cancel()
+	conn, err := s.db.Connx(ctx)
+	if err != nil {
+		return errors.Wrap(err, "get_connection")
+	}
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil && s.log != nil {
+			s.log.Warn("failed to return advisory lock connection to the pool", "space_id", spaceID, "err", closeErr)
+		}
+	}()
+
+	key := "space_members:" + spaceID
+	// Poll with pg_try_advisory_lock rather than blocking in pg_advisory_lock: a blocking wait
+	// canceled by the deadline races against the server granting the lock in the same instant,
+	// which would strand a granted lock on a connection headed back to the pool. Each try
+	// returns its verdict immediately, so a timed-out waiter provably holds nothing.
+	for {
+		var acquired bool
+		if lockErr := conn.GetContext(ctx, &acquired, `SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, key); lockErr != nil {
+			// The reply was lost, so the lock may or may not have been granted; a best-effort
+			// unlock keeps a granted lock from riding back into the pool on this session (it is
+			// a no-op with a server-side warning when the lock is not held).
+			_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, key)
+			if ctx.Err() != nil {
+				return &ErrConflict{Resource: "Space membership lock space_id=" + spaceID}
+			}
+			return errors.Wrap(lockErr, "failed to acquire space membership advisory lock")
+		}
+		if acquired {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return &ErrConflict{Resource: "Space membership lock space_id=" + spaceID}
+		case <-time.After(spaceMembershipLockRetryInterval):
+		}
+	}
+	defer func() {
+		// Unlock on a fresh context: the acquisition deadline may have passed while fn ran, and
+		// an unlock failure means the connection itself broke, which also releases the session's
+		// advisory locks server-side; the pool discards a broken connection on reuse.
+		if _, unlockErr := conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, key); unlockErr != nil && s.log != nil {
+			s.log.Warn("failed to release space membership advisory lock", "space_id", spaceID, "err", unlockErr)
+		}
+	}()
+
+	return fn()
+}
+
+// lockLiveSpace FOR UPDATE-locks the live space row.
+// Returns ErrNotFound if the space does not exist or is already soft-deleted.
+func (s *Store) lockLiveSpace(tx *sqlx.Tx, spaceID string) error {
+	_, err := s.lockLiveSpaceChannel(tx, spaceID)
+	return err
+}
+
+// lockLiveSpaceChannel is lockLiveSpace but also returns the space's backing ChannelId, so a
+// caller can derive it from the locked row (single source of truth) instead of trusting a separately-supplied value.
+func (s *Store) lockLiveSpaceChannel(tx *sqlx.Tx, spaceID string) (string, error) {
+	query := s.getQueryBuilder().
+		Select("ChannelId").
+		From("DOCS_Space").
+		Where(sq.Eq{"Id": spaceID, "DeleteAt": 0}).
+		Suffix("FOR UPDATE")
+	var channelID string
+	if err := s.getBuilder(tx, &channelID, query); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", &ErrNotFound{EntityName: "Space", ID: spaceID}
+		}
+		return "", errors.Wrap(err, "failed to lock space")
+	}
+	return channelID, nil
 }

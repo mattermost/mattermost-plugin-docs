@@ -8,20 +8,12 @@
     "translation": "The request body could not be parsed."
   },
   {
-    "id": "api.page.duplicate.invalid_parent_id.app_error",
-    "translation": "The parent_id field is not a valid ID."
+    "id": "api.optimistic_lock.baseline_required.app_error",
+    "translation": "The {{.Field}} field is required unless force is set."
   },
   {
     "id": "api.page.duplicate.invalid_target_space_id.app_error",
     "translation": "The target_space_id field is not a valid ID."
-  },
-  {
-    "id": "api.page.move.invalid_parent_id.app_error",
-    "translation": "The parent_id field is not a valid ID."
-  },
-  {
-    "id": "api.page.move_to_space.invalid_parent_id.app_error",
-    "translation": "The parent_id field is not a valid ID."
   },
   {
     "id": "api.page.move_to_space.invalid_target_space_id.app_error",
@@ -36,16 +28,12 @@
     "translation": "The request body exceeds the maximum allowed size of {{.MaxBytes}} bytes."
   },
   {
+    "id": "app.page.circular_reference.app_error",
+    "translation": "A page cannot be placed under itself or one of its descendants."
+  },
+  {
     "id": "app.page.create.conflict.app_error",
     "translation": "A page with this ID already exists."
-  },
-  {
-    "id": "app.page.create.invalid_parent.app_error",
-    "translation": "The parent page does not exist."
-  },
-  {
-    "id": "app.page.create.invalid_parent_id.app_error",
-    "translation": "Invalid parent page ID."
   },
   {
     "id": "app.page.create.invalid_space_id.app_error",
@@ -56,24 +44,12 @@
     "translation": "Invalid user ID."
   },
   {
-    "id": "app.page.create.max_depth_exceeded.app_error",
-    "translation": "Pages cannot be nested more than {{.MaxDepth}} levels deep."
-  },
-  {
-    "id": "app.page.create.parent_different_space.app_error",
-    "translation": "The parent page belongs to a different space."
-  },
-  {
     "id": "app.page.create.search_text_without_content.app_error",
     "translation": "Search text cannot be set without page content."
   },
   {
     "id": "app.page.create.space_not_found.app_error",
     "translation": "The space could not be found."
-  },
-  {
-    "id": "app.page.create.store_error.app_error",
-    "translation": "An error occurred while creating the page."
   },
   {
     "id": "app.page.delete.invalid_id.app_error",
@@ -100,24 +76,12 @@
     "translation": "Invalid page ID."
   },
   {
-    "id": "app.page.duplicate.invalid_parent_id.app_error",
-    "translation": "The parent_id field is not a valid ID."
-  },
-  {
     "id": "app.page.duplicate.invalid_space_id.app_error",
     "translation": "Invalid space ID."
   },
   {
-    "id": "app.page.duplicate.invalid_target_space_id.app_error",
-    "translation": "Invalid target space ID."
-  },
-  {
     "id": "app.page.duplicate.invalid_user_id.app_error",
     "translation": "Invalid user ID."
-  },
-  {
-    "id": "app.page.duplicate.max_depth_exceeded.app_error",
-    "translation": "Pages cannot be nested more than {{.MaxDepth}} levels deep."
   },
   {
     "id": "app.page.duplicate.not_found.app_error",
@@ -140,36 +104,28 @@
     "translation": "Invalid page ID."
   },
   {
+    "id": "app.page.invalid_parent.app_error",
+    "translation": "The destination parent page does not exist."
+  },
+  {
     "id": "app.page.invalid_space_id.app_error",
     "translation": "Invalid space ID."
   },
   {
-    "id": "app.page.move.circular_reference.app_error",
-    "translation": "A page cannot be moved under itself or one of its descendants."
+    "id": "app.page.max_depth_exceeded.app_error",
+    "translation": "Placing the page here would exceed the maximum nesting depth of {{.MaxDepth}}."
   },
   {
     "id": "app.page.move.invalid_id.app_error",
     "translation": "Invalid page ID."
   },
   {
-    "id": "app.page.move.invalid_parent.app_error",
-    "translation": "The destination parent page does not exist."
-  },
-  {
     "id": "app.page.move.invalid_space_id.app_error",
     "translation": "Invalid space ID."
   },
   {
-    "id": "app.page.move.max_depth_exceeded.app_error",
-    "translation": "Moving the page here would exceed the maximum nesting depth of {{.MaxDepth}}."
-  },
-  {
-    "id": "app.page.move.parent_different_space.app_error",
-    "translation": "The destination parent page belongs to a different space."
-  },
-  {
-    "id": "app.page.move.subtree_max_depth_exceeded.app_error",
-    "translation": "Moving this page and its sub-pages here would exceed the maximum nesting depth of {{.MaxDepth}}."
+    "id": "app.page.move.invalid_user_id.app_error",
+    "translation": "Invalid user ID."
   },
   {
     "id": "app.page.move_to_space.cross_team.app_error",
@@ -188,8 +144,8 @@
     "translation": "Invalid target space ID."
   },
   {
-    "id": "app.page.move_to_space.target_not_found.app_error",
-    "translation": "The target space could not be found."
+    "id": "app.page.move_to_space.invalid_user_id.app_error",
+    "translation": "Invalid user ID."
   },
   {
     "id": "app.page.not_found.app_error",
@@ -214,6 +170,14 @@
   {
     "id": "app.page.restore.not_restorable.app_error",
     "translation": "The page cannot be restored because it is a version snapshot."
+  },
+  {
+    "id": "app.page.restore.read_back_failed.app_error",
+    "translation": "The page was restored, but it could not be loaded. Refresh to see it."
+  },
+  {
+    "id": "app.page.subtree_max_depth_exceeded.app_error",
+    "translation": "Placing this page and its sub-pages here would exceed the maximum nesting depth of {{.MaxDepth}}."
   },
   {
     "id": "app.page.update.conflict.app_error",
@@ -260,16 +224,24 @@
     "translation": "Failed to verify space membership."
   },
   {
-    "id": "app.space.access.client_not_wired.app_error",
-    "translation": "Unable to verify space membership due to a server configuration error."
-  },
-  {
     "id": "app.space.access.forbidden.app_error",
     "translation": "You do not have permission to access this space."
   },
   {
     "id": "app.space.access.invalid_user_id.app_error",
     "translation": "Invalid user ID."
+  },
+  {
+    "id": "app.space.access.team_lookup_failed.app_error",
+    "translation": "Failed to verify team membership."
+  },
+  {
+    "id": "app.space.add_member.failed.app_error",
+    "translation": "Unable to add the member to the space."
+  },
+  {
+    "id": "app.space.client_not_wired.app_error",
+    "translation": "Unable to complete the request due to a server configuration error."
   },
   {
     "id": "app.space.create.add_member_failed.app_error",
@@ -296,10 +268,6 @@
     "translation": "A space must be supplied."
   },
   {
-    "id": "app.space.create.no_client.app_error",
-    "translation": "Unable to create the space because the plugin API client is not available."
-  },
-  {
     "id": "app.space.create.not_team_member.app_error",
     "translation": "You must be a member of the team to create a space in it."
   },
@@ -314,14 +282,6 @@
   {
     "id": "app.space.get.invalid_id.app_error",
     "translation": "Invalid space ID."
-  },
-  {
-    "id": "app.space.get_for_team.channel_list_failed.app_error",
-    "translation": "Unable to retrieve channels for the team."
-  },
-  {
-    "id": "app.space.get_for_team.client_not_wired.app_error",
-    "translation": "Unable to list spaces due to a server configuration error."
   },
   {
     "id": "app.space.get_for_team.invalid_team_id.app_error",
@@ -344,6 +304,34 @@
     "translation": "Invalid space ID."
   },
   {
+    "id": "app.space.list_members.failed.app_error",
+    "translation": "Unable to list the members of the space."
+  },
+  {
+    "id": "app.space.member.invalid_user_id.app_error",
+    "translation": "The supplied user ID is not valid."
+  },
+  {
+    "id": "app.space.member.not_team_member.app_error",
+    "translation": "The specified user is not a member of the space's team."
+  },
+  {
+    "id": "app.space.member.team_lookup_failed.app_error",
+    "translation": "Unable to verify the user's team membership."
+  },
+  {
+    "id": "app.space.member.user_not_found.app_error",
+    "translation": "The specified user could not be found."
+  },
+  {
+    "id": "app.space.remove_member.failed.app_error",
+    "translation": "Unable to remove the member from the space."
+  },
+  {
+    "id": "app.space.remove_member.last_member.app_error",
+    "translation": "The last member with access to a space cannot be removed."
+  },
+  {
     "id": "app.space.restore.channel_restore_failed.app_error",
     "translation": "The space was restored, but its backing channel could not be un-archived."
   },
@@ -354,6 +342,10 @@
   {
     "id": "app.space.restore.not_deleted.app_error",
     "translation": "The space is not deleted and cannot be restored."
+  },
+  {
+    "id": "app.space.restore.read_back_failed.app_error",
+    "translation": "The space was restored, but it could not be loaded. Refresh to see it."
   },
   {
     "id": "app.space.update.invalid_id.app_error",

@@ -1,11 +1,11 @@
 {
     "id": "com.mattermost.docs",
     "name": "Docs",
-    "description": "Docs for Mattermost — hierarchical pages, rich-text editing, comments, versioning, and Confluence import, as a self-contained plugin.",
+    "description": "Docs for Mattermost — hierarchical pages, rich-text editing, comments, versioning, and Confluence import, as a self-contained plugin. Requires a PostgreSQL-backed Mattermost server built with Docs core support (the Space channel type and EnableDocs feature flag); stock releases do not include these yet.",
     "homepage_url": "https://github.com/mattermost/mattermost-plugin-docs",
     "support_url": "https://github.com/mattermost/mattermost-plugin-docs/issues",
     "icon_path": "assets/icon.svg",
-    "min_server_version": "11.9.0",
+    "min_server_version": "11.10.0",
     "server": {
         "executables": {
             "linux-amd64": "server/dist/plugin-linux-amd64",

@@ -32,7 +32,7 @@ func TestServiceDuplicatePage(t *testing.T) {
 	parent := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 	source := mustCreatePage(t, h.store, space.Id, channelID, userID, parent.Id)
 
-	dup, appErr := h.svc.DuplicatePage(source.Id, space.Id, userID, false, "", nil)
+	dup, appErr := h.svc.DuplicatePage(source.Id, space, userID, false, nil, nil)
 	require.Nil(t, appErr)
 	require.NotEqual(t, source.Id, dup.Id)
 	require.Equal(t, "Copy of "+source.Title, dup.Title)
@@ -61,13 +61,15 @@ func TestServiceDuplicatePage_CopiesSearchText(t *testing.T) {
 	require.Nil(t, appErr)
 	require.Equal(t, "search text", source.SearchText)
 
-	dup, appErr := h.svc.DuplicatePage(source.Id, space.Id, userID, false, "", nil)
+	dup, appErr := h.svc.DuplicatePage(source.Id, space, userID, false, nil, nil)
 	require.Nil(t, appErr)
 	require.Equal(t, source.SearchText, dup.SearchText)
 }
 
-// TestServiceDuplicatePage_CopiesProps verifies the duplicate carries a deep copy of the source's
-// Props: same contents, but a distinct map so mutating one side can't alias the other.
+// TestServiceDuplicatePage_CopiesProps verifies the duplicate's Props don't alias the source's:
+// same contents, distinct top-level map (buildDuplicatePages clones shallowly). Nested values are
+// independently owned too, but only because the source is always freshly read from the store
+// (JSON decoding allocates fresh nested maps), not because the clone is deep.
 func TestServiceDuplicatePage_CopiesProps(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
@@ -80,16 +82,20 @@ func TestServiceDuplicatePage_CopiesProps(t *testing.T) {
 	// "nested" round-trips through the store as a plain map[string]any (JSON decoding never
 	// reconstructs the named mmmodel.StringInterface type), so it's written that way here too.
 	props := mmmodel.StringInterface{"pinned": true, "nested": map[string]any{"order": float64(1)}}
-	source, appErr = h.svc.UpdatePage(source.Id, space.Id, &model.PagePatch{Props: &props}, source.EditAt, false, userID)
+	source, appErr = h.svc.UpdatePage(source.Id, space.Id, &model.PagePatch{Props: &props}, new(source.EditAt), false, userID)
 	require.Nil(t, appErr)
 	require.Equal(t, props, source.Props)
 
-	dup, appErr := h.svc.DuplicatePage(source.Id, space.Id, userID, false, "", nil)
+	dup, appErr := h.svc.DuplicatePage(source.Id, space, userID, false, nil, nil)
 	require.Nil(t, appErr)
 	require.Equal(t, source.Props, dup.Props)
 
 	dup.Props["pinned"] = false
 	require.Equal(t, true, source.Props["pinned"], "mutating the duplicate's Props must not alias the source's")
+
+	dup.Props["nested"].(map[string]any)["order"] = float64(99)
+	require.Equal(t, float64(1), source.Props["nested"].(map[string]any)["order"],
+		"mutating a nested value on the duplicate must not alias the source's")
 }
 
 // TestServiceDuplicatePage_TruncatesLongTitle verifies copyTitle truncates "Copy of <title>" to the
@@ -105,7 +111,7 @@ func TestServiceDuplicatePage_TruncatesLongTitle(t *testing.T) {
 	source, appErr := h.svc.CreatePage(space.Id, "", longTitle, "", "", userID)
 	require.Nil(t, appErr)
 
-	dup, appErr := h.svc.DuplicatePage(source.Id, space.Id, userID, false, "", nil)
+	dup, appErr := h.svc.DuplicatePage(source.Id, space, userID, false, nil, nil)
 	require.Nil(t, appErr)
 	require.LessOrEqual(t, utf8.RuneCountInString(dup.Title), model.PageTitleMaxRunes)
 	require.True(t, strings.HasPrefix(dup.Title, "Copy of "))
@@ -114,7 +120,7 @@ func TestServiceDuplicatePage_TruncatesLongTitle(t *testing.T) {
 // TestServiceDuplicatePage_NotFound returns 404 for a missing source page.
 func TestServiceDuplicatePage_NotFound(t *testing.T) {
 	h := openTestService(t)
-	_, appErr := h.svc.DuplicatePage(mmmodel.NewId(), mmmodel.NewId(), mmmodel.NewId(), false, "", nil)
+	_, appErr := h.svc.DuplicatePage(mmmodel.NewId(), &model.Space{Id: mmmodel.NewId()}, mmmodel.NewId(), false, nil, nil)
 	require.NotNil(t, appErr)
 	require.Equal(t, 404, appErr.StatusCode)
 }
@@ -122,9 +128,18 @@ func TestServiceDuplicatePage_NotFound(t *testing.T) {
 // TestServiceDuplicatePage_InvalidID returns 400 for a malformed id.
 func TestServiceDuplicatePage_InvalidID(t *testing.T) {
 	h := openTestService(t)
-	_, appErr := h.svc.DuplicatePage("not-an-id", mmmodel.NewId(), mmmodel.NewId(), false, "", nil)
+	_, appErr := h.svc.DuplicatePage("not-an-id", &model.Space{Id: mmmodel.NewId()}, mmmodel.NewId(), false, nil, nil)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
+}
+
+// TestServiceDuplicatePage_NilSpace returns 400 when the caller supplies no source space record.
+func TestServiceDuplicatePage_NilSpace(t *testing.T) {
+	h := openTestService(t)
+	_, appErr := h.svc.DuplicatePage(mmmodel.NewId(), nil, mmmodel.NewId(), false, nil, nil)
+	require.NotNil(t, appErr)
+	require.Equal(t, 400, appErr.StatusCode)
+	require.Equal(t, "app.page.duplicate.invalid_space_id.app_error", appErr.Id)
 }
 
 // TestServiceDuplicatePage_InvalidUserID returns 400 for a malformed userID, mirroring CreatePage.
@@ -134,7 +149,7 @@ func TestServiceDuplicatePage_InvalidUserID(t *testing.T) {
 	space := mustCreateSpace(t, h.store, channelID)
 	source := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
-	_, appErr := h.svc.DuplicatePage(source.Id, space.Id, "not-an-id", false, "", nil)
+	_, appErr := h.svc.DuplicatePage(source.Id, space, "not-an-id", false, nil, nil)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
 	require.Equal(t, "app.page.duplicate.invalid_user_id.app_error", appErr.Id)
@@ -153,23 +168,23 @@ func TestServiceDuplicatePage_IncludeChildren(t *testing.T) {
 	child := mustCreatePage(t, h.store, space.Id, channelID, userID, source.Id)
 	grandchild := mustCreatePage(t, h.store, space.Id, channelID, userID, child.Id)
 
-	dup, appErr := h.svc.DuplicatePage(source.Id, space.Id, userID, true, "", nil)
+	dup, appErr := h.svc.DuplicatePage(source.Id, space, userID, true, nil, nil)
 	require.Nil(t, appErr)
 	require.Equal(t, "Copy of "+source.Title, dup.Title)
 
-	dupChildren, appErr := h.svc.GetPageChildren(dup.Id, space.Id, 0, 0)
+	dupChildren, _, appErr := h.svc.GetPageChildren(dup.Id, space.Id, 0, 0)
 	require.Nil(t, appErr)
 	require.Len(t, dupChildren, 1)
 	require.Equal(t, child.Title, dupChildren[0].Title)
 	require.NotEqual(t, child.Id, dupChildren[0].Id)
 
-	dupGrandchildren, appErr := h.svc.GetPageChildren(dupChildren[0].Id, space.Id, 0, 0)
+	dupGrandchildren, _, appErr := h.svc.GetPageChildren(dupChildren[0].Id, space.Id, 0, 0)
 	require.Nil(t, appErr)
 	require.Len(t, dupGrandchildren, 1)
 	require.Equal(t, grandchild.Title, dupGrandchildren[0].Title)
 
 	// The source subtree is untouched.
-	sourceChildren, appErr := h.svc.GetPageChildren(source.Id, space.Id, 0, 0)
+	sourceChildren, _, appErr := h.svc.GetPageChildren(source.Id, space.Id, 0, 0)
 	require.Nil(t, appErr)
 	require.Len(t, sourceChildren, 1)
 	require.Equal(t, child.Id, sourceChildren[0].Id)
@@ -197,10 +212,10 @@ func TestServiceDuplicatePage_MaxDepthExceeded(t *testing.T) {
 
 	source := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
-	_, appErr := h.svc.DuplicatePage(source.Id, space.Id, userID, false, "", &deepest.Id)
+	_, appErr := h.svc.DuplicatePage(source.Id, space, userID, false, nil, &deepest.Id)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
-	require.Equal(t, "app.page.duplicate.max_depth_exceeded.app_error", appErr.Id)
+	require.Equal(t, "app.page.max_depth_exceeded.app_error", appErr.Id)
 }
 
 // TestServiceDuplicatePage_TargetParentNotFound rejects a targetParentID that doesn't exist,
@@ -214,10 +229,10 @@ func TestServiceDuplicatePage_TargetParentNotFound(t *testing.T) {
 	source := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
 	ghost := mmmodel.NewId()
-	_, appErr := h.svc.DuplicatePage(source.Id, space.Id, userID, false, "", &ghost)
+	_, appErr := h.svc.DuplicatePage(source.Id, space, userID, false, nil, &ghost)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
-	require.Equal(t, "app.page.move.invalid_parent.app_error", appErr.Id)
+	require.Equal(t, "app.page.invalid_parent.app_error", appErr.Id)
 }
 
 // TestServiceDuplicatePage_TargetParentIsSourceItself nests the copy directly under the source page.
@@ -231,7 +246,7 @@ func TestServiceDuplicatePage_TargetParentIsSourceItself(t *testing.T) {
 
 	source := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
-	dup, appErr := h.svc.DuplicatePage(source.Id, space.Id, userID, false, "", &source.Id)
+	dup, appErr := h.svc.DuplicatePage(source.Id, space, userID, false, nil, &source.Id)
 	require.Nil(t, appErr)
 	require.NotEqual(t, source.Id, dup.Id)
 	require.Equal(t, source.Id, dup.ParentId)
@@ -245,18 +260,18 @@ func TestServiceDuplicatePage_TargetParentInWrongSpace(t *testing.T) {
 	userID := mmmodel.NewId()
 	teamID := mmmodel.NewId()
 
-	sourceSpace := seedSpaceInTeam(t, h.store, mmmodel.NewId(), teamID)
+	sourceSpace := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 	source := mustCreatePage(t, h.store, sourceSpace.Id, sourceSpace.ChannelId, userID, "")
 
-	targetSpace := seedSpaceInTeam(t, h.store, mmmodel.NewId(), teamID)
+	targetSpace := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 	// parentInSource lives in sourceSpace, not targetSpace — an invalid destination parent for a
 	// copy landing in targetSpace.
 	parentInSource := mustCreatePage(t, h.store, sourceSpace.Id, sourceSpace.ChannelId, userID, "")
 
-	_, appErr := h.svc.DuplicatePage(source.Id, sourceSpace.Id, userID, false, targetSpace.Id, &parentInSource.Id)
+	_, appErr := h.svc.DuplicatePage(source.Id, sourceSpace, userID, false, targetSpace, &parentInSource.Id)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
-	require.Equal(t, "app.page.move.parent_different_space.app_error", appErr.Id)
+	require.Equal(t, "app.page.invalid_parent.app_error", appErr.Id)
 }
 
 // TestServiceDuplicatePage_TargetSpaceAndParent copies the source into a different space on the
@@ -266,13 +281,13 @@ func TestServiceDuplicatePage_TargetSpaceAndParent(t *testing.T) {
 	userID := mmmodel.NewId()
 	teamID := mmmodel.NewId()
 
-	sourceSpace := seedSpaceInTeam(t, h.store, mmmodel.NewId(), teamID)
+	sourceSpace := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 	source := mustCreatePage(t, h.store, sourceSpace.Id, sourceSpace.ChannelId, userID, "")
 
-	targetSpace := seedSpaceInTeam(t, h.store, mmmodel.NewId(), teamID)
+	targetSpace := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 	targetParent := mustCreatePage(t, h.store, targetSpace.Id, targetSpace.ChannelId, userID, "")
 
-	dup, appErr := h.svc.DuplicatePage(source.Id, sourceSpace.Id, userID, false, targetSpace.Id, &targetParent.Id)
+	dup, appErr := h.svc.DuplicatePage(source.Id, sourceSpace, userID, false, targetSpace, &targetParent.Id)
 	require.Nil(t, appErr)
 	require.Equal(t, targetSpace.Id, dup.SpaceId)
 	require.Equal(t, targetSpace.ChannelId, dup.ChannelId)
@@ -287,13 +302,13 @@ func TestServiceDuplicatePage_CrossSpaceDefaultsToRoot(t *testing.T) {
 	userID := mmmodel.NewId()
 	teamID := mmmodel.NewId()
 
-	sourceSpace := seedSpaceInTeam(t, h.store, mmmodel.NewId(), teamID)
+	sourceSpace := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 	sourceParent := mustCreatePage(t, h.store, sourceSpace.Id, sourceSpace.ChannelId, userID, "")
 	source := mustCreatePage(t, h.store, sourceSpace.Id, sourceSpace.ChannelId, userID, sourceParent.Id)
 
-	targetSpace := seedSpaceInTeam(t, h.store, mmmodel.NewId(), teamID)
+	targetSpace := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 
-	dup, appErr := h.svc.DuplicatePage(source.Id, sourceSpace.Id, userID, false, targetSpace.Id, nil)
+	dup, appErr := h.svc.DuplicatePage(source.Id, sourceSpace, userID, false, targetSpace, nil)
 	require.Nil(t, appErr)
 	require.Equal(t, targetSpace.Id, dup.SpaceId)
 	require.Equal(t, "", dup.ParentId)
@@ -310,7 +325,7 @@ func TestServiceDuplicatePage_CrossTeamRejected(t *testing.T) {
 
 	targetSpace := mustCreateSpace(t, h.store, mmmodel.NewId())
 
-	_, appErr := h.svc.DuplicatePage(source.Id, sourceSpace.Id, userID, false, targetSpace.Id, nil)
+	_, appErr := h.svc.DuplicatePage(source.Id, sourceSpace, userID, false, targetSpace, nil)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
 	require.Equal(t, "app.page.duplicate.cross_team.app_error", appErr.Id)
@@ -338,14 +353,14 @@ func TestServiceDuplicatePage_IncludeChildren_MaxDepthExceeded(t *testing.T) {
 	source := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 	mustCreatePage(t, h.store, space.Id, channelID, userID, source.Id)
 
-	_, appErr := h.svc.DuplicatePage(source.Id, space.Id, userID, true, "", &deepest.Id)
+	_, appErr := h.svc.DuplicatePage(source.Id, space, userID, true, nil, &deepest.Id)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
 	require.Equal(t, "app.page.duplicate.subtree_max_depth_exceeded.app_error", appErr.Id)
 }
 
 // TestServiceDuplicatePage_InvalidParentID rejects a targetParentID that is not a valid Mattermost
-// 26-char ID, before any store call is made.
+// 26-char ID, with the same key as a missing parent.
 func TestServiceDuplicatePage_InvalidParentID(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
@@ -354,8 +369,8 @@ func TestServiceDuplicatePage_InvalidParentID(t *testing.T) {
 	source := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
 	bad := "not-a-valid-id"
-	_, appErr := h.svc.DuplicatePage(source.Id, space.Id, userID, false, "", &bad)
+	_, appErr := h.svc.DuplicatePage(source.Id, space, userID, false, nil, &bad)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
-	require.Equal(t, "app.page.duplicate.invalid_parent_id.app_error", appErr.Id)
+	require.Equal(t, "app.page.invalid_parent.app_error", appErr.Id)
 }

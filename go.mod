@@ -1,19 +1,20 @@
 module github.com/mattermost/mattermost-plugin-docs
 
-go 1.26.3
+go 1.26.4
 
-// Dev-only pins: server/public is pinned to a pre-release commit (2026-07-06) that provides
-// ChannelTypeSpace ("S") and GetSpaceBackingChannel — APIs not yet in a released server/public.
+// Dev-only pins: server/public is pinned to the head of the paired core branch that adds the
+// Space backing-channel type — ChannelTypeSpace ("S"), pluginapi Channel.GetChannelOfType, and
+// pluginapi Channel.Restore are not yet in a released server/public.
 // server/v8 is the test harness only (storetest helpers); it does not contribute any runtime
-// symbols and is pinned independently to a slightly older commit (2026-06-23). The two modules
-// live in the same monorepo but are versioned independently, so their pseudo-version timestamps
-// will always differ; what matters is that server/public has the APIs this plugin calls.
+// symbols and is pinned independently to an older commit. The two modules live in the same
+// monorepo but are versioned independently, so their pseudo-version timestamps will always
+// differ; what matters is that server/public has the APIs this plugin calls.
 // Bump both to a release tag once the core space-channel changes merge and ship.
 require (
 	github.com/gorilla/mux v1.8.1
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.12.3
-	github.com/mattermost/mattermost/server/public v0.4.4-0.20260706141116-4890e80c405a
+	github.com/mattermost/mattermost/server/public v0.4.4-0.20260711052228-fabf41e10b96
 	github.com/mattermost/mattermost/server/v8 v8.0.0-20260623200446-ba033eae4704
 	github.com/mattermost/morph v1.1.0
 	github.com/mattermost/squirrel v0.5.0
@@ -67,12 +68,12 @@ require (
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/wiggin77/srslog v1.0.1 // indirect
 	github.com/yuin/goldmark v1.8.2 // indirect
-	golang.org/x/crypto v0.52.0 // indirect
+	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/mod v0.36.0 // indirect
-	golang.org/x/net v0.54.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/text v0.38.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260511170946-3700d4141b60 // indirect
 	google.golang.org/grpc v1.81.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect

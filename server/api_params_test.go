@@ -20,7 +20,7 @@ func TestDecodeJSONBody_TrailingDataRejected(t *testing.T) {
 	var v struct {
 		Foo string `json:"foo"`
 	}
-	ok := decodeJSONBody(w, req, 1024, &v, "test", false)
+	ok := (&Plugin{}).decodeJSONBody(w, req, 1024, &v, "test", false)
 	require.False(t, ok)
 	require.Equal(t, http.StatusBadRequest, w.Code)
 }
@@ -32,7 +32,7 @@ func TestDecodeJSONBody_ValidConsumed(t *testing.T) {
 	var v struct {
 		Foo string `json:"foo"`
 	}
-	ok := decodeJSONBody(w, req, 1024, &v, "test", false)
+	ok := (&Plugin{}).decodeJSONBody(w, req, 1024, &v, "test", false)
 	require.True(t, ok)
 	require.Equal(t, "bar", v.Foo)
 }
@@ -44,7 +44,7 @@ func TestDecodeJSONBody_WhitespaceTrailing(t *testing.T) {
 	var v struct {
 		Foo string `json:"foo"`
 	}
-	ok := decodeJSONBody(w, req, 1024, &v, "test", false)
+	ok := (&Plugin{}).decodeJSONBody(w, req, 1024, &v, "test", false)
 	require.True(t, ok)
 }
 

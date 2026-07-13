@@ -45,7 +45,14 @@ type SpacePatch struct {
 	Title       *string                  `json:"title"`
 	Description *string                  `json:"description"`
 	Icon        *string                  `json:"icon"`
-	Props       *mmmodel.StringInterface `json:"props,omitempty"`
+	Props       *mmmodel.StringInterface `json:"props"`
+}
+
+// SpaceMember is the API-facing view of a user's membership in a space. Membership is backed by
+// the space's channel, but the channel-membership mechanics (channel id, roles, notify props)
+// stay internal — only the user is exposed, mirroring how Space hides its ChannelId.
+type SpaceMember struct {
+	UserId string `json:"user_id"`
 }
 
 // IsValid rejects a nil patch and an all-nil-fields patch — both no-ops that would otherwise bump

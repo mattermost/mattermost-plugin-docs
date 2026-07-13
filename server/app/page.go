@@ -27,48 +27,24 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID 
 	if !mmmodel.IsValidId(userID) {
 		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	if parentID != "" && !mmmodel.IsValidId(parentID) {
-		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.invalid_parent_id.app_error", nil, "", http.StatusBadRequest)
-	}
-	normalizedTitle, titleErr := validateTitle("CreatePage", title, model.PageTitleMaxRunes)
+	title, titleErr := validateTitle("CreatePage", title, model.PageTitleMaxRunes)
 	if titleErr != nil {
 		return nil, titleErr
 	}
-	title = normalizedTitle
 	// SearchText is the body's plain-text projection, so it makes no sense without a body
 	// (matches the update path's rule).
 	if searchText != "" && body == "" {
 		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.search_text_without_content.app_error", nil, "", http.StatusBadRequest)
 	}
 
-	if _, spaceErr := s.GetSpace(spaceID); spaceErr != nil {
-		return nil, spaceErr
-	}
-
+	// Space existence and liveness are validated by store.CreatePage itself (surfaced as
+	// not-found below), so there is no space pre-check here. The parent pre-check keeps its
+	// more specific invalid_parent rejection (a malformed, missing, or cross-space parent all
+	// read identically, so the error can't be used to probe page ids in spaces the caller
+	// isn't a member of).
 	if parentID != "" {
-		parentPage, err := s.GetPage(parentID)
-		if err != nil {
-			// Only a missing parent is a 400; other GetPage failures carry their own status.
-			if err.StatusCode == http.StatusNotFound {
-				return nil, mmmodel.NewAppError("CreatePage", "app.page.create.invalid_parent.app_error", nil, "", http.StatusBadRequest).Wrap(err)
-			}
-			return nil, err
-		}
-		// Pin the parent to the same space: cross-space parenting would corrupt
-		// SpaceId-scoped listings and hierarchy traversal.
-		if parentPage.SpaceId != spaceID {
-			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.parent_different_space.app_error", nil, "", http.StatusBadRequest)
-		}
-		ancestorDepth, ancErr := s.store.GetPageAncestorDepth(parentID)
-		if ancErr != nil {
-			return nil, storeAppError("CreatePage", ancErr)
-		}
-		// ancestorDepth excludes the parent itself, so the parent is at ancestorDepth + 1
-		// and the new child one level deeper, at ancestorDepth + 2. Root pages have depth 1.
-		newDepth := ancestorDepth + 2
-		// Optimistic fast-fail; a concurrent move could invalidate this before the insert.
-		if newDepth > MaxPageDepth {
-			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest)
+		if destErr := s.validateParentExists("CreatePage", parentID, spaceID); destErr != nil {
+			return nil, destErr
 		}
 	}
 
@@ -88,32 +64,19 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID 
 
 	created, storeErr := s.store.CreatePage(page, MaxPageDepth)
 	if storeErr != nil {
-		var notFound *store.ErrNotFound
-		if errors.As(storeErr, &notFound) {
-			if notFound.EntityName == "Page" {
-				// The parent was deleted between the pre-check above and the transactional lock.
-				return nil, mmmodel.NewAppError("CreatePage", "app.page.create.invalid_parent.app_error", nil, "", http.StatusBadRequest).Wrap(storeErr)
-			}
-			// The space was soft-deleted between the check above and the insert.
+		if store.IsErrNotFound(storeErr) {
+			// The space is missing or soft-deleted (the store checks this under lock).
 			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.space_not_found.app_error", nil, "", http.StatusNotFound).Wrap(storeErr)
-		}
-		if store.IsErrInvalidInput(storeErr) {
-			var invErr *store.ErrInvalidInput
-			if errors.As(storeErr, &invErr) && invErr.Reason == store.ReasonMaxDepthExceeded {
-				return nil, mmmodel.NewAppError("CreatePage", "app.page.create.max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest).Wrap(storeErr)
-			}
-			return nil, invalidInputAppError("CreatePage", storeErr)
 		}
 		if store.IsErrConflict(storeErr) {
 			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.conflict.app_error", nil, "", http.StatusConflict).Wrap(storeErr)
 		}
-		if store.IsErrLimitExceeded(storeErr) {
-			return nil, storeAppError("CreatePage", storeErr)
-		}
-		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.store_error.app_error", nil, "", http.StatusInternalServerError).Wrap(storeErr)
+		return nil, storeAppError("CreatePage", storeErr)
 	}
 
 	// Notifications and mention parsing are not wired yet.
+
+	s.publishToChannels(wsEventPageCreated, map[string]any{"page_id": created.Id, "space_id": created.SpaceId}, created.ChannelId)
 
 	return created, nil
 }
@@ -130,9 +93,10 @@ func (s *Service) GetPage(pageID string) (*model.Page, *mmmodel.AppError) {
 	return page, nil
 }
 
-// UpdatePage patches a page, optimistic-locked on baseEditAt. spaceID scopes the write: a page
-// moved to another space since the caller's last check returns not-found instead of updating the wrong copy.
-func (s *Service) UpdatePage(pageID, spaceID string, patch *model.PagePatch, baseEditAt int64, force bool, userID string) (*model.Page, *mmmodel.AppError) {
+// UpdatePage patches a page, optimistic-locked on baseEditAt; a nil baseEditAt without force is
+// rejected. spaceID scopes the write: a page moved to another space since the caller's last
+// check returns not-found instead of updating the wrong copy.
+func (s *Service) UpdatePage(pageID, spaceID string, patch *model.PagePatch, baseEditAt *int64, force bool, userID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -142,14 +106,18 @@ func (s *Service) UpdatePage(pageID, spaceID string, patch *model.PagePatch, bas
 	if !mmmodel.IsValidId(userID) {
 		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
+	if appErr := requireBaseline("UpdatePage", "base_edit_at", baseEditAt, force); appErr != nil {
+		return nil, appErr
+	}
 	if validErr := normalizeAndValidatePagePatch("UpdatePage", patch); validErr != nil {
 		return nil, validErr
 	}
 
 	s.log.Debug("Updating page", "page_id", pageID, "user_id", userID)
 
-	updatedPage, storeErr := s.store.UpdatePage(pageID, spaceID, patch, baseEditAt, force, userID)
+	updatedPage, storeErr := s.store.UpdatePage(pageID, spaceID, patch, mmmodel.SafeDereference(baseEditAt), force, userID)
 	if storeErr == nil {
+		s.publishToChannels(wsEventPageUpdated, map[string]any{"page_id": updatedPage.Id, "space_id": updatedPage.SpaceId}, updatedPage.ChannelId)
 		return updatedPage, nil
 	}
 	if store.IsErrNotFound(storeErr) {
@@ -203,9 +171,11 @@ func (s *Service) DeletePage(pageID, spaceID, userID string) *mmmodel.AppError {
 		return mmmodel.NewAppError("DeletePage", "app.page.delete.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	s.log.Debug("Deleting page", "page_id", pageID, "user_id", userID)
-	if delErr := s.store.DeletePage(pageID, spaceID, userID); delErr != nil {
+	channelID, delErr := s.store.DeletePage(pageID, spaceID, userID)
+	if delErr != nil {
 		return storeAppError("DeletePage", delErr)
 	}
+	s.publishToChannels(wsEventPageDeleted, map[string]any{"page_id": pageID, "space_id": spaceID}, channelID)
 	return nil
 }
 
@@ -233,41 +203,37 @@ func (s *Service) RestorePage(pageID, spaceID, userID string) (*model.Page, *mmm
 		}
 		return nil, storeAppError("RestorePage", restoreErr)
 	}
-	restored, getErr := s.GetPageInSpace("RestorePage", pageID, spaceID, false)
+	restored, getErr := readBackAfterRestore(
+		mmmodel.NewAppError("RestorePage", "app.page.restore.read_back_failed.app_error", nil, "", http.StatusInternalServerError),
+		func() (*model.Page, *mmmodel.AppError) {
+			return s.GetPageInSpace("RestorePage", pageID, spaceID, false)
+		})
 	if getErr != nil {
-		// The restore committed successfully; retry once in case of a transient read error, as
-		// a permanent 500 here would cause retries to hit "not deleted" (400) instead.
-		restored, getErr = s.GetPageInSpace("RestorePage", pageID, spaceID, false)
-		if getErr != nil {
-			return nil, getErr
-		}
+		return nil, getErr
 	}
+	s.publishToChannels(wsEventPageRestored, map[string]any{"page_id": restored.Id, "space_id": restored.SpaceId}, restored.ChannelId)
 	return restored, nil
 }
 
-// DuplicatePage copies a page into targetSpaceID (empty = source's space; non-empty must be same
+// DuplicatePage copies a page into targetSpace (nil = source's space; non-nil must be same
 // team). The root copy is titled "Copy of <title>"; descendants keep their original titles.
-// sourceSpaceID scopes the source read. targetParentID nil defaults to the source's parent (same
-// space) or the target root (cross-space); a non-nil "" always means the target root.
+// sourceSpace scopes the source read; sourceSpace and targetSpace are the caller's
+// already-fetched records (from its membership gates), so no re-read happens here.
+// targetParentID nil defaults to the source's parent (same space) or the target root
+// (cross-space); a non-nil "" always means the target root.
 // Rejects depth cap breaches; a concurrent race past this check is still caught before committing.
 // includeChildren copies the whole live subtree atomically, so a partial failure cannot leave a partial tree.
-func (s *Service) DuplicatePage(pageID, sourceSpaceID, userID string, includeChildren bool, targetSpaceID string, targetParentID *string) (*model.Page, *mmmodel.AppError) {
+func (s *Service) DuplicatePage(pageID string, sourceSpace *model.Space, userID string, includeChildren bool, targetSpace *model.Space, targetParentID *string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	if !mmmodel.IsValidId(sourceSpaceID) {
+	if sourceSpace == nil {
 		return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.invalid_space_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	if !mmmodel.IsValidId(userID) {
 		return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	if targetSpaceID != "" && !mmmodel.IsValidId(targetSpaceID) {
-		return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.invalid_target_space_id.app_error", nil, "", http.StatusBadRequest)
-	}
-	if targetParentID != nil && *targetParentID != "" && !mmmodel.IsValidId(*targetParentID) {
-		return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.invalid_parent_id.app_error", nil, "", http.StatusBadRequest)
-	}
-	source, descendants, getErr := s.store.GetPageForDuplicate(pageID, sourceSpaceID, includeChildren)
+	source, descendants, getErr := s.store.GetPageForDuplicate(pageID, sourceSpace.Id, includeChildren)
 	if getErr != nil {
 		if store.IsErrNotFound(getErr) {
 			return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.not_found.app_error", nil, "", http.StatusNotFound).Wrap(getErr)
@@ -275,26 +241,14 @@ func (s *Service) DuplicatePage(pageID, sourceSpaceID, userID string, includeChi
 		return nil, storeAppError("DuplicatePage", getErr)
 	}
 
-	destSpaceID := targetSpaceID
-	if destSpaceID == "" {
-		destSpaceID = source.SpaceId
+	dest := sourceSpace
+	if targetSpace != nil {
+		dest = targetSpace
 	}
+	destSpaceID := dest.Id
 
-	if destSpaceID != source.SpaceId {
-		sameTeam, crossErr := s.sameTeamSpaces(source.SpaceId, destSpaceID)
-		if crossErr != nil {
-			// source.SpaceId is already known-valid (source was just read from it above), so a
-			// not-found here can only be the destination space — remap to the specific id the
-			// other destination-missing paths below already use, instead of leaking the generic
-			// app.store.not_found.app_error id for the same failure class.
-			if crossErr.StatusCode == http.StatusNotFound {
-				return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.dest_not_found.app_error", nil, "", http.StatusNotFound).Wrap(crossErr)
-			}
-			return nil, crossErr
-		}
-		if !sameTeam {
-			return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.cross_team.app_error", nil, "", http.StatusBadRequest)
-		}
+	if destSpaceID != source.SpaceId && sourceSpace.TeamId != dest.TeamId {
+		return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.cross_team.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	var destParentID string
@@ -305,39 +259,48 @@ func (s *Service) DuplicatePage(pageID, sourceSpaceID, userID string, includeChi
 		destParentID = source.ParentId
 	}
 
-	// Validate depth before creating anything. Runs unconditionally: a single-page copy is the same
-	// operation as CreatePage and held to the same cap. MaxDepthOfPreOrderedPages returns 0 when
-	// descendants is nil (includeChildren false), so only the placement depth is checked in that case.
-	destinationDepth := 1
+	// Pre-check the destination parent's existence for its more specific invalid_parent rejection;
+	// the depth cap is enforced authoritatively by store.CreatePageSubtree and surfaces
+	// through the duplicate-specific message keys below.
+	// destParentID equal to the source is a legitimate case (nesting the copy under the original), not a cycle.
 	if destParentID != "" {
-		// Reject a destination parent that doesn't exist or lives outside destSpaceID before computing
-		// anything from it, so a cross-space/missing parent gets a clear error instead of a misleading
-		// depth-cap rejection.
-		// destParentID equal to the source is a legitimate case (nesting the copy under the original), not a cycle.
 		if destErr := s.validateParentExists("DuplicatePage", destParentID, destSpaceID); destErr != nil {
 			return nil, destErr
 		}
-		ancestorDepth, ancErr := s.store.GetPageAncestorDepth(destParentID)
-		if ancErr != nil {
-			return nil, storeAppError("DuplicatePage", ancErr)
-		}
-		// ancestorDepth excludes destParentID itself, so the destination parent is at ancestorDepth + 1
-		// and the copy one level deeper, at ancestorDepth + 2. Root pages have depth 1.
-		destinationDepth = ancestorDepth + 2
-	}
-	subtreeMax := model.MaxDepthOfPreOrderedPages(descendants, pageID)
-	if destinationDepth > MaxPageDepth {
-		return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest)
-	}
-	if destinationDepth+subtreeMax > MaxPageDepth {
-		return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.subtree_max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest)
 	}
 
-	// Pre-generate IDs before the bulk insert so each descendant's new ParentId can be resolved.
-	// descendants is pre-ordered (parent always before children), so idMap always has the new
-	// parent ID ready when it is needed.
+	pages := buildDuplicatePages(source, descendants, destSpaceID, destParentID, userID)
+
+	s.log.Debug("Duplicating page", "page_id", pageID, "source_space_id", sourceSpace.Id, "user_id", userID)
+
+	created, createErr := s.store.CreatePageSubtree(pages, MaxPageDepth)
+	if createErr != nil {
+		if store.IsErrNotFound(createErr) {
+			return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.dest_not_found.app_error", nil, "", http.StatusNotFound).Wrap(createErr)
+		}
+		// A copied subtree that is itself too deep gets a duplicate-specific message; a
+		// plain placement-depth breach uses storeAppError's operation-neutral key.
+		var limErr *store.ErrLimitExceeded
+		if errors.As(createErr, &limErr) && limErr.Reason == store.ReasonSubtreeMaxDepthExceeded {
+			return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.subtree_max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest).Wrap(createErr)
+		}
+		return nil, storeAppError("DuplicatePage", createErr)
+	}
+
+	root := created[0]
+	s.publishToChannels(wsEventPageDuplicated, map[string]any{"page_id": root.Id, "space_id": root.SpaceId}, root.ChannelId)
+
+	return root, nil
+}
+
+// buildDuplicatePages assembles the copies to insert: the root copy of source (retitled, placed
+// under destParentID in destSpaceID) followed by a copy of each descendant. IDs are pre-generated
+// before the bulk insert so each descendant's new ParentId can be resolved; descendants is
+// pre-ordered (parent always before children), so idMap always has the new parent ID ready when
+// it is needed.
+func buildDuplicatePages(source *model.Page, descendants []*model.Page, destSpaceID, destParentID, userID string) []*model.Page {
 	rootID := mmmodel.NewId()
-	idMap := map[string]string{pageID: rootID}
+	idMap := map[string]string{source.Id: rootID}
 	pages := make([]*model.Page, 0, 1+len(descendants))
 	pages = append(pages, &model.Page{
 		Id:             rootID,
@@ -367,27 +330,7 @@ func (s *Service) DuplicatePage(pageID, sourceSpaceID, userID string, includeChi
 		})
 		idMap[d.Id] = newID
 	}
-
-	created, createErr := s.store.CreatePageSubtree(pages, MaxPageDepth)
-	if createErr != nil {
-		if store.IsErrNotFound(createErr) {
-			return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.dest_not_found.app_error", nil, "", http.StatusNotFound).Wrap(createErr)
-		}
-		if store.IsErrLimitExceeded(createErr) {
-			var limErr *store.ErrLimitExceeded
-			errors.As(createErr, &limErr)
-			switch limErr.Reason {
-			case store.ReasonSubtreeMaxDepthExceeded:
-				return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.subtree_max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest).Wrap(createErr)
-			case store.ReasonMaxDepthExceeded:
-				return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest).Wrap(createErr)
-			}
-			return nil, storeAppError("DuplicatePage", createErr)
-		}
-		return nil, storeAppError("DuplicatePage", createErr)
-	}
-
-	return created[0], nil
+	return pages
 }
 
 // copyTitle prefixes "Copy of " and truncates to the page-title cap so the duplicate's title

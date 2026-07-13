@@ -8,9 +8,19 @@ package store
 
 import (
 	"database/sql"
+	"time"
 
 	sq "github.com/mattermost/squirrel"
+
+	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
+
+// WithSpaceMembershipLockTimeoutForTest is WithSpaceMembershipLock with a caller-supplied
+// acquisition timeout, so tests can exercise the contention path without waiting out the
+// production timeout.
+func (s *Store) WithSpaceMembershipLockTimeoutForTest(spaceID string, acquireTimeout time.Duration, fn func() error) error {
+	return s.withSpaceMembershipLock(spaceID, acquireTimeout, fn)
+}
 
 // RawExecForTest executes a raw SQL query directly on the underlying DB handle.
 // It is intentionally exported only for tests (via the _test.go filename suffix) so that
@@ -32,4 +42,11 @@ func (s *Store) QueryBuilderForTest() sq.StatementBuilderType {
 // deliberately malformed/corrupt rows, use RawExecForTest instead.
 func (s *Store) ExecBuilderForTest(b sq.Sqlizer) (sql.Result, error) {
 	return s.execBuilder(s.db, b)
+}
+
+// FetchDescendantRowsForTest runs the descendants CTE directly on the DB handle. Production
+// code reaches this CTE only from inside a transaction (GetPageForDuplicate), so this exposes
+// it for tests that exercise the CTE's size cap, depth cap, and cycle termination in isolation.
+func (s *Store) FetchDescendantRowsForTest(pageID string) ([]*model.Page, error) {
+	return s.fetchDescendantRows(s.db, pageID)
 }

@@ -36,7 +36,7 @@ func TestMovePage_StoreEdgeCases(t *testing.T) {
 		parent, err := s.CreatePage(newPage(page.SpaceId, channelID, mmmodel.NewId(), ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 
-		_, _, err = s.MovePage(page.Id, page.SpaceId, &parent.Id, nil, page.UpdateAt-1, false, store.MaxPageHierarchyDepth)
+		_, _, _, err = s.MovePage(page.Id, page.SpaceId, &parent.Id, nil, page.UpdateAt-1, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		require.True(t, store.IsErrConflict(err), "expected ErrConflict, got %T: %v", err, err)
 	})
@@ -46,7 +46,7 @@ func TestMovePage_StoreEdgeCases(t *testing.T) {
 		_, page := seedSpaceAndPage(t, s)
 
 		self := page.Id
-		_, _, err := s.MovePage(page.Id, page.SpaceId, &self, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, _, err := s.MovePage(page.Id, page.SpaceId, &self, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		require.True(t, store.IsErrCircularReference(err), "expected ErrCircularReference, got %T: %v", err, err)
 	})
@@ -56,7 +56,7 @@ func TestMovePage_StoreEdgeCases(t *testing.T) {
 		_, page := seedSpaceAndPage(t, s)
 
 		ghost := mmmodel.NewId()
-		_, _, err := s.MovePage(page.Id, page.SpaceId, &ghost, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, _, err := s.MovePage(page.Id, page.SpaceId, &ghost, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		var inv *store.ErrInvalidInput
 		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
@@ -64,7 +64,7 @@ func TestMovePage_StoreEdgeCases(t *testing.T) {
 
 	t.Run("empty pageID returns invalid-input on Id", func(t *testing.T) {
 		s := openTestDB(t)
-		_, _, err := s.MovePage("", mmmodel.NewId(), nil, nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, _, err := s.MovePage("", mmmodel.NewId(), nil, nil, 0, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		var inv *store.ErrInvalidInput
 		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
@@ -73,7 +73,7 @@ func TestMovePage_StoreEdgeCases(t *testing.T) {
 
 	t.Run("missing page returns not-found", func(t *testing.T) {
 		s := openTestDB(t)
-		_, _, err := s.MovePage(mmmodel.NewId(), mmmodel.NewId(), nil, nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, _, err := s.MovePage(mmmodel.NewId(), mmmodel.NewId(), nil, nil, 0, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		require.True(t, store.IsErrNotFound(err), "expected ErrNotFound, got %T: %v", err, err)
 	})
@@ -85,7 +85,7 @@ func TestMovePage_StoreEdgeCases(t *testing.T) {
 		require.NoError(t, err)
 
 		root := ""
-		moved, _, err := s.MovePage(child.Id, child.SpaceId, &root, nil, child.UpdateAt, false, store.MaxPageHierarchyDepth)
+		moved, _, _, err := s.MovePage(child.Id, child.SpaceId, &root, nil, child.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.NoError(t, err)
 		require.Equal(t, "", moved.ParentId)
 	})
@@ -96,10 +96,10 @@ func TestMovePage_StoreEdgeCases(t *testing.T) {
 		parent, err := s.CreatePage(newPage(page.SpaceId, channelID, mmmodel.NewId(), ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 
-		moved, _, err := s.MovePage(page.Id, page.SpaceId, &parent.Id, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		moved, _, _, err := s.MovePage(page.Id, page.SpaceId, &parent.Id, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.NoError(t, err)
 		require.Equal(t, parent.Id, moved.ParentId)
-		require.Contains(t, idsOf(mustChildren(t, s, parent.Id, parent.SpaceId)), page.Id)
+		require.Contains(t, summaryIDs(mustChildren(t, s, parent.Id, parent.SpaceId)), page.Id)
 	})
 }
 
@@ -120,7 +120,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		spaceB, err := s.CreateSpace(newSpace(chB))
 		require.NoError(t, err)
 
-		movedRoot, err := s.MovePageToSpace(root.Id, spaceA.Id, spaceB.Id, nil, root.UpdateAt, false, store.MaxPageHierarchyDepth)
+		movedRoot, _, err := s.MovePageToSpace(root.Id, spaceA.Id, spaceB.Id, nil, root.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.NoError(t, err)
 		require.Equal(t, spaceB.Id, movedRoot.SpaceId, "returned page reflects the committed move")
 		require.Equal(t, chB, movedRoot.ChannelId)
@@ -139,9 +139,53 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		require.Equal(t, root.Id, gotChild.ParentId, "child stays under the moved root")
 	})
 
+	// Draft reads require the draft's SpaceId to match its live page's SpaceId (applyDraftLivenessFilter),
+	// so a draft left behind in the source space becomes unreadable once its page moves. rewriteSubtreeSpace
+	// re-homes both the in-progress edit draft (matched by PageId) and a pending new-page draft parented
+	// within the subtree (matched by ParentId) onto the target space.
+	t.Run("re-homes the subtree's drafts to the target space", func(t *testing.T) {
+		s := openTestDB(t)
+		chA := mmmodel.NewId()
+		spaceA, err := s.CreateSpace(newSpace(chA))
+		require.NoError(t, err)
+		user := mmmodel.NewId()
+		page, err := s.CreatePage(newPage(spaceA.Id, chA, user, ""), testDefaultMaxDepth)
+		require.NoError(t, err)
+
+		chB := mmmodel.NewId()
+		spaceB, err := s.CreateSpace(newSpace(chB))
+		require.NoError(t, err)
+
+		// An in-progress edit draft on the page, and a pending new-page draft parented under it
+		// (its own PageId has no page row yet).
+		_, err = s.UpsertDraft(newDraft(user, spaceA.Id, page.Id, ""))
+		require.NoError(t, err)
+		_, err = s.UpsertDraft(newDraft(user, spaceA.Id, mmmodel.NewId(), page.Id))
+		require.NoError(t, err)
+
+		sourceBefore, err := s.GetDraftsForSpace(user, spaceA.Id)
+		require.NoError(t, err)
+		require.Len(t, sourceBefore, 2, "both drafts are readable in the source space before the move")
+
+		_, _, err = s.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		require.NoError(t, err)
+
+		movedDraft, err := s.GetDraft(user, page.Id)
+		require.NoError(t, err)
+		require.Equal(t, spaceB.Id, movedDraft.SpaceId, "the edit draft follows the page and stays readable")
+
+		targetDrafts, err := s.GetDraftsForSpace(user, spaceB.Id)
+		require.NoError(t, err)
+		require.Len(t, targetDrafts, 2, "both drafts now live in the target space")
+
+		sourceAfter, err := s.GetDraftsForSpace(user, spaceA.Id)
+		require.NoError(t, err)
+		require.Empty(t, sourceAfter, "no draft remains stranded in the source space")
+	})
+
 	t.Run("empty pageID returns invalid-input", func(t *testing.T) {
 		s := openTestDB(t)
-		_, err := s.MovePageToSpace("", mmmodel.NewId(), mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err := s.MovePageToSpace("", mmmodel.NewId(), mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		var inv *store.ErrInvalidInput
 		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
@@ -149,7 +193,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 
 	t.Run("empty sourceSpaceID returns invalid-input", func(t *testing.T) {
 		s := openTestDB(t)
-		_, err := s.MovePageToSpace(mmmodel.NewId(), "", mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err := s.MovePageToSpace(mmmodel.NewId(), "", mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		var inv *store.ErrInvalidInput
 		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
@@ -157,7 +201,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 
 	t.Run("empty targetSpaceID returns invalid-input", func(t *testing.T) {
 		s := openTestDB(t)
-		_, err := s.MovePageToSpace(mmmodel.NewId(), mmmodel.NewId(), "", nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err := s.MovePageToSpace(mmmodel.NewId(), mmmodel.NewId(), "", nil, 0, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		var inv *store.ErrInvalidInput
 		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
@@ -169,7 +213,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		spaceB, err := s.CreateSpace(newSpace(chB))
 		require.NoError(t, err)
 
-		_, err = s.MovePageToSpace(mmmodel.NewId(), mmmodel.NewId(), spaceB.Id, nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err = s.MovePageToSpace(mmmodel.NewId(), mmmodel.NewId(), spaceB.Id, nil, 0, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		require.True(t, store.IsErrNotFound(err), "expected ErrNotFound, got %T: %v", err, err)
 	})
@@ -188,7 +232,7 @@ func TestMovePage_StoreUnderLockGuards(t *testing.T) {
 		require.NoError(t, err)
 
 		dest := grandchild.Id
-		_, _, err = s.MovePage(root.Id, root.SpaceId, &dest, nil, root.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, _, err = s.MovePage(root.Id, root.SpaceId, &dest, nil, root.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		require.True(t, store.IsErrCircularReference(err), "expected ErrCircularReference, got %T: %v", err, err)
 	})
@@ -206,7 +250,7 @@ func TestMovePage_StoreUnderLockGuards(t *testing.T) {
 		require.NoError(t, err)
 
 		dest := c.Id
-		_, _, err = s.MovePage(p.Id, p.SpaceId, &dest, nil, p.UpdateAt, false, 3)
+		_, _, _, err = s.MovePage(p.Id, p.SpaceId, &dest, nil, p.UpdateAt, false, 3)
 		require.Error(t, err)
 		require.True(t, store.IsErrLimitExceeded(err), "expected ErrLimitExceeded, got %T: %v", err, err)
 	})
@@ -251,10 +295,37 @@ func TestMovePage_StoreReindexClampSingleSibling(t *testing.T) {
 
 	sameParent := parent.Id
 	large := int64(5)
-	moved, _, err := s.MovePage(child.Id, child.SpaceId, &sameParent, &large, child.UpdateAt, false, store.MaxPageHierarchyDepth)
+	moved, _, _, err := s.MovePage(child.Id, child.SpaceId, &sameParent, &large, child.UpdateAt, false, store.MaxPageHierarchyDepth)
 	require.NoError(t, err)
 	require.Equal(t, parent.Id, moved.ParentId)
-	require.Equal(t, []string{child.Id}, idsOf(mustChildren(t, s, parent.Id, parent.SpaceId)))
+	require.Equal(t, []string{child.Id}, summaryIDs(mustChildren(t, s, parent.Id, parent.SpaceId)))
+}
+
+// TestMovePage_ReturnsLockedPriorParent verifies the prior-parent return reflects the row read
+// under lock, not the caller's last read: after another move reparents the page, a forced move
+// carrying the original (stale) baseline must report the current parent as the one it displaced,
+// since that is the subtree clients actually need to invalidate.
+func TestMovePage_ReturnsLockedPriorParent(t *testing.T) {
+	s := openTestDB(t)
+	channelID, page := seedSpaceAndPage(t, s)
+	parentA, err := s.CreatePage(newPage(page.SpaceId, channelID, mmmodel.NewId(), ""), testDefaultMaxDepth)
+	require.NoError(t, err)
+	parentB, err := s.CreatePage(newPage(page.SpaceId, channelID, mmmodel.NewId(), ""), testDefaultMaxDepth)
+	require.NoError(t, err)
+
+	staleBaseline := page.UpdateAt
+	_, priorParent, didMove, err := s.MovePage(page.Id, page.SpaceId, &parentA.Id, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+	require.NoError(t, err)
+	require.True(t, didMove)
+	require.Empty(t, priorParent, "the first move displaces the root parent")
+
+	// Force past the stale baseline; the displaced parent is A (the locked row's parent), not
+	// the root the stale caller last saw.
+	forced, priorParent, didMove, err := s.MovePage(page.Id, page.SpaceId, &parentB.Id, nil, staleBaseline, true, store.MaxPageHierarchyDepth)
+	require.NoError(t, err)
+	require.True(t, didMove)
+	require.Equal(t, parentA.Id, priorParent)
+	require.Equal(t, parentB.Id, forced.ParentId)
 }
 
 // TestCreatePage_SiblingCapEnforced verifies CreatePage rejects once a parent's live child count
@@ -274,6 +345,42 @@ func TestCreatePage_SiblingCapEnforced(t *testing.T) {
 
 	_, err := s.CreatePage(newPage(parent.SpaceId, channelID, mmmodel.NewId(), parent.Id), testDefaultMaxDepth)
 	require.True(t, store.IsErrLimitExceeded(err), "expected ErrLimitExceeded, got %v", err)
+}
+
+// TestCreatePageSubtreeDuplicateIDConflict verifies the bulk-insert path maps a primary-key
+// collision to ErrConflict, matching the single-row CreatePage path. This is the conflict surface
+// reachable through DuplicatePage(includeChildren=true).
+func TestCreatePageSubtreeDuplicateIDConflict(t *testing.T) {
+	s := openTestDB(t)
+	channelID, existing := seedSpaceAndPage(t, s)
+
+	// A subtree root whose id collides with an already-live page must fail the insert as a conflict.
+	root := newPage(existing.SpaceId, channelID, mmmodel.NewId(), "")
+	root.Id = existing.Id
+	_, err := s.CreatePageSubtree([]*model.Page{root}, testDefaultMaxDepth)
+	require.True(t, store.IsErrConflict(err), "expected ErrConflict for a duplicate id, got %T: %v", err, err)
+}
+
+// TestCreatePageSubtreeSiblingCapEnforced verifies the bulk-insert path enforces
+// MaxPageSiblingsLimit on the destination sibling group the root joins (via nextSortOrder),
+// matching CreatePage. This is the cap surface reachable through DuplicatePage(includeChildren=true)
+// into an already-full group. The group is bulk-seeded with raw SQL for the same reason as
+// TestCreatePage_SiblingCapEnforced.
+func TestCreatePageSubtreeSiblingCapEnforced(t *testing.T) {
+	s := openTestDB(t)
+	channelID, parent := seedSpaceAndPage(t, s)
+
+	_, rawErr := s.RawExecForTest(
+		`INSERT INTO DOCS_Page (Id, SpaceId, ChannelId, ParentId, Type, UserId, SortOrder, CreateAt, UpdateAt)
+		 SELECT 'sib' || lpad(gs::text, 23, '0'), $1, $2, $3, 'page', $4, gs, gs, gs
+		 FROM generate_series(1, $5) AS gs`,
+		parent.SpaceId, channelID, parent.Id, mmmodel.NewId(), store.MaxPageSiblingsLimit)
+	require.NoError(t, rawErr)
+
+	root := newPage(parent.SpaceId, channelID, mmmodel.NewId(), parent.Id)
+	root.Id = mmmodel.NewId()
+	_, err := s.CreatePageSubtree([]*model.Page{root}, testDefaultMaxDepth)
+	require.True(t, store.IsErrLimitExceeded(err), "expected ErrLimitExceeded, got %T: %v", err, err)
 }
 
 // TestPageMutations_ScopedToSpace verifies the {Id, SpaceId} scoping the store mutations enforce: a
@@ -302,17 +409,17 @@ func TestPageMutations_ScopedToSpace(t *testing.T) {
 
 	t.Run("move with wrong space is not found", func(t *testing.T) {
 		root := ""
-		_, _, mErr := s.MovePage(page.Id, spaceB.Id, &root, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, _, mErr := s.MovePage(page.Id, spaceB.Id, &root, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.True(t, store.IsErrNotFound(mErr))
 	})
 
 	t.Run("move-to-space with wrong source space is not found", func(t *testing.T) {
-		_, mErr := s.MovePageToSpace(page.Id, spaceB.Id, page.SpaceId, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, mErr := s.MovePageToSpace(page.Id, spaceB.Id, page.SpaceId, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.True(t, store.IsErrNotFound(mErr))
 	})
 
 	t.Run("delete with wrong space is not found and leaves the page live", func(t *testing.T) {
-		require.True(t, store.IsErrNotFound(s.DeletePage(page.Id, spaceB.Id, user)))
+		require.True(t, store.IsErrNotFound(deletePageErr(s, page.Id, spaceB.Id, user)))
 
 		fresh, gErr := s.GetPage(page.Id, false)
 		require.NoError(t, gErr)
@@ -320,7 +427,7 @@ func TestPageMutations_ScopedToSpace(t *testing.T) {
 	})
 
 	t.Run("restore with wrong space is not found", func(t *testing.T) {
-		require.NoError(t, s.DeletePage(page.Id, page.SpaceId, user))
+		require.NoError(t, deletePageErr(s, page.Id, page.SpaceId, user))
 		require.True(t, store.IsErrNotFound(s.RestorePage(page.Id, spaceB.Id, user, testDefaultMaxDepth)))
 
 		// A correctly-scoped restore then succeeds, confirming the row was only shielded by the scope.

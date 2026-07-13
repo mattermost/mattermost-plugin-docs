@@ -31,6 +31,17 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &pqErr) && string(pqErr.Code) == pgUniqueViolationCode
 }
 
+// pgSerializationFailureCode is the PostgreSQL SQLSTATE for a serialization_failure, raised e.g.
+// when a locking read under REPEATABLE READ encounters a row that a concurrent transaction
+// updated and committed after this transaction's snapshot was taken.
+const pgSerializationFailureCode = "40001"
+
+// isSerializationFailure reports whether err is a PostgreSQL serialization failure.
+func isSerializationFailure(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && string(pqErr.Code) == pgSerializationFailureCode
+}
+
 // constraintName returns the constraint/index name from a *pq.Error, or "" if err
 // is not a *pq.Error.
 func constraintName(err error) string {
@@ -169,7 +180,7 @@ func (s *Store) get(e sqlx.ExtContext, dest any, query string, args ...any) erro
 func (s *Store) getBuilder(e sqlx.ExtContext, dest any, b sq.Sqlizer) error {
 	query, args, err := b.ToSql()
 	if err != nil {
-		return err
+		return errors.Wrap(err, "failed to build query")
 	}
 	return s.get(e, dest, query, args...)
 }
@@ -186,7 +197,7 @@ func (s *Store) selectAll(e sqlx.ExtContext, dest any, query string, args ...any
 func (s *Store) selectBuilder(e sqlx.ExtContext, dest any, b sq.Sqlizer) error {
 	query, args, err := b.ToSql()
 	if err != nil {
-		return err
+		return errors.Wrap(err, "failed to build query")
 	}
 	return s.selectAll(e, dest, query, args...)
 }
@@ -203,9 +214,18 @@ func (s *Store) exec(e sqlx.ExtContext, query string, args ...any) (sql.Result, 
 func (s *Store) execBuilder(e sqlx.ExtContext, b sq.Sqlizer) (sql.Result, error) {
 	query, args, err := b.ToSql()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "failed to build query")
 	}
 	return s.exec(e, query, args...)
+}
+
+// advisoryXactLock takes the transaction-scoped advisory lock for key, held until tx ends.
+// hashtextextended maps the key to a single bigint, so a hash collision only over-serializes
+// the two colliding keys' operations — added contention, never corruption, with negligible
+// probability. Must be called inside tx.
+func (s *Store) advisoryXactLock(tx *sqlx.Tx, key string) error {
+	_, err := s.exec(tx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, key)
+	return err
 }
 
 // nextMonotonic advances now past prev so same-millisecond writes still move the
@@ -215,6 +235,14 @@ func nextMonotonic(now, prev int64) int64 {
 		return prev + 1
 	}
 	return now
+}
+
+// monotonicBump is nextMonotonic in SQL: GREATEST(col + 1, now) sets col to at least col+1 even
+// when now is not ahead of the stored value, so the write always moves the CAS token forward and
+// a stale optimistic-lock baseline can never read as current again. Every write to a column used
+// as an optimistic-lock token must set it through this expression, never to a plain value.
+func monotonicBump(col string, now int64) sq.Sqlizer {
+	return sq.Expr("GREATEST("+col+" + 1, ?)", now)
 }
 
 // requirePositiveLimit returns ErrInvalidInput when limit is not positive.
@@ -282,6 +310,7 @@ const (
 	ReasonNotDeleted              = "not_deleted"
 	ReasonMaxDepthExceeded        = "max_depth_exceeded"
 	ReasonSubtreeMaxDepthExceeded = "subtree_max_depth_exceeded"
+	ReasonParentNotLive           = "parent_not_live"
 )
 
 func (e *ErrInvalidInput) Error() string {
@@ -313,9 +342,10 @@ func IsErrConflict(err error) bool {
 type ErrLimitExceeded struct {
 	Resource string
 	Limit    int
-	// Reason optionally carries the app-facing AppError.Id this specific limit violation should
-	// map to, so a limit re-checked under lock can return the same error key as any earlier
-	// pre-check for the same condition. Empty means storeAppError falls back to app.store.too_large.app_error.
+	// Reason optionally carries one of the short Reason* codes below, so a limit re-checked
+	// under lock can communicate the same condition as any earlier pre-check; the app layer
+	// maps the code to its own error key. Empty means storeAppError falls back to
+	// app.store.too_large.app_error.
 	Reason string
 }
 

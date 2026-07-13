@@ -3,6 +3,7 @@ package main
 import (
 	"reflect"
 
+	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/pkg/errors"
 )
 
@@ -67,8 +68,16 @@ func (p *Plugin) setConfiguration(configuration *configuration) {
 	p.configuration = configuration
 }
 
+// snapshotFeatureFlags caches the feature flags the request path reads, so per-request checks
+// don't fetch the full server configuration across the plugin RPC boundary.
+func (p *Plugin) snapshotFeatureFlags(cfg *mmmodel.Config) {
+	p.enableDocs.Store(cfg != nil && cfg.FeatureFlags != nil && cfg.FeatureFlags.EnableDocs)
+}
+
 // OnConfigurationChange is invoked when configuration changes may have been made.
 func (p *Plugin) OnConfigurationChange() error {
+	p.snapshotFeatureFlags(p.API.GetConfig())
+
 	configuration := new(configuration)
 
 	// Load the public configuration fields from the Mattermost server configuration.

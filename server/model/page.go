@@ -63,44 +63,56 @@ type Page struct {
 	Props mmmodel.StringInterface `json:"props"`
 }
 
+// PageSummary is the metadata projection returned by page collection endpoints. It deliberately
+// omits Body, SearchText, and Props: Body and SearchText can each be large, while Props is opaque
+// and may be up to PagePropsMaxBytes. Fetch a Page by ID when full content is required.
+type PageSummary struct {
+	Id             string `json:"id"`
+	SpaceId        string `json:"space_id"`
+	ParentId       string `json:"parent_id"`
+	Type           string `json:"type"`
+	Title          string `json:"title"`
+	UserId         string `json:"user_id"`
+	LastModifiedBy string `json:"last_modified_by"`
+	SortOrder      int64  `json:"sort_order"`
+	CreateAt       int64  `json:"create_at"`
+	UpdateAt       int64  `json:"update_at"`
+	EditAt         int64  `json:"edit_at"`
+}
+
 // IsSnapshot reports whether p is a version snapshot rather than a live page.
 func (p *Page) IsSnapshot() bool {
 	return p.OriginalId != ""
 }
 
-// PageIDParentRef is a narrow view of Page returned by store methods that need only
-// Id and ParentId, preventing callers from accidentally reading zero-valued fields.
-type PageIDParentRef struct {
-	Id       string `db:"id"`
-	ParentId string `db:"parentid"`
-}
-
-// MaxDepthOfPreOrderedIDParents is the narrow-type variant of MaxDepthOfPreOrderedPages,
-// operating on []PageIDParentRef instead of []*Page.
-func MaxDepthOfPreOrderedIDParents(refs []PageIDParentRef, rootID string) int {
-	depthOf := map[string]int{rootID: 0}
-	maxDepth := 0
-	for _, r := range refs {
-		if r.Id == rootID {
-			continue
+// MaxDepthOfPages returns the maximum depth in pages relative to rootID (depth 0), regardless
+// of slice order: each page's depth is the length of its ParentId chain up to rootID, walked
+// through the slice. A chain that leaves the slice counts only its in-slice length, and a
+// corrupted ParentId cycle terminates after the slice size (grossly overcounting, so a depth
+// cap rejects it) — callers reject such malformed input separately before depth matters.
+func MaxDepthOfPages(pages []*Page, rootID string) int {
+	parentOf := make(map[string]string, len(pages))
+	for _, p := range pages {
+		if p.Id != rootID {
+			parentOf[p.Id] = p.ParentId
 		}
-		depth := depthOf[r.ParentId] + 1
-		depthOf[r.Id] = depth
+	}
+	maxDepth := 0
+	for id := range parentOf {
+		depth := 0
+		for cur := id; cur != rootID; {
+			depth++
+			parent, ok := parentOf[cur]
+			if !ok || depth > len(parentOf) {
+				break
+			}
+			cur = parent
+		}
 		if depth > maxDepth {
 			maxDepth = depth
 		}
 	}
 	return maxDepth
-}
-
-// MaxDepthOfPreOrderedPages returns the maximum depth in pages relative to rootID (depth 0).
-// pages must be pre-order sorted: each page's parent appears earlier in the slice (or is rootID).
-func MaxDepthOfPreOrderedPages(pages []*Page, rootID string) int {
-	refs := make([]PageIDParentRef, len(pages))
-	for i, p := range pages {
-		refs[i] = PageIDParentRef{Id: p.Id, ParentId: p.ParentId}
-	}
-	return MaxDepthOfPreOrderedIDParents(refs, rootID)
 }
 
 // PreSave sanitizes Page and defaults its Id-independent fields before insert.
@@ -149,8 +161,8 @@ type PagePatch struct {
 }
 
 // Patch applies the non-nil fields of patch to the page. Normalization (title trim,
-// etc.) happens in PreUpdate. Callers must call patch.IsValid() first — a nil patch is a no-op here
-// rather than a panic, but produces no changes, silently defeating the caller's intent.
+// etc.) happens in PreUpdate. A nil patch is a no-op rather than a panic; callers must call
+// patch.IsValid() first to enforce patch-level validity.
 func (p *Page) Patch(patch *PagePatch) {
 	if patch == nil {
 		return

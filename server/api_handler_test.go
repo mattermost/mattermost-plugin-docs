@@ -12,6 +12,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -36,6 +37,9 @@ import (
 type apiTestHarness struct {
 	plugin *Plugin
 	store  *store.Store
+	// db is the schema-scoped handle, exposed so tests can seed core-table stand-ins
+	// (e.g. ChannelMembers rows for the team-listing visibility join).
+	db *sql.DB
 }
 
 // openTestPlugin wires a real *Plugin over an isolated test DB. When mockAPI is non-nil the
@@ -43,11 +47,7 @@ type apiTestHarness struct {
 // A nil mockAPI creates a minimal stub that satisfies the EnableDocsRequired middleware.
 func openTestPlugin(t *testing.T, mockAPI *plugintest.API) *apiTestHarness {
 	t.Helper()
-	db := testutil.OpenTestDB(t)
-	s, err := store.New(db, "postgres", nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = s.Close() })
-	require.NoError(t, s.RunMigrations())
+	s, db := testutil.OpenTestStore(t)
 
 	var client *pluginapi.Client
 	if mockAPI == nil {
@@ -55,24 +55,36 @@ func openTestPlugin(t *testing.T, mockAPI *plugintest.API) *apiTestHarness {
 		// to any channel/team so space-scoped tests pass membership checks without a real server.
 		// Channel side-effects (archive/restore) are no-ops so store-only tests don't need to
 		// set up specific channel expectations.
-		mockAPI = &plugintest.API{}
-		mockAPI.On("GetConfig").Return(&mmmodel.Config{
-			FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true},
-		}).Maybe()
-		mockAPI.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+		mockAPI = newEnabledMockAPI()
 		mockAPI.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
 		mockAPI.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
 		mockAPI.On("DeleteChannel", mock.Anything).Return(nil).Maybe()
 		mockAPI.On("RestoreChannel", mock.Anything).Return(nil).Maybe()
-		mockAPI.On("GetSpaceBackingChannel", mock.Anything).Return((*mmmodel.Channel)(nil), nil).Maybe()
+		mockAPI.On("GetChannelMembers", mock.Anything, mock.AnythingOfType("int"), mock.AnythingOfType("int")).Return(mmmodel.ChannelMembers{}, nil).Maybe()
+		mockAPI.On("GetChannelOfType", mock.Anything, mock.Anything).Return((*mmmodel.Channel)(nil), nil).Maybe()
 	}
+	// writeAppError logs 500-class failures (message plus four key/value pairs) regardless of
+	// which mock a test supplies, so stub it universally.
+	mockAPI.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	client = pluginapi.NewClient(mockAPI, nil)
 	t.Cleanup(func() { mockAPI.AssertExpectations(t) })
 
 	p := &Plugin{store: s, service: app.New(s, nil, client)}
 	p.API = mockAPI
+	p.snapshotFeatureFlags(p.API.GetConfig())
 	p.router = p.initRouter()
-	return &apiTestHarness{plugin: p, store: s}
+	return &apiTestHarness{plugin: p, store: s, db: db}
+}
+
+// newEnabledMockAPI returns a plugintest mock pre-stubbed with the EnableDocs flag on and
+// best-effort WS publishes swallowed — the shared baseline for tests that add their own
+// channel/team expectations. Tests pinning a specific PublishWebSocketEvent expectation must
+// build their mock by hand: this wildcard stub would swallow the pinned call.
+func newEnabledMockAPI() *plugintest.API {
+	mockAPI := &plugintest.API{}
+	mockAPI.On("GetConfig").Return(&mmmodel.Config{FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true}}).Maybe()
+	mockAPI.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	return mockAPI
 }
 
 // do issues a request through the plugin router. An empty userID omits the auth header.
@@ -95,21 +107,18 @@ func (h *apiTestHarness) do(t *testing.T, method, path, userID string, body any)
 
 func seedSpace(t *testing.T, s *store.Store, channelID string) *model.Space {
 	t.Helper()
-	return seedSpaceInTeam(t, s, mmmodel.NewId(), channelID)
+	return seedSpaceInTeam(t, s, channelID, mmmodel.NewId())
 }
 
-func seedSpaceInTeam(t *testing.T, s *store.Store, teamID, channelID string) *model.Space {
+// seedSpaceInTeam mirrors testutil.MustCreateSpace's (channelID, teamID) parameter order.
+func seedSpaceInTeam(t *testing.T, s *store.Store, channelID, teamID string) *model.Space {
 	t.Helper()
-	space, err := s.CreateSpace(&model.Space{ChannelId: channelID, TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "Test Space"})
-	require.NoError(t, err)
-	return space
+	return testutil.MustCreateSpace(t, s, channelID, teamID)
 }
 
 func seedPage(t *testing.T, s *store.Store, spaceID, channelID, parentID string) *model.Page {
 	t.Helper()
-	page, err := s.CreatePage(&model.Page{SpaceId: spaceID, ChannelId: channelID, UserId: mmmodel.NewId(), ParentId: parentID, Type: model.PageTypePage, Title: "Test Page", Body: `{"type":"doc","content":[]}`}, store.MaxPageHierarchyDepth+10)
-	require.NoError(t, err)
-	return page
+	return testutil.MustCreatePage(t, s, spaceID, channelID, mmmodel.NewId(), parentID)
 }
 
 // TestHandler_RequiresAuth verifies the auth middleware rejects a request with no user header.
@@ -135,8 +144,7 @@ func TestHandler_EnableDocsRequired(t *testing.T) {
 
 // TestHandler_CreateSpace drives POST /spaces through the backing-channel mock.
 func TestHandler_CreateSpace(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	mockAPI.On("GetConfig").Return(&mmmodel.Config{FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true}}).Maybe()
+	mockAPI := newEnabledMockAPI()
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
@@ -161,8 +169,7 @@ func TestHandler_CreateSpace(t *testing.T) {
 // server-owned fields from the request body: a client-supplied id, delete_at, create_at, and
 // sort_order must be ignored so a caller cannot, e.g., create an already-soft-deleted space.
 func TestHandler_CreateSpace_IgnoresServerOwnedFields(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	mockAPI.On("GetConfig").Return(&mmmodel.Config{FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true}}).Maybe()
+	mockAPI := newEnabledMockAPI()
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
@@ -331,16 +338,183 @@ func TestHandler_GetSpacePages(t *testing.T) {
 
 	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/pages", mmmodel.NewId(), nil)
 	require.Equal(t, http.StatusOK, rec.Code)
-	var resp struct {
-		Items   []*model.Page `json:"items"`
-		Page    int           `json:"page"`
-		PerPage int           `json:"per_page"`
-		HasMore bool          `json:"has_more"`
-	}
+	var resp paginatedResponse[*model.PageSummary]
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Len(t, resp.Items, 2)
 	require.Equal(t, 0, resp.Page)
 	require.False(t, resp.HasMore)
+}
+
+// TestHandler_PageCollectionsReturnMetadataOnly verifies the tree/list endpoints neither load nor
+// serialize a page's large content or opaque props, while the single-page endpoint remains the
+// full-content read path.
+func TestHandler_PageCollectionsReturnMetadataOnly(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	userID := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+
+	parentInput := testutil.NewPage(space.Id, channelID, userID, "")
+	parentInput.Title = "Parent"
+	parentInput.Body = `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"parent content"}]}]}`
+	parentInput.SearchText = "parent content"
+	parentInput.Props = mmmodel.StringInterface{"internal": "do not list"}
+	parent, err := h.store.CreatePage(parentInput, store.MaxPageHierarchyDepth+10)
+	require.NoError(t, err)
+
+	childInput := testutil.NewPage(space.Id, channelID, userID, parent.Id)
+	childInput.Title = "Child"
+	childInput.Body = `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"child content"}]}]}`
+	childInput.SearchText = "child content"
+	childInput.Props = mmmodel.StringInterface{"internal": "do not list"}
+	child, err := h.store.CreatePage(childInput, store.MaxPageHierarchyDepth+10)
+	require.NoError(t, err)
+
+	assertSummary := func(path, expectedID string) {
+		t.Helper()
+		rec := h.do(t, http.MethodGet, path, userID, nil)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var response struct {
+			Items []map[string]json.RawMessage `json:"items"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+
+		for _, item := range response.Items {
+			var id string
+			require.NoError(t, json.Unmarshal(item["id"], &id))
+			if id != expectedID {
+				continue
+			}
+			require.Contains(t, item, "title")
+			require.NotContains(t, item, "body")
+			require.NotContains(t, item, "search_text")
+			require.NotContains(t, item, "props")
+			return
+		}
+		require.Failf(t, "summary not found", "expected page %s in %s", expectedID, path)
+	}
+
+	assertSummary("/api/v1/spaces/"+space.Id+"/pages", parent.Id)
+	assertSummary("/api/v1/spaces/"+space.Id+"/pages/"+parent.Id+"/children", child.Id)
+
+	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/pages/"+parent.Id, userID, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var detail map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &detail))
+	require.Contains(t, detail, "body")
+	require.Contains(t, detail, "search_text")
+	require.Contains(t, detail, "props")
+}
+
+// TestHandler_ListSpaceMembers lists a space's members through the backing channel.
+func TestHandler_ListSpaceMembers(t *testing.T) {
+	channelID := mmmodel.NewId()
+	memberUserID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.ChannelMember{}, nil)
+	mockAPI.On("GetChannelMembers", channelID, mock.AnythingOfType("int"), mock.AnythingOfType("int")).
+		Return(mmmodel.ChannelMembers{{ChannelId: channelID, UserId: memberUserID}}, nil)
+	h := openTestPlugin(t, mockAPI)
+
+	space := seedSpace(t, h.store, channelID)
+
+	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/members", mmmodel.NewId(), nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp paginatedResponse[*model.SpaceMember]
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp.Items, 1)
+	require.Equal(t, memberUserID, resp.Items[0].UserId)
+	require.False(t, resp.HasMore)
+}
+
+// TestHandler_ListSpaceMembers_HasMore verifies the probe row: when the requested page comes back
+// full and another member exists on the next page, has_more is true and the page is trimmed to
+// per_page entries.
+func TestHandler_ListSpaceMembers_HasMore(t *testing.T) {
+	channelID := mmmodel.NewId()
+	firstMember := mmmodel.NewId()
+	secondMember := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.ChannelMember{}, nil)
+	// Page 0 at size 1 comes back full, so the handler probes the next page's first slot
+	// (page-indexed API: index (page+1)*perPage at size 1).
+	mockAPI.On("GetChannelMembers", channelID, 0, 1).
+		Return(mmmodel.ChannelMembers{{ChannelId: channelID, UserId: firstMember}}, nil)
+	mockAPI.On("GetChannelMembers", channelID, 1, 1).
+		Return(mmmodel.ChannelMembers{{ChannelId: channelID, UserId: secondMember}}, nil)
+	h := openTestPlugin(t, mockAPI)
+
+	space := seedSpace(t, h.store, channelID)
+
+	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/members?per_page=1", mmmodel.NewId(), nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp paginatedResponse[*model.SpaceMember]
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp.Items, 1)
+	require.Equal(t, firstMember, resp.Items[0].UserId)
+	require.True(t, resp.HasMore)
+}
+
+// TestHandler_AddSpaceMember adds a member to a space; any current space member may do so.
+func TestHandler_AddSpaceMember(t *testing.T) {
+	channelID := mmmodel.NewId()
+	targetUserID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.ChannelMember{}, nil)
+	mockAPI.On("AddChannelMember", channelID, targetUserID).
+		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: targetUserID}, nil)
+	h := openTestPlugin(t, mockAPI)
+
+	space := seedSpace(t, h.store, channelID)
+
+	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/members", mmmodel.NewId(), map[string]any{
+		"user_id": targetUserID,
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var member model.SpaceMember
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &member))
+	require.Equal(t, targetUserID, member.UserId)
+	mockAPI.AssertCalled(t, "AddChannelMember", channelID, targetUserID)
+}
+
+// TestHandler_RemoveSpaceMember removes a member from a space.
+func TestHandler_RemoveSpaceMember(t *testing.T) {
+	channelID := mmmodel.NewId()
+	targetUserID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.ChannelMember{}, nil)
+	// The last-member guard scans the member list before removing; report another (active)
+	// member so the removal proceeds.
+	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).
+		Return(mmmodel.ChannelMembers{{ChannelId: channelID, UserId: targetUserID}, {ChannelId: channelID, UserId: mmmodel.NewId()}}, nil)
+	mockAPI.On("DeleteChannelMember", channelID, targetUserID).Return(nil)
+	h := openTestPlugin(t, mockAPI)
+
+	space := seedSpace(t, h.store, channelID)
+
+	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID, mmmodel.NewId(), nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	mockAPI.AssertCalled(t, "DeleteChannelMember", channelID, targetUserID)
 }
 
 // TestHandler_GetTeamSpaces lists the spaces on a team visible to the caller.
@@ -349,20 +523,16 @@ func TestHandler_GetTeamSpaces(t *testing.T) {
 	teamID := mmmodel.NewId()
 	caller := mmmodel.NewId()
 
-	mockAPI := &plugintest.API{}
-	mockAPI.On("GetConfig").Return(&mmmodel.Config{FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true}}).Maybe()
-	mockAPI.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	mockAPI := newEnabledMockAPI()
 	mockAPI.On("GetTeamMember", teamID, caller).Return(&mmmodel.TeamMember{}, nil)
-	mockAPI.On("GetChannelsForTeamForUser", teamID, caller, false).Return([]*mmmodel.Channel{{Id: channelID}}, nil)
 	h := openTestPlugin(t, mockAPI)
 
-	seedSpaceInTeam(t, h.store, teamID, channelID)
+	seedSpaceInTeam(t, h.store, channelID, teamID)
+	testutil.MustAddChannelMember(t, h.db, channelID, caller)
 
 	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
-	var resp struct {
-		Items []*model.Space `json:"items"`
-	}
+	var resp paginatedResponse[*model.Space]
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Len(t, resp.Items, 1)
 }
@@ -385,9 +555,42 @@ func TestHandler_UpdatePage(t *testing.T) {
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, body)
 	require.Equal(t, http.StatusOK, rec.Code)
 
+	var updated model.Page
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updated))
+	require.Equal(t, `{"type":"doc","content":[{"type":"paragraph"}]}`, updated.Body)
+	require.Equal(t, "updated text", updated.SearchText)
+
 	// The first update bumped EditAt, so the same baseline is now stale.
 	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, body)
 	require.Equal(t, http.StatusConflict, rec.Code)
+}
+
+// TestHandler_UpdatePage_BaselineRequired verifies a PATCH that omits base_edit_at without force
+// is rejected up front with a clear 400 rather than a misleading 409 conflict. The same app-layer
+// baseline gate covers move, move-to-space, and space update.
+func TestHandler_UpdatePage_BaselineRequired(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	page := seedPage(t, h.store, space.Id, channelID, "")
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, map[string]any{
+		"body":        `{"type":"doc","content":[]}`,
+		"search_text": "text",
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	var appErr mmmodel.AppError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+	require.Equal(t, "api.optimistic_lock.baseline_required.app_error", appErr.Id)
+
+	// force substitutes for the baseline (last-write-wins).
+	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, map[string]any{
+		"body":        `{"type":"doc","content":[]}`,
+		"search_text": "text",
+		"force":       true,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
 }
 
 // TestHandler_UpdatePage_Props verifies that props supplied in the PATCH body are persisted and
@@ -445,12 +648,7 @@ func TestHandler_GetPageChildren(t *testing.T) {
 
 	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/pages/"+parent.Id+"/children", user, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
-	var resp struct {
-		Items   []*model.Page `json:"items"`
-		Page    int           `json:"page"`
-		PerPage int           `json:"per_page"`
-		HasMore bool          `json:"has_more"`
-	}
+	var resp paginatedResponse[*model.PageSummary]
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Len(t, resp.Items, 2)
 	require.ElementsMatch(t, []string{childA.Id, childB.Id}, []string{resp.Items[0].Id, resp.Items[1].Id})
@@ -513,6 +711,25 @@ func TestHandler_MovePageToSpace_MissingTargetSpaceId(t *testing.T) {
 	require.Equal(t, "api.page.move_to_space.missing_target_space_id.app_error", appErr.Id)
 }
 
+// TestHandler_MovePageToSpace_InvalidTargetSpaceId verifies a malformed (non-empty) target_space_id
+// is rejected with the handler-specific 400 before any app-layer call is made.
+func TestHandler_MovePageToSpace_InvalidTargetSpaceId(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelA := mmmodel.NewId()
+	spaceA := seedSpace(t, h.store, channelA)
+	page := seedPage(t, h.store, spaceA.Id, channelA, "")
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/move-to-space", user, map[string]any{
+		"target_space_id":    "not-a-valid-id",
+		"expected_update_at": page.UpdateAt,
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	var appErr mmmodel.AppError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+	require.Equal(t, "api.page.move_to_space.invalid_target_space_id.app_error", appErr.Id)
+}
+
 // TestHandler_MovePageToSpace_CrossTeamRejected drives the cross-team rejection through the real
 // HTTP handler, asserting the status code and AppError id the app layer returns.
 func TestHandler_MovePageToSpace_CrossTeamRejected(t *testing.T) {
@@ -563,7 +780,7 @@ func TestHandler_MovePageToSpace_DepthExceeded(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	var appErr mmmodel.AppError
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
-	require.Equal(t, "app.page.move.max_depth_exceeded.app_error", appErr.Id)
+	require.Equal(t, "app.page.max_depth_exceeded.app_error", appErr.Id)
 }
 
 // TestHandler_MovePageToSpace_RejectsCycle drives the cycle rejection through the real HTTP
@@ -584,7 +801,7 @@ func TestHandler_MovePageToSpace_RejectsCycle(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	var appErr mmmodel.AppError
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
-	require.Equal(t, "app.page.move.circular_reference.app_error", appErr.Id)
+	require.Equal(t, "app.page.circular_reference.app_error", appErr.Id)
 }
 
 // TestHandler_MovePageToSpace_ParentInWrongSpace drives the wrong-space-parent rejection through
@@ -608,7 +825,7 @@ func TestHandler_MovePageToSpace_ParentInWrongSpace(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	var appErr mmmodel.AppError
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
-	require.Equal(t, "app.page.move.parent_different_space.app_error", appErr.Id)
+	require.Equal(t, "app.page.invalid_parent.app_error", appErr.Id)
 }
 
 // TestHandler_MovePage_MaxDepthExceeded drives MovePage's depth-cap rejection through the real
@@ -633,7 +850,7 @@ func TestHandler_MovePage_MaxDepthExceeded(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	var appErr mmmodel.AppError
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
-	require.Equal(t, "app.page.move.max_depth_exceeded.app_error", appErr.Id)
+	require.Equal(t, "app.page.max_depth_exceeded.app_error", appErr.Id)
 }
 
 // TestHandler_MovePage_CircularReference drives MovePage's circular-reference rejection through
@@ -653,7 +870,7 @@ func TestHandler_MovePage_CircularReference(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 		var appErr mmmodel.AppError
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
-		require.Equal(t, "app.page.move.circular_reference.app_error", appErr.Id)
+		require.Equal(t, "app.page.circular_reference.app_error", appErr.Id)
 	})
 
 	t.Run("under own descendant", func(t *testing.T) {
@@ -667,7 +884,7 @@ func TestHandler_MovePage_CircularReference(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 		var appErr mmmodel.AppError
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
-		require.Equal(t, "app.page.move.circular_reference.app_error", appErr.Id)
+		require.Equal(t, "app.page.circular_reference.app_error", appErr.Id)
 	})
 }
 
@@ -691,7 +908,7 @@ func TestHandler_MovePage_ParentInDifferentSpace(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	var appErr mmmodel.AppError
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
-	require.Equal(t, "app.page.move.parent_different_space.app_error", appErr.Id)
+	require.Equal(t, "app.page.invalid_parent.app_error", appErr.Id)
 }
 
 // TestHandler_DuplicatePage duplicates a page in place.
@@ -747,6 +964,24 @@ func TestHandler_DuplicatePage_CrossSpace(t *testing.T) {
 	require.Equal(t, spaceB.Id, dup.SpaceId)
 }
 
+// TestHandler_DuplicatePage_InvalidTargetSpaceId verifies a malformed target_space_id is rejected
+// with the handler-specific 400 before any app-layer call is made.
+func TestHandler_DuplicatePage_InvalidTargetSpaceId(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelA := mmmodel.NewId()
+	spaceA := seedSpace(t, h.store, channelA)
+	page := seedPage(t, h.store, spaceA.Id, channelA, "")
+
+	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/duplicate", user, map[string]any{
+		"target_space_id": "not-a-valid-id",
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	var appErr mmmodel.AppError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+	require.Equal(t, "api.page.duplicate.invalid_target_space_id.app_error", appErr.Id)
+}
+
 // TestHandler_DuplicatePage_WithParent duplicates a page under a specified parent.
 func TestHandler_DuplicatePage_WithParent(t *testing.T) {
 	h := openTestPlugin(t, nil)
@@ -787,7 +1022,8 @@ func TestHandler_UpdatePage_WrongSpaceIs404(t *testing.T) {
 	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+otherSpace.Id+"/pages/"+page.Id, user, map[string]any{
-		"title": "New Title",
+		"title":        "New Title",
+		"base_edit_at": page.EditAt,
 	})
 	require.Equal(t, http.StatusNotFound, rec.Code)
 }
@@ -815,7 +1051,8 @@ func TestHandler_RestorePage_WrongSpaceIs404(t *testing.T) {
 	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
 
 	// Soft-delete the page so restore has something to act on.
-	require.NoError(t, h.store.DeletePage(page.Id, space.Id, user))
+	_, delErr := h.store.DeletePage(page.Id, space.Id, user)
+	require.NoError(t, delErr)
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+otherSpace.Id+"/pages/"+page.Id+"/restore", user, nil)
 	require.Equal(t, http.StatusNotFound, rec.Code)
@@ -824,10 +1061,7 @@ func TestHandler_RestorePage_WrongSpaceIs404(t *testing.T) {
 // TestHandler_SpaceMembershipRequired verifies that all space- and page-scoped handlers
 // reject callers who are not members of the space's backing channel with 403 Forbidden.
 func TestHandler_SpaceMembershipRequired(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	mockAPI.On("GetConfig").Return(&mmmodel.Config{
-		FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true},
-	}).Maybe()
+	mockAPI := newEnabledMockAPI()
 	h := openTestPlugin(t, mockAPI)
 
 	channelID := mmmodel.NewId()
@@ -835,6 +1069,10 @@ func TestHandler_SpaceMembershipRequired(t *testing.T) {
 	page := seedPage(t, h.store, space.Id, channelID, "")
 	stranger := mmmodel.NewId()
 
+	// The stranger passes the team gate (an active member row) so the channel-membership
+	// rejection below is what each route exercises.
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), stranger).
+		Return(&mmmodel.TeamMember{}, nil)
 	mockAPI.On("GetChannelMember", channelID, stranger).
 		Return(nil, &mmmodel.AppError{StatusCode: http.StatusNotFound})
 
@@ -869,43 +1107,34 @@ func TestHandler_SpaceMembershipRequired(t *testing.T) {
 // TestHandler_TeamSpacesPrivacy verifies that GET /teams/{team_id}/spaces filters out spaces
 // whose backing channel the caller does not belong to.
 func TestHandler_TeamSpacesPrivacy(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	mockAPI.On("GetConfig").Return(&mmmodel.Config{
-		FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true},
-	}).Maybe()
+	mockAPI := newEnabledMockAPI()
 	h := openTestPlugin(t, mockAPI)
 
 	teamID := mmmodel.NewId()
 	visibleChannelID := mmmodel.NewId()
 	hiddenChannelID := mmmodel.NewId()
-	visible := seedSpaceInTeam(t, h.store, teamID, visibleChannelID)
-	_ = seedSpaceInTeam(t, h.store, teamID, hiddenChannelID)
+	visible := seedSpaceInTeam(t, h.store, visibleChannelID, teamID)
+	_ = seedSpaceInTeam(t, h.store, hiddenChannelID, teamID)
 	caller := mmmodel.NewId()
 
 	mockAPI.On("GetTeamMember", teamID, caller).
 		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: caller}, nil)
-	mockAPI.On("GetChannelsForTeamForUser", teamID, caller, false).
-		Return([]*mmmodel.Channel{{Id: visibleChannelID}}, nil)
+	testutil.MustAddChannelMember(t, h.db, visibleChannelID, caller)
 
 	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	var resp struct {
-		Items []*model.Space `json:"items"`
-	}
+	var resp paginatedResponse[*model.Space]
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Len(t, resp.Items, 1)
 	require.Equal(t, visible.Id, resp.Items[0].Id)
 }
 
 // TestHandler_TeamSpacesHiddenPageBoundary verifies that spaces the caller cannot access are
-// filtered at the SQL level: the store receives only the caller's channel IDs and excludes
-// hidden spaces before applying offset/limit, so pagination never delivers invisible spaces.
+// filtered at the SQL level: the ChannelMembers join excludes hidden spaces before applying
+// offset/limit, so pagination never delivers invisible spaces.
 func TestHandler_TeamSpacesHiddenPageBoundary(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	mockAPI.On("GetConfig").Return(&mmmodel.Config{
-		FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true},
-	}).Maybe()
+	mockAPI := newEnabledMockAPI()
 	h := openTestPlugin(t, mockAPI)
 
 	teamID := mmmodel.NewId()
@@ -914,47 +1143,81 @@ func TestHandler_TeamSpacesHiddenPageBoundary(t *testing.T) {
 	hidden2ChannelID := mmmodel.NewId()
 	caller := mmmodel.NewId()
 
-	visible := seedSpaceInTeam(t, h.store, teamID, visibleChannelID)
-	_ = seedSpaceInTeam(t, h.store, teamID, hidden1ChannelID)
-	_ = seedSpaceInTeam(t, h.store, teamID, hidden2ChannelID)
+	visible := seedSpaceInTeam(t, h.store, visibleChannelID, teamID)
+	_ = seedSpaceInTeam(t, h.store, hidden1ChannelID, teamID)
+	_ = seedSpaceInTeam(t, h.store, hidden2ChannelID, teamID)
 
 	mockAPI.On("GetTeamMember", teamID, caller).
 		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: caller}, nil)
-	// ListForTeamForUser returns only the channels the caller belongs to; hidden channels are
-	// absent from this list, so the SQL-level IN-filter excludes their spaces entirely.
-	mockAPI.On("GetChannelsForTeamForUser", teamID, caller, false).
-		Return([]*mmmodel.Channel{{Id: visibleChannelID}}, nil)
+	// The caller belongs only to the visible channel; the ChannelMembers join excludes the
+	// hidden channels' spaces entirely.
+	testutil.MustAddChannelMember(t, h.db, visibleChannelID, caller)
 
 	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces?per_page=2", caller, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	var resp struct {
-		Items   []*model.Space `json:"items"`
-		HasMore bool           `json:"has_more"`
-	}
+	var resp paginatedResponse[*model.Space]
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Len(t, resp.Items, 1)
 	require.Equal(t, visible.Id, resp.Items[0].Id)
 	require.False(t, resp.HasMore)
 }
 
-// TestHandler_TeamSpacesChannelLookupError verifies that a backend error from
-// GetChannelsForTeamForUser during the space list filter propagates as 500.
-func TestHandler_TeamSpacesChannelLookupError(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	mockAPI.On("GetConfig").Return(&mmmodel.Config{
-		FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true},
-	}).Maybe()
+// TestHandler_TeamSpacesPagination verifies that the listing paginates over the spaces visible to
+// the caller: with three visible spaces and per_page=2, the first page returns two items and
+// reports has_more.
+func TestHandler_TeamSpacesPagination(t *testing.T) {
+	mockAPI := newEnabledMockAPI()
 	h := openTestPlugin(t, mockAPI)
 
 	teamID := mmmodel.NewId()
-	channelID := mmmodel.NewId()
-	_ = seedSpaceInTeam(t, h.store, teamID, channelID)
 	caller := mmmodel.NewId()
+	for range 3 {
+		channelID := mmmodel.NewId()
+		_ = seedSpaceInTeam(t, h.store, channelID, teamID)
+		testutil.MustAddChannelMember(t, h.db, channelID, caller)
+	}
 
 	mockAPI.On("GetTeamMember", teamID, caller).
 		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: caller}, nil)
-	mockAPI.On("GetChannelsForTeamForUser", teamID, caller, false).
+
+	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces?per_page=2", caller, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp paginatedResponse[*model.Space]
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp.Items, 2)
+	require.True(t, resp.HasMore)
+}
+
+// TestHandler_TeamSpacesNotTeamMember verifies that a caller who is not a member of the team is
+// denied with 403 (the team-membership gate on the listing route).
+func TestHandler_TeamSpacesNotTeamMember(t *testing.T) {
+	mockAPI := newEnabledMockAPI()
+	h := openTestPlugin(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	_ = seedSpaceInTeam(t, h.store, mmmodel.NewId(), teamID)
+	caller := mmmodel.NewId()
+
+	mockAPI.On("GetTeamMember", teamID, caller).
+		Return(nil, &mmmodel.AppError{StatusCode: http.StatusNotFound})
+
+	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// TestHandler_TeamSpacesTeamLookupError verifies that a non-NotFound backend error from the
+// team-membership lookup propagates as 500.
+func TestHandler_TeamSpacesTeamLookupError(t *testing.T) {
+	mockAPI := newEnabledMockAPI()
+	h := openTestPlugin(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	_ = seedSpaceInTeam(t, h.store, mmmodel.NewId(), teamID)
+	caller := mmmodel.NewId()
+
+	mockAPI.On("GetTeamMember", teamID, caller).
 		Return(nil, &mmmodel.AppError{StatusCode: http.StatusInternalServerError})
 
 	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
@@ -1009,7 +1272,7 @@ func TestDecodeJSONBody_TrailingDataTooLarge(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	var v map[string]any
-	require.False(t, decodeJSONBody(rec, req, 8, &v, "testWhere", false))
+	require.False(t, (&Plugin{}).decodeJSONBody(rec, req, 8, &v, "testWhere", false))
 	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
 
 	var appErr mmmodel.AppError
@@ -1024,7 +1287,7 @@ func TestDecodeJSONBody_TrailingDataWithinCap(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	var v map[string]any
-	require.False(t, decodeJSONBody(rec, req, 1024, &v, "testWhere", false))
+	require.False(t, (&Plugin{}).decodeJSONBody(rec, req, 1024, &v, "testWhere", false))
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 
 	var appErr mmmodel.AppError
@@ -1033,7 +1296,7 @@ func TestDecodeJSONBody_TrailingDataWithinCap(t *testing.T) {
 }
 
 // TestHandler_MovePage_InvalidParentID verifies that a malformed parent_id in the move request
-// body is rejected before any store call is made.
+// body is rejected with the same key as a missing parent.
 func TestHandler_MovePage_InvalidParentID(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
@@ -1043,16 +1306,36 @@ func TestHandler_MovePage_InvalidParentID(t *testing.T) {
 
 	bad := "not-a-valid-id"
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id+"/move", user, map[string]any{
+		"parent_id":          bad,
+		"expected_update_at": page.UpdateAt,
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	var appErr mmmodel.AppError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+	require.Equal(t, "app.page.invalid_parent.app_error", appErr.Id)
+}
+
+// TestHandler_CreatePage_InvalidParentID verifies that a malformed parent_id in the create
+// request body is rejected with the same key as a missing parent.
+func TestHandler_CreatePage_InvalidParentID(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+
+	bad := "not-a-valid-id"
+	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages", user, map[string]any{
+		"title":     "New Page",
 		"parent_id": bad,
 	})
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	var appErr mmmodel.AppError
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
-	require.Equal(t, "api.page.move.invalid_parent_id.app_error", appErr.Id)
+	require.Equal(t, "app.page.invalid_parent.app_error", appErr.Id)
 }
 
 // TestHandler_DuplicatePage_InvalidParentID verifies that a malformed parent_id in the duplicate
-// request body is rejected before any store call is made.
+// request body is rejected with the same key as a missing parent.
 func TestHandler_DuplicatePage_InvalidParentID(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
@@ -1067,11 +1350,11 @@ func TestHandler_DuplicatePage_InvalidParentID(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	var appErr mmmodel.AppError
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
-	require.Equal(t, "api.page.duplicate.invalid_parent_id.app_error", appErr.Id)
+	require.Equal(t, "app.page.invalid_parent.app_error", appErr.Id)
 }
 
 // TestHandler_MovePageToSpace_InvalidParentID verifies that a malformed parent_id in the
-// move-to-space request body is rejected before any store call is made.
+// move-to-space request body is rejected with the same key as a missing parent.
 func TestHandler_MovePageToSpace_InvalidParentID(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
@@ -1084,11 +1367,171 @@ func TestHandler_MovePageToSpace_InvalidParentID(t *testing.T) {
 
 	bad := "not-a-valid-id"
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/move-to-space", user, map[string]any{
-		"target_space_id": spaceB.Id,
-		"parent_id":       bad,
+		"target_space_id":    spaceB.Id,
+		"parent_id":          bad,
+		"expected_update_at": page.UpdateAt,
 	})
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	var appErr mmmodel.AppError
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
-	require.Equal(t, "api.page.move_to_space.invalid_parent_id.app_error", appErr.Id)
+	require.Equal(t, "app.page.invalid_parent.app_error", appErr.Id)
+}
+
+// TestHandler_GetSpace covers the happy path: a member fetches a space and receives its fields.
+func TestHandler_GetSpace(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+
+	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id, user, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got model.Space
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, space.Id, got.Id)
+	require.Equal(t, space.TeamId, got.TeamId)
+	require.Equal(t, "Test Space", got.Title)
+}
+
+// TestHandler_GetPage covers the happy path: a member fetches a page and receives its fields.
+func TestHandler_GetPage(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	page := seedPage(t, h.store, space.Id, channelID, "")
+
+	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got model.Page
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, page.Id, got.Id)
+	require.Equal(t, space.Id, got.SpaceId)
+	require.Equal(t, "Test Page", got.Title)
+}
+
+// TestHandler_CreatePage covers the happy path: a member creates a page and receives the
+// server-generated resource with a 201.
+func TestHandler_CreatePage(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+
+	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages", user, map[string]any{
+		"title": "Brand New Page",
+		"body":  `{"type":"doc","content":[]}`,
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var created model.Page
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	require.True(t, mmmodel.IsValidId(created.Id), "id must be server-generated")
+	require.Equal(t, space.Id, created.SpaceId)
+	require.Equal(t, "Brand New Page", created.Title)
+	require.Equal(t, user, created.UserId)
+
+	// The page is readable back through the API.
+	rec = h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/pages/"+created.Id, user, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandler_DeletePage covers the happy path: deleting a page returns OK and the page stops
+// resolving through the API.
+func TestHandler_DeletePage(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	page := seedPage(t, h.store, space.Id, channelID, "")
+
+	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, nil)
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// TestHandler_GetSpacePagesHasMoreBoundary pins the has_more transition exactly at the page-size
+// boundary: a window equal to the result count reports has_more=false; one smaller reports true.
+func TestHandler_GetSpacePagesHasMoreBoundary(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	for range 3 {
+		seedPage(t, h.store, space.Id, channelID, "")
+	}
+
+	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/pages?per_page=3", user, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var full paginatedResponse[model.PageSummary]
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &full))
+	require.Len(t, full.Items, 3)
+	require.False(t, full.HasMore, "a window holding every row must not report more")
+
+	rec = h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/pages?per_page=2", user, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var trimmed paginatedResponse[model.PageSummary]
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &trimmed))
+	require.Len(t, trimmed.Items, 2)
+	require.True(t, trimmed.HasMore, "a window one short of the row count must report more")
+}
+
+// TestHandler_GetPageChildrenHasMoreBoundary pins the same has_more boundary for the children
+// listing.
+func TestHandler_GetPageChildrenHasMoreBoundary(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	parent := seedPage(t, h.store, space.Id, channelID, "")
+	for range 3 {
+		seedPage(t, h.store, space.Id, channelID, parent.Id)
+	}
+
+	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/pages/"+parent.Id+"/children?per_page=3", user, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var full paginatedResponse[model.PageSummary]
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &full))
+	require.Len(t, full.Items, 3)
+	require.False(t, full.HasMore)
+
+	rec = h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/pages/"+parent.Id+"/children?per_page=2", user, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var trimmed paginatedResponse[model.PageSummary]
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &trimmed))
+	require.Len(t, trimmed.Items, 2)
+	require.True(t, trimmed.HasMore)
+}
+
+// TestHandler_CreatePage_PublishesCreatedEvent pins the created event's name, payload shape, and
+// channel-scoped broadcast — a typo in any of them would otherwise pass every Maybe-stubbed test.
+func TestHandler_CreatePage_PublishesCreatedEvent(t *testing.T) {
+	channelID := mmmodel.NewId()
+
+	// Built by hand instead of via newEnabledMockAPI: its wildcard PublishWebSocketEvent stub
+	// would swallow the pinned expectation below.
+	mockAPI := &plugintest.API{}
+	mockAPI.On("GetConfig").Return(&mmmodel.Config{FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true}}).Maybe()
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.ChannelMember{}, nil)
+	mockAPI.On("PublishWebSocketEvent", "page_created", mock.Anything, mock.Anything).Return().Once()
+	h := openTestPlugin(t, mockAPI)
+
+	space := seedSpace(t, h.store, channelID)
+	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages", mmmodel.NewId(), map[string]any{
+		"title": "Evented Page",
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var created model.Page
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_created",
+		map[string]any{"page_id": created.Id, "space_id": space.Id},
+		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
 }
