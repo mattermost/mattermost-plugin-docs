@@ -124,13 +124,11 @@ func TestServiceCreateSpace_ChannelCreationFails(t *testing.T) {
 	mockAPI.AssertNotCalled(t, "DeleteChannel")
 }
 
-// TestServiceCreateSpace_ReplicaPollFailureArchivesChannel exercises space creation on a host
-// with SQL replicas configured, under the pinned pluginapi behavior where Channel.Create's
-// replica poll uses the generic channel lookup — which cannot see a space channel — so the
-// create errors after the channel row already exists. CreateSpace must archive that channel
-// rather than leak it. Once the public module pin includes the space-aware Create (which skips
-// the poll), the poll stubs here go unused and this test should flip to asserting success.
-func TestServiceCreateSpace_ReplicaPollFailureArchivesChannel(t *testing.T) {
+// TestServiceCreateSpace_ReplicaConfiguredSucceeds exercises space creation on a host with SQL
+// replicas configured. Channel.Create skips its replica poll for space channels — the generic
+// channel lookup it polls cannot see a space channel — so creation must succeed without polling
+// GetChannel or archiving the channel.
+func TestServiceCreateSpace_ReplicaConfiguredSucceeds(t *testing.T) {
 	// The harness helper stubs GetConfig with an empty config, and identical no-argument
 	// expectations cannot be overridden, so this test wires its mocks from scratch.
 	mockAPI := &plugintest.API{}
@@ -138,23 +136,24 @@ func TestServiceCreateSpace_ReplicaPollFailureArchivesChannel(t *testing.T) {
 	mockAPI.On("GetConfig").
 		Return(&mmmodel.Config{SqlSettings: mmmodel.SqlSettings{DataSourceReplicas: []string{"replica"}}}).Maybe()
 	mockAPI.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	mockAPI.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil)
 
 	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Return(&mmmodel.Channel{Id: channelID, Type: mmmodel.ChannelTypeSpace}, nil)
-	mockAPI.On("GetChannel", channelID).
-		Return(nil, &mmmodel.AppError{StatusCode: http.StatusNotFound}).Maybe()
-	mockAPI.On("DeleteChannel", channelID).Return(nil)
+	mockAPI.On("AddChannelMember", channelID, userID).Return(&mmmodel.ChannelMember{}, nil)
 
 	client := pluginapi.NewClient(mockAPI, nil)
 	h.svc = app.New(h.store, &client.Log, client)
 
-	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: mmmodel.NewId(), Title: "Replicated"}, mmmodel.NewId())
-	require.NotNil(t, appErr)
-	require.Equal(t, "app.space.create.backing_channel_failed.app_error", appErr.Id)
-	mockAPI.AssertCalled(t, "DeleteChannel", channelID)
+	saved, appErr := h.svc.CreateSpace(&model.Space{TeamId: mmmodel.NewId(), Title: "Replicated"}, userID)
+	require.Nil(t, appErr)
+	require.Equal(t, channelID, saved.ChannelId)
+	mockAPI.AssertNotCalled(t, "GetChannel", channelID)
+	mockAPI.AssertNotCalled(t, "DeleteChannel", channelID)
 }
 
 // TestServiceCreateSpace_InvalidInput verifies the up-front validations reject before any
