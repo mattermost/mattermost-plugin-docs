@@ -8,10 +8,6 @@
     "translation": "The request body could not be parsed."
   },
   {
-    "id": "api.optimistic_lock.baseline_required.app_error",
-    "translation": "The {{.Field}} field is required unless force is set."
-  },
-  {
     "id": "api.page.duplicate.invalid_target_space_id.app_error",
     "translation": "The target_space_id field is not a valid ID."
   },
@@ -26,6 +22,10 @@
   {
     "id": "api.request_too_large.app_error",
     "translation": "The request body exceeds the maximum allowed size of {{.MaxBytes}} bytes."
+  },
+  {
+    "id": "app.optimistic_lock.baseline_required.app_error",
+    "translation": "The {{.Field}} field is required unless force is set."
   },
   {
     "id": "app.page.circular_reference.app_error",

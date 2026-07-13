@@ -100,7 +100,7 @@ func normalizeAndValidatePagePatch(where string, patch *model.PagePatch) *mmmode
 // caller-facing JSON field for the error message.
 func requireBaseline(where, field string, baseline *int64, force bool) *mmmodel.AppError {
 	if baseline == nil && !force {
-		return mmmodel.NewAppError(where, "api.optimistic_lock.baseline_required.app_error", map[string]any{"Field": field}, "", http.StatusBadRequest)
+		return mmmodel.NewAppError(where, "app.optimistic_lock.baseline_required.app_error", map[string]any{"Field": field}, "", http.StatusBadRequest)
 	}
 	return nil
 }

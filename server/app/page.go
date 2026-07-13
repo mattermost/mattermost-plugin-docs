@@ -38,10 +38,11 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID 
 	}
 
 	// Space existence and liveness are validated by store.CreatePage itself (surfaced as
-	// not-found below), so there is no space pre-check here. The parent pre-check keeps its
-	// more specific invalid_parent rejection (a malformed, missing, or cross-space parent all
-	// read identically, so the error can't be used to probe page ids in spaces the caller
-	// isn't a member of).
+	// not-found below), so there is no space pre-check here.
+	//
+	// The parent pre-check keeps its more specific invalid_parent rejection (a malformed,
+	// missing, or cross-space parent all read identically, so the error can't be used to
+	// probe page ids in spaces the caller isn't a member of).
 	if parentID != "" {
 		if destErr := s.validateParentExists("CreatePage", parentID, spaceID); destErr != nil {
 			return nil, destErr
@@ -65,7 +66,7 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID 
 	created, storeErr := s.store.CreatePage(page, MaxPageDepth)
 	if storeErr != nil {
 		if store.IsErrNotFound(storeErr) {
-			// The space is missing or soft-deleted (the store checks this under lock).
+			// The space is missing or soft-deleted.
 			return nil, mmmodel.NewAppError("CreatePage", "app.page.create.space_not_found.app_error", nil, "", http.StatusNotFound).Wrap(storeErr)
 		}
 		if store.IsErrConflict(storeErr) {
@@ -76,7 +77,9 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID 
 
 	// Notifications and mention parsing are not wired yet.
 
-	s.publishToChannels(wsEventPageCreated, map[string]any{"page_id": created.Id, "space_id": created.SpaceId}, created.ChannelId)
+	// parent_id is included because clients have never seen this page: without it a tree view
+	// cannot place the new node and would need a follow-up fetch.
+	s.publishToChannels(wsEventPageCreated, map[string]any{"page_id": created.Id, "space_id": created.SpaceId, "parent_id": created.ParentId}, created.ChannelId)
 
 	return created, nil
 }
@@ -221,7 +224,6 @@ func (s *Service) RestorePage(pageID, spaceID, userID string) (*model.Page, *mmm
 // already-fetched records (from its membership gates), so no re-read happens here.
 // targetParentID nil defaults to the source's parent (same space) or the target root
 // (cross-space); a non-nil "" always means the target root.
-// Rejects depth cap breaches; a concurrent race past this check is still caught before committing.
 // includeChildren copies the whole live subtree atomically, so a partial failure cannot leave a partial tree.
 func (s *Service) DuplicatePage(pageID string, sourceSpace *model.Space, userID string, includeChildren bool, targetSpace *model.Space, targetParentID *string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
@@ -288,7 +290,9 @@ func (s *Service) DuplicatePage(pageID string, sourceSpace *model.Space, userID 
 	}
 
 	root := created[0]
-	s.publishToChannels(wsEventPageDuplicated, map[string]any{"page_id": root.Id, "space_id": root.SpaceId}, root.ChannelId)
+	// parent_id is included because clients have never seen the copy: without it a tree view
+	// cannot place the new node and would need a follow-up fetch.
+	s.publishToChannels(wsEventPageDuplicated, map[string]any{"page_id": root.Id, "space_id": root.SpaceId, "parent_id": root.ParentId}, root.ChannelId)
 
 	return root, nil
 }

@@ -582,7 +582,7 @@ func TestHandler_UpdatePage_BaselineRequired(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	var appErr mmmodel.AppError
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
-	require.Equal(t, "api.optimistic_lock.baseline_required.app_error", appErr.Id)
+	require.Equal(t, "app.optimistic_lock.baseline_required.app_error", appErr.Id)
 
 	// force substitutes for the baseline (last-write-wins).
 	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, map[string]any{
@@ -1532,6 +1532,6 @@ func TestHandler_CreatePage_PublishesCreatedEvent(t *testing.T) {
 	var created model.Page
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_created",
-		map[string]any{"page_id": created.Id, "space_id": space.Id},
+		map[string]any{"page_id": created.Id, "space_id": space.Id, "parent_id": created.ParentId},
 		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
 }

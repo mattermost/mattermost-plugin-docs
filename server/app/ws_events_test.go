@@ -112,7 +112,7 @@ func TestServiceDuplicatePage_PublishesDuplicatedEvent(t *testing.T) {
 	require.NotEqual(t, page.Id, copyRoot.Id)
 
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_duplicated",
-		map[string]any{"page_id": copyRoot.Id, "space_id": copyRoot.SpaceId},
+		map[string]any{"page_id": copyRoot.Id, "space_id": copyRoot.SpaceId, "parent_id": copyRoot.ParentId},
 		&mmmodel.WebsocketBroadcast{ChannelId: copyRoot.ChannelId})
 }
 

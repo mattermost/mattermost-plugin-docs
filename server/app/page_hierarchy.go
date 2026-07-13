@@ -135,10 +135,10 @@ func (s *Service) MovePage(pageID, spaceID string, newParentID *string, newIndex
 
 // reparentWithinSpace performs the shared tail of an in-space move — the authoritative store
 // reparent and the page_moved publish — for MovePage and MovePageToSpace's same-space delegation,
-// so the event's payload shape and channel scoping live in one place. old_parent_id comes from
-// the store's locked read, not the callers' pre-lock probes: a concurrent move committed in
-// between (surviving here via force) would make the pre-lock parent stale and point clients at
-// the wrong subtree to invalidate.
+// so the event's payload shape and channel scoping live in one place. old_parent_id is the
+// parent the store actually replaced, not the callers' earlier probes: a concurrent move
+// committed in between (surviving here via force) would make the earlier-read parent stale and
+// point clients at the wrong subtree to invalidate.
 func (s *Service) reparentWithinSpace(where, pageID, spaceID string, newParentID *string, newIndex *int64, expectedUpdateAt *int64, force bool) (*model.Page, *mmmodel.AppError) {
 	moved, priorParentID, didMove, storeErr := s.store.MovePage(pageID, spaceID, newParentID, newIndex, mmmodel.SafeDereference(expectedUpdateAt), force, MaxPageDepth)
 	if storeErr != nil {
@@ -201,12 +201,16 @@ func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model
 		requestedParent = *parentPageID
 	}
 	// A same-space request never needs the cross-space machinery: the subtree keeps its
-	// SpaceId/ChannelId, so delegate to store.MovePage. A same-parent request no-ops there
-	// (the optimistic lock, or force, is still enforced and nothing is published); a real
-	// reparent appends under the new parent like a cross-space arrival would, but without
-	// collecting the subtree — so the descendant-count cap and the draft/snapshot rewrites
-	// never apply — and publishes the ordinary page_moved event. requestedParent is passed
-	// explicitly because nil means "target root" here but "leave unchanged" to MovePage.
+	// SpaceId/ChannelId, so delegate to store.MovePage.
+	//
+	// A same-parent request no-ops there (a stale expected_update_at still conflicts, force
+	// still overrides, and nothing is published). A real reparent appends under the new parent
+	// like a cross-space arrival would, but without collecting the subtree — so the
+	// descendant-count cap and the draft/snapshot rewrites never apply — and publishes the
+	// ordinary page_moved event.
+	//
+	// requestedParent is passed explicitly because nil means "target root" here but "leave
+	// unchanged" to MovePage.
 	if sourceSpace.Id == targetSpace.Id {
 		if requestedParent != "" && requestedParent != curParentID {
 			if destErr := s.validateDestinationParent("MovePageToSpace", pageID, requestedParent, sourceSpace.Id); destErr != nil {
@@ -234,8 +238,8 @@ func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model
 	// Each side gets only its own space's half of the move: members of the source channel may
 	// not be members of the target space and vice versa, so a shared payload naming both spaces
 	// (and both parents) would leak the other space's existence and activity to users who cannot
-	// read it. old_parent_id comes from the store's locked read (see MovePage). A member of both
-	// spaces receives both events.
+	// read it. old_parent_id is the parent the store actually replaced (see reparentWithinSpace).
+	// A member of both spaces receives both events.
 	s.publishToChannels(wsEventPageMovedToSpace, map[string]any{
 		"page_id":         moved.Id,
 		"source_space_id": sourceSpace.Id,

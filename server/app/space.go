@@ -422,8 +422,7 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID string) *mmmodel.
 
 // GetSpacesForTeam returns one page of a team's live spaces, plus whether more exist beyond
 // it. userID is verified to be a team member and the result is filtered to spaces whose
-// backing channel the caller belongs to (resolved in the store via ChannelMembers), matching
-// the membership gate on single-space reads.
+// backing channel the caller belongs to, matching the membership gate on single-space reads.
 func (s *Service) GetSpacesForTeam(teamID, userID string, page, perPage int) ([]*model.Space, bool, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(teamID) {
 		return nil, false, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.invalid_team_id.app_error", nil, "", http.StatusBadRequest)
@@ -479,9 +478,9 @@ func normalizeAndValidateSpacePatch(where string, patch *model.SpacePatch) *mmmo
 // field (including an empty string) overwrites the current value, so a field can be cleared.
 // Optimistic-locked on expectedUpdateAt: the caller passes the UpdateAt it last read, and a stale
 // baseline yields a conflict unless force overrides it with last-write-wins; a nil
-// expectedUpdateAt without force is rejected. The store merges the patch into the row it reads
-// under lock, so a forced update overwrites only the fields the patch supplies — concurrent
-// changes to other fields survive. space is the caller's already-fetched record (from its
+// expectedUpdateAt without force is rejected. The store merges the patch into the current row,
+// so a forced update overwrites only the fields the patch supplies — concurrent changes to
+// other fields survive. space is the caller's already-fetched record (from its
 // membership gate); only its Id is used here.
 func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expectedUpdateAt *int64, force bool) (*model.Space, *mmmodel.AppError) {
 	if space == nil {
