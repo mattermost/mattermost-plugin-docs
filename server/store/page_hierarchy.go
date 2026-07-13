@@ -63,8 +63,9 @@ var (
 	)`, MaxPageHierarchyDepth)
 )
 
-// computeDescendantsCTE generates the recursive CTE that walks the subtree below a page,
-// excluding the root node and returning full page columns plus the node's depth. depth counts
+// computeDescendantsCTE generates the recursive CTE that walks the live subtree below a page,
+// excluding snapshot rows (OriginalId != "") like the ancestry and subtree CTEs above, and
+// excluding the root node, returning full page columns plus the node's depth. depth counts
 // edges below the requested page: the root is seeded at 0, so a direct child is depth 1. The
 // recursion runs one level past MaxPageHierarchyDepth so an over-deep subtree row has depth >
 // MaxPageHierarchyDepth, enabling callers to detect truncation.
@@ -79,7 +80,7 @@ func computeDescendantsCTE() string {
 				ARRAY[]::bigint[] AS sort_path,
 				ARRAY[]::bigint[] AS create_path,
 				ARRAY[Id]::text[] AS id_path
-			FROM DOCS_Page WHERE Id = $1 AND DeleteAt = 0
+			FROM DOCS_Page WHERE Id = $1 AND DeleteAt = 0 AND OriginalId = ''
 			UNION ALL
 			SELECT p.Id, p.ParentId, d.depth + 1,
 				d.sort_path || p.SortOrder,
@@ -87,12 +88,12 @@ func computeDescendantsCTE() string {
 				d.id_path || p.Id
 			FROM DOCS_Page p
 			INNER JOIN descendants d ON p.ParentId = d.Id
-			WHERE p.DeleteAt = 0 AND d.depth < %d
+			WHERE p.DeleteAt = 0 AND p.OriginalId = '' AND d.depth < %d
 			  AND NOT (p.Id = ANY(d.id_path))
 		)`, MaxPageHierarchyDepth+1) + `
 	SELECT ` + pageColListP + `, d.depth
 	FROM descendants d
 	INNER JOIN DOCS_Page p ON p.Id = d.Id
-	WHERE d.Id != $1 AND p.DeleteAt = 0
+	WHERE d.Id != $1 AND p.DeleteAt = 0 AND p.OriginalId = ''
 	ORDER BY d.sort_path, d.create_path, d.id_path`
 }

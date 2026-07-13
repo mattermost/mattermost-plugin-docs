@@ -150,6 +150,9 @@ func TestServiceMovePageToSpace_PublishesEventToBothChannels(t *testing.T) {
 			"new_parent_id":   "",
 		},
 		&mmmodel.WebsocketBroadcast{ChannelId: chB})
+	// Exactly the two half-payload events above: an extra broad or full-payload broadcast would
+	// leak one space's details to the other side.
+	mockAPI.AssertNumberOfCalls(t, "PublishWebSocketEvent", 2)
 }
 
 // TestServiceMovePageToSpace_NoOpPublishesNothing verifies the same-space/same-parent no-op emits
@@ -238,8 +241,8 @@ func TestServiceDeleteSpace_PublishesDeletedEvent(t *testing.T) {
 
 // TestServiceDeleteSpace_SnapshotFailureFallsBackToChannelBroadcast verifies the delivery
 // fallback when the pre-archive member snapshot fails: the event cannot be delivered per-user,
-// so it is published as a channel-scoped broadcast (which still reaches the members if the
-// archive also failed and left the channel live).
+// so it is published as a channel-scoped broadcast — before the channel is archived, since a
+// channel-scoped broadcast to an archived channel resolves zero recipients.
 func TestServiceDeleteSpace_SnapshotFailureFallsBackToChannelBroadcast(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
@@ -255,6 +258,22 @@ func TestServiceDeleteSpace_SnapshotFailureFallsBackToChannelBroadcast(t *testin
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_deleted",
 		map[string]any{"space_id": space.Id},
 		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
+	// The fallback must be published while the channel is still live: scan the recorded calls
+	// and require the broadcast to precede the archive.
+	publishIdx, archiveIdx := -1, -1
+	for i, call := range mockAPI.Calls {
+		switch call.Method {
+		case "PublishWebSocketEvent":
+			if publishIdx == -1 {
+				publishIdx = i
+			}
+		case "DeleteChannel":
+			archiveIdx = i
+		}
+	}
+	require.GreaterOrEqual(t, publishIdx, 0, "space_deleted must be published")
+	require.GreaterOrEqual(t, archiveIdx, 0, "the backing channel must be archived")
+	require.Less(t, publishIdx, archiveIdx, "the fallback broadcast must be published before the channel is archived")
 }
 
 // TestServiceRestoreSpace_PublishesRestoredEvent pins space_restored: space-id payload, broadcast

@@ -6,6 +6,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -373,7 +374,8 @@ func (s *Store) withSpaceMembershipLock(spaceID string, acquireTimeout time.Dura
 		return errors.Wrap(err, "get_connection")
 	}
 	defer func() {
-		if closeErr := conn.Close(); closeErr != nil && s.log != nil {
+		// ErrConnDone means discardConn already destroyed the connection, which is not a failure.
+		if closeErr := conn.Close(); closeErr != nil && !errors.Is(closeErr, sql.ErrConnDone) && s.log != nil {
 			s.log.Warn("failed to return advisory lock connection to the pool", "space_id", spaceID, "err", closeErr)
 		}
 	}()
@@ -389,7 +391,12 @@ func (s *Store) withSpaceMembershipLock(spaceID string, acquireTimeout time.Dura
 			// The reply was lost, so the lock may or may not have been granted; a best-effort
 			// unlock keeps a granted lock from riding back into the pool on this session (it is
 			// a no-op with a server-side warning when the lock is not held).
-			_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, key)
+			if _, unlockErr := conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, key); unlockErr != nil {
+				discardConn(conn)
+				if s.log != nil {
+					s.log.Warn("failed to release space membership advisory lock", "space_id", spaceID, "err", unlockErr)
+				}
+			}
 			if ctx.Err() != nil {
 				return &ErrConflict{Resource: "Space membership lock space_id=" + spaceID}
 			}
@@ -405,15 +412,27 @@ func (s *Store) withSpaceMembershipLock(spaceID string, acquireTimeout time.Dura
 		}
 	}
 	defer func() {
-		// Unlock on a fresh context: the acquisition deadline may have passed while fn ran, and
-		// an unlock failure means the connection itself broke, which also releases the session's
-		// advisory locks server-side; the pool discards a broken connection on reuse.
-		if _, unlockErr := conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, key); unlockErr != nil && s.log != nil {
-			s.log.Warn("failed to release space membership advisory lock", "space_id", spaceID, "err", unlockErr)
+		// Unlock on a fresh context: the acquisition deadline may have passed while fn ran. After
+		// a failed unlock the session may still hold the lock, so the connection must not go back
+		// to the pool where an unrelated caller would inherit it; discard it instead (closing the
+		// session releases its advisory locks server-side).
+		if _, unlockErr := conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, key); unlockErr != nil {
+			discardConn(conn)
+			if s.log != nil {
+				s.log.Warn("failed to release space membership advisory lock", "space_id", spaceID, "err", unlockErr)
+			}
 		}
 	}()
 
 	return fn()
+}
+
+// discardConn marks conn's underlying driver connection broken so the deferred Close destroys it
+// instead of returning it to the pool (database/sql discards a connection whose Raw callback
+// returns driver.ErrBadConn). Used when an advisory unlock fails: the session may still hold the
+// lock, and pooling it would leak the lock to an unrelated caller.
+func discardConn(conn *sqlx.Conn) {
+	_ = conn.Raw(func(any) error { return driver.ErrBadConn })
 }
 
 // lockLiveSpace FOR UPDATE-locks the live space row.

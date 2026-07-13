@@ -172,10 +172,6 @@
     "translation": "The page cannot be restored because it is a version snapshot."
   },
   {
-    "id": "app.page.restore.read_back_failed.app_error",
-    "translation": "The page was restored, but it could not be loaded. Refresh to see it."
-  },
-  {
     "id": "app.page.subtree_max_depth_exceeded.app_error",
     "translation": "Placing this page and its sub-pages here would exceed the maximum nesting depth of {{.MaxDepth}}."
   },

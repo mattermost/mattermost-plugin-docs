@@ -566,6 +566,8 @@ func (s *Service) DeleteSpace(space *model.Space) *mmmodel.AppError {
 	recipients, snapErr := s.snapshotSpaceMemberIDs(space)
 	if snapErr != nil {
 		s.log.Warn("DeleteSpace: failed to snapshot backing-channel members for space_deleted delivery", "channel_id", space.ChannelId, "space_id", space.Id, "err", snapErr)
+		// With no member snapshot, the channel broadcast is the only remaining delivery path.
+		s.publishToChannels(wsEventSpaceDeleted, map[string]any{"space_id": space.Id}, space.ChannelId)
 	}
 	// Archive the backing channel best-effort. pluginapi.Channel.Delete soft-deletes the channel
 	// (sets DeleteAt). Guarded with a client nil-check so store-only tests (which seed spaces
@@ -576,9 +578,6 @@ func (s *Service) DeleteSpace(space *model.Space) *mmmodel.AppError {
 		}
 	}
 	if snapErr != nil {
-		// The channel broadcast reaches the members only if the archive above also failed and left
-		// the channel live; with no snapshot it is still the best remaining delivery attempt.
-		s.publishToChannels(wsEventSpaceDeleted, map[string]any{"space_id": space.Id}, space.ChannelId)
 		return nil
 	}
 	for _, userID := range recipients {

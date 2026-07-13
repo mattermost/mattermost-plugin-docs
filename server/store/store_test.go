@@ -29,6 +29,13 @@ func deletePageErr(s *store.Store, pageID, spaceID, userID string) error {
 	return err
 }
 
+// restorePageErr calls Store.RestorePage and discards the returned page, for call sites that
+// only assert the error.
+func restorePageErr(s *store.Store, pageID, spaceID, userID string, maxDepth int) error {
+	_, err := s.RestorePage(pageID, spaceID, userID, maxDepth)
+	return err
+}
+
 // testDefaultMaxDepth is the maxDepth passed to CreatePage by tests that aren't exercising the
 // depth cap itself (see testutil.UncappedMaxDepth).
 const testDefaultMaxDepth = testutil.UncappedMaxDepth
@@ -729,6 +736,41 @@ func TestFetchDescendantRows_ExcludesUnrelatedSubtrees(t *testing.T) {
 	require.Equal(t, grandchild.Id, descendants[0].Id)
 }
 
+// TestFetchDescendantRows_ExcludesVersionSnapshots verifies the descendants CTE skips version
+// snapshot rows. The snapshot is seeded in its schema-enforced shape (OriginalId != "" and
+// soft-deleted, per chk_docs_page_snapshot_deleted).
+func TestFetchDescendantRows_ExcludesVersionSnapshots(t *testing.T) {
+	s := openTestDB(t)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+
+	root, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+	require.NoError(t, err)
+	child, err := s.CreatePage(newPage(space.Id, channelID, userID, root.Id), testDefaultMaxDepth)
+	require.NoError(t, err)
+	snap, err := s.CreatePage(newPage(space.Id, channelID, userID, root.Id), testDefaultMaxDepth)
+	require.NoError(t, err)
+	_, rawErr := s.ExecBuilderForTest(s.QueryBuilderForTest().
+		Update("DOCS_Page").
+		Set("OriginalId", mmmodel.NewId()).
+		Set("DeleteAt", mmmodel.GetMillis()).
+		Where(sq.Eq{"Id": snap.Id}))
+	require.NoError(t, rawErr)
+
+	descendants, err := s.FetchDescendantRowsForTest(root.Id)
+	require.NoError(t, err)
+	require.Len(t, descendants, 1, "the snapshot row must be excluded from the descendant set")
+	require.Equal(t, child.Id, descendants[0].Id)
+
+	// A snapshot root itself yields no descendants (seed-arm exclusion).
+	fromSnap, err := s.FetchDescendantRowsForTest(snap.Id)
+	require.NoError(t, err)
+	require.Empty(t, fromSnap, "a snapshot root must have no descendant set")
+}
+
 // TestFetchDescendantRows_LeafHasZeroDescendants verifies that a leaf page
 // (no children) returns an empty descendant list.
 func TestFetchDescendantRows_LeafHasZeroDescendants(t *testing.T) {
@@ -903,12 +945,11 @@ func TestCTECycleDetection(t *testing.T) {
 	_, rawErr := s.RawExecForTest("UPDATE DOCS_Page SET ParentId = $1 WHERE Id = $1", created.Id)
 	require.NoError(t, rawErr, "raw SQL cycle injection must succeed")
 
-	// FetchDescendantRowsForTest must terminate and return a bounded (possibly empty) result.
+	// FetchDescendantRowsForTest must terminate and return a bounded result. The self-cycle is
+	// broken by the path guard and the root is excluded, so the result is empty.
 	descendants, descErr := s.FetchDescendantRowsForTest(created.Id)
-	// The self-cycle is broken by the path guard, so the result is empty.
-	// We only care that it did NOT hang or panic — an empty result is correct.
 	require.NoError(t, descErr, "FetchDescendantRowsForTest must not error on a cycle")
-	_ = descendants
+	require.Empty(t, descendants, "a page must not appear in its own descendant set")
 }
 
 // TestFetchDescendantRows_EmptyID verifies that FetchDescendantRowsForTest rejects an empty pageID
@@ -1028,7 +1069,7 @@ func TestRestorePage(t *testing.T) {
 		require.NoError(t, err)
 
 		require.NoError(t, deletePageErr(s, created.Id, created.SpaceId, userID))
-		require.NoError(t, s.RestorePage(created.Id, created.SpaceId, userID, testDefaultMaxDepth))
+		require.NoError(t, restorePageErr(s, created.Id, created.SpaceId, userID, testDefaultMaxDepth))
 
 		got, err := s.GetPage(created.Id, false)
 		require.NoError(t, err)
@@ -1046,7 +1087,7 @@ func TestRestorePage(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, parent.ParentId, promoted.ParentId)
 
-		require.NoError(t, s.RestorePage(parent.Id, parent.SpaceId, userID, testDefaultMaxDepth))
+		require.NoError(t, restorePageErr(s, parent.Id, parent.SpaceId, userID, testDefaultMaxDepth))
 
 		restored, err := s.GetPage(parent.Id, false)
 		require.NoError(t, err)
@@ -1063,7 +1104,33 @@ func TestRestorePage(t *testing.T) {
 		require.NoError(t, err)
 		// Decided atomically under the page's row lock (see RestorePage), matching
 		// RestoreSpace's already-live convention — not a generic not-found.
-		require.True(t, store.IsErrInvalidInput(s.RestorePage(live.Id, live.SpaceId, userID, testDefaultMaxDepth)))
+		require.True(t, store.IsErrInvalidInput(restorePageErr(s, live.Id, live.SpaceId, userID, testDefaultMaxDepth)))
+	})
+
+	t.Run("returns the restored page matching the persisted row", func(t *testing.T) {
+		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+		require.NoError(t, err)
+		child, err := s.CreatePage(newPage(space.Id, channelID, userID, parent.Id), testDefaultMaxDepth)
+		require.NoError(t, err)
+
+		require.NoError(t, deletePageErr(s, child.Id, child.SpaceId, userID))
+		require.NoError(t, deletePageErr(s, parent.Id, parent.SpaceId, userID))
+
+		restorer := mmmodel.NewId()
+		restored, err := s.RestorePage(child.Id, child.SpaceId, restorer, testDefaultMaxDepth)
+		require.NoError(t, err)
+		require.NotNil(t, restored)
+
+		require.Equal(t, child.Id, restored.Id)
+		require.Zero(t, restored.DeleteAt)
+		require.Empty(t, restored.ParentId, "a deleted parent must fall back to the space root")
+		require.Equal(t, restorer, restored.LastModifiedBy)
+		require.Greater(t, restored.UpdateAt, child.UpdateAt)
+		require.Greater(t, restored.EditAt, child.EditAt)
+
+		got, err := s.GetPage(child.Id, false)
+		require.NoError(t, err)
+		require.Equal(t, got, restored, "the returned page must match the persisted row")
 	})
 }
 
@@ -1082,7 +1149,7 @@ func TestRestorePageRejectsDeletedSpace(t *testing.T) {
 	require.NoError(t, deletePageErr(s, page.Id, page.SpaceId, userID))
 	require.NoError(t, s.DeleteSpace(space.Id))
 
-	require.True(t, store.IsErrNotFound(s.RestorePage(page.Id, page.SpaceId, userID, testDefaultMaxDepth)), "must not restore into a deleted space")
+	require.True(t, store.IsErrNotFound(restorePageErr(s, page.Id, page.SpaceId, userID, testDefaultMaxDepth)), "must not restore into a deleted space")
 }
 
 // TestRestorePageFallsBackToRootWhenParentDeleted verifies that if the original parent is
@@ -1103,7 +1170,7 @@ func TestRestorePageFallsBackToRootWhenParentDeleted(t *testing.T) {
 	require.NoError(t, deletePageErr(s, child.Id, child.SpaceId, userID))
 	require.NoError(t, deletePageErr(s, parent.Id, parent.SpaceId, userID))
 
-	require.NoError(t, s.RestorePage(child.Id, child.SpaceId, userID, testDefaultMaxDepth), "restore must succeed by falling back to root")
+	require.NoError(t, restorePageErr(s, child.Id, child.SpaceId, userID, testDefaultMaxDepth), "restore must succeed by falling back to root")
 
 	restored, err := s.GetPage(child.Id, false)
 	require.NoError(t, err)
@@ -1131,7 +1198,7 @@ func TestRestorePageFallsBackToRootWhenParentTooDeep(t *testing.T) {
 
 	// parent is live at depth 1, so restoring the child under it would land at depth 2 — over a
 	// cap of 1.
-	require.NoError(t, s.RestorePage(child.Id, child.SpaceId, userID, 1), "restore must succeed by falling back to root")
+	require.NoError(t, restorePageErr(s, child.Id, child.SpaceId, userID, 1), "restore must succeed by falling back to root")
 
 	restored, err := s.GetPage(child.Id, false)
 	require.NoError(t, err)
@@ -1167,7 +1234,7 @@ func TestRestorePageAppendsAtEndOfSiblingGroup(t *testing.T) {
 		"sanity: promoted children take the deleted page's slot")
 
 	// Restore p: it must append at the end (a, c1, c2, p), not reclaim its stale slot 2.
-	require.NoError(t, s.RestorePage(p.Id, p.SpaceId, userID, testDefaultMaxDepth))
+	require.NoError(t, restorePageErr(s, p.Id, p.SpaceId, userID, testDefaultMaxDepth))
 	children := mustChildren(t, s, g.Id, space.Id)
 	require.Equal(t, []string{a.Id, c1.Id, c2.Id, p.Id}, summaryIDs(children),
 		"restored page must be appended at the end of the sibling group")
@@ -1194,7 +1261,7 @@ func TestDeleteRestoreAdvancesEditAt(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, deletePageErr(s, created.Id, created.SpaceId, userID))
-	require.NoError(t, s.RestorePage(created.Id, created.SpaceId, userID, testDefaultMaxDepth))
+	require.NoError(t, restorePageErr(s, created.Id, created.SpaceId, userID, testDefaultMaxDepth))
 
 	restored, err := s.GetPage(created.Id, false)
 	require.NoError(t, err)

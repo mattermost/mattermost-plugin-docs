@@ -197,7 +197,8 @@ func (s *Service) RestorePage(pageID, spaceID, userID string) (*model.Page, *mmm
 		return nil, mmmodel.NewAppError("RestorePage", "app.page.restore.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	s.log.Debug("Restoring page", "page_id", pageID, "user_id", userID)
-	if restoreErr := s.store.RestorePage(pageID, spaceID, userID, MaxPageDepth); restoreErr != nil {
+	restored, restoreErr := s.store.RestorePage(pageID, spaceID, userID, MaxPageDepth)
+	if restoreErr != nil {
 		if appErr := restoreReasonAppError(restoreErr, map[string]*mmmodel.AppError{
 			store.ReasonNotRestorable: mmmodel.NewAppError("RestorePage", "app.page.restore.not_restorable.app_error", nil, "", http.StatusBadRequest),
 			store.ReasonNotDeleted:    mmmodel.NewAppError("RestorePage", "app.page.restore.not_deleted.app_error", nil, "", http.StatusConflict),
@@ -205,14 +206,6 @@ func (s *Service) RestorePage(pageID, spaceID, userID string) (*model.Page, *mmm
 			return nil, appErr
 		}
 		return nil, storeAppError("RestorePage", restoreErr)
-	}
-	restored, getErr := readBackAfterRestore(
-		mmmodel.NewAppError("RestorePage", "app.page.restore.read_back_failed.app_error", nil, "", http.StatusInternalServerError),
-		func() (*model.Page, *mmmodel.AppError) {
-			return s.GetPageInSpace("RestorePage", pageID, spaceID, false)
-		})
-	if getErr != nil {
-		return nil, getErr
 	}
 	s.publishToChannels(wsEventPageRestored, map[string]any{"page_id": restored.Id, "space_id": restored.SpaceId}, restored.ChannelId)
 	return restored, nil

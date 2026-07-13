@@ -436,21 +436,22 @@ func (s *Store) DeletePage(pageID, spaceID, userID string) (_ string, err error)
 	return deleted.ChannelID, nil
 }
 
-// RestorePage un-deletes a soft-deleted page. Promoted children are NOT pulled back.
-// Restore never fails on account of a deleted or now-too-deep original parent (see the fallback
-// inside). Only a soft-deleted original page (OriginalId == "", DeleteAt > 0) in a live space is
-// restorable.
-func (s *Store) RestorePage(pageID, spaceID, userID string, maxDepth int) (err error) {
+// RestorePage un-deletes a soft-deleted page and returns the restored page. Promoted children
+// are NOT pulled back. Restore never fails on account of a deleted or now-too-deep original
+// parent (see the fallback inside). Only a soft-deleted original page (OriginalId == "",
+// DeleteAt > 0) in a live space is restorable. The restored page comes from the transaction's
+// own locked read, so a caller never needs a second read that could fail after the commit.
+func (s *Store) RestorePage(pageID, spaceID, userID string, maxDepth int) (_ *model.Page, err error) {
 	if pageID == "" {
-		return &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
+		return nil, &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
 	}
 	if spaceID == "" {
-		return &ErrInvalidInput{Entity: "Page", Field: "SpaceId", Value: spaceID}
+		return nil, &ErrInvalidInput{Entity: "Page", Field: "SpaceId", Value: spaceID}
 	}
 
 	tx, err := s.db.Beginx()
 	if err != nil {
-		return errors.Wrap(err, "begin_transaction")
+		return nil, errors.Wrap(err, "begin_transaction")
 	}
 	defer s.finalizeTransaction(tx, &err)
 
@@ -458,57 +459,52 @@ func (s *Store) RestorePage(pageID, spaceID, userID string, maxDepth int) (err e
 
 	// Lock the live space first (space-before-page); a deleted space has nowhere to restore into.
 	if spErr := s.lockLiveSpace(tx, spaceID); spErr != nil {
-		return spErr
+		return nil, spErr
 	}
 
-	// Read channel/parent in-tx so the checks and the restore are atomic. Scoped to spaceID so a
+	// Read the row in-tx so the checks and the restore are atomic. Scoped to spaceID so a
 	// page whose {space_id, page_id} URL no longer matches its space reads as not-found. Lock the
 	// row regardless of state (live, deleted, or snapshot) so not-found vs not-restorable vs
 	// already-live is decided atomically under the lock, with no pre-fetch race window for the
 	// caller.
-	var target struct {
-		ChannelID  string
-		ParentID   string
-		OriginalId string
-		DeleteAt   int64
-	}
+	var page model.Page
 	targetQuery := s.getQueryBuilder().
-		Select("ChannelId", "ParentId", "OriginalId", "DeleteAt").
+		Select(pageColumnList...).
 		From("DOCS_Page").
 		Where(sq.Eq{"Id": pageID, "SpaceId": spaceID}).
 		Suffix("FOR UPDATE")
-	if txErr := s.getBuilder(tx, &target, targetQuery); txErr != nil {
+	if txErr := s.getBuilder(tx, &page, targetQuery); txErr != nil {
 		if errors.Is(txErr, sql.ErrNoRows) {
-			return &ErrNotFound{EntityName: "Page", ID: pageID}
+			return nil, &ErrNotFound{EntityName: "Page", ID: pageID}
 		}
-		return errors.Wrap(txErr, "failed to read page for restore")
+		return nil, errors.Wrap(txErr, "failed to read page for restore")
 	}
 	// Version snapshots are historical, not live pages; restore does not apply to them.
-	if target.OriginalId != "" {
-		return &ErrInvalidInput{Entity: "Page", Field: "id", Value: pageID, Reason: ReasonNotRestorable}
+	if page.OriginalId != "" {
+		return nil, &ErrInvalidInput{Entity: "Page", Field: "id", Value: pageID, Reason: ReasonNotRestorable}
 	}
 	// Already live: nothing to restore. Decided under the row lock so a concurrent restore
 	// cannot turn this into a misleading not-found.
-	if target.DeleteAt == 0 {
-		return &ErrInvalidInput{Entity: "Page", Field: "id", Value: pageID, Reason: ReasonNotDeleted}
+	if page.DeleteAt == 0 {
+		return nil, &ErrInvalidInput{Entity: "Page", Field: "id", Value: pageID, Reason: ReasonNotDeleted}
 	}
 
 	// Restore under the original parent if it's still live and not too deep; otherwise fall back
 	// to the space root rather than failing (matching Confluence — root always exists once the
 	// space is live). The parent may have moved deeper since this page was deleted, so the depth
 	// cap is re-checked here under the parent's lock rather than trusted from delete time.
-	restoreParentID := target.ParentID
-	if target.ParentID != "" {
-		parentLive, pErr := s.tryLockLiveParent(tx, target.ParentID, spaceID)
+	restoreParentID := page.ParentId
+	if page.ParentId != "" {
+		parentLive, pErr := s.tryLockLiveParent(tx, page.ParentId, spaceID)
 		if pErr != nil {
-			return pErr
+			return nil, pErr
 		}
 		if !parentLive {
 			restoreParentID = ""
 		} else {
-			parentDepth, depthErr := s.pageDepth(tx, target.ParentID)
+			parentDepth, depthErr := s.pageDepth(tx, page.ParentId)
 			if depthErr != nil {
-				return depthErr
+				return nil, depthErr
 			}
 			if parentDepth+1 > maxDepth {
 				restoreParentID = ""
@@ -519,19 +515,28 @@ func (s *Store) RestorePage(pageID, spaceID, userID string, maxDepth int) (err e
 	// The pre-delete SortOrder is stale (its slot was reused; siblings may have changed), so
 	// append at the end of the destination group under the (channelId, parentId) advisory lock
 	// (via nextSortOrder) to avoid collisions.
-	sortOrder, sortErr := s.nextSortOrder(tx, target.ChannelID, restoreParentID)
+	sortOrder, sortErr := s.nextSortOrder(tx, page.ChannelId, restoreParentID)
 	if sortErr != nil {
-		return sortErr
+		return nil, sortErr
 	}
+
+	// The row is FOR UPDATE-locked above, so computing the monotonic bumps in Go from the locked
+	// read writes the same values monotonicBump would, while keeping them on the returned page.
+	page.DeleteAt = 0
+	page.UpdateAt = nextMonotonic(now, page.UpdateAt)
+	page.EditAt = nextMonotonic(now, page.EditAt)
+	page.LastModifiedBy = userID
+	page.ParentId = restoreParentID
+	page.SortOrder = sortOrder
 
 	restoreQuery := s.getQueryBuilder().
 		Update("DOCS_Page").
-		Set("DeleteAt", 0).
-		Set("UpdateAt", monotonicBump("UpdateAt", now)).
-		Set("EditAt", monotonicBump("EditAt", now)).
-		Set("LastModifiedBy", userID).
-		Set("ParentId", restoreParentID).
-		Set("SortOrder", sortOrder)
+		Set("DeleteAt", page.DeleteAt).
+		Set("UpdateAt", page.UpdateAt).
+		Set("EditAt", page.EditAt).
+		Set("LastModifiedBy", page.LastModifiedBy).
+		Set("ParentId", page.ParentId).
+		Set("SortOrder", page.SortOrder)
 
 	restoreQuery = restoreQuery.Where(sq.And{
 		sq.Eq{"Id": pageID},
@@ -540,16 +545,16 @@ func (s *Store) RestorePage(pageID, spaceID, userID string, maxDepth int) (err e
 	})
 	result, txErr := s.execBuilder(tx, restoreQuery)
 	if txErr != nil {
-		return errors.Wrap(txErr, "failed to restore page")
+		return nil, errors.Wrap(txErr, "failed to restore page")
 	}
 	if rowsErr := checkRowsAffected(result, "Page", pageID); rowsErr != nil {
-		return rowsErr
+		return nil, rowsErr
 	}
 
 	if err = tx.Commit(); err != nil {
-		return errors.Wrap(err, "commit_transaction")
+		return nil, errors.Wrap(err, "commit_transaction")
 	}
-	return nil
+	return &page, nil
 }
 
 // PageExistsInSpace reports whether pageID is a live page in spaceID, without fetching the

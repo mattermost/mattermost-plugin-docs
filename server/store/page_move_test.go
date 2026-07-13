@@ -428,10 +428,10 @@ func TestPageMutations_ScopedToSpace(t *testing.T) {
 
 	t.Run("restore with wrong space is not found", func(t *testing.T) {
 		require.NoError(t, deletePageErr(s, page.Id, page.SpaceId, user))
-		require.True(t, store.IsErrNotFound(s.RestorePage(page.Id, spaceB.Id, user, testDefaultMaxDepth)))
+		require.True(t, store.IsErrNotFound(restorePageErr(s, page.Id, spaceB.Id, user, testDefaultMaxDepth)))
 
 		// A correctly-scoped restore then succeeds, confirming the row was only shielded by the scope.
-		require.NoError(t, s.RestorePage(page.Id, page.SpaceId, user, testDefaultMaxDepth))
+		require.NoError(t, restorePageErr(s, page.Id, page.SpaceId, user, testDefaultMaxDepth))
 	})
 
 	t.Run("get for duplicate with wrong source space is not found", func(t *testing.T) {
