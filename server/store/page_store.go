@@ -45,8 +45,10 @@ func pageToSlice(p *model.Page) []any {
 	}
 }
 
-var pageColumnsP = columnsWithAlias("p", pageColumnList)
-var pageSummaryColumnsP = columnsWithAlias("p", pageSummaryColumnList)
+var (
+	pageColumnsP        = columnsWithAlias("p", pageColumnList)
+	pageSummaryColumnsP = columnsWithAlias("p", pageSummaryColumnList)
+)
 
 // liveNonSnapshotFilter is the squirrel condition marking a page as live and not a version
 // snapshot (DeleteAt=0, OriginalId=""), shared by every store method that requires a live
