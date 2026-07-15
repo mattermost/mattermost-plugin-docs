@@ -4,6 +4,7 @@
 package app
 
 import (
+	"errors"
 	"net/http"
 	"unicode/utf8"
 
@@ -197,6 +198,18 @@ func (s *Service) CreateSpaceDraft(userID, spaceID, title, pageParentID string) 
 	// path — would incorrectly block this call.
 	saved, err := s.store.UpsertDraft(draft, parentPtr, nil)
 	if err != nil {
+		// Translate hierarchy errors with create-specific keys so the client receives an
+		// appropriate message. invalidInputAppError maps these to update.* keys, which don't
+		// apply to a create operation.
+		var invErr *store.ErrInvalidInput
+		if errors.As(err, &invErr) {
+			switch invErr.Reason {
+			case store.ReasonDraftCycle:
+				return nil, mmmodel.NewAppError("CreateSpaceDraft", "app.page_draft.create.parent_cycle.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+			case store.ReasonDraftTooDeep:
+				return nil, mmmodel.NewAppError("CreateSpaceDraft", "app.page_draft.create.parent_too_deep.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+			}
+		}
 		return nil, storeAppError("CreateSpaceDraft", err)
 	}
 

@@ -232,6 +232,14 @@
     "translation": "Invalid user ID."
   },
   {
+    "id": "app.page_draft.create.parent_cycle.app_error",
+    "translation": "Setting this parent would create a cycle in the draft hierarchy."
+  },
+  {
+    "id": "app.page_draft.create.parent_too_deep.app_error",
+    "translation": "The draft hierarchy is too deep to add another level."
+  },
+  {
     "id": "app.page_draft.create.quota_exceeded.app_error",
     "translation": "Draft limit reached. Publish or discard an existing draft before creating a new one."
   },
