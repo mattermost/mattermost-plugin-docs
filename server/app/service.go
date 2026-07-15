@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -37,6 +38,11 @@ type Service struct {
 	store  *store.Store
 	log    Logger
 	client *pluginapi.Client
+
+	// presenceBroadcastLast records the last autosave-triggered presence broadcast time (ms) per
+	// pageID, used to rate-limit high-frequency autosave broadcasts. Delete and publish paths bypass
+	// this and always broadcast.
+	presenceBroadcastLast sync.Map
 }
 
 // New creates a Service wired to the given store, logger, and optional pluginapi client.
@@ -129,6 +135,8 @@ func storeAppError(where string, err error) *mmmodel.AppError {
 			return mmmodel.NewAppError(where, "app.page.max_depth_exceeded.app_error", map[string]any{"MaxDepth": limitErr.Limit}, "", http.StatusBadRequest).Wrap(err)
 		case store.ReasonSubtreeMaxDepthExceeded:
 			return mmmodel.NewAppError(where, "app.page.subtree_max_depth_exceeded.app_error", map[string]any{"MaxDepth": limitErr.Limit}, "", http.StatusBadRequest).Wrap(err)
+		case store.ReasonDraftQuotaExceeded:
+			return mmmodel.NewAppError(where, "app.page_draft.create.quota_exceeded.app_error", nil, "", http.StatusTooManyRequests).Wrap(err)
 		}
 		return mmmodel.NewAppError(where, "app.store.too_large.app_error", map[string]any{"Limit": limitErr.Limit}, "", http.StatusUnprocessableEntity).Wrap(err)
 	default:
@@ -143,11 +151,16 @@ func storeAppError(where string, err error) *mmmodel.AppError {
 func invalidInputAppError(where string, err error) *mmmodel.AppError {
 	var invErr *store.ErrInvalidInput
 	if errors.As(err, &invErr) && invErr.Reason != "" {
-		if invErr.Reason == store.ReasonParentNotLive {
+		switch invErr.Reason {
+		case store.ReasonParentNotLive:
 			// Same key as the app-layer parent pre-checks (validateParentExists), so a parent
 			// that disappears between the pre-check and the store's locked check reads
 			// identically to one that never existed — the contract is not race-dependent.
 			return mmmodel.NewAppError(where, "app.page.invalid_parent.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+		case store.ReasonDraftCycle:
+			return mmmodel.NewAppError(where, "app.page_draft.update.parent_cycle.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+		case store.ReasonDraftTooDeep:
+			return mmmodel.NewAppError(where, "app.page_draft.update.parent_too_deep.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 		}
 		return mmmodel.NewAppError(where, invErr.Reason, nil, "", http.StatusBadRequest).Wrap(err)
 	}

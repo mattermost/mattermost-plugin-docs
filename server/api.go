@@ -23,8 +23,8 @@ import (
 //
 // Authorization: every route requires an authenticated user via MattermostAuthorizationRequired.
 // All space- and page-scoped handlers additionally gate on backing-channel membership via
-// CheckSpaceMembership (implemented). Per-page role ACLs (author vs. editor within a space)
-// are not yet implemented and are deferred to a follow-up.
+// CheckSpaceMembership. Per-page role ACLs (author vs. editor within a space) are not yet
+// implemented.
 func (p *Plugin) initRouter() *mux.Router {
 	router := mux.NewRouter()
 	router.Use(p.MattermostAuthorizationRequired)
@@ -59,6 +59,17 @@ func (p *Plugin) initRouter() *mux.Router {
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/move", p.handleMovePage).Methods(http.MethodPatch)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/move-to-space", p.handleMovePageToSpace).Methods(http.MethodPatch)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/duplicate", p.handleDuplicatePage).Methods(http.MethodPost)
+
+	// Draft CRUD + publish.
+	api.HandleFunc("/spaces/{space_id}/drafts", p.handleCreateSpaceDraft).Methods(http.MethodPost)
+	api.HandleFunc("/spaces/{space_id}/drafts", p.handleGetPageDraftsForSpace).Methods(http.MethodGet)
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/draft", p.handleUpdatePageDraft).Methods(http.MethodPut)
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/draft", p.handleGetPageDraft).Methods(http.MethodGet)
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/draft", p.handleDeletePageDraft).Methods(http.MethodDelete)
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/draft/publish", p.handlePublishPageDraft).Methods(http.MethodPost)
+
+	// Presence.
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/active-editors", p.handleGetPageActiveEditors).Methods(http.MethodGet)
 
 	return router
 }

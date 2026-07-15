@@ -247,7 +247,7 @@ func (s *Store) reindexSiblingGroup(tx *sqlx.Tx, channelID, parentID, movedPageI
 // cycle-safety are all re-validated under lock, so the move is safe regardless of concurrent
 // operations between the caller's pre-checks and this call. Cross-owner resources
 // (page-comment Posts, FileInfo) are not re-homed here.
-func (s *Store) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, parentPageID *string, expectedUpdateAt int64, force bool, maxDepth int) (_ *model.Page, priorParentID string, err error) {
+func (s *Store) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID, moverUserID string, parentPageID *string, expectedUpdateAt int64, force bool, maxDepth int) (_ *model.Page, priorParentID string, err error) {
 	if pageID == "" {
 		return nil, "", &ErrInvalidInput{Entity: "Page", Field: "Id", Value: pageID}
 	}
@@ -272,18 +272,20 @@ func (s *Store) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, par
 	if firstSpace > secondSpace {
 		firstSpace, secondSpace = secondSpace, firstSpace
 	}
-	targetChannelID, lockErr := s.lockLiveSpaceChannel(tx, firstSpace)
+	channelA, lockErr := s.lockLiveSpaceChannel(tx, firstSpace)
 	if lockErr != nil {
 		return nil, "", lockErr
 	}
+	channelB := channelA
 	if secondSpace != firstSpace {
-		secondChannelID, lockErr := s.lockLiveSpaceChannel(tx, secondSpace)
+		channelB, lockErr = s.lockLiveSpaceChannel(tx, secondSpace)
 		if lockErr != nil {
 			return nil, "", lockErr
 		}
-		if secondSpace == targetSpaceID {
-			targetChannelID = secondChannelID
-		}
+	}
+	targetChannelID := channelA
+	if secondSpace == targetSpaceID {
+		targetChannelID = channelB
 	}
 
 	// Lock the moving page, scoped to the caller's source space: a page relocated out of the URL by a
@@ -362,7 +364,7 @@ func (s *Store) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, par
 	}
 
 	// Rewrite SpaceId/ChannelId across the subtree (live rows and drafts).
-	if e := s.rewriteSubtreeSpace(tx, ids, targetSpaceID, targetChannelID, now); e != nil {
+	if e := s.rewriteSubtreeSpace(tx, ids, sourceSpaceID, targetSpaceID, targetChannelID, moverUserID, now); e != nil {
 		return nil, "", e
 	}
 
@@ -425,7 +427,34 @@ func (s *Store) collectLiveSubtreeIDs(tx *sqlx.Tx, pageID string) ([]string, int
 // rewriteSubtreeSpace re-homes the given page IDs onto
 // targetSpaceID/targetChannelID, chunked, within tx. It rewrites SpaceId/ChannelId across
 // live DOCS_Page rows, their version snapshots (OriginalId IN ids), and DOCS_Draft rows.
-func (s *Store) rewriteSubtreeSpace(tx *sqlx.Tx, ids []string, targetSpaceID, targetChannelID string, now int64) error {
+// Only the mover's own drafts are re-homed; other users' drafts for the moved pages are
+// deleted, since their page is now in a space they may not be able to access.
+func (s *Store) rewriteSubtreeSpace(tx *sqlx.Tx, ids []string, sourceSpaceID, targetSpaceID, targetChannelID, moverUserID string, now int64) error {
+	// Quota guard: count the mover's drafts that will be re-homed into targetSpaceID (those in
+	// source that cover moved pages or sit under them as new-page children) and ensure adding
+	// them won't exceed MaxDraftsPerUserPerSpace in the target. This count is a lower bound for
+	// the total re-homed set (the cascade loop below can pick up transitively nested new-page
+	// drafts), so a failure here is correct, but a pass does not guarantee the cascade is safe;
+	// the cascade is bounded by draftCycleCheckMaxDepth and the count remains low in practice.
+	var movedDraftCount int
+	movedCountQ := s.getQueryBuilder().
+		Select("COUNT(*)").
+		From("DOCS_Draft").
+		Where(sq.Eq{"UserId": moverUserID, "SpaceId": sourceSpaceID}).
+		Where(sq.Or{sq.Eq{"PageId": ids}, sq.Eq{"ParentId": ids}})
+	if err := s.getBuilder(tx, &movedDraftCount, movedCountQ); err != nil {
+		return errors.Wrap(err, "failed to count mover drafts to re-home")
+	}
+	if movedDraftCount > 0 {
+		targetDraftCount, err := s.countDraftsForUser(tx, moverUserID, targetSpaceID)
+		if err != nil {
+			return errors.Wrap(err, "failed to count mover drafts in target space")
+		}
+		if targetDraftCount+movedDraftCount > MaxDraftsPerUserPerSpace {
+			return &ErrLimitExceeded{Resource: "Draft", Limit: MaxDraftsPerUserPerSpace, Reason: ReasonDraftQuotaExceeded}
+		}
+	}
+
 	const chunkSize = 1000
 	for i := 0; i < len(ids); i += chunkSize {
 		chunk := ids[i:min(i+chunkSize, len(ids))]
@@ -452,19 +481,61 @@ func (s *Store) rewriteSubtreeSpace(tx *sqlx.Tx, ids []string, targetSpaceID, ta
 			return errors.Wrap(e, "failed to update subtree snapshots SpaceId/ChannelId")
 		}
 
-		// Re-home drafts onto the target space: draft reads are scoped to the page's current space,
-		// so a draft left behind in the source space would become unreadable after the move. PageId
-		// matches a moved page's in-progress edit; ParentId matches a pending new-page draft parented
-		// within the subtree.
-		draftUpd := s.getQueryBuilder().
+		// Re-home the mover's own drafts. UpdateAt uses monotonicBump so it stays a valid CAS
+		// token even when the move and a concurrent autosave share a millisecond boundary.
+		moverDraftUpd := s.getQueryBuilder().
 			Update("DOCS_Draft").
 			Set("SpaceId", targetSpaceID).
-			Set("UpdateAt", now).
+			Set("UpdateAt", monotonicBump("UpdateAt", now)).
+			Where(sq.Eq{"UserId": moverUserID}).
 			Where(sq.Or{sq.Eq{"PageId": chunk}, sq.Eq{"ParentId": chunk}})
-		if _, e := s.execBuilder(tx, draftUpd); e != nil {
-			return errors.Wrap(e, "failed to update subtree drafts")
+		if _, e := s.execBuilder(tx, moverDraftUpd); e != nil {
+			return errors.Wrap(e, "failed to re-home mover drafts")
+		}
+
+		// Delete other users' drafts for the moved pages: their SpaceId would no longer match
+		// the page's space, so the liveness filter rejects them anyway. Removing them explicitly
+		// prevents inaccessible rows from accumulating when the draft owner is not a member of
+		// the target space. SpaceId = sourceSpaceID prevents cross-space ID collisions from
+		// removing unrelated drafts that happen to share a PageId or ParentId.
+		otherDraftDel := s.getQueryBuilder().
+			Delete("DOCS_Draft").
+			Where(sq.NotEq{"UserId": moverUserID}).
+			Where(sq.Eq{"SpaceId": sourceSpaceID}).
+			Where(sq.Or{sq.Eq{"PageId": chunk}, sq.Eq{"ParentId": chunk}})
+		if _, e := s.execBuilder(tx, otherDraftDel); e != nil {
+			return errors.Wrap(e, "failed to delete other-user drafts for moved pages")
 		}
 	}
+
+	// Cascade the space re-home to the mover's transitively-nested new-page drafts (draft B
+	// whose ParentId is draft A's PageId, not a live page). The chunk loop above matched only
+	// drafts whose ParentId was a live moved page; draft B is caught here. Loop until stable,
+	// bounded by draftCycleCheckMaxDepth which caps the draft tree depth.
+	// Squirrel cannot express UPDATE … FROM …, so the statement is built directly.
+	for range draftCycleCheckMaxDepth {
+		result, e := s.exec(tx, `
+			UPDATE DOCS_Draft d
+			SET SpaceId = $1, UpdateAt = GREATEST(d.UpdateAt + 1, $2)
+			FROM DOCS_Draft parent
+			WHERE d.UserId = $3
+			  AND d.SpaceId = $4
+			  AND parent.UserId = $3
+			  AND parent.SpaceId = $1
+			  AND parent.PageId = d.ParentId`,
+			targetSpaceID, now, moverUserID, sourceSpaceID)
+		if e != nil {
+			return errors.Wrap(e, "failed to cascade draft space to nested drafts")
+		}
+		rows, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			return errors.Wrap(rowsErr, "failed to read rows affected for nested draft cascade")
+		}
+		if rows == 0 {
+			break
+		}
+	}
+
 	return nil
 }
 

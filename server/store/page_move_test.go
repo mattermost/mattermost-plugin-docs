@@ -120,7 +120,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		spaceB, err := s.CreateSpace(newSpace(chB))
 		require.NoError(t, err)
 
-		movedRoot, _, err := s.MovePageToSpace(root.Id, spaceA.Id, spaceB.Id, nil, root.UpdateAt, false, store.MaxPageHierarchyDepth)
+		movedRoot, _, err := s.MovePageToSpace(root.Id, spaceA.Id, spaceB.Id, mmmodel.NewId(), nil, root.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.NoError(t, err)
 		require.Equal(t, spaceB.Id, movedRoot.SpaceId, "returned page reflects the committed move")
 		require.Equal(t, chB, movedRoot.ChannelId)
@@ -158,34 +158,37 @@ func TestMovePageToSpace_Store(t *testing.T) {
 
 		// An in-progress edit draft on the page, and a pending new-page draft parented under it
 		// (its own PageId has no page row yet).
-		_, err = s.UpsertDraft(newDraft(user, spaceA.Id, page.Id, ""))
+		dEdit := newDraft(user, spaceA.Id, page.Id, "")
+		dEdit.Props = mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: page.EditAt}
+		_, err = s.UpsertDraft(dEdit, nil, nil)
 		require.NoError(t, err)
-		_, err = s.UpsertDraft(newDraft(user, spaceA.Id, mmmodel.NewId(), page.Id))
+		parentPageID := page.Id
+		_, err = s.UpsertDraft(newDraft(user, spaceA.Id, mmmodel.NewId(), parentPageID), &parentPageID, nil)
 		require.NoError(t, err)
 
-		sourceBefore, err := s.GetDraftsForSpace(user, spaceA.Id)
+		sourceBefore, err := s.GetDraftsForSpace(user, spaceA.Id, 0, testDraftListLimit)
 		require.NoError(t, err)
 		require.Len(t, sourceBefore, 2, "both drafts are readable in the source space before the move")
 
-		_, _, err = s.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, err = s.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, user, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.NoError(t, err)
 
 		movedDraft, err := s.GetDraft(user, page.Id)
 		require.NoError(t, err)
 		require.Equal(t, spaceB.Id, movedDraft.SpaceId, "the edit draft follows the page and stays readable")
 
-		targetDrafts, err := s.GetDraftsForSpace(user, spaceB.Id)
+		targetDrafts, err := s.GetDraftsForSpace(user, spaceB.Id, 0, testDraftListLimit)
 		require.NoError(t, err)
 		require.Len(t, targetDrafts, 2, "both drafts now live in the target space")
 
-		sourceAfter, err := s.GetDraftsForSpace(user, spaceA.Id)
+		sourceAfter, err := s.GetDraftsForSpace(user, spaceA.Id, 0, testDraftListLimit)
 		require.NoError(t, err)
 		require.Empty(t, sourceAfter, "no draft remains stranded in the source space")
 	})
 
 	t.Run("empty pageID returns invalid-input", func(t *testing.T) {
 		s := openTestDB(t)
-		_, _, err := s.MovePageToSpace("", mmmodel.NewId(), mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err := s.MovePageToSpace("", mmmodel.NewId(), mmmodel.NewId(), mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		var inv *store.ErrInvalidInput
 		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
@@ -193,7 +196,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 
 	t.Run("empty sourceSpaceID returns invalid-input", func(t *testing.T) {
 		s := openTestDB(t)
-		_, _, err := s.MovePageToSpace(mmmodel.NewId(), "", mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err := s.MovePageToSpace(mmmodel.NewId(), "", mmmodel.NewId(), mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		var inv *store.ErrInvalidInput
 		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
@@ -201,7 +204,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 
 	t.Run("empty targetSpaceID returns invalid-input", func(t *testing.T) {
 		s := openTestDB(t)
-		_, _, err := s.MovePageToSpace(mmmodel.NewId(), mmmodel.NewId(), "", nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err := s.MovePageToSpace(mmmodel.NewId(), mmmodel.NewId(), "", mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		var inv *store.ErrInvalidInput
 		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
@@ -213,7 +216,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		spaceB, err := s.CreateSpace(newSpace(chB))
 		require.NoError(t, err)
 
-		_, _, err = s.MovePageToSpace(mmmodel.NewId(), mmmodel.NewId(), spaceB.Id, nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err = s.MovePageToSpace(mmmodel.NewId(), mmmodel.NewId(), spaceB.Id, mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		require.True(t, store.IsErrNotFound(err), "expected ErrNotFound, got %T: %v", err, err)
 	})
@@ -414,7 +417,7 @@ func TestPageMutations_ScopedToSpace(t *testing.T) {
 	})
 
 	t.Run("move-to-space with wrong source space is not found", func(t *testing.T) {
-		_, _, mErr := s.MovePageToSpace(page.Id, spaceB.Id, page.SpaceId, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, mErr := s.MovePageToSpace(page.Id, spaceB.Id, page.SpaceId, user, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.True(t, store.IsErrNotFound(mErr))
 	})
 

@@ -50,16 +50,17 @@ func TestServiceDuplicatePage(t *testing.T) {
 }
 
 // TestServiceDuplicatePage_CopiesSearchText verifies the duplicate carries the source's SearchText
-// verbatim (alongside the body) so it is immediately searchable like its source.
+// (alongside the body) so it is immediately searchable like its source. SearchText is derived
+// server-side from the body, so a caller-supplied value is ignored.
 func TestServiceDuplicatePage_CopiesSearchText(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
-	source, appErr := h.svc.CreatePage(space.Id, "", "Searchable", "body text", "search text", userID)
+	source, appErr := h.svc.CreatePage(space.Id, "", "Searchable", "body text", userID)
 	require.Nil(t, appErr)
-	require.Equal(t, "search text", source.SearchText)
+	require.Equal(t, "body text", source.SearchText, "SearchText is derived from the body, not the caller-supplied value")
 
 	dup, appErr := h.svc.DuplicatePage(source.Id, space, userID, false, nil, nil)
 	require.Nil(t, appErr)
@@ -76,7 +77,7 @@ func TestServiceDuplicatePage_CopiesProps(t *testing.T) {
 	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
-	source, appErr := h.svc.CreatePage(space.Id, "", "Has Props", "body text", "", userID)
+	source, appErr := h.svc.CreatePage(space.Id, "", "Has Props", "body text", userID)
 	require.Nil(t, appErr)
 
 	// "nested" round-trips through the store as a plain map[string]any (JSON decoding never
@@ -108,7 +109,7 @@ func TestServiceDuplicatePage_TruncatesLongTitle(t *testing.T) {
 	userID := mmmodel.NewId()
 
 	longTitle := strings.Repeat("x", model.PageTitleMaxRunes)
-	source, appErr := h.svc.CreatePage(space.Id, "", longTitle, "", "", userID)
+	source, appErr := h.svc.CreatePage(space.Id, "", longTitle, "", userID)
 	require.Nil(t, appErr)
 
 	dup, appErr := h.svc.DuplicatePage(source.Id, space, userID, false, nil, nil)

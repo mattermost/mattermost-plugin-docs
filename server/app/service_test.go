@@ -106,7 +106,7 @@ func TestServiceCreatePageParentDifferentSpace(t *testing.T) {
 	otherSpace := mustCreateSpace(t, h.store, otherChannelID)
 	rogueParent := mustCreatePage(t, h.store, otherSpace.Id, otherChannelID, userID, "")
 
-	_, err := h.svc.CreatePage(space.Id, rogueParent.Id, "Child", "", "", userID)
+	_, err := h.svc.CreatePage(space.Id, rogueParent.Id, "Child", "", userID)
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	require.Equal(t, "app.page.invalid_parent.app_error", err.Id)
@@ -206,10 +206,10 @@ func TestServiceUpdatePageSearchTextWithoutBody(t *testing.T) {
 	require.Equal(t, "model.page.patch.search_text_body_mismatch.app_error", err.Id)
 }
 
-// TestServiceUpdatePageBodyWithoutSearchText covers the inverse: a Body change with no
-// accompanying SearchText would strand the GIN index on the page's old content, so the
-// update-path guard rejects it too (both or neither).
-func TestServiceUpdatePageBodyWithoutSearchText(t *testing.T) {
+// TestServiceUpdatePageBodyDerivesSearchText verifies that a Body-only patch succeeds and its
+// SearchText is derived server-side from the body, keeping the search index in sync without the
+// caller having to supply it.
+func TestServiceUpdatePageBodyDerivesSearchText(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
@@ -217,18 +217,16 @@ func TestServiceUpdatePageBodyWithoutSearchText(t *testing.T) {
 	userID := mmmodel.NewId()
 	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
-	_, err := h.svc.UpdatePage(
+	updated, err := h.svc.UpdatePage(
 		created.Id, created.SpaceId, &model.PagePatch{Body: mmmodel.NewPointer("new body")}, new(created.EditAt), false, userID,
 	)
-	require.NotNil(t, err)
-	require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	require.Equal(t, "model.page.patch.search_text_body_mismatch.app_error", err.Id)
+	require.Nil(t, err)
+	require.Equal(t, "new body", updated.SearchText)
 }
 
-// TestServiceUpdatePageSearchTextWithBodyCleared verifies that clearing Body to "" while
-// setting a non-empty SearchText is rejected: SearchText is the body's plain-text projection
-// and must not survive an emptied body (mirrors the create-path rule).
-func TestServiceUpdatePageSearchTextWithBodyCleared(t *testing.T) {
+// TestServiceUpdatePageSearchTextIgnoredOnBodyClear verifies that clearing Body to "" derives an
+// empty SearchText regardless of the caller-supplied value — SearchText is the body's projection.
+func TestServiceUpdatePageSearchTextIgnoredOnBodyClear(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
@@ -236,14 +234,14 @@ func TestServiceUpdatePageSearchTextWithBodyCleared(t *testing.T) {
 	userID := mmmodel.NewId()
 	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
-	_, err := h.svc.UpdatePage(
+	updated, err := h.svc.UpdatePage(
 		created.Id, created.SpaceId,
-		&model.PagePatch{Body: mmmodel.NewPointer(""), SearchText: mmmodel.NewPointer("some text")},
+		&model.PagePatch{Body: mmmodel.NewPointer(""), SearchText: mmmodel.NewPointer("ignored")},
 		new(created.EditAt), false, userID,
 	)
-	require.NotNil(t, err)
-	require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	require.Equal(t, "model.page.patch.search_text_without_content.app_error", err.Id)
+	require.Nil(t, err)
+	require.Equal(t, "", updated.SearchText)
+	require.Equal(t, "", updated.Body)
 }
 
 // TestServiceUpdatePageClearSearchTextAlone verifies the coupling rule: clearing SearchText
@@ -414,7 +412,7 @@ func TestServiceCreatePageDerivesChannelFromSpace(t *testing.T) {
 	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
-	created, err := h.svc.CreatePage(space.Id, "", "My Page", "", "", userID)
+	created, err := h.svc.CreatePage(space.Id, "", "My Page", "", userID)
 	require.Nil(t, err)
 	require.Equal(t, "My Page", created.Title)
 	require.Equal(t, space.Id, created.SpaceId)
@@ -428,34 +426,34 @@ func TestServiceCreatePage(t *testing.T) {
 	userID := mmmodel.NewId()
 
 	t.Run("rejects invalid space id", func(t *testing.T) {
-		_, err := h.svc.CreatePage("not-a-valid-id", "", "Title", "", "", userID)
+		_, err := h.svc.CreatePage("not-a-valid-id", "", "Title", "", userID)
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
 		require.Equal(t, "app.page.create.invalid_space_id.app_error", err.Id)
 	})
 
 	t.Run("rejects invalid user id", func(t *testing.T) {
-		_, err := h.svc.CreatePage(space.Id, "", "Title", "", "", "not-a-valid-id")
+		_, err := h.svc.CreatePage(space.Id, "", "Title", "", "not-a-valid-id")
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusBadRequest, err.StatusCode)
 		require.Equal(t, "app.page.create.invalid_user_id.app_error", err.Id)
 	})
 
 	t.Run("rejects empty title", func(t *testing.T) {
-		_, err := h.svc.CreatePage(space.Id, "", "   ", "", "", userID)
+		_, err := h.svc.CreatePage(space.Id, "", "   ", "", userID)
 		require.NotNil(t, err)
 		require.Equal(t, 400, err.StatusCode)
 	})
 
 	t.Run("rejects title too long", func(t *testing.T) {
 		long := strings.Repeat("x", model.PageTitleMaxRunes+1)
-		_, err := h.svc.CreatePage(space.Id, "", long, "", "", userID)
+		_, err := h.svc.CreatePage(space.Id, "", long, "", userID)
 		require.NotNil(t, err)
 		require.Equal(t, 400, err.StatusCode)
 	})
 
 	t.Run("rejects nonexistent parent", func(t *testing.T) {
-		_, err := h.svc.CreatePage(space.Id, mmmodel.NewId(), "Title", "", "", userID)
+		_, err := h.svc.CreatePage(space.Id, mmmodel.NewId(), "Title", "", userID)
 		require.NotNil(t, err)
 		require.Equal(t, 400, err.StatusCode)
 	})
@@ -464,7 +462,7 @@ func TestServiceCreatePage(t *testing.T) {
 		otherChannelID := mmmodel.NewId()
 		otherSpace := mustCreateSpace(t, h.store, otherChannelID)
 		parent := mustCreatePage(t, h.store, otherSpace.Id, otherChannelID, userID, "")
-		_, err := h.svc.CreatePage(space.Id, parent.Id, "Title", "", "", userID)
+		_, err := h.svc.CreatePage(space.Id, parent.Id, "Title", "", userID)
 		require.NotNil(t, err)
 		require.Equal(t, 400, err.StatusCode)
 	})
@@ -477,17 +475,17 @@ func TestServiceCreatePage(t *testing.T) {
 		// child would be at depth MaxPageDepth+1 and must be rejected.
 		parentID := ""
 		for range app.MaxPageDepth {
-			p, err := h.svc.CreatePage(depthSpace.Id, parentID, "d", "", "", userID)
+			p, err := h.svc.CreatePage(depthSpace.Id, parentID, "d", "", userID)
 			require.Nil(t, err)
 			parentID = p.Id
 		}
-		_, err := h.svc.CreatePage(depthSpace.Id, parentID, "too deep", "", "", userID)
+		_, err := h.svc.CreatePage(depthSpace.Id, parentID, "too deep", "", userID)
 		require.NotNil(t, err)
 		require.Equal(t, 400, err.StatusCode)
 	})
 
 	t.Run("creates a valid page", func(t *testing.T) {
-		created, err := h.svc.CreatePage(space.Id, "", "My Page", "", "", userID)
+		created, err := h.svc.CreatePage(space.Id, "", "My Page", "", userID)
 		require.Nil(t, err)
 		require.Equal(t, "My Page", created.Title)
 	})
@@ -545,9 +543,9 @@ func TestServiceUpdatePageOversizedBody(t *testing.T) {
 	require.Equal(t, "model.page.is_valid.body.app_error", err.Id)
 }
 
-// TestServiceUpdatePageOversizedSearchText verifies that the update path rejects oversized
-// searchText with 400.
-func TestServiceUpdatePageOversizedSearchText(t *testing.T) {
+// TestServiceUpdatePageOversizedSearchTextIgnored verifies a caller-supplied oversized SearchText
+// is harmless: it is ignored and SearchText is derived from the (small) body instead.
+func TestServiceUpdatePageOversizedSearchTextIgnored(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
@@ -555,10 +553,9 @@ func TestServiceUpdatePageOversizedSearchText(t *testing.T) {
 	created := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 	oversized := strings.Repeat("x", model.PageSearchTextMaxBytes+1)
-	_, err := h.svc.UpdatePage(created.Id, created.SpaceId, &model.PagePatch{Title: mmmodel.NewPointer("Title"), Body: mmmodel.NewPointer("body"), SearchText: mmmodel.NewPointer(oversized)}, new(created.EditAt), false, mmmodel.NewId())
-	require.NotNil(t, err)
-	require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	require.Equal(t, "model.page.is_valid.search_text.app_error", err.Id)
+	updated, err := h.svc.UpdatePage(created.Id, created.SpaceId, &model.PagePatch{Title: mmmodel.NewPointer("Title"), Body: mmmodel.NewPointer("body"), SearchText: mmmodel.NewPointer(oversized)}, new(created.EditAt), false, mmmodel.NewId())
+	require.Nil(t, err)
+	require.Equal(t, "body", updated.SearchText)
 }
 
 // TestServiceCreatePageOversizedBody verifies that CreatePage rejects a body that exceeds
@@ -570,7 +567,7 @@ func TestServiceCreatePageOversizedBody(t *testing.T) {
 	space := mustCreateSpace(t, h.store, channelID)
 
 	oversized := strings.Repeat("x", model.PageBodyMaxBytes+1)
-	_, err := h.svc.CreatePage(space.Id, "", "Title", oversized, "", mmmodel.NewId())
+	_, err := h.svc.CreatePage(space.Id, "", "Title", oversized, mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
 	require.Equal(t, "model.page.is_valid.body.app_error", err.Id)
@@ -599,18 +596,17 @@ func TestServiceUpdatePageCanSetEmptyBody(t *testing.T) {
 	require.Equal(t, "", emptied.Body, "an explicit empty Body must clear the stored body")
 }
 
-// TestServiceCreatePageSearchTextWithoutBody verifies CreatePage rejects searchText
-// supplied without a body, matching the update path's rule.
-func TestServiceCreatePageSearchTextWithoutBody(t *testing.T) {
+// TestServiceCreatePageSearchTextDerivedFromBody verifies CreatePage ignores a caller-supplied
+// SearchText and derives it from the body — so an empty body yields an empty SearchText.
+func TestServiceCreatePageSearchTextDerivedFromBody(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, channelID)
 
-	_, err := h.svc.CreatePage(space.Id, "", "Title", "", "searchtext", mmmodel.NewId())
-	require.NotNil(t, err)
-	require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	require.Equal(t, "app.page.create.search_text_without_content.app_error", err.Id)
+	created, err := h.svc.CreatePage(space.Id, "", "Title", "", mmmodel.NewId())
+	require.Nil(t, err)
+	require.Equal(t, "", created.SearchText)
 }
 
 // TestServiceGetPageWithDeleted verifies the with-deleted reader returns a soft-deleted

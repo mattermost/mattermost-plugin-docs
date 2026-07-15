@@ -34,6 +34,10 @@ const (
 	wsEventPageMoved        = "page_moved"
 	wsEventPageDuplicated   = "page_duplicated"
 	wsEventPageMovedToSpace = "page_moved_to_space"
+	// wsEventPagePresenceUpdated carries a presence snapshot ({page_id, space_id, active_editors,
+	// as_of}), not the {page_id, space_id} mutation shape, and fires on every autosave/draft-delete
+	// rather than on a page write.
+	wsEventPagePresenceUpdated = "page_presence_updated"
 
 	wsEventSpaceCreated       = "space_created"
 	wsEventSpaceUpdated       = "space_updated"
@@ -50,12 +54,12 @@ func (s *Service) publishToChannels(event string, payload map[string]any, channe
 	if s.client == nil {
 		return
 	}
-	seen := make(map[string]bool, len(channelIDs))
+	seen := make(map[string]struct{}, len(channelIDs))
 	for _, chID := range channelIDs {
-		if chID == "" || seen[chID] {
+		if _, ok := seen[chID]; chID == "" || ok {
 			continue
 		}
-		seen[chID] = true
+		seen[chID] = struct{}{}
 		s.client.Frontend.PublishWebSocketEvent(event, payload, &mmmodel.WebsocketBroadcast{ChannelId: chID})
 	}
 }

@@ -44,8 +44,8 @@
     "translation": "Invalid user ID."
   },
   {
-    "id": "app.page.create.search_text_without_content.app_error",
-    "translation": "Search text cannot be set without page content."
+    "id": "app.page.create.parent_different_channel.app_error",
+    "translation": "The parent page belongs to a different space."
   },
   {
     "id": "app.page.create.space_not_found.app_error",
@@ -108,6 +108,10 @@
     "translation": "Invalid page ID."
   },
   {
+    "id": "app.page.invalid_content.app_error",
+    "translation": "The page body is not valid content."
+  },
+  {
     "id": "app.page.invalid_parent.app_error",
     "translation": "The destination parent page does not exist."
   },
@@ -156,6 +160,18 @@
     "translation": "The page could not be found."
   },
   {
+    "id": "app.page.presence.invalid_page_id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page.presence.invalid_space_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.page.presence.store_error.app_error",
+    "translation": "The list of active editors could not be loaded."
+  },
+  {
     "id": "app.page.restore.invalid_id.app_error",
     "translation": "Invalid page ID."
   },
@@ -202,6 +218,146 @@
   {
     "id": "app.page.update.store_error.app_error",
     "translation": "An error occurred while updating the page."
+  },
+  {
+    "id": "app.page_draft.create.invalid_parent.app_error",
+    "translation": "The parent page or draft was not found."
+  },
+  {
+    "id": "app.page_draft.create.invalid_parent_id.app_error",
+    "translation": "The parent ID is not a valid ID."
+  },
+  {
+    "id": "app.page_draft.create.invalid_space_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.page_draft.create.invalid_user_id.app_error",
+    "translation": "Invalid user ID."
+  },
+  {
+    "id": "app.page_draft.create.quota_exceeded.app_error",
+    "translation": "Draft limit reached. Publish or discard an existing draft before creating a new one."
+  },
+  {
+    "id": "app.page_draft.delete.invalid_page_id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page_draft.delete.invalid_space_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.page_draft.delete.invalid_user_id.app_error",
+    "translation": "Invalid user ID."
+  },
+  {
+    "id": "app.page_draft.delete.not_found.app_error",
+    "translation": "Draft not found."
+  },
+  {
+    "id": "app.page_draft.delete.store_error.app_error",
+    "translation": "Failed to delete draft."
+  },
+  {
+    "id": "app.page_draft.get.invalid_page_id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page_draft.get.invalid_space_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.page_draft.get.invalid_user_id.app_error",
+    "translation": "Invalid user ID."
+  },
+  {
+    "id": "app.page_draft.get.not_found.app_error",
+    "translation": "Draft not found."
+  },
+  {
+    "id": "app.page_draft.get.store_error.app_error",
+    "translation": "Failed to retrieve draft."
+  },
+  {
+    "id": "app.page_draft.list.invalid_space_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.page_draft.list.invalid_user_id.app_error",
+    "translation": "Invalid user ID."
+  },
+  {
+    "id": "app.page_draft.publish.baseline_required.app_error",
+    "translation": "Cannot publish: the draft is missing its edit baseline. Reopen the page and try again."
+  },
+  {
+    "id": "app.page_draft.publish.conflict.app_error",
+    "translation": "The page was modified by another writer. Refresh and try again."
+  },
+  {
+    "id": "app.page_draft.publish.draft_changed.app_error",
+    "translation": "This draft was saved again while it was being published. Nothing was published; try publishing again to include your latest changes."
+  },
+  {
+    "id": "app.page_draft.publish.edit_conflict.app_error",
+    "translation": "Someone else edited this page while you were writing. Reopen the page to see their changes, then publish again."
+  },
+  {
+    "id": "app.page_draft.publish.draft_not_found.app_error",
+    "translation": "The draft could not be found; it may have already been published or discarded."
+  },
+  {
+    "id": "app.page_draft.publish.page_deleted.app_error",
+    "translation": "The page was deleted and can no longer be published."
+  },
+  {
+    "id": "app.page_draft.publish.parent_unpublished.app_error",
+    "translation": "The parent page must be published before this page can be published."
+  },
+  {
+    "id": "app.page_draft.update.invalid_page_id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page_draft.update.invalid_parent_id.app_error",
+    "translation": "Invalid parent ID."
+  },
+  {
+    "id": "app.page_draft.update.invalid_file_id.app_error",
+    "translation": "One or more file IDs are invalid."
+  },
+  {
+    "id": "app.page_draft.update.invalid_space_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.page_draft.update.invalid_user_id.app_error",
+    "translation": "Invalid user ID."
+  },
+  {
+    "id": "app.page_draft.update.nil_draft.app_error",
+    "translation": "Draft must not be nil."
+  },
+  {
+    "id": "app.page_draft.update.parent_cycle.app_error",
+    "translation": "Setting this parent would create a cycle in the draft hierarchy."
+  },
+  {
+    "id": "app.page_draft.update.draft_changed.app_error",
+    "translation": "A concurrent autosave has updated the draft; please republish."
+  },
+  {
+    "id": "app.page_draft.update.edit_conflict.app_error",
+    "translation": "A concurrent edit has been published; please reload the page to continue editing."
+  },
+  {
+    "id": "app.page_draft.update.page_not_found.app_error",
+    "translation": "The page does not exist or is not accessible in this space."
+  },
+  {
+    "id": "app.page_draft.update.parent_too_deep.app_error",
+    "translation": "The draft hierarchy is too deep to add another level."
   },
   {
     "id": "app.shared.description_too_long.app_error",
@@ -382,6 +538,10 @@
   {
     "id": "model.draft.is_valid.file_ids.app_error",
     "translation": "The draft has too many file attachments."
+  },
+  {
+    "id": "model.draft.is_valid.last_active_at.app_error",
+    "translation": "Invalid draft last-active time."
   },
   {
     "id": "model.draft.is_valid.page_id.app_error",

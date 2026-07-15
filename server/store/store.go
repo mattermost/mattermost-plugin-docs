@@ -311,6 +311,9 @@ const (
 	ReasonMaxDepthExceeded        = "max_depth_exceeded"
 	ReasonSubtreeMaxDepthExceeded = "subtree_max_depth_exceeded"
 	ReasonParentNotLive           = "parent_not_live"
+	ReasonDraftCycle              = "draft_cycle"
+	ReasonDraftTooDeep            = "draft_too_deep"
+	ReasonDraftQuotaExceeded      = "draft_quota_exceeded"
 )
 
 func (e *ErrInvalidInput) Error() string {
@@ -323,12 +326,28 @@ func IsErrInvalidInput(err error) bool {
 	return errors.As(err, &e)
 }
 
-// ErrConflict is returned when a unique constraint is violated or a CAS check fails.
+// Conflict reasons let a caller tell one CAS failure from another without parsing Resource. An
+// ErrConflict with no Reason is an unqualified conflict (e.g. a primary-key collision).
+const (
+	// ReasonConcurrentEdit: the page's EditAt no longer matches the baseline the caller published
+	// against — someone else edited the page.
+	ReasonConcurrentEdit = "concurrent_edit"
+	// ReasonConcurrentAutosave: the draft changed after the caller read it — the caller's own
+	// editor autosaved while the publish was in flight.
+	ReasonConcurrentAutosave = "concurrent_autosave"
+)
+
+// ErrConflict is returned when a unique constraint is violated or a CAS check fails. Reason, when
+// set, names which CAS failed so a caller can map it to a specific response.
 type ErrConflict struct {
 	Resource string
+	Reason   string
 }
 
 func (e *ErrConflict) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("conflict on %s: %s", e.Resource, e.Reason)
+	}
 	return fmt.Sprintf("conflict: %s", e.Resource)
 }
 
@@ -336,6 +355,16 @@ func (e *ErrConflict) Error() string {
 func IsErrConflict(err error) bool {
 	var e *ErrConflict
 	return errors.As(err, &e)
+}
+
+// ConflictReason returns the Reason of the ErrConflict in err's chain, or "" if err is not an
+// ErrConflict or carries no reason.
+func ConflictReason(err error) string {
+	var e *ErrConflict
+	if errors.As(err, &e) {
+		return e.Reason
+	}
+	return ""
 }
 
 // ErrLimitExceeded is returned when a result set exceeds a hard size limit.

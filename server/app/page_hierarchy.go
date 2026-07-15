@@ -231,7 +231,7 @@ func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model
 
 	s.log.Debug("Moving page to space", "page_id", pageID, "source_space_id", sourceSpace.Id, "target_space_id", targetSpace.Id, "user_id", userID)
 
-	moved, priorParentID, storeErr := s.store.MovePageToSpace(pageID, sourceSpace.Id, targetSpace.Id, parentPageID, mmmodel.SafeDereference(expectedUpdateAt), force, MaxPageDepth)
+	moved, priorParentID, storeErr := s.store.MovePageToSpace(pageID, sourceSpace.Id, targetSpace.Id, userID, parentPageID, mmmodel.SafeDereference(expectedUpdateAt), force, MaxPageDepth)
 	if storeErr != nil {
 		return nil, storeAppError("MovePageToSpace", storeErr)
 	}

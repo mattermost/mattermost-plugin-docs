@@ -110,7 +110,6 @@ func seedSpace(t *testing.T, s *store.Store, channelID string) *model.Space {
 	return seedSpaceInTeam(t, s, channelID, mmmodel.NewId())
 }
 
-// seedSpaceInTeam mirrors testutil.MustCreateSpace's (channelID, teamID) parameter order.
 func seedSpaceInTeam(t *testing.T, s *store.Store, channelID, teamID string) *model.Space {
 	t.Helper()
 	return testutil.MustCreateSpace(t, s, channelID, teamID)
@@ -224,16 +223,16 @@ func TestHandler_SpaceAndPageRoundTrip(t *testing.T) {
 		require.Equal(t, space.Id, page.SpaceId)
 	})
 
-	t.Run("create page with content and search_text", func(t *testing.T) {
+	t.Run("create page derives search_text from body", func(t *testing.T) {
 		rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages", user, map[string]any{
 			"title":       "Page B",
-			"body":        `{"type":"doc","content":[]}`,
-			"search_text": "plain text projection",
+			"body":        `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"searchable body"}]}]}`,
+			"search_text": "ignored client value",
 		})
 		require.Equal(t, http.StatusCreated, rec.Code)
 		var page model.Page
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &page))
-		require.Equal(t, "plain text projection", page.SearchText)
+		require.Equal(t, "searchable body", page.SearchText, "SearchText is derived from the body, not the caller-supplied value")
 	})
 
 	t.Run("get page in wrong space is 404", func(t *testing.T) {
@@ -545,11 +544,10 @@ func TestHandler_UpdatePage(t *testing.T) {
 	space := seedSpace(t, h.store, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
-	// Body and search text must be patched together (search text is the body's plain-text
-	// projection), so both are supplied.
+	// SearchText is derived from the body server-side, so only the body is supplied; a
+	// caller-supplied search_text is ignored.
 	body := map[string]any{
-		"body":         `{"type":"doc","content":[{"type":"paragraph"}]}`,
-		"search_text":  "updated text",
+		"body":         `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"updated text"}]}]}`,
 		"base_edit_at": page.EditAt,
 	}
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, body)
@@ -557,7 +555,7 @@ func TestHandler_UpdatePage(t *testing.T) {
 
 	var updated model.Page
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updated))
-	require.Equal(t, `{"type":"doc","content":[{"type":"paragraph"}]}`, updated.Body)
+	require.Contains(t, updated.Body, "updated text")
 	require.Equal(t, "updated text", updated.SearchText)
 
 	// The first update bumped EditAt, so the same baseline is now stale.
@@ -1097,6 +1095,14 @@ func TestHandler_SpaceMembershipRequired(t *testing.T) {
 		{http.MethodPatch, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/move", nil},
 		{http.MethodPatch, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/move-to-space", nil},
 		{http.MethodPost, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/duplicate", nil},
+		// Draft + presence handlers.
+		{http.MethodPost, "/api/v1/spaces/" + space.Id + "/drafts", map[string]any{"title": "D"}},
+		{http.MethodGet, "/api/v1/spaces/" + space.Id + "/drafts", nil},
+		{http.MethodPut, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/draft", map[string]any{"title": "D"}},
+		{http.MethodGet, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/draft", nil},
+		{http.MethodDelete, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/draft", nil},
+		{http.MethodPost, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/draft/publish", nil},
+		{http.MethodGet, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/active-editors", nil},
 	}
 	for _, tc := range cases {
 		rec := h.do(t, tc.method, tc.path, stranger, tc.body)
