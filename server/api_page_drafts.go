@@ -43,11 +43,11 @@ func (p *Plugin) handleUpdatePageDraft(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ParentId *string                  `json:"parent_id"`
-		Title    string                   `json:"title"`
-		Body     string                   `json:"body"`
-		FileIds  *mmmodel.StringArray     `json:"file_ids"`
-		Props    mmmodel.StringInterface  `json:"props"`
+		ParentId *string                 `json:"parent_id"`
+		Title    string                  `json:"title"`
+		Body     string                  `json:"body"`
+		FileIds  *mmmodel.StringArray    `json:"file_ids"`
+		Props    mmmodel.StringInterface `json:"props"`
 	}
 	if !p.decodeJSONBody(w, r, maxDraftBodyBytes, &req, "handleUpdatePageDraft", false) {
 		return

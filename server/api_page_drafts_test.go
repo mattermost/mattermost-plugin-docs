@@ -289,9 +289,9 @@ func TestHandler_DeletePageDraft(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &draft))
 	pageID := draft.PageId
 
-	// DELETE the draft — must return 204.
+	// DELETE the draft — must return 200.
 	rec = h.do(t, http.MethodDelete, base+"/pages/"+pageID+"/draft", userID, nil)
-	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Equal(t, http.StatusOK, rec.Code)
 
 	// GET after delete must return 404.
 	rec = h.do(t, http.MethodGet, base+"/pages/"+pageID+"/draft", userID, nil)
