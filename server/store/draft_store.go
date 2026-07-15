@@ -186,14 +186,14 @@ FROM chain`, draftCycleCheckMaxDepth, draftCycleCheckMaxDepth)
 		return &ErrInvalidInput{Entity: "Draft", Field: "ParentId", Value: startParentID, Reason: ReasonDraftTooDeep}
 	}
 	// Include the live-page ancestor's depth: a draft chain valid on its own can still exceed
-	// MaxPageHierarchyDepth when the live ancestor is already deeply nested.
+	// the publishing limit when the live ancestor is already deeply nested.
 	if result.LiveAncestor != "" {
 		liveDepth, err := s.pageDepth(tx, result.LiveAncestor)
 		if err != nil {
 			return errors.Wrap(err, "cycle check: failed to read live ancestor depth")
 		}
 		// liveDepth counts the ancestor itself; +1 for the new leaf being validated.
-		if liveDepth+result.ChainDepth+1 > MaxPageHierarchyDepth {
+		if liveDepth+result.ChainDepth+1 > draftCycleCheckMaxDepth {
 			return &ErrInvalidInput{Entity: "Draft", Field: "ParentId", Value: startParentID, Reason: ReasonDraftTooDeep}
 		}
 	}
@@ -413,31 +413,6 @@ func (s *Store) GetDraft(userID, pageID string) (*model.Draft, error) {
 	return &draft, nil
 }
 
-// AnyDraftExistsForPageInSpace reports whether any user has a draft with the given pageID in spaceID.
-// Scoping to the space prevents a draft in one space from being mistaken for a page reservation
-// in another space.
-func (s *Store) AnyDraftExistsForPageInSpace(pageID, spaceID string) (bool, error) {
-	if pageID == "" {
-		return false, &ErrInvalidInput{Entity: "Draft", Field: "pageId", Value: pageID}
-	}
-	if spaceID == "" {
-		return false, &ErrInvalidInput{Entity: "Draft", Field: "spaceId", Value: spaceID}
-	}
-	var one int
-	builder := s.getQueryBuilder().
-		Select("1").
-		From("DOCS_Draft").
-		Where(sq.Eq{"PageId": pageID, "SpaceId": spaceID})
-	switch err := s.getBuilder(s.db, &one, builder); {
-	case err == nil:
-		return true, nil
-	case errors.Is(err, sql.ErrNoRows):
-		return false, nil
-	default:
-		return false, errors.Wrap(err, "unable_to_check_draft_for_page")
-	}
-}
-
 // DeleteDraft removes the draft keyed by (userID, pageID), or returns ErrNotFound.
 func (s *Store) DeleteDraft(userID, pageID string) error {
 	if userID == "" {
@@ -490,45 +465,57 @@ func (s *Store) DeleteDraftVersion(userID, pageID string, expectedUpdateAt int64
 // DeleteDraftReparenting atomically reparents the calling user's child drafts (those with
 // ParentId = pageID) to the deleted draft's own parent, then deletes the draft keyed by
 // (userID, pageID). This prevents child drafts from holding a dangling parent after a discard.
-// Returns ErrNotFound when no draft exists for (userID, pageID).
-func (s *Store) DeleteDraftReparenting(userID, pageID string) (err error) {
+// Returns ErrNotFound when no draft exists for (userID, pageID). pageWasLive is true when the
+// deleted draft was an edit draft (the page exists as a live page), false for new-page drafts;
+// callers use this to decide whether a presence broadcast is needed.
+func (s *Store) DeleteDraftReparenting(userID, pageID string) (pageWasLive bool, err error) {
 	if userID == "" {
-		return &ErrInvalidInput{Entity: "Draft", Field: "userId", Value: userID}
+		return false, &ErrInvalidInput{Entity: "Draft", Field: "userId", Value: userID}
 	}
 	if pageID == "" {
-		return &ErrInvalidInput{Entity: "Draft", Field: "pageId", Value: pageID}
+		return false, &ErrInvalidInput{Entity: "Draft", Field: "pageId", Value: pageID}
 	}
 
 	tx, err := s.db.Beginx()
 	if err != nil {
-		return errors.Wrap(err, "begin_transaction")
+		return false, errors.Wrap(err, "begin_transaction")
 	}
 	defer s.finalizeTransaction(tx, &err)
 
-	// Lock the draft row and read its parent for reparenting.
-	var draft struct{ ParentId string }
+	// Lock the draft row and read its parent and space for reparenting.
+	var draft struct {
+		ParentId string
+		SpaceId  string
+	}
 	lockQ := s.getQueryBuilder().
-		Select("ParentId").
+		Select("ParentId", "SpaceId").
 		From("DOCS_Draft").
 		Where(sq.Eq{"UserId": userID, "PageId": pageID}).
 		Suffix("FOR UPDATE")
 	switch lockErr := s.getBuilder(tx, &draft, lockQ); {
 	case lockErr == nil:
 	case errors.Is(lockErr, sql.ErrNoRows):
-		return &ErrNotFound{EntityName: "Draft", ID: pageID}
+		return false, &ErrNotFound{EntityName: "Draft", ID: pageID}
 	default:
-		return errors.Wrap(lockErr, "failed to lock draft for delete")
+		return false, errors.Wrap(lockErr, "failed to lock draft for delete")
 	}
 
-	// Reparent this user's child drafts to the deleted draft's own parent so they remain valid.
-	now := mmmodel.GetMillis()
-	reparentQ := s.getQueryBuilder().
-		Update("DOCS_Draft").
-		Set("ParentId", draft.ParentId).
-		Set("UpdateAt", monotonicBump("UpdateAt", now)).
-		Where(sq.Eq{"UserId": userID, "ParentId": pageID})
-	if _, rErr := s.execBuilder(tx, reparentQ); rErr != nil {
-		return errors.Wrap(rErr, "failed to reparent child drafts")
+	// Reparent child drafts only when discarding a new-page draft. For edit drafts (page is live),
+	// children's ParentId still points at a valid live page and must not be changed.
+	pageIsLive, liveErr := s.PageExistsInSpace(pageID, draft.SpaceId)
+	if liveErr != nil {
+		return false, errors.Wrap(liveErr, "failed to check page liveness for reparenting")
+	}
+	if !pageIsLive {
+		now := mmmodel.GetMillis()
+		reparentQ := s.getQueryBuilder().
+			Update("DOCS_Draft").
+			Set("ParentId", draft.ParentId).
+			Set("UpdateAt", monotonicBump("UpdateAt", now)).
+			Where(sq.Eq{"UserId": userID, "ParentId": pageID})
+		if _, rErr := s.execBuilder(tx, reparentQ); rErr != nil {
+			return false, errors.Wrap(rErr, "failed to reparent child drafts")
+		}
 	}
 
 	deleteQ := s.getQueryBuilder().
@@ -536,16 +523,16 @@ func (s *Store) DeleteDraftReparenting(userID, pageID string) (err error) {
 		Where(sq.Eq{"UserId": userID, "PageId": pageID})
 	result, dErr := s.execBuilder(tx, deleteQ)
 	if dErr != nil {
-		return errors.Wrap(dErr, "unable_to_delete_draft")
+		return false, errors.Wrap(dErr, "unable_to_delete_draft")
 	}
 	if err = checkRowsAffected(result, "Draft", pageID); err != nil {
-		return err
+		return false, err
 	}
 
 	if err = tx.Commit(); err != nil {
-		return errors.Wrap(err, "commit_transaction")
+		return false, errors.Wrap(err, "commit_transaction")
 	}
-	return nil
+	return pageIsLive, nil
 }
 
 // GetDraftsForSpace returns the user's drafts in the given space, most-recently-updated first,

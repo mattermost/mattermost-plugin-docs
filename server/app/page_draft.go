@@ -13,6 +13,10 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
+func presenceBroadcastKey(pageID, userID string) string {
+	return pageID + ":" + userID
+}
+
 // UpdatePageDraft upserts the calling user's autosave draft for a page in a space. channelID is
 // the space's backing channel, used to scope the presence broadcast.
 //
@@ -99,13 +103,7 @@ func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs 
 		}
 		pageIsLiveResolved = true
 		if !pageIsLive {
-			anyDraft, anyErr := s.store.AnyDraftExistsForPageInSpace(draft.PageId, draft.SpaceId)
-			if anyErr != nil {
-				return nil, storeAppError("UpdatePageDraft", anyErr)
-			}
-			if !anyDraft {
-				return nil, mmmodel.NewAppError("UpdatePageDraft", "app.page_draft.update.page_not_found.app_error", nil, "", http.StatusNotFound)
-			}
+			return nil, mmmodel.NewAppError("UpdatePageDraft", "app.page_draft.update.page_not_found.app_error", nil, "", http.StatusNotFound)
 		}
 	}
 
@@ -140,15 +138,17 @@ func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs 
 	}
 
 	// Existing published page: rate-limited channel-wide broadcast so other viewers see this user
-	// in the active-editors indicator.
+	// in the active-editors indicator. Key by page+user so concurrent editors don't suppress each
+	// other's first broadcast.
+	presenceKey := presenceBroadcastKey(saved.PageId, saved.UserId)
 	now := mmmodel.GetMillis()
-	existing, loaded := s.presenceBroadcastLast.LoadOrStore(saved.PageId, now)
+	existing, loaded := s.presenceBroadcastLast.LoadOrStore(presenceKey, now)
 	if loaded {
 		lastTime, ok := existing.(int64)
 		if !ok || now-lastTime < presenceBroadcastMinIntervalMs {
 			return saved, nil
 		}
-		if !s.presenceBroadcastLast.CompareAndSwap(saved.PageId, existing, now) {
+		if !s.presenceBroadcastLast.CompareAndSwap(presenceKey, existing, now) {
 			return saved, nil
 		}
 	}
@@ -290,29 +290,24 @@ func (s *Service) DeletePageDraft(userID, spaceID, pageID, channelID string) *mm
 	// a discarded draft can briefly reappear. It is per-user and cleared by discarding again; fully
 	// preventing it would need a soft-delete tombstone, which is not warranted for this window.
 	//
-	if err := s.store.DeleteDraftReparenting(userID, pageID); err != nil {
+	pageWasLive, delErr := s.store.DeleteDraftReparenting(userID, pageID)
+	if delErr != nil {
 		// A concurrent publish/delete may have removed the draft between the check above and here;
 		// treat that benign race as a 404, matching the not-found path of the initial check, rather
 		// than a 500 that would also emit a spurious server-side error log.
-		if store.IsErrNotFound(err) {
-			return mmmodel.NewAppError("DeletePageDraft", "app.page_draft.delete.not_found.app_error", nil, "", http.StatusNotFound).Wrap(err)
+		if store.IsErrNotFound(delErr) {
+			return mmmodel.NewAppError("DeletePageDraft", "app.page_draft.delete.not_found.app_error", nil, "", http.StatusNotFound).Wrap(delErr)
 		}
-		return storeAppError("DeletePageDraft", err)
+		return storeAppError("DeletePageDraft", delErr)
 	}
 
 	// Presence cleanup: only broadcast channel-wide if the page is published. A new-page draft
 	// discard was never visible to the channel (no channel broadcast on create), so no cleanup
 	// broadcast is needed.
-	pageExists, pageExistsErr := s.store.PageExistsInSpace(pageID, spaceID)
-	if pageExistsErr != nil {
-		s.log.Warn("DeletePageDraft: failed to check page existence; skipping broadcast",
-			"page_id", pageID, "err", pageExistsErr)
+	if !pageWasLive {
 		return nil
 	}
-	if !pageExists {
-		return nil
-	}
-	s.presenceBroadcastLast.Delete(pageID)
+	s.presenceBroadcastLast.Delete(presenceBroadcastKey(pageID, userID))
 	s.broadcastPagePresence(pageID, spaceID, channelID)
 
 	return nil
@@ -466,7 +461,7 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 				return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.draft_changed.app_error",
 					nil, "", http.StatusConflict)
 			}
-			s.presenceBroadcastLast.Delete(pageID)
+			s.presenceBroadcastLast.Delete(presenceBroadcastKey(pageID, userID))
 			s.broadcastPagePresence(pageID, spaceID, existing.ChannelId)
 			return existing, false, nil
 		}
@@ -511,7 +506,7 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 					}
 					// The draft is consumed; clear the rate-limit entry and broadcast presence so
 					// the active-editors indicator drops this user, matching the non-conflict path.
-					s.presenceBroadcastLast.Delete(pageID)
+					s.presenceBroadcastLast.Delete(presenceBroadcastKey(pageID, userID))
 					s.broadcastPagePresence(pageID, spaceID, raced.ChannelId)
 					return raced, false, nil
 				}
@@ -551,7 +546,7 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 	// The publish deleted the draft inside PublishDraft (bypassing the app-level DeletePageDraft
 	// that normally broadcasts presence), so broadcast presence now so the active-editors indicator
 	// clears on other clients. Delete the rate-limit entry first so the broadcast is not suppressed.
-	s.presenceBroadcastLast.Delete(pageID)
+	s.presenceBroadcastLast.Delete(presenceBroadcastKey(pageID, userID))
 	s.broadcastPagePresence(pageID, spaceID, page.ChannelId)
 
 	return page, isNewPage, nil

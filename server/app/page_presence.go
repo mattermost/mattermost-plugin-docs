@@ -26,18 +26,18 @@ func activeEditorSince() int64 {
 }
 
 // getActiveEditors returns the user IDs currently editing pageID in spaceID — those with a draft
-// updated within the active-editor window. The returned slice is never nil. A store failure is
-// logged and yields an empty list (presence is best-effort and must never fail the originating
-// request); use this only where a best-effort answer is acceptable, not to back a REST read that
-// must surface a store failure.
-func (s *Service) getActiveEditors(pageID, spaceID string) []string {
+// updated within the active-editor window. The bool is true on success and false on a store
+// failure; callers must skip the broadcast on failure to avoid publishing a spurious empty snapshot
+// that would wrongly clear a valid presence indicator. Use this only where a best-effort answer is
+// acceptable, not to back a REST read that must surface a store failure.
+func (s *Service) getActiveEditors(pageID, spaceID string) ([]string, bool) {
 	editors, err := s.store.GetPageActiveEditors(pageID, spaceID, activeEditorSince())
 	if err != nil {
-		s.log.Warn("getActiveEditors: failed to query active editors; returning empty",
+		s.log.Warn("getActiveEditors: failed to query active editors; skipping broadcast",
 			"page_id", pageID, "err", err)
-		return []string{}
+		return nil, false
 	}
-	return editors
+	return editors, true
 }
 
 // publishSelfPresence sends a presence snapshot to the draft's author only. Used when the page is
@@ -62,7 +62,10 @@ func (s *Service) broadcastPagePresence(pageID, spaceID, channelID string) {
 	// Stamp as_of before the editors query so it marks when the snapshot was taken, not when the
 	// broadcast finished assembling — clients use it to discard out-of-order snapshots.
 	asOf := mmmodel.GetMillis()
-	editors := s.getActiveEditors(pageID, spaceID)
+	editors, ok := s.getActiveEditors(pageID, spaceID)
+	if !ok {
+		return
+	}
 	s.publishToChannels(wsEventPagePresenceUpdated, map[string]any{
 		"page_id":        pageID,
 		"space_id":       spaceID,
