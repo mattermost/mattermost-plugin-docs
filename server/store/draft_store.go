@@ -228,13 +228,13 @@ func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmod
 
 	// parentIDParam is the SQL-level parameter: nil → SQL NULL (preserve on conflict), non-nil
 	// → the explicit value (stored via COALESCE on INSERT, used directly on UPDATE).
-	var parentIDParam interface{}
+	var parentIDParam any
 	if parentID != nil {
 		parentIDParam = *parentID
 	}
 
 	// fileIDsParam follows the same nil/non-nil semantics as parentIDParam.
-	var fileIDsParam interface{}
+	var fileIDsParam any
 	if fileIDs != nil {
 		fileIDsParam = mmmodel.ArrayToJSON([]string(*fileIDs))
 	}
