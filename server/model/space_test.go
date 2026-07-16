@@ -131,6 +131,91 @@ func TestSpaceIsValid(t *testing.T) {
 	})
 }
 
+func TestSpacePatchIsValid(t *testing.T) {
+	t.Run("nil patch rejected", func(t *testing.T) {
+		var patch *model.SpacePatch
+		aerr := patch.IsValid()
+		require.NotNil(t, aerr)
+		require.Equal(t, "model.space.patch.nothing_to_update.app_error", aerr.Id)
+	})
+
+	t.Run("empty patch rejected", func(t *testing.T) {
+		aerr := (&model.SpacePatch{}).IsValid()
+		require.NotNil(t, aerr)
+		require.Equal(t, "model.space.patch.nothing_to_update.app_error", aerr.Id)
+	})
+
+	t.Run("Title only accepted", func(t *testing.T) {
+		aerr := (&model.SpacePatch{Title: mmmodel.NewPointer("new title")}).IsValid()
+		require.Nil(t, aerr)
+	})
+
+	t.Run("Description only accepted", func(t *testing.T) {
+		aerr := (&model.SpacePatch{Description: mmmodel.NewPointer("desc")}).IsValid()
+		require.Nil(t, aerr)
+	})
+
+	t.Run("Icon only accepted", func(t *testing.T) {
+		aerr := (&model.SpacePatch{Icon: mmmodel.NewPointer("icon")}).IsValid()
+		require.Nil(t, aerr)
+	})
+
+	t.Run("Props only accepted", func(t *testing.T) {
+		props := mmmodel.StringInterface{"k": "v"}
+		aerr := (&model.SpacePatch{Props: &props}).IsValid()
+		require.Nil(t, aerr)
+	})
+}
+
+func TestSpacePatch(t *testing.T) {
+	base := func() *model.Space {
+		return &model.Space{Title: "orig", Description: "origdesc", Icon: "origicon"}
+	}
+
+	t.Run("nil fields leave values unchanged", func(t *testing.T) {
+		s := base()
+		s.Patch(&model.SpacePatch{})
+		require.Equal(t, "orig", s.Title)
+		require.Equal(t, "origdesc", s.Description)
+		require.Equal(t, "origicon", s.Icon)
+	})
+
+	t.Run("non-nil fields are applied", func(t *testing.T) {
+		s := base()
+		s.Patch(&model.SpacePatch{
+			Title:       mmmodel.NewPointer("new"),
+			Description: mmmodel.NewPointer("newdesc"),
+			Icon:        mmmodel.NewPointer("newicon"),
+		})
+		require.Equal(t, "new", s.Title)
+		require.Equal(t, "newdesc", s.Description)
+		require.Equal(t, "newicon", s.Icon)
+	})
+
+	t.Run("empty string is a real value, not leave-unchanged", func(t *testing.T) {
+		s := base()
+		s.Patch(&model.SpacePatch{Description: mmmodel.NewPointer("")})
+		require.Equal(t, "", s.Description)
+		require.Equal(t, "orig", s.Title)
+	})
+
+	t.Run("Props are applied as a clone", func(t *testing.T) {
+		s := base()
+		props := mmmodel.StringInterface{"k": "v"}
+		s.Patch(&model.SpacePatch{Props: &props})
+		require.Equal(t, mmmodel.StringInterface{"k": "v"}, s.Props)
+		// Mutating the original map must not affect the space's Props.
+		props["k"] = "mutated"
+		require.Equal(t, "v", s.Props["k"])
+	})
+
+	t.Run("nil patch is a no-op", func(t *testing.T) {
+		s := base()
+		s.Patch(nil)
+		require.Equal(t, "orig", s.Title)
+	})
+}
+
 func TestSpacePreSaveDefaultsSortOrder(t *testing.T) {
 	s := &model.Space{ChannelId: mmmodel.NewId(), Title: "T"}
 	s.PreSave()

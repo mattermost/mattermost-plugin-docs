@@ -11,8 +11,8 @@ import (
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 )
 
-// DraftFileidsMaxRunes is the maximum rune length of the serialized FileIds JSON array.
-const DraftFileidsMaxRunes = 300
+// DraftFileIdsMaxRunes is the maximum rune length of the serialized FileIds JSON array.
+const DraftFileIdsMaxRunes = 300
 
 // Draft is a per-user autosave draft for a space page, stored in DOCS_Draft.
 //
@@ -110,7 +110,7 @@ func (d *Draft) IsValid() *mmmodel.AppError {
 		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.body_size.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
 	}
 
-	if utf8.RuneCountInString(mmmodel.ArrayToJSON(d.FileIds)) > DraftFileidsMaxRunes {
+	if utf8.RuneCountInString(mmmodel.ArrayToJSON(d.FileIds)) > DraftFileIdsMaxRunes {
 		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.file_ids.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
 	}
 

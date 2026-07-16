@@ -31,6 +31,17 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &pqErr) && string(pqErr.Code) == pgUniqueViolationCode
 }
 
+// pgSerializationFailureCode is the PostgreSQL SQLSTATE for a serialization_failure, raised e.g.
+// when a locking read under REPEATABLE READ encounters a row that a concurrent transaction
+// updated and committed after this transaction's snapshot was taken.
+const pgSerializationFailureCode = "40001"
+
+// isSerializationFailure reports whether err is a PostgreSQL serialization failure.
+func isSerializationFailure(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && string(pqErr.Code) == pgSerializationFailureCode
+}
+
 // constraintName returns the constraint/index name from a *pq.Error, or "" if err
 // is not a *pq.Error.
 func constraintName(err error) string {
@@ -46,8 +57,8 @@ var migrations embed.FS
 
 const defaultQueryTimeout = 30 * time.Second
 
-// migrationLockTimeout must exceed the statement timeout: the same context drives
-// morph's lock-refresh, so an early expiry could drop the lock mid-DDL.
+// migrationLockTimeout must exceed the statement timeout: an early expiry could drop the
+// distributed migration lock before DDL completes.
 const migrationLockTimeout = 70 * time.Minute
 
 // Store holds the database handle used by the Docs plugin.
@@ -58,8 +69,9 @@ type Store struct {
 	log *pluginapi.LogService
 }
 
-// New creates a Store wrapping the given master DB handle.
-func New(db *sql.DB, driverName string) (*Store, error) {
+// New creates a Store wrapping the given master DB handle. log may be nil in tests
+// that do not exercise migration warnings.
+func New(db *sql.DB, driverName string, log *pluginapi.LogService) (*Store, error) {
 	if driverName != "postgres" {
 		return nil, fmt.Errorf("docs plugin only supports PostgreSQL; got %q", driverName)
 	}
@@ -67,18 +79,14 @@ func New(db *sql.DB, driverName string) (*Store, error) {
 	s := &Store{
 		db:      sqlx.NewDb(db, driverName),
 		builder: sq.StatementBuilder.PlaceholderFormat(sq.Dollar),
+		log:     log,
 	}
 	return s, nil
 }
 
-// SetLogger wires a logger into the store for non-fatal warnings.
-func (s *Store) SetLogger(log *pluginapi.LogService) {
-	s.log = log
-}
-
 // RunMigrations applies all pending morph migrations. Concurrent runs across an HA
-// cluster are serialized internally by morph's distributed DB-table lock (WithLock,
-// below); no external cluster mutex is required.
+// cluster are serialized internally by a distributed DB-table lock; no external cluster
+// mutex is required.
 func (s *Store) RunMigrations() error {
 	ctx, cancel := context.WithTimeout(context.Background(), migrationLockTimeout)
 	defer cancel()
@@ -138,8 +146,7 @@ func (s *Store) getQueryBuilder() sq.StatementBuilderType {
 	return s.builder
 }
 
-// columnsWithAlias returns the given columns prefixed with a table alias, used when
-// joining tables to avoid ambiguous column references.
+// columnsWithAlias returns the given columns prefixed with alias (e.g. "p.Id" for alias "p").
 func columnsWithAlias(alias string, cols []string) []string {
 	out := make([]string, len(cols))
 	for i, c := range cols {
@@ -148,11 +155,9 @@ func columnsWithAlias(alias string, cols []string) []string {
 	return out
 }
 
-// finalizeTransaction rolls tx back unless already committed. Callers defer this
-// immediately after Beginx and commit explicitly on the success path (Rollback then
-// returns sql.ErrTxDone and is ignored). When the body failed (*perr != nil) the
-// original typed error stays at the head of a merror chain so the app layer can still
-// classify it with errors.As, while a rollback failure is appended rather than dropped.
+// finalizeTransaction rolls tx back unless already committed (Rollback returns sql.ErrTxDone
+// when already committed, which is ignored). On failure, preserves the original typed error
+// as the head of a merror chain so errors.As classification still works even if rollback also fails.
 func (s *Store) finalizeTransaction(tx *sqlx.Tx, perr *error) {
 	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
 		if *perr == nil {
@@ -175,7 +180,7 @@ func (s *Store) get(e sqlx.ExtContext, dest any, query string, args ...any) erro
 func (s *Store) getBuilder(e sqlx.ExtContext, dest any, b sq.Sqlizer) error {
 	query, args, err := b.ToSql()
 	if err != nil {
-		return err
+		return errors.Wrap(err, "failed to build query")
 	}
 	return s.get(e, dest, query, args...)
 }
@@ -192,7 +197,7 @@ func (s *Store) selectAll(e sqlx.ExtContext, dest any, query string, args ...any
 func (s *Store) selectBuilder(e sqlx.ExtContext, dest any, b sq.Sqlizer) error {
 	query, args, err := b.ToSql()
 	if err != nil {
-		return err
+		return errors.Wrap(err, "failed to build query")
 	}
 	return s.selectAll(e, dest, query, args...)
 }
@@ -209,9 +214,18 @@ func (s *Store) exec(e sqlx.ExtContext, query string, args ...any) (sql.Result, 
 func (s *Store) execBuilder(e sqlx.ExtContext, b sq.Sqlizer) (sql.Result, error) {
 	query, args, err := b.ToSql()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "failed to build query")
 	}
 	return s.exec(e, query, args...)
+}
+
+// advisoryXactLock takes the transaction-scoped advisory lock for key, held until tx ends.
+// hashtextextended maps the key to a single bigint, so a hash collision only over-serializes
+// the two colliding keys' operations — added contention, never corruption, with negligible
+// probability. Must be called inside tx.
+func (s *Store) advisoryXactLock(tx *sqlx.Tx, key string) error {
+	_, err := s.exec(tx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, key)
+	return err
 }
 
 // nextMonotonic advances now past prev so same-millisecond writes still move the
@@ -223,8 +237,15 @@ func nextMonotonic(now, prev int64) int64 {
 	return now
 }
 
-// requirePositiveLimit returns ErrInvalidInput when limit is not positive, for the
-// callers of applyLimitOffset that must reject limit <= 0 before querying.
+// monotonicBump is nextMonotonic in SQL: GREATEST(col + 1, now) sets col to at least col+1 even
+// when now is not ahead of the stored value, so the write always moves the CAS token forward and
+// a stale optimistic-lock baseline can never read as current again. Every write to a column used
+// as an optimistic-lock token must set it through this expression, never to a plain value.
+func monotonicBump(col string, now int64) sq.Sqlizer {
+	return sq.Expr("GREATEST("+col+" + 1, ?)", now)
+}
+
+// requirePositiveLimit returns ErrInvalidInput when limit is not positive.
 func requirePositiveLimit(entity string, limit int) error {
 	if limit <= 0 {
 		return &ErrInvalidInput{Entity: entity, Field: "limit", Value: limit}
@@ -277,17 +298,19 @@ type ErrInvalidInput struct {
 	Field  string
 	Value  any
 	// Reason optionally carries either the originating AppError.Id (e.g. from a model IsValid
-	// check) or one of the short Reason* codes below, so the app layer can surface the specific
-	// validation key instead of a generic one.
+	// check) or one of the short Reason* codes below, enabling callers to surface a specific
+	// error key instead of a generic one.
 	Reason string
 }
 
 // Reason codes for invariants decided atomically under a row lock (see RestorePage, RestoreSpace,
-// CreatePage); the app layer maps these to its own app-facing error keys.
+// CreatePage). Callers map these to their own error keys.
 const (
-	ReasonNotRestorable    = "not_restorable"
-	ReasonNotDeleted       = "not_deleted"
-	ReasonMaxDepthExceeded = "max_depth_exceeded"
+	ReasonNotRestorable           = "not_restorable"
+	ReasonNotDeleted              = "not_deleted"
+	ReasonMaxDepthExceeded        = "max_depth_exceeded"
+	ReasonSubtreeMaxDepthExceeded = "subtree_max_depth_exceeded"
+	ReasonParentNotLive           = "parent_not_live"
 )
 
 func (e *ErrInvalidInput) Error() string {
@@ -319,6 +342,11 @@ func IsErrConflict(err error) bool {
 type ErrLimitExceeded struct {
 	Resource string
 	Limit    int
+	// Reason optionally carries one of the short Reason* codes below, so a limit re-checked
+	// under lock can communicate the same condition as any earlier pre-check; the app layer
+	// maps the code to its own error key. Empty means storeAppError falls back to
+	// app.store.too_large.app_error.
+	Reason string
 }
 
 func (e *ErrLimitExceeded) Error() string {
@@ -328,5 +356,21 @@ func (e *ErrLimitExceeded) Error() string {
 // IsErrLimitExceeded reports whether err is an ErrLimitExceeded.
 func IsErrLimitExceeded(err error) bool {
 	var e *ErrLimitExceeded
+	return errors.As(err, &e)
+}
+
+// ErrCircularReference is returned when a move would make a page its own ancestor or descendant.
+type ErrCircularReference struct {
+	PageID       string
+	DestParentID string
+}
+
+func (e *ErrCircularReference) Error() string {
+	return fmt.Sprintf("page %s cannot move under %s: would create a cycle", e.PageID, e.DestParentID)
+}
+
+// IsErrCircularReference reports whether err is an ErrCircularReference.
+func IsErrCircularReference(err error) bool {
+	var e *ErrCircularReference
 	return errors.As(err, &e)
 }

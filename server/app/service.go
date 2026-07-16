@@ -10,8 +10,10 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/pluginapi"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
@@ -20,21 +22,28 @@ import (
 // Logger is the logging surface the service needs.
 type Logger interface {
 	Debug(msg string, keyValuePairs ...any)
+	Warn(msg string, keyValuePairs ...any)
+	Error(msg string, keyValuePairs ...any)
 }
 
 type noopLogger struct{}
 
 func (noopLogger) Debug(_ string, _ ...any) {}
+func (noopLogger) Warn(_ string, _ ...any)  {}
+func (noopLogger) Error(_ string, _ ...any) {}
 
 // Service is the central service struct for the Docs plugin.
 type Service struct {
-	store *store.Store
-	log   Logger
+	store  *store.Store
+	log    Logger
+	client *pluginapi.Client
 }
 
-// New creates a Service wired to the given store and logger.
+// New creates a Service wired to the given store, logger, and optional pluginapi client.
 // Passing nil for store panics immediately; passing nil for log installs a no-op logger.
-func New(s *store.Store, log Logger) *Service {
+// client may be nil: WS publish methods become no-ops, and channel/team-backed operations
+// (membership checks, member management, space listing) return a client-not-wired error.
+func New(s *store.Store, log Logger, client *pluginapi.Client) *Service {
 	if s == nil {
 		panic("app.New: store must not be nil")
 	}
@@ -42,62 +51,58 @@ func New(s *store.Store, log Logger) *Service {
 		log = noopLogger{}
 	}
 	return &Service{
-		store: s,
-		log:   log,
+		store:  s,
+		log:    log,
+		client: client,
 	}
 }
 
-func (s *Service) logDebug(message string, keyValuePairs ...any) {
-	s.log.Debug(message, keyValuePairs...)
+// validateTitle sanitizes and validates an entity title, returning the normalized form.
+// where identifies the calling operation for logs; the message keys are shared across callers.
+func validateTitle(where, title string, maxRunes int) (string, *mmmodel.AppError) {
+	title = normalizeTitle(title)
+	if title == "" {
+		return "", mmmodel.NewAppError(where, "app.shared.title_required.app_error", nil, "", http.StatusBadRequest)
+	}
+	if utf8.RuneCountInString(title) > maxRunes {
+		return "", mmmodel.NewAppError(where, "app.shared.title_too_long.app_error", map[string]any{"MaxLength": maxRunes}, "", http.StatusBadRequest)
+	}
+	return title, nil
 }
 
-// normalizeTitle sanitizes and trims a title. Length and required-field validation are
-// enforced by Page.IsValid/Space.IsValid at the store boundary — the single source of truth
-// for that rule — so this only normalizes.
 func normalizeTitle(title string) string {
 	return strings.TrimSpace(mmmodel.SanitizeUnicode(title))
 }
 
-// normalizeAndValidatePagePatch normalizes a page update patch's Title (trimmed, with the
-// result written back into the patch); Body and SearchText are left as-is. A nil field means
-// "leave unchanged". Size caps and required-field checks are enforced by Page.IsValid at the
-// store boundary. It defers patch-shape validation to PagePatch.IsValid.
-func normalizeAndValidatePagePatch(patch *model.PagePatch) *mmmodel.AppError {
+// normalizeAndValidatePagePatch normalizes a page update patch's Title (trimmed, empty rejected),
+// with the result written back into the patch; Body and SearchText are left as-is. A nil field
+// means "leave unchanged". It defers patch-shape validation to PagePatch.IsValid.
+func normalizeAndValidatePagePatch(where string, patch *model.PagePatch) *mmmodel.AppError {
 	// The patch.Title != nil guard below protects the title dereference; IsValid only
 	// rejects a nil or all-nil patch and can pass with Title == nil.
 	if validErr := patch.IsValid(); validErr != nil {
 		return validErr
 	}
 	if patch.Title != nil {
-		normalized := normalizeTitle(*patch.Title)
+		normalized, titleErr := validateTitle(where, *patch.Title, model.PageTitleMaxRunes)
+		if titleErr != nil {
+			return titleErr
+		}
 		patch.Title = &normalized
 	}
 	return nil
 }
 
-// PerPageDefault is the page size used when perPage is not a positive value, matching
-// core's page-param convention (server/channels/web/params.go).
-const PerPageDefault = 60
-
-// PerPageMaximum is the largest page size a caller may request; larger values are
-// clamped down, matching core's page-param convention.
-const PerPageMaximum = 200
-
-// paginationOffsetLimit converts a zero-based page/size into a SQL offset/limit. perPage <= 0
-// is clamped to PerPageDefault and perPage > PerPageMaximum is clamped down to PerPageMaximum,
-// so the returned limit is always positive and bounded — a caller can never request an
-// unbounded result this way.
-func paginationOffsetLimit(page, perPage int) (offset, limit int) {
-	if page < 0 {
-		page = 0
+// requireBaseline rejects a mutation that supplies neither an optimistic-lock baseline nor
+// force. SafeDereference would otherwise turn an absent baseline into 0, which never matches a
+// live row's timestamp, so every such request would fail as a misleading "changed by someone
+// else" conflict; requiring the field makes the contract explicit instead. field names the
+// caller-facing JSON field for the error message.
+func requireBaseline(where, field string, baseline *int64, force bool) *mmmodel.AppError {
+	if baseline == nil && !force {
+		return mmmodel.NewAppError(where, "app.optimistic_lock.baseline_required.app_error", map[string]any{"Field": field}, "", http.StatusBadRequest)
 	}
-	switch {
-	case perPage <= 0:
-		perPage = PerPageDefault
-	case perPage > PerPageMaximum:
-		perPage = PerPageMaximum
-	}
-	return page * perPage, perPage
+	return nil
 }
 
 // storeAppError maps a store sentinel error to an *AppError with the conventional status code
@@ -109,6 +114,8 @@ func storeAppError(where string, err error) *mmmodel.AppError {
 	switch {
 	case store.IsErrNotFound(err):
 		return mmmodel.NewAppError(where, "app.store.not_found.app_error", nil, "", http.StatusNotFound).Wrap(err)
+	case store.IsErrCircularReference(err):
+		return mmmodel.NewAppError(where, "app.page.circular_reference.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 	case store.IsErrInvalidInput(err):
 		return invalidInputAppError(where, err)
 	case store.IsErrConflict(err):
@@ -117,6 +124,12 @@ func storeAppError(where string, err error) *mmmodel.AppError {
 		// Use the limit the error carries; different store methods have different bounds.
 		var limitErr *store.ErrLimitExceeded
 		_ = errors.As(err, &limitErr) // guaranteed true: IsErrLimitExceeded already performed this assertion
+		switch limitErr.Reason {
+		case store.ReasonMaxDepthExceeded:
+			return mmmodel.NewAppError(where, "app.page.max_depth_exceeded.app_error", map[string]any{"MaxDepth": limitErr.Limit}, "", http.StatusBadRequest).Wrap(err)
+		case store.ReasonSubtreeMaxDepthExceeded:
+			return mmmodel.NewAppError(where, "app.page.subtree_max_depth_exceeded.app_error", map[string]any{"MaxDepth": limitErr.Limit}, "", http.StatusBadRequest).Wrap(err)
+		}
 		return mmmodel.NewAppError(where, "app.store.too_large.app_error", map[string]any{"Limit": limitErr.Limit}, "", http.StatusUnprocessableEntity).Wrap(err)
 	default:
 		return mmmodel.NewAppError(where, "app.store.internal_error.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
@@ -125,26 +138,53 @@ func storeAppError(where string, err error) *mmmodel.AppError {
 
 // invalidInputAppError maps a store ErrInvalidInput to a 400 *AppError, preferring the
 // specific validation key the store carried (from a model IsValid check) over a shared fallback.
+// Reason* codes are translated to their shared message keys here; callers wanting an
+// operation-specific key for a code map it themselves before falling back to this.
 func invalidInputAppError(where string, err error) *mmmodel.AppError {
 	var invErr *store.ErrInvalidInput
 	if errors.As(err, &invErr) && invErr.Reason != "" {
+		if invErr.Reason == store.ReasonParentNotLive {
+			// Same key as the app-layer parent pre-checks (validateParentExists), so a parent
+			// that disappears between the pre-check and the store's locked check reads
+			// identically to one that never existed — the contract is not race-dependent.
+			return mmmodel.NewAppError(where, "app.page.invalid_parent.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+		}
 		return mmmodel.NewAppError(where, invErr.Reason, nil, "", http.StatusBadRequest).Wrap(err)
 	}
 	return mmmodel.NewAppError(where, "app.store.invalid_input.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 }
 
 // restoreReasonAppError maps a store.Reason* restore-failure code (see RestorePage, RestoreSpace)
-// to its app-facing error key via reasonKeys, so the store communicates which condition failed
-// without naming the app-facing message key itself. Returns nil if err isn't an ErrInvalidInput
-// carrying one of reasonKeys, leaving the caller to fall back to storeAppError.
-func restoreReasonAppError(where string, err error, reasonKeys map[string]string) *mmmodel.AppError {
+// to a pre-built AppError via appErrors, so the store communicates which condition failed without
+// naming the app-facing message key itself. Callers construct AppErrors with string-literal IDs so
+// the i18n extraction tool can discover them. Returns nil if err is not an ErrInvalidInput carrying
+// one of the mapped reasons, leaving the caller to fall back to storeAppError.
+func restoreReasonAppError(err error, appErrors map[string]*mmmodel.AppError) *mmmodel.AppError {
 	var invErr *store.ErrInvalidInput
 	if !errors.As(err, &invErr) {
 		return nil
 	}
-	key, ok := reasonKeys[invErr.Reason]
+	appErr, ok := appErrors[invErr.Reason]
 	if !ok {
 		return nil
 	}
-	return mmmodel.NewAppError(where, key, nil, "", http.StatusBadRequest).Wrap(err)
+	return appErr.Wrap(err)
+}
+
+// readBackAfterRestore re-reads an entity whose restore has already committed, retrying once in
+// case of a transient read error. The read's own error is never surfaced: a 404/500 there would
+// misreport an already committed restore as failed, prompting a retry that then 409s. The
+// distinct readFailedErr tells the caller the restore succeeded and only the read-back failed.
+// Callers construct readFailedErr with a string-literal ID so the i18n extraction tool can
+// discover it.
+func readBackAfterRestore[T any](readFailedErr *mmmodel.AppError, get func() (T, *mmmodel.AppError)) (T, *mmmodel.AppError) {
+	got, getErr := get()
+	if getErr != nil {
+		got, getErr = get()
+		if getErr != nil {
+			var zero T
+			return zero, readFailedErr.Wrap(getErr)
+		}
+	}
+	return got, nil
 }

@@ -68,6 +68,14 @@ func TestDraftIsValid(t *testing.T) {
 		require.Nil(t, d.IsValid())
 	})
 
+	t.Run("ParentId equal to PageId rejected", func(t *testing.T) {
+		d := validDraft()
+		d.ParentId = d.PageId
+		aerr := d.IsValid()
+		require.NotNil(t, aerr)
+		require.Equal(t, "model.draft.is_valid.parent_self.app_error", aerr.Id)
+	})
+
 	t.Run("title over cap rejected", func(t *testing.T) {
 		d := validDraft()
 		d.Title = strings.Repeat("x", model.PageTitleMaxRunes+1)

@@ -25,7 +25,7 @@ const (
 	// PagePropsMaxBytes caps the serialized size of the opaque Props map.
 	PagePropsMaxBytes = 64 * 1024
 
-	// PageSearchTextMaxBytes caps the stored SearchText's size.
+	// PageSearchTextMaxBytes caps the stored SearchText, the Body's plain-text search projection.
 	PageSearchTextMaxBytes = 2 * 1024 * 1024
 )
 
@@ -63,9 +63,56 @@ type Page struct {
 	Props mmmodel.StringInterface `json:"props"`
 }
 
+// PageSummary is the metadata projection returned by page collection endpoints. It deliberately
+// omits Body, SearchText, and Props: Body and SearchText can each be large, while Props is opaque
+// and may be up to PagePropsMaxBytes. Fetch a Page by ID when full content is required.
+type PageSummary struct {
+	Id             string `json:"id"`
+	SpaceId        string `json:"space_id"`
+	ParentId       string `json:"parent_id"`
+	Type           string `json:"type"`
+	Title          string `json:"title"`
+	UserId         string `json:"user_id"`
+	LastModifiedBy string `json:"last_modified_by"`
+	SortOrder      int64  `json:"sort_order"`
+	CreateAt       int64  `json:"create_at"`
+	UpdateAt       int64  `json:"update_at"`
+	EditAt         int64  `json:"edit_at"`
+}
+
 // IsSnapshot reports whether p is a version snapshot rather than a live page.
 func (p *Page) IsSnapshot() bool {
 	return p.OriginalId != ""
+}
+
+// MaxDepthOfPages returns the maximum depth in pages relative to rootID (depth 0), regardless
+// of slice order: each page's depth is the length of its ParentId chain up to rootID, walked
+// through the slice. A chain that leaves the slice counts only its in-slice length, and a
+// corrupted ParentId cycle terminates after the slice size (grossly overcounting, so a depth
+// cap rejects it) — callers reject such malformed input separately before depth matters.
+func MaxDepthOfPages(pages []*Page, rootID string) int {
+	parentOf := make(map[string]string, len(pages))
+	for _, p := range pages {
+		if p.Id != rootID {
+			parentOf[p.Id] = p.ParentId
+		}
+	}
+	maxDepth := 0
+	for id := range parentOf {
+		depth := 0
+		for cur := id; cur != rootID; {
+			depth++
+			parent, ok := parentOf[cur]
+			if !ok || depth > len(parentOf) {
+				break
+			}
+			cur = parent
+		}
+		if depth > maxDepth {
+			maxDepth = depth
+		}
+	}
+	return maxDepth
 }
 
 // PreSave sanitizes Page and defaults its Id-independent fields before insert.
@@ -89,6 +136,7 @@ func (p *Page) PreSave() {
 		p.CreateAt = now
 	}
 	p.UpdateAt = now
+	p.EditAt = now
 }
 
 // PreUpdate sanitizes Page and stamps UpdateAt before an update is persisted.
@@ -113,8 +161,12 @@ type PagePatch struct {
 }
 
 // Patch applies the non-nil fields of patch to the page. Normalization (title trim,
-// etc.) happens in PreUpdate.
+// etc.) happens in PreUpdate. A nil patch is a no-op rather than a panic; callers must call
+// patch.IsValid() first to enforce patch-level validity.
 func (p *Page) Patch(patch *PagePatch) {
+	if patch == nil {
+		return
+	}
 	if patch.Title != nil {
 		p.Title = *patch.Title
 	}
@@ -129,12 +181,10 @@ func (p *Page) Patch(patch *PagePatch) {
 	}
 }
 
-// IsValid checks rules about which fields the patch sets — Page.IsValid can't, since it only
-// sees the merged page. SearchText is Body's plain-text projection backing the search index
-// (Body is opaque rich-text, so it can't be tokenized directly), so the two must be patched
-// together: changing one without the other desyncs the index from the body. A non-empty
-// SearchText additionally requires a non-empty Body. This lives on the patch (not only in the
-// service), so any caller that bypasses the service still upholds it.
+// IsValid checks patch-level rules that Page.IsValid can't, since it only sees the merged page.
+// Body and SearchText must be patched together (one without the other desyncs the search index
+// from the body); a non-empty SearchText also requires a non-empty Body. Enforced here, not just
+// in the service, so callers that bypass the service still uphold it.
 func (p *PagePatch) IsValid() *mmmodel.AppError {
 	// Reject a nil patch (which would panic on the Body/SearchText cross-checks below) and an
 	// all-nil-fields patch (a no-op that would otherwise bump timestamps without a content change).
@@ -172,6 +222,10 @@ func (p *Page) IsValid() *mmmodel.AppError {
 
 	if p.UpdateAt == 0 {
 		return mmmodel.NewAppError("Page.IsValid", "model.page.is_valid.update_at.app_error", nil, "id="+p.Id, http.StatusBadRequest)
+	}
+
+	if p.EditAt == 0 {
+		return mmmodel.NewAppError("Page.IsValid", "model.page.is_valid.edit_at.app_error", nil, "id="+p.Id, http.StatusBadRequest)
 	}
 
 	if p.Type != PageTypePage && p.Type != PageTypeFolder {
