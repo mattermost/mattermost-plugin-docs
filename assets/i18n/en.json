@@ -84,10 +84,6 @@
     "translation": "Invalid user ID."
   },
   {
-    "id": "app.page.duplicate.max_depth_exceeded.app_error",
-    "translation": "Pages cannot be nested more than {{.MaxDepth}} levels deep."
-  },
-  {
     "id": "app.page.duplicate.not_found.app_error",
     "translation": "The page could not be found."
   },
@@ -313,7 +309,7 @@
   },
   {
     "id": "app.page_draft.update.draft_changed.app_error",
-    "translation": "A concurrent autosave has updated the draft; please republish."
+    "translation": "A concurrent autosave updated the draft. Reload it and try saving again."
   },
   {
     "id": "app.page_draft.update.edit_conflict.app_error",

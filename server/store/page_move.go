@@ -257,6 +257,11 @@ func (s *Store) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID, moverUserI
 	if targetSpaceID == "" {
 		return nil, "", &ErrInvalidInput{Entity: "Page", Field: "TargetSpaceId", Value: targetSpaceID}
 	}
+	// moverUserID keys the draft re-home vs. delete classification in rewriteSubtreeSpace; an empty
+	// or malformed value would match no owner and delete every affected draft as "another user's".
+	if !mmmodel.IsValidId(moverUserID) {
+		return nil, "", &ErrInvalidInput{Entity: "Page", Field: "MoverUserId", Value: moverUserID}
+	}
 
 	tx, err := s.db.Beginx()
 	if err != nil {

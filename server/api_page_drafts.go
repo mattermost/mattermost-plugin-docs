@@ -13,10 +13,12 @@ import (
 )
 
 const (
-	// maxDraftBodyBytes caps the autosave PUT, which carries the full document body. It tracks the
-	// model's enforced body limit plus headroom for the title/props/file-ids and JSON envelope, so
-	// an over-limit body is rejected at the transport layer rather than after decoding.
-	maxDraftBodyBytes = model.PageBodyMaxBytes + (64 << 10) // 64 KiB headroom
+	// maxDraftBodyBytes caps the autosave PUT, which carries the full document body. Body is JSON
+	// nested inside the request JSON, so its transport form can grow far beyond its decoded size once
+	// quotes, backslashes, and control characters are escaped (worst case ~6x for all-control-char
+	// input). Size the transport cap for that worst case plus headroom for the title/props/file-ids
+	// and JSON envelope; the decoded body stays capped at model.PageBodyMaxBytes during normalization.
+	maxDraftBodyBytes = 6*model.PageBodyMaxBytes + (64 << 10) // 64 KiB headroom
 )
 
 // handleUpdatePageDraft handles PUT /api/v1/spaces/{space_id}/pages/{page_id}/draft

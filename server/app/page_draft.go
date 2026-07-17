@@ -75,7 +75,9 @@ func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs 
 			return nil, mmmodel.NewAppError("UpdatePageDraft", "model.draft.is_valid.file_ids.app_error", nil, "", http.StatusBadRequest)
 		}
 		for _, fileID := range *fileIDs {
-			if fileID != "" && !mmmodel.IsValidId(fileID) {
+			// Reject "" too: an empty slice clears the list, but an empty entry is malformed and
+			// would otherwise be merged verbatim into FileIds.
+			if !mmmodel.IsValidId(fileID) {
 				return nil, mmmodel.NewAppError("UpdatePageDraft", "app.page_draft.update.invalid_file_id.app_error", nil, "", http.StatusBadRequest)
 			}
 		}
@@ -204,6 +206,10 @@ func (s *Service) CreateSpaceDraft(userID, spaceID, title, pageParentID string) 
 		var invErr *store.ErrInvalidInput
 		if errors.As(err, &invErr) {
 			switch invErr.Reason {
+			case store.ReasonParentNotLive:
+				// The parent validated in validateDraftParent can disappear before UpsertDraft's
+				// locked check; surface the create-specific key rather than storeAppError's page.* key.
+				return nil, mmmodel.NewAppError("CreateSpaceDraft", "app.page_draft.create.invalid_parent.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 			case store.ReasonDraftCycle:
 				return nil, mmmodel.NewAppError("CreateSpaceDraft", "app.page_draft.create.parent_cycle.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 			case store.ReasonDraftTooDeep:
@@ -294,6 +300,11 @@ func (s *Service) DeletePageDraft(userID, spaceID, pageID, channelID string) *mm
 	// named in the request before deleting — otherwise a member of another space could delete a
 	// draft here by passing this space's id with a foreign page id.
 	if _, appErr := s.GetPageDraft(userID, spaceID, pageID); appErr != nil {
+		// GetPageDraft returns its own get.* not-found key; translate it to the delete operation's
+		// key so a discard reports a delete-appropriate message.
+		if appErr.StatusCode == http.StatusNotFound {
+			return mmmodel.NewAppError("DeletePageDraft", "app.page_draft.delete.not_found.app_error", nil, "", http.StatusNotFound).Wrap(appErr)
+		}
 		return appErr
 	}
 

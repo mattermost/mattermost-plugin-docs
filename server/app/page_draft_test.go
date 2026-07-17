@@ -361,7 +361,7 @@ func TestPublishRejectsForeignSpacePage(t *testing.T) {
 	for _, force := range []bool{false, true} {
 		_, _, appErr = h.svc.PublishPageDraft(userB, spaceB.Id, pageID, force)
 		require.NotNil(t, appErr, "cross-space publish (force=%v) must fail", force)
-		require.Contains(t, []int{http.StatusNotFound, http.StatusConflict}, appErr.StatusCode,
+		require.Equal(t, http.StatusNotFound, appErr.StatusCode,
 			"cross-space publish (force=%v) must be rejected", force)
 	}
 
