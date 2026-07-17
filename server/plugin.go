@@ -90,7 +90,6 @@ func (p *Plugin) OnActivate() error {
 	p.store = s
 	p.service = app.New(p.store, &p.client.Log, p.client)
 
-
 	p.router = p.initRouter()
 
 	return nil
