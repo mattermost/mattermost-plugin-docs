@@ -78,13 +78,14 @@ func (s *Service) publishSelfPresence(draft *model.Draft) {
 	}, draft.UserId)
 }
 
-// broadcastPagePresence fans a page_presence_updated event out to the space audience, carrying the
-// current active-editor set, the time it was taken (so a client can discard an out-of-order snapshot
-// delivered from another cluster node), and active_timeout_ms. Broadcasts are only triggered by user
-// actions (autosave, discard, publish), so a client that receives no newer snapshot cannot tell a
-// still-active editor from one whose session ended abnormally; active_timeout_ms lets it expire the
-// snapshot's editors on its own once as_of + active_timeout_ms has passed. channelID is the space's
-// backing channel. Best-effort: failures are swallowed.
+// broadcastPagePresence fans a page_presence_updated event out to the space audience on channelID
+// (the space's backing channel), carrying the current active-editor set, as_of, and active_timeout_ms.
+// Best-effort: failures are swallowed.
+//
+// Broadcasts fire only on user actions (autosave, discard, publish), never periodically, so a client
+// that receives no newer snapshot cannot distinguish a still-active editor from one whose session
+// ended abnormally. active_timeout_ms lets it expire the snapshot's editors on its own once
+// as_of + active_timeout_ms has passed.
 func (s *Service) broadcastPagePresence(pageID, spaceID, channelID string) {
 	if s.client == nil {
 		return

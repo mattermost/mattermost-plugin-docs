@@ -41,7 +41,7 @@ type Service struct {
 	client *pluginapi.Client
 
 	// presenceBroadcastLast records the last autosave-triggered presence broadcast time (ms) per
-	// pageID, used to rate-limit high-frequency autosave broadcasts. Delete and publish paths bypass
+	// (pageID, userID), used to rate-limit high-frequency autosave broadcasts. Delete and publish paths bypass
 	// this and always broadcast.
 	//
 	// The map is per-process, so each node throttles independently: a user whose autosaves are

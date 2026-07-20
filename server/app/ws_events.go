@@ -35,8 +35,8 @@ const (
 	wsEventPageDuplicated   = "page_duplicated"
 	wsEventPageMovedToSpace = "page_moved_to_space"
 	// wsEventPagePresenceUpdated carries a presence snapshot ({page_id, space_id, active_editors,
-	// as_of}), not the {page_id, space_id} mutation shape, and fires on every autosave/draft-delete
-	// rather than on a page write.
+	// as_of, active_timeout_ms}), not the {page_id, space_id} mutation shape; it is rate-limited on
+	// autosave but always fires on discard and publish.
 	wsEventPagePresenceUpdated = "page_presence_updated"
 
 	wsEventSpaceCreated       = "space_created"

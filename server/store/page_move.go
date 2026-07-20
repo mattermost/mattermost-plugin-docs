@@ -433,9 +433,7 @@ func (s *Store) collectLiveSubtreeIDs(tx *sqlx.Tx, pageID string) ([]string, int
 // targetSpaceID/targetChannelID, chunked, within tx. It rewrites SpaceId/ChannelId across
 // live DOCS_Page rows, their version snapshots (OriginalId IN ids), and DOCS_Draft rows.
 // Every user's drafts follow their page, not just the mover's: a draft is unpublished work its
-// owner has not consented to lose, so a move must not destroy it as a side effect. An owner who
-// is not a member of targetSpaceID simply cannot reach the draft — the space-membership check on
-// every read gates it — but the content survives and returns if they gain access.
+// owner has not consented to lose, so a move must not destroy it as a side effect.
 func (s *Store) rewriteSubtreeSpace(tx *sqlx.Tx, ids []string, sourceSpaceID, targetSpaceID, targetChannelID, moverUserID string, now int64) error {
 	// Quota guard: count the mover's drafts that will be re-homed into targetSpaceID (those in
 	// source that cover moved pages or sit under them as new-page children) and ensure adding
@@ -499,13 +497,15 @@ func (s *Store) rewriteSubtreeSpace(tx *sqlx.Tx, ids []string, sourceSpaceID, ta
 		}
 
 		// Re-home every owner's drafts for the moved pages, so a draft keeps matching its page's
-		// space and stays readable to an owner who is a member of the target. UpdateAt uses
-		// monotonicBump so it stays a valid CAS token even when the move and a concurrent autosave
-		// share a millisecond boundary. SpaceId = sourceSpaceID prevents cross-space ID collisions
-		// from re-homing unrelated drafts that happen to share a PageId or ParentId. LastActiveAt is
-		// reset so a re-homed draft is not reported as an active editor in the target space until its
-		// owner edits it there — otherwise a source-only owner's recent edit would surface to target
-		// members through GetPageActiveEditors for the remainder of the active-editor window.
+		// space and stays readable to an owner who is a member of the target.
+		//
+		// UpdateAt uses monotonicBump so it stays a valid CAS token even when the move and a
+		// concurrent autosave share a millisecond boundary. SpaceId = sourceSpaceID prevents
+		// re-homing an unrelated draft that happens to share a PageId or ParentId with another space.
+		//
+		// LastActiveAt is reset so a re-homed draft is not reported as an active editor in the target
+		// space until its owner edits it there — otherwise a source-only owner's recent edit would
+		// surface to target members through GetPageActiveEditors for the rest of the active-editor window.
 		draftUpd := s.getQueryBuilder().
 			Update("DOCS_Draft").
 			Set("SpaceId", targetSpaceID).

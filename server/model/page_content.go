@@ -39,8 +39,7 @@ func BuildSearchText(doc TipTapDocument) string {
 
 // ParseTipTapDocument parses and sanitizes a TipTap JSON string into a TipTapDocument. Unlike the
 // model's field validators, it returns a plain error (not an *mmmodel.AppError): its failures are
-// parse-level and are always collapsed by the app layer into one generic content app-error, so they
-// are not meant to be addressable per-reason by an i18n key.
+// parse-level, not per-field, so there is no single i18n key to attach per reason.
 func ParseTipTapDocument(contentJSON string) (TipTapDocument, error) {
 	if contentJSON == "" {
 		return TipTapDocument{

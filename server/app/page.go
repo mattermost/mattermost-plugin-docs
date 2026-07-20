@@ -18,9 +18,10 @@ import (
 // store.MaxPageHierarchyDepth (50) is a separate, larger bound used by descendant/ancestor reads.
 const MaxPageDepth = 10
 
-// A draft chain publishes into a page chain of the same depth, so the store's draft-cycle bound
-// must equal MaxPageDepth. Either subtraction below is a negative constant if they drift, which
-// overflows uint and fails to compile — catching drift in both directions.
+// MaxPageDepth and store.DraftCycleCheckMaxDepth must stay equal: a draft chain publishes into a
+// page chain of the same depth. The two lines below fail to compile if the values ever diverge —
+// whichever subtraction goes negative overflows when converted to uint, which Go rejects in a
+// constant expression. Both directions are checked so drift is caught whichever constant grew.
 const (
 	_ = uint(MaxPageDepth - store.DraftCycleCheckMaxDepth)
 	_ = uint(store.DraftCycleCheckMaxDepth - MaxPageDepth)

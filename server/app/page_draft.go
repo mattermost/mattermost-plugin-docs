@@ -127,7 +127,7 @@ func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs 
 	// New-page drafts (no published page row yet) must not broadcast presence to the space channel:
 	// that would expose the reserved page ID and the author's identity to all space members before
 	// the page exists. Send the event only to the author so their own UI can track the session.
-	// UpsertDraft already determined liveness under its page-row lock, so reuse its result here;
+	// UpsertDraft already determined liveness as part of the same call, so reuse its result here;
 	// only the no-existing-draft branch above resolved it independently.
 	if !pageIsLiveResolved {
 		pageIsLive = savedPageWasLive
@@ -309,11 +309,9 @@ func (s *Service) DeletePageDraft(userID, spaceID, pageID, channelID string) *mm
 		return appErr
 	}
 
-	// Discard is unconditional: the user wants the draft gone regardless of its current version. An
-	// autosave already in flight when the discard commits can still re-insert the draft afterward
-	// (an unpublished new-page draft has no page row for UpsertDraft's staleness guard to key on), so
-	// a discarded draft can briefly reappear. It is per-user and cleared by discarding again; fully
-	// preventing it would need a soft-delete tombstone, which is not warranted for this window.
+	// Discard is unconditional. A concurrent autosave in flight can briefly re-insert the draft after
+	// this commits — an unpublished new-page draft has no page row for UpsertDraft's staleness guard
+	// to key on. It is per-user and clears on a repeat discard, so a tombstone isn't warranted.
 	//
 	pageWasLive, delErr := s.store.DeleteDraftReparenting(userID, spaceID, pageID)
 	if delErr != nil {
@@ -347,7 +345,7 @@ func (s *Service) GetPageDraftsForSpace(userID, spaceID string, page, perPage in
 		return nil, false, mmmodel.NewAppError("GetPageDraftsForSpace", "app.page_draft.list.invalid_space_id.app_error", nil, "", http.StatusBadRequest)
 	}
 
-	// The store's liveness join excludes a soft-deleted space, so this need not re-check liveness.
+	// The store already excludes drafts in a soft-deleted space, so this need not re-check liveness.
 	offset, limit := paginationOffsetLimit(page, perPage)
 	drafts, err := s.store.GetDraftsForSpace(userID, spaceID, offset, limit)
 	if err != nil {
@@ -519,10 +517,11 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 				if rErr == nil && raced != nil && raced.SpaceId == spaceID && raced.DeleteAt == 0 {
 					// Discard this caller's now-orphaned draft so it does not linger pointing at a
 					// published page — but only if it still holds the version this publish read. A fresh
-					// autosave landing after the race winner committed bumps UpdateAt, so the CAS matches
-					// no row and that newer draft is left intact rather than silently dropped. Cleanup is
-					// best-effort: the page is already published by the winner, so a failure here is logged
-					// (a stray draft the user can discard), never surfaced as a publish failure.
+					// autosave after the race winner committed bumps UpdateAt, so the CAS matches no row
+					// and that newer draft is left intact rather than dropped.
+					//
+					// Best-effort: the page is already published by the winner, so a failure here is
+					// logged (a stray draft the user can discard), never surfaced as a publish failure.
 					if _, delErr := s.store.DeleteDraftVersion(userID, pageID, draft.UpdateAt); delErr != nil {
 						s.log.Warn("PublishPageDraft: failed to delete orphaned draft after adopting race winner",
 							"page_id", pageID, "user_id", userID, "err", delErr)
@@ -533,8 +532,7 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 					return raced, false, nil
 				}
 				if rErr != nil {
-					// A real store failure here is not the same as losing the race; it would otherwise
-					// be indistinguishable from it in the response, so leave a trace.
+					// Log this: a real store failure here would otherwise look identical to losing the race.
 					s.log.Warn("PublishPageDraft: failed to read the page that won the publish race",
 						"page_id", pageID, "user_id", userID, "err", rErr)
 				}

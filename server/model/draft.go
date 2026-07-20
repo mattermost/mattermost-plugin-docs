@@ -14,8 +14,10 @@ import (
 // DraftFileIdsMaxRunes is the maximum rune length of the serialized FileIds JSON array.
 const DraftFileIdsMaxRunes = 300
 
-// DraftPropsOriginalPageEditAt stores the EditAt the user last saw when they opened
-// a page for editing — used as the optimistic-lock baseline on publish.
+// DraftPropsOriginalPageEditAt is a draft Props key holding the page's EditAt at the moment the user
+// opened it for editing. On publish the server compares this against the page's current EditAt; if
+// they differ, another user saved the page in the meantime, so the publish is rejected as a conflict
+// rather than overwriting the newer content.
 const DraftPropsOriginalPageEditAt = "original_page_edit_at"
 
 // Draft is a per-user autosave draft for a space page, stored in DOCS_Draft.
@@ -78,8 +80,6 @@ func (d *Draft) PreSave() {
 		d.CreateAt = now
 	}
 	d.UpdateAt = now
-	// PreSave runs only on a user's own save of the draft, which is exactly the signal presence
-	// needs — bulk maintenance writes update the row without going through here.
 	d.LastActiveAt = now
 }
 

@@ -332,8 +332,9 @@ const (
 	// ReasonConcurrentEdit: the page's EditAt no longer matches the baseline the caller published
 	// against — someone else edited the page.
 	ReasonConcurrentEdit = "concurrent_edit"
-	// ReasonConcurrentAutosave: the draft changed after the caller read it — the caller's own
-	// editor autosaved while the publish was in flight.
+	// ReasonConcurrentAutosave: the draft's version token no longer matches what the caller read —
+	// usually a concurrent autosave, but also a bulk write (a page delete reparenting a pending
+	// draft, or a move-to-space re-homing it) that bumps the token without changing content.
 	ReasonConcurrentAutosave = "concurrent_autosave"
 )
 

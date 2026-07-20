@@ -729,7 +729,7 @@ func (s *Store) PublishDraft(isNewPage bool, page *model.Page, userID, spaceID s
 	if spaceID == "" {
 		return nil, &ErrInvalidInput{Entity: "Draft", Field: "spaceID", Value: spaceID}
 	}
-	// spaceID is the caller's authorized space; the page must live in it. A mismatch means the page
+	// spaceID is the space from the caller's request; the page must live in it. A mismatch means the page
 	// was relocated by a concurrent move-to-space (edit path) or the caller built it for the wrong
 	// space — reject rather than write under the stale/foreign space.
 	if page.SpaceId != spaceID {

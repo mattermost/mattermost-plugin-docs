@@ -24,7 +24,7 @@ const DraftCycleCheckMaxDepth = 10
 
 // MaxDraftsPerUserPerSpace is the maximum number of draft rows a single user may hold in one
 // space. Enforced atomically inside UpsertDraft after the space lock, so it holds under
-// concurrent creates. The app layer may also use this constant for a fast-path pre-check.
+// concurrent creates.
 const MaxDraftsPerUserPerSpace = 100
 
 // maxActiveEditorsPerPage caps the number of user IDs returned by GetPageActiveEditors. A page
@@ -124,7 +124,7 @@ func (s *Store) countDraftsForUser(e sqlx.ExtContext, userID, spaceID string) (i
 }
 
 // draftExistsTx reports whether a draft row keyed by (userID, pageID) currently exists, read within
-// tx so it observes the transaction's own view (including the page-row lock the caller already holds).
+// tx so it observes the transaction's own uncommitted writes.
 func (s *Store) draftExistsTx(tx *sqlx.Tx, userID, pageID string) (bool, error) {
 	var one int
 	builder := s.getQueryBuilder().
@@ -143,7 +143,7 @@ func (s *Store) draftExistsTx(tx *sqlx.Tx, userID, pageID string) (bool, error) 
 
 // checkNoDraftCycle walks the parent chain from startParentID through the caller's draft rows and
 // returns an error if leafPageID appears anywhere in the chain (cycle) or if the total depth
-// (draft chain + live-page ancestor) would exceed MaxPageHierarchyDepth. A published-page
+// (draft chain + live-page ancestor) would exceed DraftCycleCheckMaxDepth. A published-page
 // ancestor (no matching draft row) terminates the recursion early. Squirrel cannot express
 // recursive CTEs, so raw SQL is used here.
 func (s *Store) checkNoDraftCycle(tx *sqlx.Tx, userID, leafPageID, startParentID string) error {
@@ -216,11 +216,12 @@ FROM chain`, DraftCycleCheckMaxDepth, DraftCycleCheckMaxDepth)
 // happens inside the single upsert statement, so two concurrent autosaves cannot lose a field by
 // merging against a stale read. The stored row is returned.
 //
+// The draft's space must be live, and the PageId must belong to the draft's space.
+//
 // parentID encodes the write intent for the ParentId column: nil means "omitted — preserve the
 // existing stored parent", a pointer to "" means "clear to root", and a pointer to a valid ID
 // means "set to that ID". The draft struct's own ParentId field is not used on the write path.
 //
-// The draft's space must be live; the PageId must belong to the draft's space.
 // fileIDs encodes the write intent for the FileIds column: nil means "omitted — preserve the
 // existing stored value", a pointer to an empty slice means "clear to no attachments", and a
 // pointer to a non-empty slice means "replace with these IDs". This mirrors parentID's
@@ -261,8 +262,8 @@ func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmod
 	// Quota check: enforce MaxDraftsPerUserPerSpace atomically inside the space lock so
 	// concurrent CreateSpaceDraft calls in the same space cannot both pass a stale pre-check
 	// and each insert a row that pushes the total past the cap.
-	// Skip the check on the UPDATE path (existing draft) to avoid an unnecessary count query
-	// on every autosave.
+	// Skip the check on the UPDATE path: updating an existing draft adds no row, so it cannot
+	// push the total over the cap.
 	isExisting, existErr := s.draftExistsTx(tx, draft.UserId, draft.PageId)
 	if existErr != nil {
 		return nil, false, existErr
@@ -358,10 +359,9 @@ func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmod
 		}
 	}
 
-	// parentIDParam is SQL NULL when parentID is nil (preserve on conflict), and the dereferenced
-	// string otherwise. The COALESCE in VALUES ensures NOT NULL is satisfied on INSERT; the CASE in
-	// the ON CONFLICT clause reads the original bound parameter (not EXCLUDED.ParentId) to
-	// distinguish nil ("omit, preserve") from "" ("explicit clear to root").
+	// The COALESCE in VALUES ensures NOT NULL is satisfied on INSERT; the CASE in the ON CONFLICT
+	// clause reads the original bound parameter (not EXCLUDED.ParentId) to distinguish nil
+	// ("omit, preserve") from "" ("explicit clear to root").
 	builder := s.getQueryBuilder().
 		Insert("DOCS_Draft").
 		Columns(draftSelectColumns...).
@@ -468,16 +468,12 @@ func (s *Store) DeleteDraftVersion(userID, pageID string, expectedUpdateAt int64
 	return rows > 0, nil
 }
 
-// DeleteDraftReparenting atomically reparents the calling user's child drafts (those with
-// ParentId = pageID) to the deleted draft's own parent, then deletes the draft keyed by
-// (userID, spaceID, pageID). This prevents child drafts from holding a dangling parent after a
-// discard. The space row is locked first, before any draft row, matching the space→row lock order
-// of every other structural draft mutation (UpsertDraft, PublishDraft): this serializes concurrent
-// discards in the same chain on a single lock — so two of them cannot interleave into a dangling
-// parent — and keeps the lock order consistent, avoiding an AB-BA deadlock against UpsertDraft.
-// Returns ErrNotFound when no draft exists for (userID, spaceID, pageID). pageWasLive is true when
-// the deleted draft was an edit draft (the page exists as a live page), false for new-page drafts;
-// callers use this to decide whether a presence broadcast is needed.
+// DeleteDraftReparenting deletes the draft keyed by (userID, spaceID, pageID). When the discarded
+// draft is a new-page draft (no live page yet), its child drafts are first reparented to its own
+// parent so they don't dangle; an edit draft's children still point at the live page and are left
+// untouched. Returns ErrNotFound when no draft exists for (userID, spaceID, pageID). pageWasLive is
+// true when the deleted draft was an edit draft (the page exists as a live page), false for new-page
+// drafts; callers use this to decide whether a presence broadcast is needed.
 func (s *Store) DeleteDraftReparenting(userID, spaceID, pageID string) (pageWasLive bool, err error) {
 	if userID == "" {
 		return false, &ErrInvalidInput{Entity: "Draft", Field: "userId", Value: userID}
@@ -495,6 +491,10 @@ func (s *Store) DeleteDraftReparenting(userID, spaceID, pageID string) (pageWasL
 	}
 	defer s.finalizeTransaction(tx, &err)
 
+	// Lock the space row before any draft row, matching the space→row lock order of every other
+	// structural draft mutation (UpsertDraft, PublishDraft): this serializes concurrent discards in
+	// the same chain so two cannot interleave into a dangling parent, and keeps the lock order
+	// consistent to avoid an AB-BA deadlock against UpsertDraft.
 	if lockErr := s.lockLiveSpace(tx, spaceID); lockErr != nil {
 		return false, lockErr
 	}
