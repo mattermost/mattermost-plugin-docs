@@ -140,7 +140,7 @@ func (s *Service) MovePage(pageID, spaceID string, newParentID *string, newIndex
 // committed in between (surviving here via force) would make the earlier-read parent stale and
 // point clients at the wrong subtree to invalidate.
 func (s *Service) reparentWithinSpace(where, pageID, spaceID string, newParentID *string, newIndex *int64, expectedUpdateAt *int64, force bool) (*model.Page, *mmmodel.AppError) {
-	moved, priorParentID, didMove, storeErr := s.store.MovePage(pageID, spaceID, newParentID, newIndex, mmmodel.SafeDereference(expectedUpdateAt), force, MaxPageDepth)
+	moved, priorParentID, didMove, storeErr := s.store.MovePage(pageID, spaceID, newParentID, newIndex, mmmodel.SafeDereference(expectedUpdateAt), force, model.MaxPageDepth)
 	if storeErr != nil {
 		return nil, storeAppError(where, storeErr)
 	}
@@ -231,7 +231,7 @@ func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model
 
 	s.log.Debug("Moving page to space", "page_id", pageID, "source_space_id", sourceSpace.Id, "target_space_id", targetSpace.Id, "user_id", userID)
 
-	moved, priorParentID, storeErr := s.store.MovePageToSpace(pageID, sourceSpace.Id, targetSpace.Id, userID, parentPageID, mmmodel.SafeDereference(expectedUpdateAt), force, MaxPageDepth)
+	moved, priorParentID, storeErr := s.store.MovePageToSpace(pageID, sourceSpace.Id, targetSpace.Id, userID, parentPageID, mmmodel.SafeDereference(expectedUpdateAt), force, model.MaxPageDepth)
 	if storeErr != nil {
 		return nil, storeAppError("MovePageToSpace", storeErr)
 	}

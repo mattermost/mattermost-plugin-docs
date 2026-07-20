@@ -12,7 +12,6 @@ import (
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
-	"github.com/mattermost/mattermost-plugin-docs/server/app"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
@@ -206,7 +205,7 @@ func TestServiceDuplicatePage_MaxDepthExceeded(t *testing.T) {
 	// copied under it would land at (MaxPageDepth-1)+2 = MaxPageDepth+1 > MaxPageDepth.
 	var deepest *model.Page
 	parentID := ""
-	for range app.MaxPageDepth {
+	for range model.MaxPageDepth {
 		deepest = mustCreatePage(t, h.store, space.Id, channelID, userID, parentID)
 		parentID = deepest.Id
 	}
@@ -344,7 +343,7 @@ func TestServiceDuplicatePage_IncludeChildren_MaxDepthExceeded(t *testing.T) {
 	// destinationDepth = (MaxPageDepth-2)+2 = MaxPageDepth — one level short of the cap.
 	var deepest *model.Page
 	parentID := ""
-	for range app.MaxPageDepth - 1 {
+	for range model.MaxPageDepth - 1 {
 		deepest = mustCreatePage(t, h.store, space.Id, channelID, userID, parentID)
 		parentID = deepest.Id
 	}

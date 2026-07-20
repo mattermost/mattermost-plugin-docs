@@ -22,6 +22,11 @@ const (
 	// so this is a storage safety bound against unbounded writes.
 	PageBodyMaxBytes = 2 * 1024 * 1024
 
+	// MaxPageDepth is the page hierarchy depth limit (root is depth 1). It also bounds draft
+	// nesting: a draft chain publishes into a page chain of the same depth, so the store's
+	// draft-cycle walk is capped at the same value.
+	MaxPageDepth = 10
+
 	// PagePropsMaxBytes caps the serialized size of the opaque Props map.
 	PagePropsMaxBytes = 64 * 1024
 

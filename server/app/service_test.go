@@ -474,7 +474,7 @@ func TestServiceCreatePage(t *testing.T) {
 		// Build a full-depth chain (root at depth 1 up to MaxPageDepth); the next
 		// child would be at depth MaxPageDepth+1 and must be rejected.
 		parentID := ""
-		for range app.MaxPageDepth {
+		for range model.MaxPageDepth {
 			p, err := h.svc.CreatePage(depthSpace.Id, parentID, "d", "", userID)
 			require.Nil(t, err)
 			parentID = p.Id

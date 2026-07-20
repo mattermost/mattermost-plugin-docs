@@ -440,7 +440,7 @@ func (s *Store) rewriteSubtreeSpace(tx *sqlx.Tx, ids []string, sourceSpaceID, ta
 	// them won't exceed MaxDraftsPerUserPerSpace in the target. This count is a lower bound for
 	// the total re-homed set (the cascade loop below can pick up transitively nested new-page
 	// drafts), so a failure here is correct, but a pass does not guarantee the cascade is safe;
-	// the cascade is bounded by DraftCycleCheckMaxDepth and the count remains low in practice.
+	// the cascade is bounded by model.MaxPageDepth and the count remains low in practice.
 	//
 	// Only the mover is quota-checked. Other users' re-homed drafts can push them past the cap in
 	// the target space, which is accepted: the cap is a soft storage bound, and re-homing moves
@@ -522,9 +522,9 @@ func (s *Store) rewriteSubtreeSpace(tx *sqlx.Tx, ids []string, sourceSpaceID, ta
 	// draft A's PageId, not a live page). The chunk loop above matched only drafts whose ParentId
 	// was a live moved page; draft B is caught here. Draft nesting is same-owner only, so the join
 	// pairs each draft with its parent on UserId rather than singling out the mover. Loop until
-	// stable, bounded by DraftCycleCheckMaxDepth which caps the draft tree depth.
+	// stable, bounded by model.MaxPageDepth which caps the draft tree depth.
 	// Squirrel cannot express UPDATE … FROM …, so the statement is built directly.
-	for range DraftCycleCheckMaxDepth {
+	for range model.MaxPageDepth {
 		result, e := s.exec(tx, `
 			UPDATE DOCS_Draft d
 			SET SpaceId = $1, UpdateAt = GREATEST(d.UpdateAt + 1, $2), LastActiveAt = 0

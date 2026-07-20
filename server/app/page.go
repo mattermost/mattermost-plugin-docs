@@ -14,19 +14,6 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
-// MaxPageDepth is the page hierarchy depth limit (root is depth 1).
-// store.MaxPageHierarchyDepth (50) is a separate, larger bound used by descendant/ancestor reads.
-const MaxPageDepth = 10
-
-// MaxPageDepth and store.DraftCycleCheckMaxDepth must stay equal: a draft chain publishes into a
-// page chain of the same depth. The two lines below fail to compile if the values ever diverge —
-// whichever subtraction goes negative overflows when converted to uint, which Go rejects in a
-// constant expression. Both directions are checked so drift is caught whichever constant grew.
-const (
-	_ = uint(MaxPageDepth - store.DraftCycleCheckMaxDepth)
-	_ = uint(store.DraftCycleCheckMaxDepth - MaxPageDepth)
-)
-
 // CreatePage creates a new page in spaceID. ChannelId is derived from the space, not supplied by the caller.
 // The page ID is always server-generated; callers must not supply one.
 func (s *Service) CreatePage(spaceID, parentID, title, body, userID string) (*model.Page, *mmmodel.AppError) {
@@ -72,7 +59,7 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, userID string) (*mo
 
 	s.log.Debug("Creating page", "space_id", spaceID, "parent_id", parentID, "user_id", userID)
 
-	created, storeErr := s.store.CreatePage(page, MaxPageDepth)
+	created, storeErr := s.store.CreatePage(page, model.MaxPageDepth)
 	if storeErr != nil {
 		if store.IsErrNotFound(storeErr) {
 			// The space is missing or soft-deleted.
@@ -211,7 +198,7 @@ func (s *Service) RestorePage(pageID, spaceID, userID string) (*model.Page, *mmm
 		return nil, mmmodel.NewAppError("RestorePage", "app.page.restore.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	s.log.Debug("Restoring page", "page_id", pageID, "user_id", userID)
-	restored, restoreErr := s.store.RestorePage(pageID, spaceID, userID, MaxPageDepth)
+	restored, restoreErr := s.store.RestorePage(pageID, spaceID, userID, model.MaxPageDepth)
 	if restoreErr != nil {
 		if appErr := restoreReasonAppError(restoreErr, map[string]*mmmodel.AppError{
 			store.ReasonNotRestorable: mmmodel.NewAppError("RestorePage", "app.page.restore.not_restorable.app_error", nil, "", http.StatusBadRequest),
@@ -282,7 +269,7 @@ func (s *Service) DuplicatePage(pageID string, sourceSpace *model.Space, userID 
 
 	s.log.Debug("Duplicating page", "page_id", pageID, "source_space_id", sourceSpace.Id, "user_id", userID)
 
-	created, createErr := s.store.CreatePageSubtree(pages, MaxPageDepth)
+	created, createErr := s.store.CreatePageSubtree(pages, model.MaxPageDepth)
 	if createErr != nil {
 		if store.IsErrNotFound(createErr) {
 			return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.dest_not_found.app_error", nil, "", http.StatusNotFound).Wrap(createErr)
@@ -291,7 +278,7 @@ func (s *Service) DuplicatePage(pageID string, sourceSpace *model.Space, userID 
 		// plain placement-depth breach uses storeAppError's operation-neutral key.
 		var limErr *store.ErrLimitExceeded
 		if errors.As(createErr, &limErr) && limErr.Reason == store.ReasonSubtreeMaxDepthExceeded {
-			return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.subtree_max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest).Wrap(createErr)
+			return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.subtree_max_depth_exceeded.app_error", map[string]any{"MaxDepth": model.MaxPageDepth}, "", http.StatusBadRequest).Wrap(createErr)
 		}
 		return nil, storeAppError("DuplicatePage", createErr)
 	}

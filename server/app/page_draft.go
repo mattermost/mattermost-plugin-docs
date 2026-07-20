@@ -491,7 +491,7 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 	// 6. Atomic write: page + draft-delete in one transaction. draft.UpdateAt is passed through so a
 	// concurrent autosave rolls this publish back as a conflict rather than shipping older content —
 	// see store.PublishDraft.
-	page, storeErr := s.store.PublishDraft(isNewPage, pageForWrite, userID, spaceID, force, MaxPageDepth, draft.UpdateAt)
+	page, storeErr := s.store.PublishDraft(isNewPage, pageForWrite, userID, spaceID, force, model.MaxPageDepth, draft.UpdateAt)
 	if storeErr != nil {
 		switch {
 		// The draft moved under this publish: the caller's own editor autosaved after this call read it,

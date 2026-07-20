@@ -16,12 +16,6 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-// DraftCycleCheckMaxDepth bounds the parent-chain walk in checkNoDraftCycle and the nested-draft
-// cascade in rewriteSubtreeSpace. It must equal the app layer's page-depth cap (app.MaxPageDepth),
-// since a draft chain publishes into a page chain of the same depth; app asserts that equality at
-// compile time so the two constants cannot drift.
-const DraftCycleCheckMaxDepth = 10
-
 // MaxDraftsPerUserPerSpace is the maximum number of draft rows a single user may hold in one
 // space. Enforced atomically inside UpsertDraft after the space lock, so it holds under
 // concurrent creates.
@@ -143,7 +137,7 @@ func (s *Store) draftExistsTx(tx *sqlx.Tx, userID, pageID string) (bool, error) 
 
 // checkNoDraftCycle walks the parent chain from startParentID through the caller's draft rows and
 // returns an error if leafPageID appears anywhere in the chain (cycle) or if the total depth
-// (draft chain + live-page ancestor) would exceed DraftCycleCheckMaxDepth. A published-page
+// (draft chain + live-page ancestor) would exceed model.MaxPageDepth. A published-page
 // ancestor (no matching draft row) terminates the recursion early. Squirrel cannot express
 // recursive CTEs, so raw SQL is used here.
 func (s *Store) checkNoDraftCycle(tx *sqlx.Tx, userID, leafPageID, startParentID string) error {
@@ -170,7 +164,7 @@ SELECT
           AND NOT EXISTS (SELECT 1 FROM DOCS_Draft d2 WHERE d2.UserId = $2 AND d2.PageId = c.node)
         ORDER BY c.depth DESC LIMIT 1
     ), '')                               AS live_ancestor
-FROM chain`, DraftCycleCheckMaxDepth, DraftCycleCheckMaxDepth)
+FROM chain`, model.MaxPageDepth, model.MaxPageDepth)
 
 	var result struct {
 		IsCycle      bool   `db:"is_cycle"`
@@ -195,7 +189,7 @@ FROM chain`, DraftCycleCheckMaxDepth, DraftCycleCheckMaxDepth)
 			return errors.Wrap(err, "cycle check: failed to read live ancestor depth")
 		}
 		// liveDepth counts the ancestor itself; +1 for the new leaf being validated.
-		if liveDepth+result.ChainDepth+1 > DraftCycleCheckMaxDepth {
+		if liveDepth+result.ChainDepth+1 > model.MaxPageDepth {
 			return &ErrInvalidInput{Entity: "Draft", Field: "ParentId", Value: startParentID, Reason: ReasonDraftTooDeep}
 		}
 	}

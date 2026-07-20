@@ -485,7 +485,7 @@ func TestFetchDescendantRows(t *testing.T) {
 }
 
 func TestDepthBoundaryExact(t *testing.T) {
-	const maxDepth = 10 // mirrors app.MaxPageDepth; the store CTE uses 50
+	const maxDepth = model.MaxPageDepth // the store CTE uses the larger MaxPageHierarchyDepth (50)
 
 	s := openTestDB(t)
 
@@ -2066,7 +2066,7 @@ func TestDraft(t *testing.T) {
 
 	// TestDraft/"upsert rejects a draft whose parent chain exceeds the max depth" exercises
 	// checkNoDraftCycle's too-deep branch. Each draft added to the chain is itself parent-chain
-	// validated, so a chain of exactly DraftCycleCheckMaxDepth new-page drafts is the deepest one
+	// validated, so a chain of exactly model.MaxPageDepth new-page drafts is the deepest one
 	// that can be built without tripping the cap; a further draft parented under the deepest one
 	// is rejected as too deep.
 	t.Run("upsert rejects a draft whose parent chain exceeds the max depth", func(t *testing.T) {
@@ -2076,7 +2076,7 @@ func TestDraft(t *testing.T) {
 		userID := mmmodel.NewId()
 
 		parentID := ""
-		for range store.DraftCycleCheckMaxDepth {
+		for range model.MaxPageDepth {
 			pageID := mmmodel.NewId()
 			var parentParam *string
 			if parentID != "" {

@@ -765,7 +765,7 @@ func TestHandler_MovePageToSpace_DepthExceeded(t *testing.T) {
 	require.NoError(t, err)
 
 	parentID := ""
-	for range app.MaxPageDepth {
+	for range model.MaxPageDepth {
 		p := seedPage(t, h.store, spaceB.Id, channelB, parentID)
 		parentID = p.Id
 	}
@@ -835,7 +835,7 @@ func TestHandler_MovePage_MaxDepthExceeded(t *testing.T) {
 	space := seedSpace(t, h.store, channelID)
 
 	parentID := ""
-	for range app.MaxPageDepth {
+	for range model.MaxPageDepth {
 		p := seedPage(t, h.store, space.Id, channelID, parentID)
 		parentID = p.Id
 	}
