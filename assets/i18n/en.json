@@ -44,10 +44,6 @@
     "translation": "Invalid user ID."
   },
   {
-    "id": "app.page.create.parent_different_channel.app_error",
-    "translation": "The parent page belongs to a different space."
-  },
-  {
     "id": "app.page.create.space_not_found.app_error",
     "translation": "The space could not be found."
   },
@@ -236,10 +232,6 @@
     "translation": "The draft hierarchy is too deep to add another level."
   },
   {
-    "id": "app.page_draft.create.quota_exceeded.app_error",
-    "translation": "Draft limit reached. Publish or discard an existing draft before creating a new one."
-  },
-  {
     "id": "app.page_draft.delete.invalid_page_id.app_error",
     "translation": "Invalid page ID."
   },
@@ -306,6 +298,10 @@
   {
     "id": "app.page_draft.publish.parent_unpublished.app_error",
     "translation": "The parent page must be published before this page can be published."
+  },
+  {
+    "id": "app.page_draft.quota_exceeded.app_error",
+    "translation": "Draft limit reached. Publish or discard an existing draft to free up space."
   },
   {
     "id": "app.page_draft.update.draft_changed.app_error",

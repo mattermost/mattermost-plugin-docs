@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode/utf8"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -42,7 +43,16 @@ type Service struct {
 	// presenceBroadcastLast records the last autosave-triggered presence broadcast time (ms) per
 	// pageID, used to rate-limit high-frequency autosave broadcasts. Delete and publish paths bypass
 	// this and always broadcast.
+	//
+	// The map is per-process, so each node throttles independently: a user whose autosaves are
+	// spread across nodes can broadcast more often than the interval implies. That is acceptable —
+	// the payload is queried fresh from the shared DB on every broadcast, so the throttle only
+	// trades broadcast volume, never correctness. Entries are dropped on discard and publish, and
+	// swept by age via sweepPresenceBroadcastLast for sessions abandoned without either.
 	presenceBroadcastLast sync.Map
+
+	// presenceSweepLast is the last time presenceBroadcastLast was swept (ms).
+	presenceSweepLast atomic.Int64
 }
 
 // New creates a Service wired to the given store, logger, and optional pluginapi client.
@@ -136,7 +146,7 @@ func storeAppError(where string, err error) *mmmodel.AppError {
 		case store.ReasonSubtreeMaxDepthExceeded:
 			return mmmodel.NewAppError(where, "app.page.subtree_max_depth_exceeded.app_error", map[string]any{"MaxDepth": limitErr.Limit}, "", http.StatusBadRequest).Wrap(err)
 		case store.ReasonDraftQuotaExceeded:
-			return mmmodel.NewAppError(where, "app.page_draft.create.quota_exceeded.app_error", nil, "", http.StatusTooManyRequests).Wrap(err)
+			return mmmodel.NewAppError(where, "app.page_draft.quota_exceeded.app_error", nil, "", http.StatusTooManyRequests).Wrap(err)
 		}
 		return mmmodel.NewAppError(where, "app.store.too_large.app_error", map[string]any{"Limit": limitErr.Limit}, "", http.StatusUnprocessableEntity).Wrap(err)
 	default:

@@ -23,7 +23,7 @@ func docWith(text string) string {
 }
 
 // publishNewPage creates a new-page draft, autosaves the given body, and publishes it, returning
-// the live page. It asserts the reserved draft id is preserved through publish (plan §5).
+// the live page. It asserts the reserved draft id is preserved through publish.
 func publishNewPage(t *testing.T, h *testHarness, spaceID, userID, title, bodyText string) *model.Page {
 	t.Helper()
 	draft, appErr := h.svc.CreateSpaceDraft(userID, spaceID, title, "")
@@ -78,6 +78,36 @@ func TestPublishEmptyDraftBodyDoesNotWipePage(t *testing.T) {
 	republished, _, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
 	require.Nil(t, appErr)
 	require.Contains(t, republished.Body, "ORIGINAL", "publishing a title-only edit must preserve the page body")
+}
+
+// TestPublishNoOpDraftDiscardsAndReturnsExistingPage verifies that publishing a draft that carries
+// no content change — only the optimistic-lock baseline prop, no Title, no Body — is treated as a
+// discard rather than a no-op page write: the draft is deleted, the existing page comes back
+// unchanged, and wasCreated is false.
+func TestPublishNoOpDraftDiscardsAndReturnsExistingPage(t *testing.T) {
+	h := openTestService(t)
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
+	userID := mmmodel.NewId()
+
+	page := publishNewPage(t, h, space.Id, userID, "Doc", "original")
+
+	// Start an edit session whose only autosave carries the baseline prop — no Title, no Body.
+	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
+		UserId: userID, SpaceId: space.Id, PageId: page.Id,
+		Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(page.EditAt)},
+	}, nil, nil, "")
+	require.Nil(t, appErr)
+
+	result, wasCreated, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
+	require.Nil(t, appErr)
+	require.False(t, wasCreated, "a no-content publish must not report a creation")
+	require.Equal(t, page.Title, result.Title, "the page's title must be unchanged")
+	require.Contains(t, result.Body, "original", "the page's body must be unchanged")
+
+	// The draft was consumed: it was converted into a discard rather than left in place.
+	_, appErr = h.svc.GetPageDraft(userID, space.Id, page.Id)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusNotFound, appErr.StatusCode)
 }
 
 func TestPublishRejectsMissingBaselineOnEdit(t *testing.T) {
@@ -188,9 +218,9 @@ func TestGetPageActiveEditorsRejectsWrongSpace(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, appErr.StatusCode)
 
 	// Through its own space it resolves (empty set — no active drafts).
-	editors, appErr := h.svc.GetPageActiveEditors(page.Id, spaceA.Id)
+	snapshot, appErr := h.svc.GetPageActiveEditors(page.Id, spaceA.Id)
 	require.Nil(t, appErr)
-	require.Empty(t, editors)
+	require.Empty(t, snapshot.ActiveEditors)
 }
 
 func TestActiveEditorsSurfacesHeartbeat(t *testing.T) {
@@ -207,9 +237,11 @@ func TestActiveEditorsSurfacesHeartbeat(t *testing.T) {
 	}, nil, nil, "")
 	require.Nil(t, appErr)
 
-	editors, appErr := h.svc.GetPageActiveEditors(page.Id, space.Id)
+	snapshot, appErr := h.svc.GetPageActiveEditors(page.Id, space.Id)
 	require.Nil(t, appErr)
-	require.Contains(t, editors, userID)
+	require.Contains(t, snapshot.ActiveEditors, userID)
+	require.Positive(t, snapshot.AsOf)
+	require.Equal(t, int64(5*60*1000), snapshot.ActiveTimeoutMs)
 }
 
 func TestPublishSetsLastModifiedBy(t *testing.T) {
@@ -718,10 +750,13 @@ func TestPublishNewPageRejectsCrossSpaceParent(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// Publishing must reject: the parent lives in a different space than the draft's space.
+	// Publishing must reject: the parent lives in a different space than the draft's space. The guard
+	// collapses "cross-space" and "not a live page" into a single parent_unpublished 409 so the
+	// response can't be used to probe page ids in spaces the caller cannot read.
 	_, _, appErr := h.svc.PublishPageDraft(userID, spaceB.Id, pageID, false)
 	require.NotNil(t, appErr)
-	require.Equal(t, http.StatusBadRequest, appErr.StatusCode, "cross-space parent must be rejected: %v", appErr)
+	require.Equal(t, http.StatusConflict, appErr.StatusCode, "cross-space parent must be rejected: %v", appErr)
+	require.Equal(t, "app.page_draft.publish.parent_unpublished.app_error", appErr.Id)
 }
 
 func TestGetPageActiveEditorsRejectsInvalidPageID(t *testing.T) {

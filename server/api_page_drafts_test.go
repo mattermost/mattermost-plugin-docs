@@ -36,7 +36,7 @@ func TestHandler_DraftLifecycle(t *testing.T) {
 	pageID := draft.PageId
 	require.True(t, mmmodel.IsValidId(pageID))
 
-	rec = h.do(t, http.MethodPut, base+"/pages/"+pageID+"/draft", userID, map[string]any{
+	rec = h.do(t, http.MethodPatch, base+"/pages/"+pageID+"/draft", userID, map[string]any{
 		"title": "New Doc",
 		"body":  `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"hello"}]}]}`,
 	})
@@ -124,7 +124,7 @@ func TestHandler_UpdatePageDraftRequiresExistingDraft(t *testing.T) {
 	userID := mmmodel.NewId()
 
 	// No draft has been created for this page id — the PUT must be rejected.
-	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/pages/"+mmmodel.NewId()+"/draft", userID, map[string]any{
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+mmmodel.NewId()+"/draft", userID, map[string]any{
 		"title": "ghost",
 	})
 	require.Equal(t, http.StatusNotFound, rec.Code)
@@ -156,7 +156,7 @@ func TestHandler_UpdatePageDraftClearsParentWhenParentIdIsEmptyString(t *testing
 	require.Equal(t, parentDraft.PageId, childDraft.ParentId)
 
 	// PUT with parent_id omitted must preserve the existing parent.
-	rec = h.do(t, http.MethodPut, base+"/pages/"+childDraft.PageId+"/draft", userID, map[string]any{
+	rec = h.do(t, http.MethodPatch, base+"/pages/"+childDraft.PageId+"/draft", userID, map[string]any{
 		"title": "Child updated",
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -165,7 +165,7 @@ func TestHandler_UpdatePageDraftClearsParentWhenParentIdIsEmptyString(t *testing
 	require.Equal(t, parentDraft.PageId, saved.ParentId, "omitting parent_id must preserve the existing parent")
 
 	// PUT with parent_id: "" must clear the parent to root.
-	rec = h.do(t, http.MethodPut, base+"/pages/"+childDraft.PageId+"/draft", userID, map[string]any{
+	rec = h.do(t, http.MethodPatch, base+"/pages/"+childDraft.PageId+"/draft", userID, map[string]any{
 		"parent_id": "",
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -198,7 +198,7 @@ func TestHandler_UpdatePageDraftCreatesForExistingPage(t *testing.T) {
 	require.Equal(t, pageID, page.Id)
 
 	// Step 2: open an edit session — first PUT creates the draft for an existing page.
-	rec = h.do(t, http.MethodPut, base+"/pages/"+pageID+"/draft", userID, map[string]any{
+	rec = h.do(t, http.MethodPatch, base+"/pages/"+pageID+"/draft", userID, map[string]any{
 		"title": "Original",
 		"props": mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: page.EditAt},
 	})
@@ -210,7 +210,7 @@ func TestHandler_UpdatePageDraftCreatesForExistingPage(t *testing.T) {
 	require.True(t, hasBaseline, "draft must carry the original_page_edit_at baseline so publish can detect conflicts")
 
 	// Step 3: autosave new content.
-	rec = h.do(t, http.MethodPut, base+"/pages/"+pageID+"/draft", userID, map[string]any{
+	rec = h.do(t, http.MethodPatch, base+"/pages/"+pageID+"/draft", userID, map[string]any{
 		"title": "Edited",
 		"body":  `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"updated"}]}]}`,
 	})
@@ -253,13 +253,13 @@ func TestHandler_PublishConflict409(t *testing.T) {
 	editAt := page.EditAt
 
 	// User A and user B both open edit sessions against the same baseline.
-	rec = h.do(t, http.MethodPut, base+"/pages/"+pageID+"/draft", userA, map[string]any{
+	rec = h.do(t, http.MethodPatch, base+"/pages/"+pageID+"/draft", userA, map[string]any{
 		"title": "Edit by A",
 		"props": mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: editAt},
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	rec = h.do(t, http.MethodPut, base+"/pages/"+pageID+"/draft", userB, map[string]any{
+	rec = h.do(t, http.MethodPatch, base+"/pages/"+pageID+"/draft", userB, map[string]any{
 		"title": "Edit by B",
 		"props": mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: editAt},
 	})
@@ -338,18 +338,24 @@ func TestHandler_ActiveEditorsResponseBody(t *testing.T) {
 	var page model.Page
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &page))
 
-	// No edit draft open yet — active_editors must be an empty list, not null.
+	// No edit draft open yet — active_editors must be an empty list, not null. The response also
+	// carries as_of and active_timeout_ms, mirroring the page_presence_updated WS payload so a client
+	// resyncing over REST can reason about snapshot staleness the same way.
 	rec = h.do(t, http.MethodGet, base+"/pages/"+pageID+"/active-editors", userID, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 	var resp struct {
-		ActiveEditors []string `json:"active_editors"`
+		ActiveEditors   []string `json:"active_editors"`
+		AsOf            int64    `json:"as_of"`
+		ActiveTimeoutMs int64    `json:"active_timeout_ms"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.NotNil(t, resp.ActiveEditors)
 	require.Empty(t, resp.ActiveEditors)
+	require.Positive(t, resp.AsOf, "response must carry the snapshot timestamp")
+	require.Equal(t, int64(5*60*1000), resp.ActiveTimeoutMs, "response must carry the active-editor window")
 
 	// Open an edit draft — the user must now appear as an active editor.
-	rec = h.do(t, http.MethodPut, base+"/pages/"+pageID+"/draft", userID, map[string]any{
+	rec = h.do(t, http.MethodPatch, base+"/pages/"+pageID+"/draft", userID, map[string]any{
 		"title": "Presence Test",
 		"props": mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: page.EditAt},
 	})

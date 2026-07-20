@@ -154,8 +154,7 @@ func (d *Draft) IsValid() *mmmodel.AppError {
 
 // GetProps returns Props, or an empty map if Props is nil.
 func (d *Draft) GetProps() mmmodel.StringInterface {
-	d.Props = ensureProps(d.Props)
-	return d.Props
+	return ensureProps(d.Props)
 }
 
 // SanitizeProps strips any props key not on the recognized allowlist. Call on every write path to

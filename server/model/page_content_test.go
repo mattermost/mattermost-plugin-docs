@@ -128,6 +128,88 @@ func TestParseTipTapDocumentSanitizesURLs(t *testing.T) {
 	}
 }
 
+// TestParseTipTapDocumentRejectsForbiddenTypes pins the node/mark denylist — the strongest
+// defense in the sanitizer — by asserting that a document carrying a forbidden type is rejected
+// outright rather than stripped and accepted.
+func TestParseTipTapDocumentRejectsForbiddenTypes(t *testing.T) {
+	// Every forbidden node type, plus a couple of allowed ones as a control.
+	nodeCases := []struct {
+		nodeType string
+		rejected bool
+	}{
+		{"script", true},
+		{"iframe", true},
+		{"embed", true},
+		{"object", true},
+		{"noscript", true},
+		{"template", true},
+		{"style", true},
+		{"link", true},
+		{"svg", true},
+		{"math", true},
+		{"animate", true},
+		{"animatetransform", true},
+		{"foreignobject", true},
+		{"maction", true},
+		{"SCRIPT", true}, // denylist is case-insensitive
+		{"IFrame", true},
+		{"paragraph", false}, // control: allowed
+	}
+	for _, tc := range nodeCases {
+		t.Run("node type "+tc.nodeType, func(t *testing.T) {
+			raw := map[string]any{
+				"type":    "doc",
+				"content": []any{map[string]any{"type": tc.nodeType}},
+			}
+			b, err := json.Marshal(raw)
+			require.NoError(t, err)
+			_, err = model.ParseTipTapDocument(string(b))
+			if tc.rejected {
+				require.Error(t, err, "forbidden node type %q must be rejected", tc.nodeType)
+			} else {
+				require.NoError(t, err, "allowed node type %q must parse", tc.nodeType)
+			}
+		})
+	}
+
+	// Forbidden mark types on an otherwise-valid text node. "link" is intentionally absent — it is a
+	// valid mark whose href is sanitized rather than blocked (see TestParseTipTapDocumentSanitizesURLs).
+	markCases := []struct {
+		markType string
+		rejected bool
+	}{
+		{"script", true},
+		{"iframe", true},
+		{"style", true},
+		{"svg", true},
+		{"foreignobject", true},
+		{"MAction", true}, // case-insensitive
+		{"link", false},   // control: allowed as a mark
+		{"bold", false},   // control: ordinary formatting mark
+		{"", true},        // a mark with an empty type is rejected, matching node-type strictness
+	}
+	for _, tc := range markCases {
+		t.Run("mark type "+tc.markType, func(t *testing.T) {
+			raw := map[string]any{
+				"type": "doc",
+				"content": []any{map[string]any{
+					"type":  "text",
+					"text":  "x",
+					"marks": []any{map[string]any{"type": tc.markType}},
+				}},
+			}
+			b, err := json.Marshal(raw)
+			require.NoError(t, err)
+			_, err = model.ParseTipTapDocument(string(b))
+			if tc.rejected {
+				require.Error(t, err, "forbidden mark type %q must be rejected", tc.markType)
+			} else {
+				require.NoError(t, err, "allowed mark type %q must parse", tc.markType)
+			}
+		})
+	}
+}
+
 func TestParseTipTapDocumentRejectsNullNodes(t *testing.T) {
 	t.Run("null top-level content node", func(t *testing.T) {
 		_, err := model.ParseTipTapDocument(`{"type":"doc","content":[null]}`)
@@ -398,6 +480,38 @@ func TestParseTipTapDocumentStripsAdditionalDangerousAttrs(t *testing.T) {
 	require.NotContains(t, attrs, "dynsrc")
 	require.NotContains(t, attrs, "lowsrc")
 	require.Equal(t, "safe", attrs["title"])
+}
+
+// buildTipTapContentJSON returns a TipTap document JSON string whose top-level content array holds
+// n flat sibling paragraph nodes, built without any nesting so the node count equals n exactly.
+func buildTipTapContentJSON(n int) string {
+	var b strings.Builder
+	b.WriteString(`{"type":"doc","content":[`)
+	for i := range n {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"type":"paragraph"}`)
+	}
+	b.WriteString(`]}`)
+	return b.String()
+}
+
+func TestParseTipTapDocumentRejectsTooManyNodes(t *testing.T) {
+	// Mirrors the maxTipTapNodes guard in sanitizeTipTapDocument (server/model/page_content.go).
+	const nodeLimit = 50_000
+
+	t.Run("node count at the limit is accepted", func(t *testing.T) {
+		doc, err := model.ParseTipTapDocument(buildTipTapContentJSON(nodeLimit))
+		require.NoError(t, err)
+		require.Len(t, doc.Content, nodeLimit)
+	})
+
+	t.Run("node count exceeding the limit is rejected", func(t *testing.T) {
+		_, err := model.ParseTipTapDocument(buildTipTapContentJSON(nodeLimit + 1))
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "exceeds the maximum of 50000 nodes")
+	})
 }
 
 func TestBuildSearchText(t *testing.T) {

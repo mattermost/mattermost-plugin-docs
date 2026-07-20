@@ -1021,9 +1021,9 @@ func TestDeletePage(t *testing.T) {
 			d.Props = mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: created.EditAt}
 			return d
 		}
-		_, err = s.UpsertDraft(withBaseline(userID), nil, nil)
+		_, _, err = s.UpsertDraft(withBaseline(userID), nil, nil)
 		require.NoError(t, err)
-		_, err = s.UpsertDraft(withBaseline(otherUserID), nil, nil)
+		_, _, err = s.UpsertDraft(withBaseline(otherUserID), nil, nil)
 		require.NoError(t, err)
 
 		require.NoError(t, deletePageErr(s, created.Id, created.SpaceId, userID))
@@ -1065,17 +1065,26 @@ func TestDeletePage(t *testing.T) {
 		// New-page draft whose pending parent is the published page.
 		draftPageID := mmmodel.NewId()
 		parentID := parent.Id
-		saved, err := s.UpsertDraft(newDraft(userID, space.Id, draftPageID, ""), &parentID, nil)
+		_, _, err = s.UpsertDraft(newDraft(userID, space.Id, draftPageID, ""), &parentID, nil)
 		require.NoError(t, err)
-		before := saved.UpdateAt
+
+		// Force the draft's stored UpdateAt ahead of wall clock, so a plain SET UpdateAt=now would move
+		// it backward. Only the GREATEST(now, UpdateAt+1) bump keeps it strictly advancing — a
+		// wall-clock-only reparent would fail the assertion below, which is what makes this a real guard.
+		future := mmmodel.GetMillis() + 60*60*1000
+		_, err = s.ExecBuilderForTest(s.QueryBuilderForTest().
+			Update("DOCS_Draft").
+			Set("UpdateAt", future).
+			Where(sq.Eq{"UserId": userID, "PageId": draftPageID}))
+		require.NoError(t, err)
 
 		// Deleting the parent triggers reparentDraftsForPage on this draft.
 		require.NoError(t, deletePageErr(s, parent.Id, space.Id, userID))
 
 		after, err := s.GetDraft(userID, draftPageID)
 		require.NoError(t, err)
-		require.Greater(t, after.UpdateAt, before,
-			"reparent must strictly advance UpdateAt so a stale publish CAS cannot match the reparented token")
+		require.Equal(t, future+1, after.UpdateAt,
+			"reparent must strictly advance UpdateAt to stored+1 so a stale publish CAS cannot match the reparented token")
 	})
 
 	t.Run("missing page returns not-found", func(t *testing.T) {
@@ -1651,7 +1660,7 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, spaceErr)
 		spaceID := space.Id
 
-		saved, err := s.UpsertDraft(newDraft(userID, spaceID, pageID, ""), nil, nil)
+		saved, _, err := s.UpsertDraft(newDraft(userID, spaceID, pageID, ""), nil, nil)
 		require.NoError(t, err)
 		require.NotZero(t, saved.CreateAt)
 
@@ -1669,13 +1678,13 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, spaceErr)
 		spaceID := space.Id
 
-		first, err := s.UpsertDraft(newDraft(userID, spaceID, pageID, ""), nil, nil)
+		first, _, err := s.UpsertDraft(newDraft(userID, spaceID, pageID, ""), nil, nil)
 		require.NoError(t, err)
 
 		second := newDraft(userID, spaceID, pageID, "")
 		second.CreateAt = first.CreateAt
 		second.Title = "Updated"
-		_, err = s.UpsertDraft(second, nil, nil)
+		_, _, err = s.UpsertDraft(second, nil, nil)
 		require.NoError(t, err)
 
 		got, err := s.GetDraft(userID, pageID)
@@ -1694,7 +1703,7 @@ func TestDraft(t *testing.T) {
 		full.Title = "Original title"
 		full.Body = `{"type":"doc","content":[{"type":"paragraph"}]}`
 		full.Props = mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(1234)}
-		stored, err := s.UpsertDraft(full, nil, nil)
+		stored, _, err := s.UpsertDraft(full, nil, nil)
 		require.NoError(t, err)
 
 		// A body-only heartbeat: no title, no props. Neither may be wiped.
@@ -1702,7 +1711,7 @@ func TestDraft(t *testing.T) {
 		bodyOnly.Title = ""
 		bodyOnly.Body = `{"type":"doc","content":[{"type":"paragraph"},{"type":"paragraph"}]}`
 		bodyOnly.Props = nil
-		saved, err := s.UpsertDraft(bodyOnly, nil, nil)
+		saved, _, err := s.UpsertDraft(bodyOnly, nil, nil)
 		require.NoError(t, err)
 		require.Equal(t, "Original title", saved.Title, "an omitted title must not wipe the stored one")
 		require.Equal(t, bodyOnly.Body, saved.Body, "the sent body must be written")
@@ -1714,7 +1723,7 @@ func TestDraft(t *testing.T) {
 		titleOnly := newDraft(userID, space.Id, pageID, "")
 		titleOnly.Title = "Renamed"
 		titleOnly.Body = ""
-		saved, err = s.UpsertDraft(titleOnly, nil, nil)
+		saved, _, err = s.UpsertDraft(titleOnly, nil, nil)
 		require.NoError(t, err)
 		require.Equal(t, "Renamed", saved.Title)
 		require.Equal(t, bodyOnly.Body, saved.Body, "an omitted body must not wipe the stored one")
@@ -1728,9 +1737,9 @@ func TestDraft(t *testing.T) {
 		spaceID := space.Id
 		userA, userB := mmmodel.NewId(), mmmodel.NewId()
 
-		_, err := s.UpsertDraft(newDraft(userA, spaceID, pageID, ""), nil, nil)
+		_, _, err := s.UpsertDraft(newDraft(userA, spaceID, pageID, ""), nil, nil)
 		require.NoError(t, err)
-		_, err = s.UpsertDraft(newDraft(userB, spaceID, pageID, ""), nil, nil)
+		_, _, err = s.UpsertDraft(newDraft(userB, spaceID, pageID, ""), nil, nil)
 		require.NoError(t, err)
 
 		gotA, err := s.GetDraft(userA, pageID)
@@ -1748,7 +1757,7 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, spaceErr)
 		spaceID := space.Id
 
-		_, err := s.UpsertDraft(newDraft(userID, spaceID, pageID, ""), nil, nil)
+		_, _, err := s.UpsertDraft(newDraft(userID, spaceID, pageID, ""), nil, nil)
 		require.NoError(t, err)
 
 		require.NoError(t, s.DeleteDraft(userID, pageID))
@@ -1775,9 +1784,9 @@ func TestDraft(t *testing.T) {
 		space, err := s.CreateSpace(newSpace(mmmodel.NewId()))
 		require.NoError(t, err)
 
-		_, err = s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), ""), nil, nil)
+		_, _, err = s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), ""), nil, nil)
 		require.NoError(t, err)
-		second, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), ""), nil, nil)
+		second, _, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), ""), nil, nil)
 		require.NoError(t, err)
 
 		drafts, err := s.GetDraftsForSpace(userID, space.Id, 0, testDraftListLimit)
@@ -1792,7 +1801,7 @@ func TestDraft(t *testing.T) {
 		space, err := s.CreateSpace(newSpace(mmmodel.NewId()))
 		require.NoError(t, err)
 
-		draft, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), ""), nil, nil)
+		draft, _, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), ""), nil, nil)
 		require.NoError(t, err)
 
 		require.NoError(t, s.DeleteSpace(space.Id))
@@ -1853,7 +1862,7 @@ func TestDraft(t *testing.T) {
 		pageInB, err := s.CreatePage(newPage(spaceB.Id, spaceB.ChannelId, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 
-		_, err = s.UpsertDraft(newDraft(userID, spaceA.Id, pageInB.Id, ""), nil, nil)
+		_, _, err = s.UpsertDraft(newDraft(userID, spaceA.Id, pageInB.Id, ""), nil, nil)
 		require.True(t, store.IsErrInvalidInput(err), "expected invalid input for a cross-space page, got %v", err)
 	})
 
@@ -1869,7 +1878,7 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, err)
 		dLive := newDraft(userID, space.Id, live.Id, "")
 		dLive.Props = mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: live.EditAt}
-		_, err = s.UpsertDraft(dLive, nil, nil)
+		_, _, err = s.UpsertDraft(dLive, nil, nil)
 		require.NoError(t, err)
 
 		// A draft whose page is soft-deleted is excluded.
@@ -1877,7 +1886,7 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, err)
 		dDeleted := newDraft(userID, space.Id, deleted.Id, "")
 		dDeleted.Props = mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: deleted.EditAt}
-		_, err = s.UpsertDraft(dDeleted, nil, nil)
+		_, _, err = s.UpsertDraft(dDeleted, nil, nil)
 		require.NoError(t, err)
 		require.NoError(t, deletePageErr(s, deleted.Id, deleted.SpaceId, userID))
 
@@ -1903,7 +1912,7 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, err)
 		dSnap := newDraft(userID, space.Id, snap.Id, "")
 		dSnap.Props = mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: snap.EditAt}
-		_, err = s.UpsertDraft(dSnap, nil, nil)
+		_, _, err = s.UpsertDraft(dSnap, nil, nil)
 		require.NoError(t, err)
 		_, rawErr := s.ExecBuilderForTest(s.QueryBuilderForTest().
 			Update("DOCS_Page").
@@ -1929,7 +1938,7 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, deletePageErr(s, page.Id, page.SpaceId, userID))
 
 		// An autosave landing after the page was deleted must not recreate a draft for it.
-		_, err = s.UpsertDraft(newDraft(userID, space.Id, page.Id, ""), nil, nil)
+		_, _, err = s.UpsertDraft(newDraft(userID, space.Id, page.Id, ""), nil, nil)
 		require.True(t, store.IsErrInvalidInput(err), "expected invalid input for a deleted page, got %v", err)
 	})
 
@@ -1939,7 +1948,7 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, s.DeleteSpace(space.Id))
 
-		_, err = s.UpsertDraft(newDraft(mmmodel.NewId(), space.Id, mmmodel.NewId(), ""), nil, nil)
+		_, _, err = s.UpsertDraft(newDraft(mmmodel.NewId(), space.Id, mmmodel.NewId(), ""), nil, nil)
 		require.True(t, store.IsErrNotFound(err), "expected not-found for a deleted space, got %v", err)
 	})
 
@@ -1954,7 +1963,7 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, err)
 
 		parentID := parent.Id
-		saved, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), parentID), &parentID, nil)
+		saved, _, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), parentID), &parentID, nil)
 		require.NoError(t, err)
 		require.Equal(t, parent.Id, saved.ParentId)
 	})
@@ -1965,7 +1974,7 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, err)
 
 		missingParentID := mmmodel.NewId()
-		_, err = s.UpsertDraft(newDraft(mmmodel.NewId(), space.Id, mmmodel.NewId(), missingParentID), &missingParentID, nil)
+		_, _, err = s.UpsertDraft(newDraft(mmmodel.NewId(), space.Id, mmmodel.NewId(), missingParentID), &missingParentID, nil)
 		require.True(t, store.IsErrInvalidInput(err), "expected invalid input for a missing parent, got %v", err)
 	})
 
@@ -1981,7 +1990,7 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, deletePageErr(s, parent.Id, parent.SpaceId, userID))
 
 		parentID := parent.Id
-		_, err = s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), parentID), &parentID, nil)
+		_, _, err = s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), parentID), &parentID, nil)
 		require.True(t, store.IsErrInvalidInput(err), "expected invalid input for a deleted parent, got %v", err)
 	})
 
@@ -1998,7 +2007,7 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, err)
 
 		parentID := parentInB.Id
-		_, err = s.UpsertDraft(newDraft(userID, spaceA.Id, mmmodel.NewId(), parentID), &parentID, nil)
+		_, _, err = s.UpsertDraft(newDraft(userID, spaceA.Id, mmmodel.NewId(), parentID), &parentID, nil)
 		require.True(t, store.IsErrInvalidInput(err), "expected invalid input for a cross-space parent, got %v", err)
 	})
 
@@ -2008,11 +2017,11 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, err)
 		userID := mmmodel.NewId()
 
-		parentDraft, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), ""), nil, nil)
+		parentDraft, _, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), ""), nil, nil)
 		require.NoError(t, err)
 
 		parentPageID := parentDraft.PageId
-		saved, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), parentPageID), &parentPageID, nil)
+		saved, _, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), parentPageID), &parentPageID, nil)
 		require.NoError(t, err)
 		require.Equal(t, parentDraft.PageId, saved.ParentId)
 	})
@@ -2023,12 +2032,68 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, err)
 		userA, userB := mmmodel.NewId(), mmmodel.NewId()
 
-		otherDraft, err := s.UpsertDraft(newDraft(userA, space.Id, mmmodel.NewId(), ""), nil, nil)
+		otherDraft, _, err := s.UpsertDraft(newDraft(userA, space.Id, mmmodel.NewId(), ""), nil, nil)
 		require.NoError(t, err)
 
 		otherPageID := otherDraft.PageId
-		_, err = s.UpsertDraft(newDraft(userB, space.Id, mmmodel.NewId(), otherPageID), &otherPageID, nil)
+		_, _, err = s.UpsertDraft(newDraft(userB, space.Id, mmmodel.NewId(), otherPageID), &otherPageID, nil)
 		require.True(t, store.IsErrInvalidInput(err), "expected invalid input for another user's draft parent, got %v", err)
+	})
+
+	// TestDraft/"upsert rejects a draft whose parent chain cycles back to itself" exercises
+	// checkNoDraftCycle's cycle branch: a root new-page draft, a second draft parented under it,
+	// then re-parenting the root under the second draft closes the loop root -> child -> root.
+	t.Run("upsert rejects a draft whose parent chain cycles back to itself", func(t *testing.T) {
+		s := openTestDB(t)
+		space, err := s.CreateSpace(newSpace(mmmodel.NewId()))
+		require.NoError(t, err)
+		userID := mmmodel.NewId()
+
+		rootDraft, _, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), ""), nil, nil)
+		require.NoError(t, err)
+
+		rootPageID := rootDraft.PageId
+		childDraft, _, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), rootPageID), &rootPageID, nil)
+		require.NoError(t, err)
+
+		childPageID := childDraft.PageId
+		_, _, err = s.UpsertDraft(newDraft(userID, space.Id, rootDraft.PageId, childPageID), &childPageID, nil)
+		require.Error(t, err)
+		var inv *store.ErrInvalidInput
+		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
+		require.Equal(t, store.ReasonDraftCycle, inv.Reason)
+	})
+
+	// TestDraft/"upsert rejects a draft whose parent chain exceeds the max depth" exercises
+	// checkNoDraftCycle's too-deep branch. Each draft added to the chain is itself parent-chain
+	// validated, so a chain of exactly DraftCycleCheckMaxDepth new-page drafts is the deepest one
+	// that can be built without tripping the cap; a further draft parented under the deepest one
+	// is rejected as too deep.
+	t.Run("upsert rejects a draft whose parent chain exceeds the max depth", func(t *testing.T) {
+		s := openTestDB(t)
+		space, err := s.CreateSpace(newSpace(mmmodel.NewId()))
+		require.NoError(t, err)
+		userID := mmmodel.NewId()
+
+		parentID := ""
+		for range store.DraftCycleCheckMaxDepth {
+			pageID := mmmodel.NewId()
+			var parentParam *string
+			if parentID != "" {
+				p := parentID
+				parentParam = &p
+			}
+			_, _, err = s.UpsertDraft(newDraft(userID, space.Id, pageID, parentID), parentParam, nil)
+			require.NoError(t, err)
+			parentID = pageID
+		}
+
+		deepestParentID := parentID
+		_, _, err = s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), deepestParentID), &deepestParentID, nil)
+		require.Error(t, err)
+		var inv *store.ErrInvalidInput
+		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
+		require.Equal(t, store.ReasonDraftTooDeep, inv.Reason)
 	})
 
 	t.Run("drafts for space is scoped to the user", func(t *testing.T) {
@@ -2037,9 +2102,9 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, err)
 		userA, userB := mmmodel.NewId(), mmmodel.NewId()
 
-		_, err = s.UpsertDraft(newDraft(userA, space.Id, mmmodel.NewId(), ""), nil, nil)
+		_, _, err = s.UpsertDraft(newDraft(userA, space.Id, mmmodel.NewId(), ""), nil, nil)
 		require.NoError(t, err)
-		_, err = s.UpsertDraft(newDraft(userB, space.Id, mmmodel.NewId(), ""), nil, nil)
+		_, _, err = s.UpsertDraft(newDraft(userB, space.Id, mmmodel.NewId(), ""), nil, nil)
 		require.NoError(t, err)
 
 		drafts, err := s.GetDraftsForSpace(userA, space.Id, 0, testDraftListLimit)
@@ -2059,7 +2124,7 @@ func TestDraft(t *testing.T) {
 		d.Body = `{"type":"doc","content":[{"type":"paragraph"}]}`
 		d.FileIds = mmmodel.StringArray{mmmodel.NewId(), mmmodel.NewId()}
 		d.Props = mmmodel.StringInterface{"k": float64(1700000000123)}
-		_, err := s.UpsertDraft(d, nil, &d.FileIds)
+		_, _, err := s.UpsertDraft(d, nil, &d.FileIds)
 		require.NoError(t, err)
 
 		got, err := s.GetDraft(userID, pageID)
@@ -2076,7 +2141,7 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, spaceErr)
 		spaceID := space.Id
 
-		_, err := s.UpsertDraft(newDraft(userID, spaceID, pageID, ""), nil, nil)
+		_, _, err := s.UpsertDraft(newDraft(userID, spaceID, pageID, ""), nil, nil)
 		require.NoError(t, err)
 
 		got, err := s.GetDraft(userID, pageID)
@@ -2099,13 +2164,13 @@ func TestDraft(t *testing.T) {
 		require.NoError(t, err)
 		firstParent, secondParent := firstPage.Id, secondPage.Id
 
-		_, err = s.UpsertDraft(newDraft(userID, spaceID, pageID, firstParent), &firstParent, nil)
+		_, _, err = s.UpsertDraft(newDraft(userID, spaceID, pageID, firstParent), &firstParent, nil)
 		require.NoError(t, err)
 		got, err := s.GetDraft(userID, pageID)
 		require.NoError(t, err)
 		require.Equal(t, firstParent, got.ParentId)
 
-		_, err = s.UpsertDraft(newDraft(userID, spaceID, pageID, secondParent), &secondParent, nil)
+		_, _, err = s.UpsertDraft(newDraft(userID, spaceID, pageID, secondParent), &secondParent, nil)
 		require.NoError(t, err)
 		got, err = s.GetDraft(userID, pageID)
 		require.NoError(t, err)
@@ -2122,7 +2187,7 @@ func TestDraft(t *testing.T) {
 		d := newDraft(userID, spaceID, pageID, "")
 		d.Title = "Title Only"
 		d.Body = ""
-		_, err := s.UpsertDraft(d, nil, nil)
+		_, _, err := s.UpsertDraft(d, nil, nil)
 		require.NoError(t, err)
 
 		got, err := s.GetDraft(userID, pageID)
@@ -2139,11 +2204,11 @@ func TestDraft(t *testing.T) {
 		spaceB, err := s.CreateSpace(newSpace(mmmodel.NewId()))
 		require.NoError(t, err)
 
-		_, err = s.UpsertDraft(newDraft(userID, spaceA.Id, mmmodel.NewId(), ""), nil, nil)
+		_, _, err = s.UpsertDraft(newDraft(userID, spaceA.Id, mmmodel.NewId(), ""), nil, nil)
 		require.NoError(t, err)
-		_, err = s.UpsertDraft(newDraft(userID, spaceA.Id, mmmodel.NewId(), ""), nil, nil)
+		_, _, err = s.UpsertDraft(newDraft(userID, spaceA.Id, mmmodel.NewId(), ""), nil, nil)
 		require.NoError(t, err)
-		_, err = s.UpsertDraft(newDraft(userID, spaceB.Id, mmmodel.NewId(), ""), nil, nil)
+		_, _, err = s.UpsertDraft(newDraft(userID, spaceB.Id, mmmodel.NewId(), ""), nil, nil)
 		require.NoError(t, err)
 
 		drafts, err := s.GetDraftsForSpace(userID, spaceA.Id, 0, testDraftListLimit)
@@ -2167,11 +2232,11 @@ func TestDraft(t *testing.T) {
 
 		// Upsert runs the full model IsValid, so a malformed (non-empty) id is rejected as
 		// invalid input.
-		_, err := s.UpsertDraft(newDraft("bad", valid, valid, ""), nil, nil)
+		_, _, err := s.UpsertDraft(newDraft("bad", valid, valid, ""), nil, nil)
 		require.True(t, store.IsErrInvalidInput(err), "upsert with bad user id, got %v", err)
 
 		// Upsert with nil draft must return ErrInvalidInput.
-		_, err = s.UpsertDraft(nil, nil, nil)
+		_, _, err = s.UpsertDraft(nil, nil, nil)
 		require.True(t, store.IsErrInvalidInput(err), "upsert nil draft, got %v", err)
 
 		// Get/Delete guard only against empty ids (matching the page/space store convention);
@@ -2227,7 +2292,7 @@ func TestDeletePageReparentsPendingDrafts(t *testing.T) {
 	// A new-page draft (its own page not yet created) pending as a child of parent.
 	newPageID := mmmodel.NewId()
 	parentID := parent.Id
-	_, err = s.UpsertDraft(newDraft(userID, space.Id, newPageID, parentID), &parentID, nil)
+	_, _, err = s.UpsertDraft(newDraft(userID, space.Id, newPageID, parentID), &parentID, nil)
 	require.NoError(t, err)
 
 	require.NoError(t, deletePageErr(s, parent.Id, parent.SpaceId, userID))
@@ -2457,7 +2522,7 @@ func TestGetActiveEditorsForPage(t *testing.T) {
 
 	pageID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	_, err = s.UpsertDraft(newDraft(userID, space.Id, pageID, ""), nil, nil)
+	_, _, err = s.UpsertDraft(newDraft(userID, space.Id, pageID, ""), nil, nil)
 	require.NoError(t, err)
 	now := mmmodel.GetMillis()
 
@@ -2484,7 +2549,7 @@ func TestGetActiveEditorsForPage(t *testing.T) {
 		require.NoError(t, err)
 		otherUser := mmmodel.NewId()
 		// Same (reserved) pageID, different space and user — an unpublished new-page draft.
-		_, err = s.UpsertDraft(newDraft(otherUser, otherSpace.Id, pageID, ""), nil, nil)
+		_, _, err = s.UpsertDraft(newDraft(otherUser, otherSpace.Id, pageID, ""), nil, nil)
 		require.NoError(t, err)
 
 		editors, err := s.GetPageActiveEditors(pageID, space.Id, mmmodel.GetMillis()-5*60*1000)
@@ -2514,9 +2579,9 @@ func TestGetActiveEditorsForPageMultipleEditorsOrderedByLastActiveAt(t *testing.
 	pageID := mmmodel.NewId()
 	userA, userB := mmmodel.NewId(), mmmodel.NewId()
 
-	_, err = s.UpsertDraft(newDraft(userA, space.Id, pageID, ""), nil, nil)
+	_, _, err = s.UpsertDraft(newDraft(userA, space.Id, pageID, ""), nil, nil)
 	require.NoError(t, err)
-	_, err = s.UpsertDraft(newDraft(userB, space.Id, pageID, ""), nil, nil)
+	_, _, err = s.UpsertDraft(newDraft(userB, space.Id, pageID, ""), nil, nil)
 	require.NoError(t, err)
 
 	// Push userA's LastActiveAt into the past so userB (more recent) should appear first.
@@ -2550,7 +2615,7 @@ func TestGetActiveEditorsForPageIgnoresMaintenanceWrites(t *testing.T) {
 	// A new-page draft pending under the parent, last actually edited well outside the window.
 	childPageID := mmmodel.NewId()
 	parentID := parent.Id
-	_, err = s.UpsertDraft(newDraft(userID, space.Id, childPageID, parentID), &parentID, nil)
+	_, _, err = s.UpsertDraft(newDraft(userID, space.Id, childPageID, parentID), &parentID, nil)
 	require.NoError(t, err)
 
 	stale := mmmodel.GetMillis() - 60*60*1000
@@ -2583,7 +2648,7 @@ func TestUpsertDraftBumpsUpdateAtMonotonically(t *testing.T) {
 	userID := mmmodel.NewId()
 	pageID := mmmodel.NewId()
 
-	_, err = s.UpsertDraft(newDraft(userID, space.Id, pageID, ""), nil, nil)
+	_, _, err = s.UpsertDraft(newDraft(userID, space.Id, pageID, ""), nil, nil)
 	require.NoError(t, err)
 
 	// Force the stored UpdateAt ahead of the next save's wall clock. Without the monotonic bump,
@@ -2595,7 +2660,7 @@ func TestUpsertDraftBumpsUpdateAtMonotonically(t *testing.T) {
 		Where(sq.Eq{"UserId": userID, "PageId": pageID}))
 	require.NoError(t, err)
 
-	saved, err := s.UpsertDraft(newDraft(userID, space.Id, pageID, ""), nil, nil)
+	saved, _, err := s.UpsertDraft(newDraft(userID, space.Id, pageID, ""), nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, future+1, saved.UpdateAt,
 		"UpdateAt must advance to stored+1 when the incoming timestamp is not already greater")
@@ -2608,7 +2673,7 @@ func TestDeleteDraftVersion(t *testing.T) {
 	userID := mmmodel.NewId()
 	pageID := mmmodel.NewId()
 
-	saved, err := s.UpsertDraft(newDraft(userID, space.Id, pageID, ""), nil, nil)
+	saved, _, err := s.UpsertDraft(newDraft(userID, space.Id, pageID, ""), nil, nil)
 	require.NoError(t, err)
 
 	t.Run("stale version deletes nothing and leaves the draft intact", func(t *testing.T) {
@@ -2646,7 +2711,7 @@ func TestPublishDraft(t *testing.T) {
 		userID := mmmodel.NewId()
 		pageID := mmmodel.NewId()
 
-		draft, err := s.UpsertDraft(newDraft(userID, space.Id, pageID, ""), nil, nil)
+		draft, _, err := s.UpsertDraft(newDraft(userID, space.Id, pageID, ""), nil, nil)
 		require.NoError(t, err)
 
 		page := &model.Page{Id: pageID, SpaceId: space.Id, Title: "Published", Body: `{"type":"doc","content":[]}`, UserId: userID}
@@ -2673,7 +2738,7 @@ func TestPublishDraft(t *testing.T) {
 		require.NoError(t, err)
 		d := newDraft(userID, space.Id, created.Id, "")
 		d.Props = mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: created.EditAt}
-		draft, err := s.UpsertDraft(d, nil, nil)
+		draft, _, err := s.UpsertDraft(d, nil, nil)
 		require.NoError(t, err)
 
 		edit := *created
@@ -2696,7 +2761,7 @@ func TestPublishDraft(t *testing.T) {
 		require.NoError(t, err)
 		d2 := newDraft(userID, space.Id, created.Id, "")
 		d2.Props = mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: created.EditAt}
-		draft, err := s.UpsertDraft(d2, nil, nil)
+		draft, _, err := s.UpsertDraft(d2, nil, nil)
 		require.NoError(t, err)
 
 		edit := *created
@@ -2724,14 +2789,14 @@ func TestPublishDraft(t *testing.T) {
 		require.NoError(t, err)
 		d3 := newDraft(userID, space.Id, created.Id, "")
 		d3.Props = mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: created.EditAt}
-		stale, err := s.UpsertDraft(d3, nil, nil)
+		stale, _, err := s.UpsertDraft(d3, nil, nil)
 		require.NoError(t, err)
 
 		// The user's editor autosaves again after the publish path read the draft.
 		newer := newDraft(userID, space.Id, created.Id, "")
 		newer.Body = `{"type":"doc","content":[{"type":"paragraph"}]}`
 		newer.Props = mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: created.EditAt}
-		newer, err = s.UpsertDraft(newer, nil, nil)
+		newer, _, err = s.UpsertDraft(newer, nil, nil)
 		require.NoError(t, err)
 		require.Greater(t, newer.UpdateAt, stale.UpdateAt, "the autosave must advance UpdateAt")
 

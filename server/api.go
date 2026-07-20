@@ -63,7 +63,7 @@ func (p *Plugin) initRouter() *mux.Router {
 	// Draft CRUD + publish.
 	api.HandleFunc("/spaces/{space_id}/drafts", p.handleCreateSpaceDraft).Methods(http.MethodPost)
 	api.HandleFunc("/spaces/{space_id}/drafts", p.handleGetPageDraftsForSpace).Methods(http.MethodGet)
-	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/draft", p.handleUpdatePageDraft).Methods(http.MethodPut)
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/draft", p.handleUpdatePageDraft).Methods(http.MethodPatch)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/draft", p.handleGetPageDraft).Methods(http.MethodGet)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/draft", p.handleDeletePageDraft).Methods(http.MethodDelete)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/draft/publish", p.handlePublishPageDraft).Methods(http.MethodPost)

@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	// maxDraftBodyBytes caps the autosave PUT, which carries the full document body. Body is JSON
+	// maxDraftBodyBytes caps the autosave request, which carries the full document body. Body is JSON
 	// nested inside the request JSON, so its transport form can grow far beyond its decoded size once
 	// quotes, backslashes, and control characters are escaped (worst case ~6x for all-control-char
 	// input). Size the transport cap for that worst case plus headroom for the title/props/file-ids
@@ -21,12 +21,13 @@ const (
 	maxDraftBodyBytes = 6*model.PageBodyMaxBytes + (64 << 10) // 64 KiB headroom
 )
 
-// handleUpdatePageDraft handles PUT /api/v1/spaces/{space_id}/pages/{page_id}/draft
-// It upserts the calling user's draft for the page. This PUT merges rather than replaces: an
-// omitted field means "unchanged", not "cleared" (autosave heartbeats carry only the fields the
-// editor touched). parent_id: null omits the field; parent_id: "" explicitly clears it.
+// handleUpdatePageDraft handles PATCH /api/v1/spaces/{space_id}/pages/{page_id}/draft
+// It upserts the calling user's draft for the page. PATCH is deliberate: the request merges rather
+// than replaces, so an omitted field means "unchanged", not "cleared" (autosave heartbeats carry
+// only the fields the editor touched). parent_id: null omits the field; parent_id: "" explicitly
+// clears it.
 //
-// For existing published pages, the first PUT creates the draft (open an edit session). The client
+// For existing published pages, the first request creates the draft (open an edit session). The client
 // must include original_page_edit_at in props — the page's EditAt at the moment the user opened
 // it — so a subsequent publish can detect a concurrent edit.
 //
@@ -150,7 +151,7 @@ func (p *Plugin) handleCreateSpaceDraft(w http.ResponseWriter, r *http.Request) 
 //
 // The optimistic-lock baseline for an edit-publish is not a field on this request: it travels with
 // the draft, captured once (as the original_page_edit_at prop) when editing began and carried by the
-// autosave PUTs. This differs from the per-request base_edit_at on handleUpdatePage (and
+// autosave requests. This differs from the per-request base_edit_at on handleUpdatePage (and
 // expected_update_at on handleMovePage) because a publish ships whatever the draft already holds
 // rather than re-supplying a freshly-read baseline.
 func (p *Plugin) handlePublishPageDraft(w http.ResponseWriter, r *http.Request) {

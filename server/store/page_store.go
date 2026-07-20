@@ -559,6 +559,13 @@ func (s *Store) RestorePage(pageID, spaceID, userID string, maxDepth int) (_ *mo
 // PageExistsInSpace reports whether pageID is a live page in spaceID, without fetching the
 // row — callers that only need to 404 on a missing page avoid hauling the page body.
 func (s *Store) PageExistsInSpace(pageID, spaceID string) (bool, error) {
+	return s.pageExistsInSpace(s.db, pageID, spaceID)
+}
+
+// pageExistsInSpace is PageExistsInSpace against an explicit executor, so callers inside a
+// transaction observe that transaction's own view (e.g. its uncommitted writes and row locks)
+// rather than reading through a separate pooled connection.
+func (s *Store) pageExistsInSpace(e sqlx.ExtContext, pageID, spaceID string) (bool, error) {
 	if pageID == "" {
 		return false, &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
 	}
@@ -571,7 +578,7 @@ func (s *Store) PageExistsInSpace(pageID, spaceID string) (bool, error) {
 		Where(sq.Eq{"Id": pageID, "SpaceId": spaceID}).
 		Where(liveNonSnapshotFilter(""))
 	var exists int
-	if err := s.getBuilder(s.db, &exists, query); err != nil {
+	if err := s.getBuilder(e, &exists, query); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
 		}

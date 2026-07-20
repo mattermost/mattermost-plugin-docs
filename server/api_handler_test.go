@@ -1098,7 +1098,7 @@ func TestHandler_SpaceMembershipRequired(t *testing.T) {
 		// Draft + presence handlers.
 		{http.MethodPost, "/api/v1/spaces/" + space.Id + "/drafts", map[string]any{"title": "D"}},
 		{http.MethodGet, "/api/v1/spaces/" + space.Id + "/drafts", nil},
-		{http.MethodPut, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/draft", map[string]any{"title": "D"}},
+		{http.MethodPatch, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/draft", map[string]any{"title": "D"}},
 		{http.MethodGet, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/draft", nil},
 		{http.MethodDelete, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/draft", nil},
 		{http.MethodPost, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/draft/publish", nil},

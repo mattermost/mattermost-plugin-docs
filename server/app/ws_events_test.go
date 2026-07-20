@@ -202,6 +202,7 @@ func TestServiceUpdatePageDraft_PublishesPresenceEvent(t *testing.T) {
 				payload["page_id"] == page.Id &&
 				payload["space_id"] == space.Id &&
 				payload["as_of"] != nil &&
+				payload["active_timeout_ms"] == int64(5*60*1000) &&
 				slices.Contains(editors, userID)
 		}),
 		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
@@ -272,6 +273,7 @@ func TestServicePublishPageDraft_PublishesUpdatedEvent(t *testing.T) {
 				payload["page_id"] == republished.Id &&
 				payload["space_id"] == space.Id &&
 				payload["as_of"] != nil &&
+				payload["active_timeout_ms"] == int64(5*60*1000) &&
 				len(editors) == 0
 		}),
 		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
@@ -306,6 +308,7 @@ func TestServiceDeletePageDraft_PublishesPresenceEvent(t *testing.T) {
 				payload["page_id"] == page.Id &&
 				payload["space_id"] == space.Id &&
 				payload["as_of"] != nil &&
+				payload["active_timeout_ms"] == int64(5*60*1000) &&
 				len(editors) == 0
 		}),
 		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
@@ -337,7 +340,8 @@ func TestServiceUpdatePageDraft_NewPageDraftPublishesToUserOnly(t *testing.T) {
 	// The broadcast must be user-scoped: only the author learns about their own unreleased page.
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_presence_updated",
 		mock.MatchedBy(func(payload map[string]any) bool {
-			return payload["page_id"] == draft.PageId && payload["space_id"] == space.Id
+			return payload["page_id"] == draft.PageId && payload["space_id"] == space.Id &&
+				payload["active_timeout_ms"] == int64(5*60*1000)
 		}),
 		&mmmodel.WebsocketBroadcast{UserId: userID})
 

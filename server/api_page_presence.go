@@ -22,13 +22,11 @@ func (p *Plugin) handleGetPageActiveEditors(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	editors, appErr := p.service.GetPageActiveEditors(pageID, spaceID)
+	snapshot, appErr := p.service.GetPageActiveEditors(pageID, spaceID)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, struct {
-		ActiveEditors []string `json:"active_editors"`
-	}{ActiveEditors: editors})
+	writeJSON(w, http.StatusOK, snapshot)
 }

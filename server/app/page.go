@@ -18,6 +18,14 @@ import (
 // store.MaxPageHierarchyDepth (50) is a separate, larger bound used by descendant/ancestor reads.
 const MaxPageDepth = 10
 
+// A draft chain publishes into a page chain of the same depth, so the store's draft-cycle bound
+// must equal MaxPageDepth. Either subtraction below is a negative constant if they drift, which
+// overflows uint and fails to compile — catching drift in both directions.
+const (
+	_ = uint(MaxPageDepth - store.DraftCycleCheckMaxDepth)
+	_ = uint(store.DraftCycleCheckMaxDepth - MaxPageDepth)
+)
+
 // CreatePage creates a new page in spaceID. ChannelId is derived from the space, not supplied by the caller.
 // The page ID is always server-generated; callers must not supply one.
 func (s *Service) CreatePage(spaceID, parentID, title, body, userID string) (*model.Page, *mmmodel.AppError) {

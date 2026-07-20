@@ -19,6 +19,10 @@ const (
 	EmptyTipTapJSON = `{"type":"doc","content":[]}`
 )
 
+// TipTapDocument is the parsed form of a TipTap editor document. Content is left as an untyped node
+// tree because the TipTap schema is open (editor extensions add node/mark types). Instances must be
+// produced by ParseTipTapDocument for the sanitization invariant to hold — a value built any other
+// way has not passed sanitizeTipTapDocument and must not be stored or rendered.
 type TipTapDocument struct {
 	Type    string           `json:"type"`
 	Content []map[string]any `json:"content"`
@@ -378,7 +382,10 @@ func sanitizeTipTapNode(node map[string]any, depth int) error {
 			// Sanitize both the mark's nested attrs and any dangerous/URL keys placed directly on
 			// the mark object (a non-standard shape a lenient renderer may read).
 			stripDangerousKeys(markNode)
-			markType, _ := markNode["type"].(string)
+			markType, ok := markNode["type"].(string)
+			if !ok || markType == "" {
+				return errors.New("content mark must have a non-empty type field")
+			}
 			if _, forbidden := forbiddenMarkTypes[strings.ToLower(markType)]; forbidden {
 				return errors.Errorf("content mark type %q is not allowed", markType)
 			}

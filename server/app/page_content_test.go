@@ -4,6 +4,7 @@
 package app
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -66,6 +67,18 @@ func TestValidateAndNormalizeContent(t *testing.T) {
 		require.NoError(t, err)
 		require.Contains(t, body, `"  indented line"`, "leading spaces must not be stripped from paragraph text")
 	})
+}
+
+// TestNormalizePageContentRejectsTooManyParagraphs verifies that a plain-text body exceeding
+// maxPlainTextParagraphs newlines is rejected with 400, rather than producing an oversized TipTap
+// document.
+func TestNormalizePageContentRejectsTooManyParagraphs(t *testing.T) {
+	body := strings.Repeat("x\n", maxPlainTextParagraphs+1)
+
+	_, _, appErr := normalizePageContent("test", body)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+	require.Contains(t, appErr.Error(), "too many paragraphs")
 }
 
 func TestNormalizePatchContent(t *testing.T) {
