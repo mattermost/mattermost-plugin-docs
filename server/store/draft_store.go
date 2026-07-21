@@ -27,7 +27,7 @@ const MaxDraftsPerUserPerSpace = 100
 const maxActiveEditorsPerPage = 100
 
 var draftSelectColumns = []string{
-	"UserId", "SpaceId", "PageId", "ParentId", "Title", "Body", "FileIds", "Props", "CreateAt", "UpdateAt", "LastActiveAt",
+	"UserId", "SpaceId", "PageId", "ParentId", "Title", "Body", "FileIds", "Props", "CreateAt", "UpdateAt", "LastActiveAt", "BaseEditAt",
 }
 
 // draftMetaColumns is the metadata column set for draft queries — Body omitted because it can be up to PageBodyMaxBytes per draft.
@@ -83,8 +83,8 @@ func (s *Store) reparentDraftsForPage(tx *sqlx.Tx, pageID, newParentID string, n
 
 // draftParentExistsTx reports whether userID has a draft for parentID in spaceID, under the
 // same visibility rule as GetDraft, reading within tx so it observes uncommitted state. It locks
-// the matched parent-draft row (FOR UPDATE OF d) so a concurrent DeleteDraft cannot remove the
-// parent between this check and the child-draft insert. Only the draft row is locked, since the
+// the matched parent-draft row (FOR UPDATE OF d) so a concurrent DeleteDraftReparenting cannot
+// remove the parent between this check and the child-draft insert. Only the draft row is locked, since the
 // liveness filter LEFT JOINs the nullable page side, which cannot be a FOR UPDATE target.
 func (s *Store) draftParentExistsTx(tx *sqlx.Tx, userID, spaceID, parentID string) (bool, error) {
 	builder := applyDraftLivenessFilter(
@@ -201,9 +201,9 @@ FROM chain`, model.MaxPageDepth, model.MaxPageDepth)
 //
 // An autosave may carry only the fields the editor changed, so on the update path an empty Title or
 // Body means "not sent", not "cleared", and the stored value is kept (a cleared document is
-// EmptyTipTapJSON, not ""). ParentId and FileIds do not follow this empty-means-not-sent rule: they
-// use explicit pointer intent (see the parentID/fileIDs paragraphs below), where a nil pointer — not
-// an empty value — means "not sent". Props are merged key-wise over the stored map.
+// EmptyTipTapJSON, not ""). ParentId, FileIds, and Props do not follow this empty-means-not-sent
+// rule: they use explicit pointer intent (see the parentID/fileIDs/props paragraphs below), where a
+// nil pointer — not an empty value — means "not sent".
 // CreateAt keeps the existing row's original value. UpdateAt is bumped strictly monotonically
 // (GREATEST(incoming, stored+1)), so it is a collision-free version token: publish CAS-deletes the
 // draft on this value, and two saves within the same millisecond can no longer share it. All of this
@@ -220,7 +220,13 @@ FROM chain`, model.MaxPageDepth, model.MaxPageDepth)
 // existing stored value", a pointer to an empty slice means "clear to no attachments", and a
 // pointer to a non-empty slice means "replace with these IDs". This mirrors parentID's
 // preserve/clear/set semantics.
-func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmodel.StringArray) (_ *model.Draft, pageWasLive bool, err error) {
+//
+// props encodes the write intent for the Props column: nil means "omitted — preserve the existing
+// stored map", and a non-nil pointer replaces the whole map with the pointed-to value (an empty map
+// clears all keys). This is a whole-value replace, not a key-wise merge, mirroring parentID/fileIDs.
+// The written value's serialized size must be validated by the caller (App layer): the struct's own
+// Props field — the only one IsValid checks — is not what gets written.
+func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmodel.StringArray, props *mmmodel.StringInterface) (_ *model.Draft, pageWasLive bool, err error) {
 	if draft == nil {
 		return nil, false, &ErrInvalidInput{Entity: "Draft", Field: "draft", Value: nil}
 	}
@@ -236,6 +242,18 @@ func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmod
 	var fileIDsParam any
 	if fileIDs != nil {
 		fileIDsParam = mmmodel.ArrayToJSON([]string(*fileIDs))
+	}
+
+	// propsParam follows the same nil/non-nil semantics: nil → SQL NULL (preserve on conflict),
+	// non-nil → the whole map (replace). A non-nil pointer to a nil map is normalized to an empty
+	// map so it serializes as JSONB '{}' (clear), never JSON null.
+	var propsParam any
+	if props != nil {
+		p := *props
+		if p == nil {
+			p = mmmodel.StringInterface{}
+		}
+		propsParam = p
 	}
 
 	draft.PreSave()
@@ -292,6 +310,15 @@ func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmod
 		if page.DeleteAt != 0 || page.OriginalId != "" || page.SpaceID != draft.SpaceId {
 			return nil, false, &ErrInvalidInput{Entity: "Draft", Field: "PageId", Value: draft.PageId}
 		}
+		// Establish-time baseline sanity check: on the establishing INSERT (no draft row yet), a
+		// baseline ahead of the live page is impossible — the client cannot have seen a version newer
+		// than the one that exists — so reject it as invalid input (400 via storeAppError). isExisting
+		// is authoritative here: lockLiveSpace's per-space FOR UPDATE serializes same-space upserts
+		// before it is read, so a concurrent establish cannot make it stale. The update path needs no
+		// guard — BaseEditAt is write-once, so the incoming value is ignored on conflict.
+		if !isExisting && draft.BaseEditAt > page.EditAt {
+			return nil, false, &ErrInvalidInput{Entity: "Draft", Field: "BaseEditAt", Value: draft.BaseEditAt}
+		}
 		// Refuse to resurrect a draft a concurrent publish already consumed. When this autosave's
 		// edit-session baseline is behind the page's current EditAt, the page advanced under it (a
 		// publish or another edit). A still-existing draft row may keep saving — the conflict is
@@ -300,9 +327,10 @@ func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmod
 		// page row FOR UPDATE serializes this with PublishDraft's own draft delete, so the existence
 		// check is stable within the transaction.
 		conflictReason := ""
-		if base, ok := draft.EditBaseline(); ok && page.EditAt > base {
+		base := draft.BaseEditAt
+		if base != 0 && page.EditAt > base {
 			conflictReason = ReasonConcurrentEdit
-		} else if !ok {
+		} else if base == 0 {
 			// New-page autosave: no optimistic-lock baseline was set. The page row now exists,
 			// which means a concurrent publish claimed this page id. If the draft no longer
 			// exists (publish deleted it), reject rather than resurrect it — a re-INSERT here
@@ -359,17 +387,17 @@ func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmod
 	builder := s.getQueryBuilder().
 		Insert("DOCS_Draft").
 		Columns(draftSelectColumns...).
-		Values(draft.UserId, draft.SpaceId, draft.PageId, sq.Expr("COALESCE(?::varchar(26), '')", parentIDParam), draft.Title, draft.Body, sq.Expr("COALESCE(?::text, '[]')", fileIDsParam), draft.GetProps(), draft.CreateAt, draft.UpdateAt, draft.LastActiveAt).
+		Values(draft.UserId, draft.SpaceId, draft.PageId, sq.Expr("COALESCE(?::varchar(26), '')", parentIDParam), draft.Title, draft.Body, sq.Expr("COALESCE(?::text, '[]')", fileIDsParam), sq.Expr("COALESCE(?::jsonb, '{}'::jsonb)", propsParam), draft.CreateAt, draft.UpdateAt, draft.LastActiveAt, draft.BaseEditAt).
 		Suffix(`ON CONFLICT (UserId, PageId) DO UPDATE SET
 			SpaceId = DOCS_Draft.SpaceId,
 			ParentId = CASE WHEN ?::varchar(26) IS NULL THEN DOCS_Draft.ParentId ELSE EXCLUDED.ParentId END,
 			Title = COALESCE(NULLIF(EXCLUDED.Title, ''), DOCS_Draft.Title),
 			Body = COALESCE(NULLIF(EXCLUDED.Body, ''), DOCS_Draft.Body),
 			FileIds = CASE WHEN ?::text IS NULL THEN DOCS_Draft.FileIds ELSE EXCLUDED.FileIds END,
-			Props = DOCS_Draft.Props || EXCLUDED.Props,
+			Props = CASE WHEN ?::jsonb IS NULL THEN DOCS_Draft.Props ELSE EXCLUDED.Props END,
 			UpdateAt = GREATEST(EXCLUDED.UpdateAt, DOCS_Draft.UpdateAt + 1),
 			LastActiveAt = GREATEST(EXCLUDED.LastActiveAt, DOCS_Draft.LastActiveAt)
-		RETURNING `+strings.Join(draftSelectColumns, ", "), parentIDParam, fileIDsParam)
+		RETURNING `+strings.Join(draftSelectColumns, ", "), parentIDParam, fileIDsParam, propsParam)
 
 	// Read the stored row back: the omitted-field preserve and the props merge happen in the
 	// statement above, so the returned row — not the caller's struct — is the saved draft.

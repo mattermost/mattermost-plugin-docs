@@ -59,7 +59,7 @@ func (s *Service) sweepPresenceBroadcastLast(now int64) {
 func (s *Service) getActiveEditors(pageID, spaceID string) ([]string, bool) {
 	editors, err := s.store.GetPageActiveEditors(pageID, spaceID, activeEditorSince())
 	if err != nil {
-		s.log.Warn("getActiveEditors: failed to query active editors; skipping broadcast",
+		s.log.Warn("failed to query active editors; skipping broadcast",
 			"page_id", pageID, "err", err)
 		return nil, false
 	}

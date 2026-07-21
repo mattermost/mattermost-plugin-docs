@@ -444,6 +444,45 @@ func TestParseTipTapDocumentDropsNonStringURLAttr(t *testing.T) {
 	require.NotContains(t, attrs, "href", "non-string URL attr must be dropped")
 }
 
+func TestParseTipTapDocumentNeutralizesBareArrayURLStrings(t *testing.T) {
+	// A dangerous scheme carried as a bare string inside an array attribute value — under a key an
+	// editor extension may define that is not one of the designated URL keys — has no attribute key
+	// to mark it a URL, so stripDangerousKeys does not reach it. The array walk must still neutralize
+	// the executable scheme while leaving legitimate colon-bearing strings (a timestamp, a ratio) and
+	// safe URLs untouched.
+	raw := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "customEmbed",
+				"attrs": map[string]any{
+					"sources": []any{"javascript:alert(1)", "vbscript:msgbox(1)", "http://ok.example", "12:30", "16:9"},
+					"nested":  []any{[]any{"javascript:alert(2)"}},
+				},
+			},
+		},
+	}
+	b, err := json.Marshal(raw)
+	require.NoError(t, err)
+	doc, err := model.ParseTipTapDocument(string(b))
+	require.NoError(t, err)
+
+	out := marshal(t, doc)
+	require.NotContains(t, out, "javascript:alert", "bare javascript: array element must be neutralized")
+	require.NotContains(t, out, "vbscript:", "bare vbscript: array element must be neutralized")
+	require.Contains(t, out, "http://ok.example", "a safe URL in the array must be preserved")
+	require.Contains(t, out, "12:30", "a non-URL colon-bearing string must be preserved")
+	require.Contains(t, out, "16:9", "a non-URL ratio string must be preserved")
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &parsed))
+	attrs := parsed["content"].([]any)[0].(map[string]any)["attrs"].(map[string]any)
+	sources := attrs["sources"].([]any)
+	require.Equal(t, "", sources[0], "javascript: element blanked in place, preserving array length")
+	require.Equal(t, "", sources[1], "vbscript: element blanked in place")
+	require.Equal(t, "http://ok.example", sources[2])
+}
+
 func TestParseTipTapDocumentRejectsTooDeep(t *testing.T) {
 	// A pathologically deep document is rejected rather than walked.
 	depth := 200

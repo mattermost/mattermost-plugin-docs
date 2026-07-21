@@ -174,9 +174,9 @@ func TestHandler_UpdatePageDraftClearsParentWhenParentIdIsEmptyString(t *testing
 }
 
 // TestHandler_UpdatePageDraftCreatesForExistingPage drives the existing-page edit flow: publish a
-// new-page draft to get a live page, then open an edit session by PUT .../draft with the page's
-// EditAt baseline in props. Verifies the draft is created, autosave updates it, publish succeeds
-// (edit path → 200), and the draft is gone afterwards.
+// new-page draft to get a live page, then open an edit session by PATCH .../draft with the page's
+// EditAt baseline in the top-level base_edit_at field. Verifies the draft is created, autosave
+// updates it, publish succeeds (edit path → 200), and the draft is gone afterwards.
 func TestHandler_UpdatePageDraftCreatesForExistingPage(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	channelID := mmmodel.NewId()
@@ -199,15 +199,21 @@ func TestHandler_UpdatePageDraftCreatesForExistingPage(t *testing.T) {
 
 	// Step 2: open an edit session — first PUT creates the draft for an existing page.
 	rec = h.do(t, http.MethodPatch, base+"/pages/"+pageID+"/draft", userID, map[string]any{
-		"title": "Original",
-		"props": mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: page.EditAt},
+		"title":        "Original",
+		"base_edit_at": page.EditAt,
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 	var editDraft model.Draft
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &editDraft))
 	require.Equal(t, pageID, editDraft.PageId)
-	_, hasBaseline := editDraft.EditBaseline()
-	require.True(t, hasBaseline, "draft must carry the original_page_edit_at baseline so publish can detect conflicts")
+	require.Equal(t, page.EditAt, editDraft.BaseEditAt, "draft must carry the base_edit_at baseline so publish can detect conflicts")
+
+	// GET must round-trip the same baseline.
+	rec = h.do(t, http.MethodGet, base+"/pages/"+pageID+"/draft", userID, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var fetched model.Draft
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &fetched))
+	require.Equal(t, page.EditAt, fetched.BaseEditAt, "GET must return the base_edit_at baseline that was set via PATCH")
 
 	// Step 3: autosave new content.
 	rec = h.do(t, http.MethodPatch, base+"/pages/"+pageID+"/draft", userID, map[string]any{
@@ -254,14 +260,14 @@ func TestHandler_PublishConflict409(t *testing.T) {
 
 	// User A and user B both open edit sessions against the same baseline.
 	rec = h.do(t, http.MethodPatch, base+"/pages/"+pageID+"/draft", userA, map[string]any{
-		"title": "Edit by A",
-		"props": mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: editAt},
+		"title":        "Edit by A",
+		"base_edit_at": editAt,
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	rec = h.do(t, http.MethodPatch, base+"/pages/"+pageID+"/draft", userB, map[string]any{
-		"title": "Edit by B",
-		"props": mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: editAt},
+		"title":        "Edit by B",
+		"base_edit_at": editAt,
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -356,8 +362,8 @@ func TestHandler_ActiveEditorsResponseBody(t *testing.T) {
 
 	// Open an edit draft — the user must now appear as an active editor.
 	rec = h.do(t, http.MethodPatch, base+"/pages/"+pageID+"/draft", userID, map[string]any{
-		"title": "Presence Test",
-		"props": mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: page.EditAt},
+		"title":        "Presence Test",
+		"base_edit_at": page.EditAt,
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -365,4 +371,104 @@ func TestHandler_ActiveEditorsResponseBody(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Contains(t, resp.ActiveEditors, userID, "user with an open edit draft must appear as an active editor")
+}
+
+// TestHandler_UpdatePageDraftPropsPointerIntent covers the props pointer-intent semantics over the
+// HTTP boundary: an absent props field preserves the stored map, an explicit null behaves the same
+// as absent, an empty object clears all keys, and a populated object replaces the whole map.
+func TestHandler_UpdatePageDraftPropsPointerIntent(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	space := seedSpace(t, h.store, mmmodel.NewId())
+	userID := mmmodel.NewId()
+	base := "/api/v1/spaces/" + space.Id
+
+	rec := h.do(t, http.MethodPost, base+"/drafts", userID, map[string]any{"title": "Props Test"})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var draft model.Draft
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &draft))
+	draftPath := base + "/pages/" + draft.PageId + "/draft"
+
+	// Populate props.
+	rec = h.do(t, http.MethodPatch, draftPath, userID, map[string]any{
+		"title": "Props Test",
+		"props": map[string]any{"color": "red"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var populated model.Draft
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &populated))
+	require.Equal(t, "red", populated.Props["color"])
+
+	// props absent must preserve the existing map. Each step below unmarshals into a fresh Draft
+	// value: reusing one across json.Unmarshal calls would merge into the existing non-nil map
+	// instead of replacing it, masking whether the server actually cleared/replaced the props.
+	rec = h.do(t, http.MethodPatch, draftPath, userID, map[string]any{
+		"title": "Props Test Updated",
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var afterAbsent model.Draft
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &afterAbsent))
+	require.Equal(t, "red", afterAbsent.Props["color"], "omitting props must preserve the existing map")
+
+	// props: null must also preserve the existing map — it unmarshals to a nil pointer, same as
+	// omitting the field entirely.
+	rec = h.do(t, http.MethodPatch, draftPath, userID, map[string]any{
+		"props": nil,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var afterNull model.Draft
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &afterNull))
+	require.Equal(t, "red", afterNull.Props["color"], "props: null must preserve the existing map, same as omitting it")
+
+	// props: {} must clear all keys.
+	rec = h.do(t, http.MethodPatch, draftPath, userID, map[string]any{
+		"props": map[string]any{},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var afterClear model.Draft
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &afterClear))
+	require.Empty(t, afterClear.Props, "props: {} must clear all keys")
+
+	// props populated again must replace the (now-empty) map.
+	rec = h.do(t, http.MethodPatch, draftPath, userID, map[string]any{
+		"props": map[string]any{"size": "large"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var afterReplace model.Draft
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &afterReplace))
+	require.Equal(t, "large", afterReplace.Props["size"])
+	require.NotContains(t, afterReplace.Props, "color", "props replace must drop keys not present in the new map")
+}
+
+// TestHandler_UpdatePageDraftPropsBaselineNoLongerHonored covers the removal of the old
+// props.original_page_edit_at baseline convention: placing the value only under that props key must
+// NOT establish an optimistic-lock baseline. Since a baseline-less edit-open against a live page is
+// itself rejected (the store refuses to create a baseline-less edit draft for an existing page — see
+// TestPublishRejectsNoBaselineOnExistingPageEdit in server/app/page_draft_test.go), the PATCH must
+// fail with the same conflict the client would get if it had supplied no baseline at all.
+func TestHandler_UpdatePageDraftPropsBaselineNoLongerHonored(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	userID := mmmodel.NewId()
+	base := "/api/v1/spaces/" + space.Id
+
+	rec := h.do(t, http.MethodPost, base+"/drafts", userID, map[string]any{"title": "Doc"})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var draft model.Draft
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &draft))
+	pageID := draft.PageId
+
+	rec = h.do(t, http.MethodPost, base+"/pages/"+pageID+"/draft/publish", userID, nil)
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var page model.Page
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &page))
+
+	// Open an edit session but put the baseline only under the old props key, not the top-level
+	// base_edit_at field. This must be rejected with 409, exactly as if base_edit_at had been
+	// omitted entirely (proving the props key carries no special meaning any more).
+	rec = h.do(t, http.MethodPatch, base+"/pages/"+pageID+"/draft", userID, map[string]any{
+		"title": "Edited",
+		"props": map[string]any{"original_page_edit_at": page.EditAt},
+	})
+	require.Equal(t, http.StatusConflict, rec.Code, "props.original_page_edit_at must not be honored as a baseline")
 }

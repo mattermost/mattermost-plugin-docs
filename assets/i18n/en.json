@@ -292,6 +292,18 @@
     "translation": "Someone else edited this page while you were writing. Reopen the page to see their changes, then publish again."
   },
   {
+    "id": "app.page_draft.publish.invalid_page_id.app_error",
+    "translation": "Invalid page ID."
+  },
+  {
+    "id": "app.page_draft.publish.invalid_space_id.app_error",
+    "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.page_draft.publish.invalid_user_id.app_error",
+    "translation": "Invalid user ID."
+  },
+  {
     "id": "app.page_draft.publish.page_deleted.app_error",
     "translation": "The page was deleted and can no longer be published."
   },
@@ -514,6 +526,10 @@
   {
     "id": "app.store.too_large.app_error",
     "translation": "The result set is too large; narrow your request (limit {{.Limit}})."
+  },
+  {
+    "id": "model.draft.is_valid.base_edit_at.app_error",
+    "translation": "Invalid draft baseline edit time."
   },
   {
     "id": "model.draft.is_valid.body_size.app_error",

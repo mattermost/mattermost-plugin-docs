@@ -160,11 +160,11 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		// An in-progress edit draft on the page, and a pending new-page draft parented under it
 		// (its own PageId has no page row yet).
 		dEdit := newDraft(user, spaceA.Id, page.Id, "")
-		dEdit.Props = mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: page.EditAt}
-		_, _, err = s.UpsertDraft(dEdit, nil, nil)
+		dEdit.BaseEditAt = page.EditAt
+		_, _, err = s.UpsertDraft(dEdit, nil, nil, nil)
 		require.NoError(t, err)
 		parentPageID := page.Id
-		_, _, err = s.UpsertDraft(newDraft(user, spaceA.Id, mmmodel.NewId(), parentPageID), &parentPageID, nil)
+		_, _, err = s.UpsertDraft(newDraft(user, spaceA.Id, mmmodel.NewId(), parentPageID), &parentPageID, nil, nil)
 		require.NoError(t, err)
 
 		sourceBefore, err := s.GetDraftsForSpace(user, spaceA.Id, 0, testDraftListLimit)
@@ -206,8 +206,8 @@ func TestMovePageToSpace_Store(t *testing.T) {
 
 		// A second user holds an in-progress edit draft on the same page.
 		otherDraft := newDraft(other, spaceA.Id, page.Id, "")
-		otherDraft.Props = mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: page.EditAt}
-		_, _, err = s.UpsertDraft(otherDraft, nil, nil)
+		otherDraft.BaseEditAt = page.EditAt
+		_, _, err = s.UpsertDraft(otherDraft, nil, nil, nil)
 		require.NoError(t, err)
 
 		_, _, err = s.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, mover, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
@@ -237,8 +237,8 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		require.NoError(t, err)
 		// One mover draft on the page to be moved.
 		editDraft := newDraft(mover, spaceA.Id, page.Id, "")
-		editDraft.Props = mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: page.EditAt}
-		_, _, err = s.UpsertDraft(editDraft, nil, nil)
+		editDraft.BaseEditAt = page.EditAt
+		_, _, err = s.UpsertDraft(editDraft, nil, nil, nil)
 		require.NoError(t, err)
 
 		chB := mmmodel.NewId()
@@ -246,7 +246,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		require.NoError(t, err)
 		// Fill the mover's quota in the target space, so re-homing even one more trips the cap.
 		for range store.MaxDraftsPerUserPerSpace {
-			_, _, err = s.UpsertDraft(newDraft(mover, spaceB.Id, mmmodel.NewId(), ""), nil, nil)
+			_, _, err = s.UpsertDraft(newDraft(mover, spaceB.Id, mmmodel.NewId(), ""), nil, nil, nil)
 			require.NoError(t, err)
 		}
 
@@ -277,8 +277,8 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		require.NoError(t, err)
 
 		editDraft := newDraft(user, spaceA.Id, page.Id, "")
-		editDraft.Props = mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: page.EditAt}
-		_, _, err = s.UpsertDraft(editDraft, nil, nil)
+		editDraft.BaseEditAt = page.EditAt
+		_, _, err = s.UpsertDraft(editDraft, nil, nil, nil)
 		require.NoError(t, err)
 
 		windowStart := mmmodel.GetMillis() - 60*1000
@@ -594,8 +594,8 @@ func TestMovePageToSpace_ConcurrentAutosaveInvariants(t *testing.T) {
 
 		// An in-progress edit draft on the page, baselined at the page's current EditAt.
 		seed := newDraft(user, spaceA.Id, page.Id, "")
-		seed.Props = mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: page.EditAt}
-		_, _, err = s.UpsertDraft(seed, nil, nil)
+		seed.BaseEditAt = page.EditAt
+		_, _, err = s.UpsertDraft(seed, nil, nil, nil)
 		require.NoError(t, err)
 
 		// Race the move against an autosave on the same draft, released together. Both calls open
@@ -615,8 +615,8 @@ func TestMovePageToSpace_ConcurrentAutosaveInvariants(t *testing.T) {
 			defer wg.Done()
 			<-start
 			autosave := newDraft(user, spaceA.Id, page.Id, "")
-			autosave.Props = mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: page.EditAt}
-			_, _, _ = s.UpsertDraft(autosave, nil, nil)
+			autosave.BaseEditAt = page.EditAt
+			_, _, _ = s.UpsertDraft(autosave, nil, nil, nil)
 		}()
 		close(start)
 		wg.Wait()

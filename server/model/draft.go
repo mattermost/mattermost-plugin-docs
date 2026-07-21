@@ -14,12 +14,6 @@ import (
 // DraftFileIdsMaxRunes is the maximum rune length of the serialized FileIds JSON array.
 const DraftFileIdsMaxRunes = 300
 
-// DraftPropsOriginalPageEditAt is a draft Props key holding the page's EditAt at the moment the user
-// opened it for editing. On publish the server compares this against the page's current EditAt; if
-// they differ, another user saved the page in the meantime, so the publish is rejected as a conflict
-// rather than overwriting the newer content.
-const DraftPropsOriginalPageEditAt = "original_page_edit_at"
-
 // Draft is a per-user autosave draft for a space page, stored in DOCS_Draft.
 //
 // A draft is keyed by (UserId, PageId): PageId is the page id reserved when the
@@ -44,6 +38,14 @@ type Draft struct {
 	CreateAt     int64                   `json:"create_at"`
 	UpdateAt     int64                   `json:"update_at"`
 	LastActiveAt int64                   `json:"last_active_at"`
+	// BaseEditAt is the optimistic-lock (CAS) baseline: the page EditAt the client saw when it opened
+	// this page for editing, compared against the page's current EditAt on publish to reject a
+	// concurrent-edit conflict. Write-once — frozen at the SQL layer on conflict (see
+	// Store.UpsertDraft), so unlike the mutable Page.EditAt it never changes once established. 0 means
+	// no baseline: either a new-page draft or an existing-page edit whose baseline was never captured
+	// (fails closed to a forced publish). "New page" is decided by page existence, never by
+	// BaseEditAt == 0.
+	BaseEditAt int64 `json:"base_edit_at"`
 }
 
 // DraftSummary is the metadata projection returned by draft collection endpoints. It deliberately
@@ -96,6 +98,7 @@ func (d *Draft) Auditable() map[string]any {
 		"create_at":      d.CreateAt,
 		"update_at":      d.UpdateAt,
 		"last_active_at": d.LastActiveAt,
+		"base_edit_at":   d.BaseEditAt,
 	}
 }
 
@@ -132,6 +135,12 @@ func (d *Draft) IsValid() *mmmodel.AppError {
 		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.last_active_at.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
 	}
 
+	// BaseEditAt is an optimistic-lock baseline (a page EditAt) or 0 for "no baseline"; a negative
+	// value is never legitimate. 0 is legal and must not be rejected.
+	if d.BaseEditAt < 0 {
+		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.base_edit_at.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
+	}
+
 	// A draft publishes into a page, so it is bound by the page content limits.
 	if utf8.RuneCountInString(d.Title) > PageTitleMaxRunes {
 		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.title_length.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
@@ -145,7 +154,7 @@ func (d *Draft) IsValid() *mmmodel.AppError {
 		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.file_ids.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
 	}
 
-	if err := validatePropsSize("Draft.IsValid", "page_id="+d.PageId, d.Props, PagePropsMaxBytes); err != nil {
+	if err := ValidatePropsSize("Draft.IsValid", "page_id="+d.PageId, d.Props, PagePropsMaxBytes); err != nil {
 		return err
 	}
 
@@ -155,33 +164,4 @@ func (d *Draft) IsValid() *mmmodel.AppError {
 // GetProps returns Props, or an empty map if Props is nil.
 func (d *Draft) GetProps() mmmodel.StringInterface {
 	return ensureProps(d.Props)
-}
-
-// SanitizeProps strips any props key not on the recognized allowlist. Call on every write path to
-// prevent unknown client-supplied keys from accumulating in the stored map.
-func (d *Draft) SanitizeProps() {
-	allowed := mmmodel.StringInterface{}
-	if v, ok := d.Props[DraftPropsOriginalPageEditAt]; ok {
-		allowed[DraftPropsOriginalPageEditAt] = v
-	}
-	d.Props = allowed
-}
-
-// EditBaseline extracts the optimistic-lock baseline from the draft's props. JSON-decoded numbers
-// arrive as float64; a programmatically-set int64/int is also accepted. Returns (0, false) when
-// the baseline is absent or zero (e.g. a new-page draft).
-func (d *Draft) EditBaseline() (int64, bool) {
-	v, ok := d.GetProps()[DraftPropsOriginalPageEditAt]
-	if !ok {
-		return 0, false
-	}
-	switch n := v.(type) {
-	case float64:
-		return int64(n), n != 0
-	case int64:
-		return n, n != 0
-	case int:
-		return int64(n), n != 0
-	}
-	return 0, false
 }

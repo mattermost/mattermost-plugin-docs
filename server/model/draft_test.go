@@ -127,6 +127,20 @@ func TestDraftIsValid(t *testing.T) {
 		require.NotNil(t, aerr)
 		require.Equal(t, "model.draft.is_valid.update_at.app_error", aerr.Id)
 	})
+
+	t.Run("negative BaseEditAt rejected", func(t *testing.T) {
+		d := validDraft()
+		d.BaseEditAt = -1
+		aerr := d.IsValid()
+		require.NotNil(t, aerr)
+		require.Equal(t, "model.draft.is_valid.base_edit_at.app_error", aerr.Id)
+	})
+
+	t.Run("zero BaseEditAt allowed", func(t *testing.T) {
+		d := validDraft()
+		d.BaseEditAt = 0
+		require.Nil(t, d.IsValid())
+	})
 }
 
 func TestDraftIsValidLastActiveAtZeroRejected(t *testing.T) {
@@ -165,113 +179,9 @@ func TestDraftGetPropsNilReturnsEmpty(t *testing.T) {
 	require.Empty(t, d.GetProps())
 }
 
-func TestDraftSanitizeProps(t *testing.T) {
-	t.Run("keeps only the baseline key, unknown keys dropped", func(t *testing.T) {
-		d := &model.Draft{Props: mmmodel.StringInterface{
-			model.DraftPropsOriginalPageEditAt: int64(12345),
-			"unknown_key":                      "value",
-			"another_unknown":                  42,
-		}}
-		d.SanitizeProps()
-		require.Equal(t, mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: int64(12345)}, d.Props)
-	})
-
-	t.Run("nil Props becomes an empty map", func(t *testing.T) {
-		d := &model.Draft{Props: nil}
-		d.SanitizeProps()
-		require.NotNil(t, d.Props)
-		require.Empty(t, d.Props)
-	})
-
-	t.Run("only unknown keys becomes an empty map", func(t *testing.T) {
-		d := &model.Draft{Props: mmmodel.StringInterface{"unknown": "x"}}
-		d.SanitizeProps()
-		require.NotNil(t, d.Props)
-		require.Empty(t, d.Props)
-	})
-
-	t.Run("baseline key absent yields an empty map", func(t *testing.T) {
-		d := &model.Draft{Props: mmmodel.StringInterface{"foo": "bar"}}
-		d.SanitizeProps()
-		require.NotNil(t, d.Props)
-		require.Empty(t, d.Props)
-	})
-}
-
-func TestDraftEditBaseline(t *testing.T) {
-	t.Run("float64 non-zero converts to int64", func(t *testing.T) {
-		d := &model.Draft{Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(1610000000000)}}
-		v, ok := d.EditBaseline()
-		require.True(t, ok)
-		require.Equal(t, int64(1610000000000), v)
-	})
-
-	t.Run("float64 zero", func(t *testing.T) {
-		d := &model.Draft{Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(0)}}
-		v, ok := d.EditBaseline()
-		require.False(t, ok)
-		require.Equal(t, int64(0), v)
-	})
-
-	t.Run("int64 non-zero passes through", func(t *testing.T) {
-		d := &model.Draft{Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: int64(42)}}
-		v, ok := d.EditBaseline()
-		require.True(t, ok)
-		require.Equal(t, int64(42), v)
-	})
-
-	t.Run("int64 zero", func(t *testing.T) {
-		d := &model.Draft{Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: int64(0)}}
-		v, ok := d.EditBaseline()
-		require.False(t, ok)
-		require.Equal(t, int64(0), v)
-	})
-
-	t.Run("int non-zero converts to int64", func(t *testing.T) {
-		d := &model.Draft{Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: int(7)}}
-		v, ok := d.EditBaseline()
-		require.True(t, ok)
-		require.Equal(t, int64(7), v)
-	})
-
-	t.Run("int zero", func(t *testing.T) {
-		d := &model.Draft{Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: int(0)}}
-		v, ok := d.EditBaseline()
-		require.False(t, ok)
-		require.Equal(t, int64(0), v)
-	})
-
-	t.Run("missing key", func(t *testing.T) {
-		d := &model.Draft{Props: mmmodel.StringInterface{}}
-		v, ok := d.EditBaseline()
-		require.False(t, ok)
-		require.Equal(t, int64(0), v)
-	})
-
-	t.Run("wrong type string does not panic", func(t *testing.T) {
-		d := &model.Draft{Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: "not-a-number"}}
-		require.NotPanics(t, func() {
-			v, ok := d.EditBaseline()
-			require.False(t, ok)
-			require.Equal(t, int64(0), v)
-		})
-	})
-
-	t.Run("wrong type slice does not panic", func(t *testing.T) {
-		d := &model.Draft{Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: []any{1, 2, 3}}}
-		require.NotPanics(t, func() {
-			v, ok := d.EditBaseline()
-			require.False(t, ok)
-			require.Equal(t, int64(0), v)
-		})
-	})
-
-	t.Run("wrong type bool does not panic", func(t *testing.T) {
-		d := &model.Draft{Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: true}}
-		require.NotPanics(t, func() {
-			v, ok := d.EditBaseline()
-			require.False(t, ok)
-			require.Equal(t, int64(0), v)
-		})
-	})
+func TestDraftAuditable(t *testing.T) {
+	d := validDraft()
+	d.BaseEditAt = 42
+	auditable := d.Auditable()
+	require.Equal(t, int64(42), auditable["base_edit_at"])
 }

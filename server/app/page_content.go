@@ -86,9 +86,10 @@ func marshalTipTapDoc(doc model.TipTapDocument) (string, string, error) {
 	return string(sanitized), model.BuildSearchText(doc), nil
 }
 
-// maxPlainTextParagraphs caps the number of paragraph nodes produced when wrapping plain text.
-// A newline-only body at PageBodyMaxBytes would otherwise produce ~2M maps before the
-// post-normalization body-size check could reject the output.
+// maxPlainTextParagraphs caps the number of paragraph nodes produced when converting plain text
+// to a TipTap document. convertPlainTextToTipTap splits on newlines and turns each line into its
+// own paragraph node (a map[string]any), so a newline-only body at PageBodyMaxBytes would
+// otherwise build ~2M such maps before the post-normalization body-size check could reject it.
 const maxPlainTextParagraphs = 10_000
 
 // convertPlainTextToTipTap wraps plain text in a minimal TipTap document. Returns an error when

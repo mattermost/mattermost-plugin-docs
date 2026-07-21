@@ -18,7 +18,8 @@ const (
 	// quotes, backslashes, and control characters are escaped (worst case ~6x for all-control-char
 	// input). Size the transport cap for that worst case plus headroom for the title/props/file-ids
 	// and JSON envelope; the decoded body stays capped at model.PageBodyMaxBytes during normalization.
-	maxDraftBodyBytes = 6*model.PageBodyMaxBytes + (64 << 10) // 64 KiB headroom
+	draftBodyHeadroomBytes = 64 * 1024 // headroom for the title/props/file-ids and JSON envelope
+	maxDraftBodyBytes      = 6*model.PageBodyMaxBytes + draftBodyHeadroomBytes
 )
 
 // handleUpdatePageDraft handles PATCH /api/v1/spaces/{space_id}/pages/{page_id}/draft
@@ -28,8 +29,8 @@ const (
 // clears it.
 //
 // For existing published pages, the first request creates the draft (open an edit session). The client
-// must include original_page_edit_at in props — the page's EditAt at the moment the user opened
-// it — so a subsequent publish can detect a concurrent edit.
+// must send the top-level base_edit_at field — the page's EditAt at the moment the user opened it — on
+// every autosave, so a subsequent publish can detect a concurrent edit. It is not a props key.
 //
 // For new-page drafts (no page row yet), the draft must already exist via POST
 // /spaces/{space_id}/drafts. This prevents a space member who learns another user's pending page
@@ -46,28 +47,37 @@ func (p *Plugin) handleUpdatePageDraft(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ParentId *string                 `json:"parent_id"`
-		Title    string                  `json:"title"`
-		Body     string                  `json:"body"`
-		FileIds  *mmmodel.StringArray    `json:"file_ids"`
-		Props    mmmodel.StringInterface `json:"props"`
+		ParentId   *string                  `json:"parent_id"`
+		Title      string                   `json:"title"`
+		Body       string                   `json:"body"`
+		FileIds    *mmmodel.StringArray     `json:"file_ids"`
+		Props      *mmmodel.StringInterface `json:"props"`
+		BaseEditAt *int64                   `json:"base_edit_at"`
 	}
 	if !p.decodeJSONBody(w, r, maxDraftBodyBytes, &req, "handleUpdatePageDraft", false) {
 		return
 	}
 
+	// base_edit_at nil → 0 (no baseline: a new-page draft, or an existing-page edit that omitted it,
+	// which fails closed to a forced publish). Props flows via the pointer below (like file_ids), so it
+	// is not set on the struct here.
+	var baseEditAt int64
+	if req.BaseEditAt != nil {
+		baseEditAt = *req.BaseEditAt
+	}
 	draft := &model.Draft{
-		UserId:  userID,
-		SpaceId: spaceID,
-		PageId:  pageID,
-		Title:   req.Title,
-		Body:    req.Body,
-		Props:   req.Props,
+		UserId:     userID,
+		SpaceId:    spaceID,
+		PageId:     pageID,
+		Title:      req.Title,
+		Body:       req.Body,
+		BaseEditAt: baseEditAt,
 	}
 
 	// req.ParentId nil → preserve; pointer to "" → clear to root; pointer to ID → set parent.
 	// req.FileIds nil → preserve; pointer to [] → clear; pointer to [...] → replace.
-	saved, appErr := p.service.UpdatePageDraft(draft, req.ParentId, req.FileIds, space.ChannelId)
+	// req.Props nil → preserve; non-nil → replace the whole map (an empty map clears all keys).
+	saved, appErr := p.service.UpdatePageDraft(draft, req.ParentId, req.FileIds, req.Props, space.ChannelId)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return
@@ -150,8 +160,8 @@ func (p *Plugin) handleCreateSpaceDraft(w http.ResponseWriter, r *http.Request) 
 // one transaction.
 //
 // The optimistic-lock baseline for an edit-publish is not a field on this request: it travels with
-// the draft, captured once (as the original_page_edit_at prop) when editing began and carried by the
-// autosave requests. This differs from the per-request base_edit_at on handleUpdatePage (and
+// the draft, stored in its write-once BaseEditAt column (sent as the top-level base_edit_at field on
+// the autosave requests). This differs from the per-request base_edit_at on handleUpdatePage (and
 // expected_update_at on handleMovePage) because a publish ships whatever the draft already holds
 // rather than re-supplying a freshly-read baseline.
 func (p *Plugin) handlePublishPageDraft(w http.ResponseWriter, r *http.Request) {

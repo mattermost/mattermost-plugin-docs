@@ -816,13 +816,17 @@ func (s *Store) PublishDraft(isNewPage bool, page *model.Page, userID, spaceID s
 		// Apply only the fields the draft carried against the locked row, preserving current's value
 		// for any empty (unset) field. An empty Title/Body means "not sent" (a cleared document is
 		// EmptyTipTapJSON, not ""), so a partial autosave never wipes an untouched field — and a
-		// force-publish cannot revert a concurrent edit to a field this draft did not change.
+		// force-publish cannot revert a concurrent edit to a field this draft did not change. Props
+		// follow the same rule: a non-empty map replaces, an empty/nil map preserves current's props.
 		if page.Title != "" {
 			current.Title = page.Title
 		}
 		if page.Body != "" {
 			current.Body = page.Body
 			current.SearchText = page.SearchText
+		}
+		if len(page.Props) > 0 {
+			current.Props = page.Props
 		}
 		current.LastModifiedBy = page.LastModifiedBy
 		current.PreUpdate()

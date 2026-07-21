@@ -30,7 +30,7 @@ func publishNewPage(t *testing.T, h *testHarness, spaceID, userID, title, bodyTe
 	require.Nil(t, appErr)
 	reservedID := draft.PageId
 
-	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: spaceID, PageId: reservedID, Title: title, Body: docWith(bodyText)}, nil, nil, "")
+	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: spaceID, PageId: reservedID, Title: title, Body: docWith(bodyText)}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
 	page, wasCreated, appErr := h.svc.PublishPageDraft(userID, spaceID, reservedID, false)
@@ -51,11 +51,11 @@ func TestUpdatePageDraftPreservesBodyOnTitleOnlyAutosave(t *testing.T) {
 	pageID := draft.PageId
 
 	// Autosave real content.
-	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: pageID, Title: "Doc", Body: docWith("keep me")}, nil, nil, "")
+	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: pageID, Title: "Doc", Body: docWith("keep me")}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
 	// A heartbeat that sends only the title (empty body) must not wipe the stored draft body.
-	saved, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: pageID, Title: "Doc"}, nil, nil, "")
+	saved, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: pageID, Title: "Doc"}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 	require.Contains(t, saved.Body, "keep me", "a title-only autosave must not clear the draft body")
 }
@@ -71,8 +71,8 @@ func TestPublishEmptyDraftBodyDoesNotWipePage(t *testing.T) {
 	// the heartbeat case that previously wiped the page on publish.
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Important",
-		Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(page.EditAt)},
-	}, nil, nil, "")
+		BaseEditAt: page.EditAt,
+	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
 	republished, _, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
@@ -81,7 +81,7 @@ func TestPublishEmptyDraftBodyDoesNotWipePage(t *testing.T) {
 }
 
 // TestPublishNoOpDraftDiscardsAndReturnsExistingPage verifies that publishing a draft that carries
-// no content change — only the optimistic-lock baseline prop, no Title, no Body — is treated as a
+// no content change — only the optimistic-lock baseline, no Title, no Body — is treated as a
 // discard rather than a no-op page write: the draft is deleted, the existing page comes back
 // unchanged, and wasCreated is false.
 func TestPublishNoOpDraftDiscardsAndReturnsExistingPage(t *testing.T) {
@@ -91,11 +91,11 @@ func TestPublishNoOpDraftDiscardsAndReturnsExistingPage(t *testing.T) {
 
 	page := publishNewPage(t, h, space.Id, userID, "Doc", "original")
 
-	// Start an edit session whose only autosave carries the baseline prop — no Title, no Body.
+	// Start an edit session whose only autosave carries the baseline — no Title, no Body.
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id,
-		Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(page.EditAt)},
-	}, nil, nil, "")
+		BaseEditAt: page.EditAt,
+	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
 	result, wasCreated, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
@@ -118,21 +118,58 @@ func TestPublishRejectsMissingBaselineOnEdit(t *testing.T) {
 	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
 
 	// UpsertDraft guards the first edit-draft save: attempting to create a draft for an existing
-	// page without original_page_edit_at is rejected at the store layer, so the client must send
+	// page without a base_edit_at baseline is rejected at the store layer, so the client must send
 	// the baseline on the very first autosave (the response tells it to reload and set it).
-	_, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc", Body: docWith("v2")}, nil, nil, "")
+	_, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc", Body: docWith("v2")}, nil, nil, nil, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusConflict, appErr.StatusCode)
 
 	// With a proper baseline the draft is created; force=true publishes regardless of baseline.
 	_, appErr = h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc", Body: docWith("v2"),
-		Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(page.EditAt)},
-	}, nil, nil, "")
+		BaseEditAt: page.EditAt,
+	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
 	forced, _, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, true)
 	require.Nil(t, appErr)
+	require.Contains(t, forced.Body, "v2")
+}
+
+// TestPublishRejectsNoBaselineOnExistingPageEdit covers the app-level baseline_required guard in
+// PublishPageDraft: a stored edit-draft with BaseEditAt still 0 (no baseline was ever captured) must
+// be rejected with 400 unless force=true. The store's UpsertDraft guard normally blocks a
+// baseline-less draft from ever being created against a live page (see
+// TestPublishRejectsMissingBaselineOnEdit), so this simulates the race where the draft's first
+// autosave lands as a new-page draft and the underlying page becomes live afterward without the
+// draft ever acquiring a baseline — reached here by inserting the draft row directly.
+func TestPublishRejectsNoBaselineOnExistingPageEdit(t *testing.T) {
+	h := openTestService(t)
+	channelID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+	userID := mmmodel.NewId()
+
+	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
+
+	now := mmmodel.GetMillis()
+	_, err := h.db.Exec(
+		`INSERT INTO docs_draft (userid,spaceid,pageid,parentid,title,body,fileids,props,createat,updateat,lastactiveat,baseeditat)
+		 VALUES ($1,$2,$3,'',$4,$5,'[]','{}', $6,$6,$6,0)`,
+		userID, space.Id, page.Id, "Edited", docWith("v2"), now,
+	)
+	require.NoError(t, err)
+
+	// Without a baseline, a non-force publish of an edit must be rejected.
+	_, _, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+	require.Equal(t, "app.page_draft.publish.baseline_required.app_error", appErr.Id)
+
+	// force=true bypasses the missing-baseline guard and publishes the edit.
+	forced, wasCreated, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, true)
+	require.Nil(t, appErr)
+	require.False(t, wasCreated)
+	require.Equal(t, "Edited", forced.Title)
 	require.Contains(t, forced.Body, "v2")
 }
 
@@ -148,8 +185,8 @@ func TestPublishStaleBaselineConflicts(t *testing.T) {
 	// not consumed by any publish), so the stale-baseline conflict surfaces at publish time.
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc", Body: docWith("v3"),
-		Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(staleEditAt)},
-	}, nil, nil, "")
+		BaseEditAt: staleEditAt,
+	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
 	// A concurrent direct edit advances the page's EditAt out from under that baseline, without
@@ -175,8 +212,8 @@ func TestPublishAfterPageDeleteReturns404(t *testing.T) {
 	page := publishNewPage(t, h, space.Id, userID, "Doomed", "x")
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doomed", Body: docWith("y"),
-		Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(page.EditAt)},
-	}, nil, nil, "")
+		BaseEditAt: page.EditAt,
+	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 	requireStoreDeletePage(t, h.store, page.Id, space.Id, userID)
 
@@ -233,8 +270,8 @@ func TestActiveEditorsSurfacesHeartbeat(t *testing.T) {
 	// An autosave is the heartbeat; the editor must then appear as active.
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc", Body: docWith("editing"),
-		Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(page.EditAt)},
-	}, nil, nil, "")
+		BaseEditAt: page.EditAt,
+	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
 	snapshot, appErr := h.svc.GetPageActiveEditors(page.Id, space.Id)
@@ -264,19 +301,20 @@ func TestPublishForceOverridesStaleBaseline(t *testing.T) {
 	// Start an edit session with a draft baselined at the current EditAt; the draft persists.
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc", Body: docWith("v3"),
-		Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(staleEditAt)},
-	}, nil, nil, "")
+		BaseEditAt: staleEditAt,
+	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
 	// A concurrent direct edit advances the page's EditAt, making the draft's baseline stale.
 	concurrent := docWith("concurrent")
-	_, appErr = h.svc.UpdatePage(page.Id, space.Id, &model.PagePatch{Body: &concurrent}, new(staleEditAt), false, userID)
+	concurrentPage, appErr := h.svc.UpdatePage(page.Id, space.Id, &model.PagePatch{Body: &concurrent}, new(staleEditAt), false, userID)
 	require.Nil(t, appErr)
 
 	// force=true must override the stale-baseline CAS and win with the draft's content.
 	forced, _, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, true)
 	require.Nil(t, appErr)
 	require.Contains(t, forced.Body, "v3", "force must override a stale baseline")
+	require.Greater(t, forced.EditAt, concurrentPage.EditAt, "a force-publish must still advance the page's EditAt")
 }
 
 func TestPublishForceDoesNotRevertUntouchedField(t *testing.T) {
@@ -290,8 +328,8 @@ func TestPublishForceDoesNotRevertUntouchedField(t *testing.T) {
 	// A title-only edit: the draft carries a new title but no body, baselined at the current EditAt.
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "New title",
-		Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(baseEditAt)},
-	}, nil, nil, "")
+		BaseEditAt: baseEditAt,
+	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
 	// A concurrent edit changes the BODY — a field the draft never touched — and advances EditAt.
@@ -318,8 +356,8 @@ func TestUpdatePageDraftRejectsStaleBaselineAfterPublish(t *testing.T) {
 	// Edit and publish: the draft is consumed and the page's EditAt advances.
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc", Body: docWith("v2"),
-		Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(baseEditAt)},
-	}, nil, nil, "")
+		BaseEditAt: baseEditAt,
+	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 	_, _, appErr = h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
 	require.Nil(t, appErr)
@@ -328,8 +366,8 @@ func TestUpdatePageDraftRejectsStaleBaselineAfterPublish(t *testing.T) {
 	// draft on the now-published page.
 	_, appErr = h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc", Body: docWith("late"),
-		Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(baseEditAt)},
-	}, nil, nil, "")
+		BaseEditAt: baseEditAt,
+	}, nil, nil, nil, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusConflict, appErr.StatusCode)
 
@@ -339,7 +377,7 @@ func TestUpdatePageDraftRejectsStaleBaselineAfterPublish(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, appErr.StatusCode)
 }
 
-func TestUpdatePageDraftMergesPropsPreservingBaseline(t *testing.T) {
+func TestUpdatePageDraftPreservesPropsOnOmit(t *testing.T) {
 	h := openTestService(t)
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
@@ -348,20 +386,89 @@ func TestUpdatePageDraftMergesPropsPreservingBaseline(t *testing.T) {
 	require.Nil(t, appErr)
 	pageID := draft.PageId
 
-	// First autosave records the optimistic-lock baseline prop.
+	// First autosave writes a props map (non-nil pointer → whole-value replace).
 	saved, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: pageID, Title: "Doc", Body: docWith("v1"),
-		Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(1234)},
-	}, nil, nil, "")
+	}, nil, nil, &mmmodel.StringInterface{"custom": "v"}, "")
 	require.Nil(t, appErr)
-	require.EqualValues(t, 1234, saved.Props[model.DraftPropsOriginalPageEditAt])
+	require.Equal(t, "v", saved.Props["custom"])
 
-	// A later autosave that omits props must preserve the stored baseline (key-wise merge, no clobber).
+	// A later autosave that omits props (nil pointer) must preserve the stored map.
 	saved, appErr = h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: pageID, Title: "Doc", Body: docWith("v2"),
-	}, nil, nil, "")
+	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
-	require.EqualValues(t, 1234, saved.Props[model.DraftPropsOriginalPageEditAt], "omitted props must preserve the stored baseline")
+	require.Equal(t, "v", saved.Props["custom"], "omitted props must preserve the stored map")
+
+	// An explicit empty map (non-nil pointer) must clear the stored props.
+	saved, appErr = h.svc.UpdatePageDraft(&model.Draft{
+		UserId: userID, SpaceId: space.Id, PageId: pageID, Title: "Doc", Body: docWith("v3"),
+	}, nil, nil, &mmmodel.StringInterface{}, "")
+	require.Nil(t, appErr)
+	require.Empty(t, saved.Props, "an explicit empty props map must clear the stored props")
+}
+
+// A draft autosave whose (valid TipTap) body exceeds PageBodyMaxBytes must be rejected with 400 —
+// the body is well-formed and small in node count, so it clears content normalization and is caught
+// by Draft.IsValid's size guard in the store, surfaced through the app layer.
+func TestUpdatePageDraftRejectsOversizedBody(t *testing.T) {
+	h := openTestService(t)
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
+	userID := mmmodel.NewId()
+
+	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Doc", "")
+	require.Nil(t, appErr)
+
+	// One paragraph, one text node whose text alone exceeds PageBodyMaxBytes — clears the node/
+	// paragraph limits but overflows the serialized-body size cap.
+	oversized := docWith(strings.Repeat("x", model.PageBodyMaxBytes))
+	_, appErr = h.svc.UpdatePageDraft(&model.Draft{
+		UserId: userID, SpaceId: space.Id, PageId: draft.PageId, Title: "Doc", Body: oversized,
+	}, nil, nil, nil, "")
+	require.NotNil(t, appErr, "an oversized draft body must be rejected")
+	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+}
+
+// Props follow PagePatch.Props write intent on publish: a new page adopts the draft's props, an
+// edit whose draft carries a non-empty props map replaces the live page's props, and an edit that
+// carries no props preserves them.
+func TestPublishCarriesDraftProps(t *testing.T) {
+	h := openTestService(t)
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
+	userID := mmmodel.NewId()
+
+	// New-page publish adopts the draft's props.
+	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Doc", "")
+	require.Nil(t, appErr)
+	pageID := draft.PageId
+	_, appErr = h.svc.UpdatePageDraft(&model.Draft{
+		UserId: userID, SpaceId: space.Id, PageId: pageID, Title: "Doc", Body: docWith("v1"),
+	}, nil, nil, &mmmodel.StringInterface{"color": "blue"}, "")
+	require.Nil(t, appErr)
+
+	page, wasCreated, appErr := h.svc.PublishPageDraft(userID, space.Id, pageID, false)
+	require.Nil(t, appErr)
+	require.True(t, wasCreated)
+	require.Equal(t, "blue", page.Props["color"], "a new page must adopt the draft's props on publish")
+
+	// An edit whose draft carries a non-empty props map replaces the page's props.
+	_, appErr = h.svc.UpdatePageDraft(&model.Draft{
+		UserId: userID, SpaceId: space.Id, PageId: pageID, Title: "Doc", BaseEditAt: page.EditAt,
+	}, nil, nil, &mmmodel.StringInterface{"color": "red"}, "")
+	require.Nil(t, appErr)
+	edited, _, appErr := h.svc.PublishPageDraft(userID, space.Id, pageID, false)
+	require.Nil(t, appErr)
+	require.Equal(t, "red", edited.Props["color"], "an edit with non-empty draft props must replace the page's props")
+
+	// An edit that carries content but no props preserves the live page's props.
+	_, appErr = h.svc.UpdatePageDraft(&model.Draft{
+		UserId: userID, SpaceId: space.Id, PageId: pageID, Body: docWith("v2"), BaseEditAt: edited.EditAt,
+	}, nil, nil, nil, "")
+	require.Nil(t, appErr)
+	preserved, _, appErr := h.svc.PublishPageDraft(userID, space.Id, pageID, false)
+	require.Nil(t, appErr)
+	require.Equal(t, "red", preserved.Props["color"], "an edit carrying no props must preserve the page's props")
+	require.Contains(t, preserved.Body, "v2")
 }
 
 func TestPublishRejectsForeignSpacePage(t *testing.T) {
@@ -377,12 +484,12 @@ func TestPublishRejectsForeignSpacePage(t *testing.T) {
 
 	// userB cannot reserve a draft in space B against userA's not-yet-live page id —
 	// the cross-space reservation is now correctly rejected at the app layer.
-	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userB, SpaceId: spaceB.Id, PageId: pageID, Title: "B doc", Body: docWith("b content")}, nil, nil, "")
+	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userB, SpaceId: spaceB.Id, PageId: pageID, Title: "B doc", Body: docWith("b content")}, nil, nil, nil, "")
 	require.NotNil(t, appErr, "cross-space draft reservation must be rejected")
 	require.Equal(t, http.StatusNotFound, appErr.StatusCode, "cross-space draft reservation returns 404")
 
 	// userA autosaves content and publishes, so the page becomes live in space A.
-	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userA, SpaceId: spaceA.Id, PageId: pageID, Title: "A doc", Body: docWith("a content")}, nil, nil, "")
+	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userA, SpaceId: spaceA.Id, PageId: pageID, Title: "A doc", Body: docWith("a content")}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 	pageA, wasCreated, appErr := h.svc.PublishPageDraft(userA, spaceA.Id, pageID, false)
 	require.Nil(t, appErr)
@@ -413,11 +520,11 @@ func TestUpdatePageDraftPreservesTitleOnBodyOnlyAutosave(t *testing.T) {
 	require.Nil(t, appErr)
 	pageID := draft.PageId
 
-	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: pageID, Title: "Keep Title", Body: docWith("v1")}, nil, nil, "")
+	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: pageID, Title: "Keep Title", Body: docWith("v1")}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
 	// A heartbeat that sends only the body (empty title) must not wipe the stored title.
-	saved, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: pageID, Body: docWith("v2")}, nil, nil, "")
+	saved, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: pageID, Body: docWith("v2")}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 	require.Equal(t, "Keep Title", saved.Title, "a body-only autosave must not clear the draft title")
 }
@@ -434,7 +541,7 @@ func TestUpdatePageDraftSanitizesBody(t *testing.T) {
 	saved, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: draft.PageId, Title: "Doc",
 		Body: `{"type":"doc","content":[{"type":"image","attrs":{"src":"x","onerror":"alert(document.cookie)"}}]}`,
-	}, nil, nil, "")
+	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 	require.NotContains(t, saved.Body, "onerror", "autosave must sanitize the draft body")
 }
@@ -453,7 +560,7 @@ func TestPublishEditIgnoresStaleParentGuard(t *testing.T) {
 	childDraft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Child", parent.Id)
 	require.Nil(t, appErr)
 	childID := childDraft.PageId
-	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: childID, Title: "Child", Body: docWith("c1")}, nil, nil, "")
+	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: childID, Title: "Child", Body: docWith("c1")}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 	child, _, appErr := h.svc.PublishPageDraft(userID, space.Id, childID, false)
 	require.Nil(t, appErr)
@@ -462,8 +569,8 @@ func TestPublishEditIgnoresStaleParentGuard(t *testing.T) {
 	parentID := parent.Id
 	_, appErr = h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: childID, Title: "Child", Body: docWith("c2"),
-		Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(child.EditAt)},
-	}, &parentID, nil, "")
+		BaseEditAt: child.EditAt,
+	}, &parentID, nil, nil, "")
 	require.Nil(t, appErr)
 
 	// The parent is deleted mid-edit (its children are promoted), leaving the draft's parent id stale.
@@ -481,7 +588,7 @@ func TestUpdatePageDraftRejectsInvalidPageID(t *testing.T) {
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
-	_, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: "not-a-valid-id", Title: "x"}, nil, nil, "")
+	_, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: "not-a-valid-id", Title: "x"}, nil, nil, nil, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 }
@@ -511,7 +618,7 @@ func TestUpdatePageDraftRejectsInvalidUserID(t *testing.T) {
 	h := openTestService(t)
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 
-	_, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: "bad-id", SpaceId: space.Id, PageId: mmmodel.NewId()}, nil, nil, "")
+	_, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: "bad-id", SpaceId: space.Id, PageId: mmmodel.NewId()}, nil, nil, nil, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 }
@@ -519,31 +626,9 @@ func TestUpdatePageDraftRejectsInvalidUserID(t *testing.T) {
 func TestUpdatePageDraftRejectsInvalidSpaceID(t *testing.T) {
 	h := openTestService(t)
 
-	_, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: mmmodel.NewId(), SpaceId: "bad-id", PageId: mmmodel.NewId()}, nil, nil, "")
+	_, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: mmmodel.NewId(), SpaceId: "bad-id", PageId: mmmodel.NewId()}, nil, nil, nil, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
-}
-
-func TestUpdatePageDraftPropWhitelistDropsForeignKeys(t *testing.T) {
-	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, mmmodel.NewId())
-	userID := mmmodel.NewId()
-
-	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Doc", "")
-	require.Nil(t, appErr)
-
-	// UpdatePageDraft with an unrecognized prop key.
-	saved, appErr := h.svc.UpdatePageDraft(&model.Draft{
-		UserId: userID, SpaceId: space.Id, PageId: draft.PageId,
-		Props: mmmodel.StringInterface{
-			model.DraftPropsOriginalPageEditAt: float64(123),
-			"evil_key":                         "should be dropped",
-		},
-	}, nil, nil, "")
-	require.Nil(t, appErr)
-	require.Equal(t, float64(123), saved.Props[model.DraftPropsOriginalPageEditAt], "allowed prop must be preserved")
-	_, hasForeign := saved.Props["evil_key"]
-	require.False(t, hasForeign, "unrecognized prop key must be stripped by the whitelist")
 }
 
 func TestCreateSpaceDraftRejectsEmptyTitle(t *testing.T) {
@@ -586,7 +671,7 @@ func TestUpdatePageDraftRejectsResurrectionAfterNewPagePublish(t *testing.T) {
 	require.Nil(t, appErr)
 	pageID := draft.PageId
 
-	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: pageID, Body: docWith("v1")}, nil, nil, "")
+	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: pageID, Body: docWith("v1")}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 	_, _, appErr = h.svc.PublishPageDraft(userID, space.Id, pageID, false)
 	require.Nil(t, appErr)
@@ -594,7 +679,7 @@ func TestUpdatePageDraftRejectsResurrectionAfterNewPagePublish(t *testing.T) {
 	// Late autosave with no baseline: the draft is gone, so this must be rejected.
 	_, appErr = h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: pageID, Body: docWith("late"),
-	}, nil, nil, "")
+	}, nil, nil, nil, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusConflict, appErr.StatusCode)
 
@@ -619,13 +704,13 @@ func TestUpdatePageDraftRejectsDraftParentCycle(t *testing.T) {
 	// B → A is valid (A has no parent).
 	_, appErr = h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: draftB.PageId,
-	}, &draftA.PageId, nil, "")
+	}, &draftA.PageId, nil, nil, "")
 	require.Nil(t, appErr)
 
 	// A → B would create A → B → A: a cycle. This must be rejected.
 	_, appErr = h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: draftA.PageId,
-	}, &draftB.PageId, nil, "")
+	}, &draftB.PageId, nil, nil, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 }
@@ -649,7 +734,7 @@ func TestUpdatePageDraftRejectsDraftHierarchyTooDeep(t *testing.T) {
 	for i := 1; i < chainLen; i++ {
 		_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 			UserId: userID, SpaceId: space.Id, PageId: drafts[i].PageId,
-		}, &drafts[i-1].PageId, nil, "")
+		}, &drafts[i-1].PageId, nil, nil, "")
 		require.Nil(t, appErr, "chaining draft %d under draft %d must succeed", i, i-1)
 	}
 
@@ -659,7 +744,7 @@ func TestUpdatePageDraftRejectsDraftHierarchyTooDeep(t *testing.T) {
 	leaf := drafts[chainLen-1].PageId
 	_, appErr = h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: extra.PageId,
-	}, &leaf, nil, "")
+	}, &leaf, nil, nil, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 }
@@ -678,7 +763,7 @@ func TestDeletePageDraftReparentsChildren(t *testing.T) {
 
 	_, appErr = h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: draftC.PageId,
-	}, &draftP.PageId, nil, "")
+	}, &draftP.PageId, nil, nil, "")
 	require.Nil(t, appErr)
 
 	// Discard the parent draft.

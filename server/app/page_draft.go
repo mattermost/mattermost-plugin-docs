@@ -29,7 +29,9 @@ func presenceBroadcastKey(pageID, userID string) string {
 // heartbeats cannot clobber each other's changes.
 // parentID encodes the write intent for ParentId: nil preserves the stored value, a pointer to ""
 // clears to root, and a pointer to a valid ID sets the parent. See store.UpsertDraft for details.
-func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs *mmmodel.StringArray, channelID string) (*model.Draft, *mmmodel.AppError) {
+// props encodes the write intent for Props: nil preserves the stored map, a non-nil pointer replaces
+// it wholesale (an empty map clears all keys); its serialized size is validated here.
+func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs *mmmodel.StringArray, props *mmmodel.StringInterface, channelID string) (*model.Draft, *mmmodel.AppError) {
 	if draft == nil {
 		return nil, mmmodel.NewAppError("UpdatePageDraft", "app.page_draft.update.nil_draft.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -65,9 +67,14 @@ func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs 
 		draft.Body = sanitizedBody
 	}
 
-	// Only the optimistic-lock baseline is a recognized prop; drop anything else the client sent so
-	// it cannot accumulate in the stored map, which the store merges into rather than replaces.
-	draft.SanitizeProps()
+	// Validate the written Props size here: props is passed to the store separately (pointer intent),
+	// so it is not the draft.Props field IsValid checks — without this the PagePropsMaxBytes bound
+	// would be silently bypassed on the write path. Mirrors the fileIDs size guard below.
+	if props != nil {
+		if propsErr := model.ValidatePropsSize("UpdatePageDraft", "page_id="+draft.PageId, *props, model.PagePropsMaxBytes); propsErr != nil {
+			return nil, propsErr
+		}
+	}
 
 	// Validate fileIDs size here because fileIDs is passed to the store separately and is not placed
 	// into draft.FileIds before IsValid runs — the store's UpsertDraft merges it in SQL.
@@ -84,8 +91,9 @@ func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs 
 		}
 	}
 
-	// pageIsLiveResolved tracks whether we already know the live-page answer from the
-	// not-found branch below (so we don't issue a second PageExistsInSpace after the upsert).
+	// pageIsLiveResolved is true when the not-found branch below has already
+	// checked whether a live page exists in the space. The post-upsert check
+	// reads this flag to skip calling PageExistsInSpace a second time.
 	pageIsLive := false
 	pageIsLiveResolved := false
 
@@ -111,7 +119,7 @@ func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs 
 		}
 	}
 
-	saved, savedPageWasLive, err := s.store.UpsertDraft(draft, parentID, fileIDs)
+	saved, savedPageWasLive, err := s.store.UpsertDraft(draft, parentID, fileIDs, props)
 	if err != nil {
 		switch store.ConflictReason(err) {
 		case store.ReasonConcurrentEdit:
@@ -198,7 +206,7 @@ func (s *Service) CreateSpaceDraft(userID, spaceID, title, pageParentID string) 
 	// UpdatePageDraft's guard — which rejects drafts for non-existent pages on the autosave
 	// path — would incorrectly block this call. The page is never live here, so the liveness
 	// flag is discarded.
-	saved, _, err := s.store.UpsertDraft(draft, parentPtr, nil)
+	saved, _, err := s.store.UpsertDraft(draft, parentPtr, nil, nil)
 	if err != nil {
 		// Translate hierarchy errors with create-specific keys so the client receives an
 		// appropriate message. invalidInputAppError maps these to update.* keys, which don't
@@ -362,6 +370,15 @@ func (s *Service) GetPageDraftsForSpace(userID, spaceID string, page, perPage in
 //   - wasCreated=true → a new page was inserted by this call (handler should return 201)
 //   - wasCreated=false → an existing page was updated, or a concurrent create was adopted (return 200)
 func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (*model.Page, bool, *mmmodel.AppError) {
+	if !mmmodel.IsValidId(userID) {
+		return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	if !mmmodel.IsValidId(spaceID) {
+		return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.invalid_space_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	if !mmmodel.IsValidId(pageID) {
+		return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.invalid_page_id.app_error", nil, "", http.StatusBadRequest)
+	}
 	s.log.Debug("Publishing page draft", "space_id", spaceID, "page_id", pageID, "user_id", userID, "force", force)
 	// 1. Fetch draft (idempotency guard: 404 = draft already published or discarded).
 	draft, appErr := s.GetPageDraft(userID, spaceID, pageID)
@@ -415,7 +432,12 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 		return nil, false, contentErr
 	}
 
-	// 5. Build the *model.Page for the store call.
+	// 5. Build the *model.Page for the store call. Props follow the same write intent as
+	// PagePatch.Props: a new page adopts the draft's props outright, while an edit replaces the
+	// live page's props only when the draft carries a non-empty map and preserves them otherwise.
+	// (A bare Draft.Props map cannot express "clear to empty" distinctly from "unset", so an empty
+	// draft map means preserve, consistent with how Title/Body are carried below.) No client sets
+	// page props through drafts today; this keeps the publish path ready for when one does.
 	var pageForWrite *model.Page
 	if isNewPage {
 		title, titleErr := validateTitle("PublishPageDraft", draft.Title, model.PageTitleMaxRunes)
@@ -431,13 +453,15 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 			Title:          title,
 			Body:           body,
 			SearchText:     searchText,
+			Props:          draft.Props,
 			UserId:         userID,
 			LastModifiedBy: userID,
 		}
 	} else {
 		// Edit path: require an optimistic-lock baseline unless force, so a client that never
 		// captured the page's EditAt cannot silently overwrite a concurrent edit.
-		baseEditAt, haveBaseline := draft.EditBaseline()
+		baseEditAt := draft.BaseEditAt
+		haveBaseline := baseEditAt != 0
 		if !force && !haveBaseline {
 			return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.baseline_required.app_error",
 				nil, "", http.StatusBadRequest)
@@ -464,15 +488,18 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 			pageForWrite.Body = body
 			pageForWrite.SearchText = searchText
 		}
+		if len(draft.Props) > 0 {
+			pageForWrite.Props = draft.Props
+		}
 		if haveBaseline {
 			pageForWrite.EditAt = baseEditAt
 		}
 
-		// A draft that carries only an optimistic-lock baseline — no Title, no Body — has no page
-		// content to write. Publishing it would bump EditAt and emit page_updated with no actual
+		// A draft that carries only an optimistic-lock baseline — no Title, no Body, no Props — has no
+		// page change to write. Publishing it would bump EditAt and emit page_updated with no actual
 		// change, invalidating other editors' baselines for nothing. Treat it as a discard instead:
 		// delete the draft and return the page as-is.
-		if pageForWrite.Title == "" && pageForWrite.Body == "" {
+		if pageForWrite.Title == "" && pageForWrite.Body == "" && len(pageForWrite.Props) == 0 {
 			deleted, delErr := s.store.DeleteDraftVersion(userID, pageID, draft.UpdateAt)
 			if delErr != nil {
 				return nil, false, storeAppError("PublishPageDraft", delErr)
@@ -523,7 +550,7 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 					// Best-effort: the page is already published by the winner, so a failure here is
 					// logged (a stray draft the user can discard), never surfaced as a publish failure.
 					if _, delErr := s.store.DeleteDraftVersion(userID, pageID, draft.UpdateAt); delErr != nil {
-						s.log.Warn("PublishPageDraft: failed to delete orphaned draft after adopting race winner",
+						s.log.Warn("failed to delete orphaned draft after adopting race winner",
 							"page_id", pageID, "user_id", userID, "err", delErr)
 					}
 					// The draft is consumed; clear the rate-limit entry and broadcast presence so
@@ -533,7 +560,7 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 				}
 				if rErr != nil {
 					// Log this: a real store failure here would otherwise look identical to losing the race.
-					s.log.Warn("PublishPageDraft: failed to read the page that won the publish race",
+					s.log.Warn("failed to read the page that won the publish race",
 						"page_id", pageID, "user_id", userID, "err", rErr)
 				}
 			}

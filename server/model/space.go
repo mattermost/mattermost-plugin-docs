@@ -183,7 +183,7 @@ func (s *Space) IsValid() *mmmodel.AppError {
 		return mmmodel.NewAppError("Space.IsValid", "model.space.is_valid.icon_length.app_error", nil, "id="+s.Id, http.StatusBadRequest)
 	}
 
-	if err := validatePropsSize("Space.IsValid", "id="+s.Id, s.Props, SpacePropsMaxBytes); err != nil {
+	if err := ValidatePropsSize("Space.IsValid", "id="+s.Id, s.Props, SpacePropsMaxBytes); err != nil {
 		return err
 	}
 

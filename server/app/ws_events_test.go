@@ -191,8 +191,8 @@ func TestServiceUpdatePageDraft_PublishesPresenceEvent(t *testing.T) {
 
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc",
-		Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(page.EditAt)},
-	}, nil, nil, channelID)
+		BaseEditAt: page.EditAt,
+	}, nil, nil, nil, channelID)
 	require.Nil(t, appErr)
 
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_presence_updated",
@@ -253,8 +253,8 @@ func TestServicePublishPageDraft_PublishesUpdatedEvent(t *testing.T) {
 	// Start an edit session against the live page's baseline, then publish it.
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc", Body: docWith("edited"),
-		Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(page.EditAt)},
-	}, nil, nil, "")
+		BaseEditAt: page.EditAt,
+	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
 	republished, wasCreated, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
@@ -295,8 +295,8 @@ func TestServiceDeletePageDraft_PublishesPresenceEvent(t *testing.T) {
 
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc",
-		Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(page.EditAt)},
-	}, nil, nil, channelID)
+		BaseEditAt: page.EditAt,
+	}, nil, nil, nil, channelID)
 	require.Nil(t, appErr)
 
 	require.Nil(t, h.svc.DeletePageDraft(userID, space.Id, page.Id, channelID))
@@ -334,7 +334,7 @@ func TestServiceUpdatePageDraft_NewPageDraftPublishesToUserOnly(t *testing.T) {
 
 	_, appErr = h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: draft.PageId, Title: "Unpublished",
-	}, nil, nil, channelID)
+	}, nil, nil, nil, channelID)
 	require.Nil(t, appErr)
 
 	// The broadcast must be user-scoped: only the author learns about their own unreleased page.
@@ -369,8 +369,8 @@ func TestServiceUpdatePageDraft_PresenceRateLimitSuppressesSecondBroadcast(t *te
 	autosave := func() {
 		_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 			UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc",
-			Props: mmmodel.StringInterface{model.DraftPropsOriginalPageEditAt: float64(page.EditAt)},
-		}, nil, nil, channelID)
+			BaseEditAt: page.EditAt,
+		}, nil, nil, nil, channelID)
 		require.Nil(t, appErr)
 	}
 	autosave() // first: should broadcast

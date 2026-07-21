@@ -293,9 +293,12 @@ func sanitizeAttrs(attrs map[string]any, depth int) error {
 	return nil
 }
 
-// sanitizeAttrValue recurses into the containers an attribute value may hold. Scalars are left
-// alone: only a map can carry a dangerous key. Like sanitizeAttrs, it fails closed past
-// maxTipTapDepth.
+// sanitizeAttrValue recurses into the containers an attribute value may hold, neutralizing dangerous
+// URL schemes on any bare string reached inside an array. A scalar string held directly under a map
+// key is left to stripDangerousKeys, which sanitizes it only under a URL-designated key; but a string
+// inside an array has no key to mark it, so a dangerous scheme there — e.g. ["javascript:alert(1)"]
+// under a non-URL-designated key an editor extension may define — would otherwise pass through
+// untouched. Like sanitizeAttrs, it fails closed past maxTipTapDepth.
 func sanitizeAttrValue(val any, depth int) error {
 	if depth > maxTipTapDepth {
 		return errAttrDepthExceeded
@@ -304,7 +307,11 @@ func sanitizeAttrValue(val any, depth int) error {
 	case map[string]any:
 		return sanitizeAttrs(v, depth+1)
 	case []any:
-		for _, item := range v {
+		for i, item := range v {
+			if s, ok := item.(string); ok {
+				v[i] = neutralizeBareArrayURLString(s)
+				continue
+			}
 			if err := sanitizeAttrValue(item, depth+1); err != nil {
 				return err
 			}
@@ -487,24 +494,42 @@ func urlScheme(s string) (string, bool) {
 // its scheme, so an obfuscated "java\tscript:" cannot slip past the scheme check.
 var urlStripChars = strings.NewReplacer("\t", "", "\n", "", "\r", "", "\x00", "")
 
-// sanitizeURL returns the URL unchanged if its scheme is on the allowlist (or it is a relative
-// reference), and "" otherwise. It defends against control-character, leading-whitespace, and
-// HTML-entity obfuscation of dangerous schemes (e.g. "java&Tab;script&colon;alert(1)").
-func sanitizeURL(url string) string {
-	// Decode HTML entities and strip the tab/newline/CR browsers ignore, so an obfuscated scheme
-	// (entity-encoded ":" or an embedded control char) is detected. The decode is used only for
-	// scheme detection; the original url is what gets returned when allowed.
-	// Two strip passes: the first removes literal control chars, the second removes any that
-	// html.UnescapeString re-introduces (e.g. "&Tab;" → "\t").
-	// Percent-encoded characters (%09, %0A, etc.) are intentionally NOT stripped: browsers do not
-	// strip percent-encoded chars from scheme names, so "java%09script:" never parses as "javascript:".
+// decodeURLScheme extracts the scheme a browser would resolve from url, defeating the obfuscation a
+// dangerous scheme can hide behind. It decodes HTML entities and strips the tab/newline/CR/null
+// browsers ignore, so an entity-encoded ":" or an embedded control char is detected. Two strip
+// passes: the first removes literal control chars, the second removes any html.UnescapeString
+// re-introduces (e.g. "&Tab;" → "\t"). Percent-encoded characters (%09, %0A, etc.) are intentionally
+// NOT stripped: browsers do not strip them from scheme names, so "java%09script:" never parses as
+// "javascript:". Returns the lowercased scheme, the lowercased cleaned string (for data: prefix
+// matching), and whether a scheme is present (false for a relative reference). The decode is used
+// only for detection; callers return the original string when they allow it.
+func decodeURLScheme(url string) (scheme, lower string, hasScheme bool) {
 	cleaned := urlStripChars.Replace(url)
 	cleaned = html.UnescapeString(cleaned)
 	cleaned = urlStripChars.Replace(cleaned)
 	cleaned = strings.TrimFunc(cleaned, func(r rune) bool { return r <= ' ' })
-	lower := strings.ToLower(cleaned)
+	lower = strings.ToLower(cleaned)
+	scheme, hasScheme = urlScheme(lower)
+	return scheme, lower, hasScheme
+}
 
-	scheme, hasScheme := urlScheme(lower)
+// isSafeImageDataURL reports whether a data: URL carries a base64 payload sniffing as an allowed
+// raster image. lower is the lowercased, obfuscation-decoded form of url from decodeURLScheme.
+func isSafeImageDataURL(url, lower string) bool {
+	for _, prefix := range safeImageDataPrefixes {
+		if strings.HasPrefix(lower, prefix) && isBase64ImagePayload(url) {
+			return true
+		}
+	}
+	return false
+}
+
+// sanitizeURL returns the URL unchanged if its scheme is on the allowlist (or it is a relative
+// reference), and "" otherwise. It defends against control-character, leading-whitespace, and
+// HTML-entity obfuscation of dangerous schemes (e.g. "java&Tab;script&colon;alert(1)"). Applied to a
+// value under a URL-designated attribute key (href, src, data-*, …).
+func sanitizeURL(url string) string {
+	scheme, lower, hasScheme := decodeURLScheme(url)
 	if !hasScheme {
 		return url
 	}
@@ -512,13 +537,36 @@ func sanitizeURL(url string) string {
 	case "http", "https", "mailto", "tel":
 		return url
 	case "data":
-		for _, prefix := range safeImageDataPrefixes {
-			if strings.HasPrefix(lower, prefix) && isBase64ImagePayload(url) {
-				return url
-			}
+		if isSafeImageDataURL(url, lower) {
+			return url
 		}
 		return ""
 	default:
 		return ""
+	}
+}
+
+// neutralizeBareArrayURLString blanks a string reached as a bare element of an array attribute value
+// if it carries a script-executing or foreign-content URL scheme. Unlike sanitizeURL (a strict
+// allowlist applied where an attribute key marks the value a URL), a bare array element has no key to
+// mark it, so only the unambiguously dangerous schemes are neutralized: a plain colon-bearing string
+// an extension may legitimately store in an array — a "12:30" timestamp, a "16:9" ratio — is
+// preserved, while a javascript:/vbscript:/non-image data: payload smuggled through a non-URL array
+// key is dropped.
+func neutralizeBareArrayURLString(s string) string {
+	scheme, lower, hasScheme := decodeURLScheme(s)
+	if !hasScheme {
+		return s
+	}
+	switch scheme {
+	case "javascript", "vbscript":
+		return ""
+	case "data":
+		if isSafeImageDataURL(s, lower) {
+			return s
+		}
+		return ""
+	default:
+		return s
 	}
 }
