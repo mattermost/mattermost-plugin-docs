@@ -4,7 +4,7 @@
 import {useTeamContext} from 'hooks/team';
 import {useCallback} from 'react';
 import {useHistory, useRouteMatch} from 'react-router-dom';
-import {DOCS_ROUTE, docsHomePath, docsPath, draftPath, pagePath, spacePath} from 'routing/paths';
+import {DOCS_DRAFT_ROUTE, DOCS_ROUTE, docsHomePath, docsPath, draftPath, pagePath, spacePath} from 'routing/paths';
 
 type DocsRouteParams = {
     team?: string;
@@ -19,12 +19,16 @@ type DocsRouteParams = {
 // navigation (clicks, keyboard handlers).
 export function useDocsNavigation() {
     const history = useHistory();
+
+    const draftMatch = useRouteMatch<DocsRouteParams>(DOCS_DRAFT_ROUTE);
     const match = useRouteMatch<DocsRouteParams>(DOCS_ROUTE);
     const {name: currentTeamName} = useTeamContext();
 
-    const teamName = match?.params.team || currentTeamName;
-    const spaceId = match?.params.spaceId;
-    const pageId = match?.params.pageId;
+    const active = draftMatch ?? match;
+    const teamName = active?.params.team || currentTeamName;
+    const spaceId = active?.params.spaceId;
+    const pageId = active?.params.pageId;
+    const isDraft = Boolean(draftMatch);
 
     const goToSpace = useCallback((id: string) => history.push(spacePath(teamName, id)), [history, teamName]);
     const goToPage = useCallback((space: string, page: string) => history.push(pagePath(teamName, space, page)), [history, teamName]);
@@ -36,6 +40,7 @@ export function useDocsNavigation() {
         teamName,
         spaceId,
         pageId,
+        isDraft,
         goToSpace,
         goToPage,
         goToDraft,
