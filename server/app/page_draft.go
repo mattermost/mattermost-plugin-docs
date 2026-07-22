@@ -105,8 +105,11 @@ func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs 
 		// Existing draft belongs to a different space: reject to prevent cross-space drift.
 		return nil, mmmodel.NewAppError("UpdatePageDraft", "app.page_draft.update.page_not_found.app_error", nil, "", http.StatusNotFound)
 	case store.IsErrNotFound(existingDraftErr):
-		// No draft for this user+page. Allow only if the page ID is "known" — either another
-		// user already reserved it via CreateSpaceDraft, or it is a published page in this space.
+		// No draft for THIS user+page. Allow only if the page is already published/live in the
+		// space — PageExistsInSpace checks DOCS_Page, not drafts. A page id reserved via
+		// CreateSpaceDraft (the id is allocated, but no DOCS_Page row exists yet) has only a
+		// DOCS_Draft row, so its author reaches this method through the "existing draft" branch
+		// above (user-scoped GetDraft), never here.
 		// This prevents PATCH /spaces/X/pages/<random-id>/draft from ghost-drafting a non-existent page.
 		var existsErr error
 		pageIsLive, existsErr = s.store.PageExistsInSpace(draft.PageId, draft.SpaceId)
@@ -317,10 +320,15 @@ func (s *Service) DeletePageDraft(userID, spaceID, pageID, channelID string) *mm
 		return appErr
 	}
 
-	// Discard is unconditional. A concurrent autosave in flight can briefly re-insert the draft after
-	// this commits — an unpublished new-page draft has no page row for UpsertDraft's staleness guard
-	// to key on. It is per-user and clears on a repeat discard, so a tombstone isn't warranted.
-	//
+	// Discard is unconditional. Autosave and discard are separate HTTP requests in separate
+	// transactions, so an autosave request the same user dispatched just before the discard can
+	// still be in flight when the discard commits and then re-insert (resurrect) this draft — the
+	// server does not guarantee the autosave commits before the later-issued delete. An unpublished
+	// new-page draft has no page row for UpsertDraft's staleness guard to key on, so the guard
+	// cannot tell that a discard happened (a published page is protected; only this case is not).
+	// The resulting zombie draft is harmless — it is visible only to its owning user (drafts are
+	// keyed by (UserId, PageId)), and that user removes it by discarding again — so a deletion
+	// tombstone to permanently block re-insertion is not warranted.
 	pageWasLive, delErr := s.store.DeleteDraftReparenting(userID, spaceID, pageID)
 	if delErr != nil {
 		// A concurrent publish/delete may have removed the draft between the check above and here;
@@ -466,12 +474,13 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 			return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.baseline_required.app_error",
 				nil, "", http.StatusBadRequest)
 		}
-		// Carry only the fields the draft actually set; leave the rest empty. The store preserves the
-		// live page's current value for any empty field, so an omitted field is never sourced from the
-		// pre-lock `existing` snapshot — otherwise a force-publish could revert a concurrent edit to a
-		// field this draft never touched.
-		// An empty draft body means "unset" (a cleared document is EmptyTipTapJSON, not ""), so an
-		// empty body leaves the live page's content intact rather than wiping it.
+		// Build pageForWrite with only the fields this draft changed; leave every other field at its
+		// zero value. The store treats a zero/empty field as "keep the live page's current value" and
+		// writes just the non-empty ones. Omitted fields are deliberately NOT copied from the pre-lock
+		// `existing` snapshot: that snapshot can be stale, so on a force-publish copying it back would
+		// overwrite a field this draft never touched and revert a concurrent edit to it.
+		// Body uses "" as its unset marker — a document the user cleared is stored as EmptyTipTapJSON,
+		// never "" — so treating an empty ("") body as unset preserves the live content instead of wiping it.
 		pageForWrite = &model.Page{
 			Id:             pageID,
 			SpaceId:        spaceID,
@@ -495,10 +504,13 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 			pageForWrite.EditAt = baseEditAt
 		}
 
-		// A draft that carries only an optimistic-lock baseline — no Title, no Body, no Props — has no
-		// page change to write. Publishing it would bump EditAt and emit page_updated with no actual
-		// change, invalidating other editors' baselines for nothing. Treat it as a discard instead:
-		// delete the draft and return the page as-is.
+		// "Baseline-only" draft: it carries an optimistic-lock baseline but no content in any field —
+		// Title, Body, and Props were never populated (all empty). This is NOT a user who cleared the
+		// document: a cleared doc is EmptyTipTapJSON, a non-empty Body that publishes normally; empty
+		// here means "never sent". With every field empty there is no page change to write. Publishing
+		// would still bump EditAt and emit page_updated with no actual change, invalidating other
+		// editors' baselines for nothing. Treat it as a discard instead: delete the draft and return
+		// the page as-is.
 		if pageForWrite.Title == "" && pageForWrite.Body == "" && len(pageForWrite.Props) == 0 {
 			deleted, delErr := s.store.DeleteDraftVersion(userID, pageID, draft.UpdateAt)
 			if delErr != nil {

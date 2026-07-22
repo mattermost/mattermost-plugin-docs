@@ -113,9 +113,7 @@ func MaxDepthOfPages(pages []*Page, rootID string) int {
 			}
 			cur = parent
 		}
-		if depth > maxDepth {
-			maxDepth = depth
-		}
+		maxDepth = max(maxDepth, depth)
 	}
 	return maxDepth
 }

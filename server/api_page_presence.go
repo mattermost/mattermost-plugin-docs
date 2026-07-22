@@ -11,7 +11,7 @@ import (
 
 // handleGetPageActiveEditors handles
 // GET /api/v1/spaces/{space_id}/pages/{page_id}/active-editors
-// Returns the user IDs currently active on the page.
+// Returns the active-editors snapshot for the page (active_editors, as_of, active_timeout_ms).
 func (p *Plugin) handleGetPageActiveEditors(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	spaceID := vars["space_id"]

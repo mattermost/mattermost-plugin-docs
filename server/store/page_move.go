@@ -421,9 +421,7 @@ func (s *Store) collectLiveSubtreeIDs(tx *sqlx.Tx, pageID string) ([]string, int
 		if row.Depth > MaxPageHierarchyDepth {
 			return nil, 0, &ErrLimitExceeded{Resource: "Page subtree for page_id=" + pageID + " (depth)", Limit: MaxPageHierarchyDepth}
 		}
-		if row.Depth > maxRelDepth {
-			maxRelDepth = row.Depth
-		}
+		maxRelDepth = max(maxRelDepth, row.Depth)
 		ids = append(ids, row.ID)
 	}
 	return ids, maxRelDepth, nil

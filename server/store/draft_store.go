@@ -381,6 +381,8 @@ func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmod
 		}
 	}
 
+	// The INSERT ... VALUES is squirrel-built; squirrel cannot express ON CONFLICT ... DO UPDATE or
+	// RETURNING, so those are carried raw in the Suffix below.
 	// The COALESCE in VALUES ensures NOT NULL is satisfied on INSERT; the CASE in the ON CONFLICT
 	// clause reads the original bound parameter (not EXCLUDED.ParentId) to distinguish nil
 	// ("omit, preserve") from "" ("explicit clear to root").

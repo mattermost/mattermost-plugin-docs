@@ -34,9 +34,10 @@ const (
 	wsEventPageMoved        = "page_moved"
 	wsEventPageDuplicated   = "page_duplicated"
 	wsEventPageMovedToSpace = "page_moved_to_space"
-	// wsEventPagePresenceUpdated carries a presence snapshot ({page_id, space_id, active_editors,
-	// as_of, active_timeout_ms}), not the {page_id, space_id} mutation shape; it is rate-limited on
-	// autosave but always fires on discard and publish.
+	// Unlike the other page_* events above — which carry only {page_id, space_id} as a
+	// "something changed, refetch" signal — wsEventPagePresenceUpdated carries the full presence
+	// snapshot inline ({page_id, space_id, active_editors, as_of, active_timeout_ms}), so clients
+	// need no follow-up fetch. It is rate-limited on autosave but always fires on discard and publish.
 	wsEventPagePresenceUpdated = "page_presence_updated"
 
 	wsEventSpaceCreated       = "space_created"

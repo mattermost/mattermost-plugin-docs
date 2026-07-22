@@ -220,6 +220,8 @@ func (s *Store) execBuilder(e sqlx.ExtContext, b sq.Sqlizer) (sql.Result, error)
 }
 
 // advisoryXactLock takes the transaction-scoped advisory lock for key, held until tx ends.
+// It is a bare pg_advisory_xact_lock function-call SELECT, which squirrel does not model, so
+// it is issued raw.
 // hashtextextended maps the key to a single bigint, so a hash collision only over-serializes
 // the two colliding keys' operations — added contention, never corruption, with negligible
 // probability. Must be called inside tx.

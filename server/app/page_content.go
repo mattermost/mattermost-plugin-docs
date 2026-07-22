@@ -22,7 +22,7 @@ import (
 // pages with model.EmptyTipTapJSON (a rendered-empty document). These are two DISTINCT empty
 // representations, and consumers may assign them different meaning: the publish path treats "" as
 // "field not sent, preserve the existing page body" and EmptyTipTapJSON as "explicitly cleared".
-func normalizePageContent(where, body string) (string, string, *mmmodel.AppError) {
+func normalizePageContent(where, body string) (normBody, searchText string, appErr *mmmodel.AppError) {
 	normBody, searchText, err := validateAndNormalizeContent(body)
 	if err != nil {
 		return "", "", mmmodel.NewAppError(where, "app.page.invalid_content.app_error", nil, "", http.StatusBadRequest).Wrap(err)
@@ -50,7 +50,7 @@ func normalizePatchContent(where string, patch *model.PagePatch) *mmmodel.AppErr
 
 // validateAndNormalizeContent validates and normalizes TipTap/plain-text page content.
 // Returns (normalizedBody, searchText, error). An empty content string is returned as-is (no-op).
-func validateAndNormalizeContent(content string) (string, string, error) {
+func validateAndNormalizeContent(content string) (normBody, searchText string, err error) {
 	if content == "" {
 		return content, "", nil
 	}
@@ -59,10 +59,11 @@ func validateAndNormalizeContent(content string) (string, string, error) {
 	// valid JSON but not a "doc" is a genuine content error and ParseTipTapDocument rejects it.
 	idx := strings.IndexFunc(content, func(r rune) bool { return !unicode.IsSpace(r) })
 	if idx >= 0 && content[idx] == '{' {
-		doc, err := model.ParseTipTapDocument(content)
-		if err == nil {
+		doc, parseErr := model.ParseTipTapDocument(content)
+		if parseErr == nil {
 			return marshalTipTapDoc(doc)
 		}
+		err = parseErr
 		var syntaxErr *json.SyntaxError
 		if !errors.As(err, &syntaxErr) {
 			return "", "", err
