@@ -6,19 +6,22 @@ import React from 'react';
 import {FormattedMessage} from 'react-intl';
 
 import DocsHome from 'components/docs_home/docs_home';
+import PageEditor from 'components/page_editor/page_editor';
 
 import styles from './docs_main_content.module.scss';
 
 type Props = {
     spaceId?: string;
     pageId?: string;
+    isDraft?: boolean;
     onCreateSpace: () => void;
     onBrowseSpaces: () => void;
 };
 
 // The space view is built later; for now a routed space renders a placeholder
-// that reflects the routed space/page to keep the URL observable.
-const DocsMainContent = ({spaceId, pageId, onCreateSpace, onBrowseSpaces}: Props) => {
+// that reflects the routed space/page. When a page is routed we hand off to
+// PageEditor
+const DocsMainContent = ({spaceId, pageId, isDraft, onCreateSpace, onBrowseSpaces}: Props) => {
     const space = useSpace(spaceId);
 
     if (!space) {
@@ -26,6 +29,16 @@ const DocsMainContent = ({spaceId, pageId, onCreateSpace, onBrowseSpaces}: Props
             <DocsHome
                 onCreateSpace={onCreateSpace}
                 onBrowseSpaces={onBrowseSpaces}
+            />
+        );
+    }
+
+    if (pageId) {
+        return (
+            <PageEditor
+                spaceId={space.id}
+                pageId={pageId}
+                isDraft={Boolean(isDraft)}
             />
         );
     }
@@ -39,18 +52,10 @@ const DocsMainContent = ({spaceId, pageId, onCreateSpace, onBrowseSpaces}: Props
                     {space.title}
                 </h2>
                 <p className={styles.subtitle}>
-                    {pageId ? (
-                        <FormattedMessage
-                            id='docs.main.page'
-                            defaultMessage='Page {pageId}'
-                            values={{pageId}}
-                        />
-                    ) : (
-                        <FormattedMessage
-                            id='docs.main.spaceOverview'
-                            defaultMessage='Space overview'
-                        />
-                    )}
+                    <FormattedMessage
+                        id='docs.main.spaceOverview'
+                        defaultMessage='Space overview'
+                    />
                 </p>
             </div>
         </div>
