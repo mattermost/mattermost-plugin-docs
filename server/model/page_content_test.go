@@ -454,7 +454,7 @@ func TestParseTipTapDocumentNeutralizesBareArrayURLStrings(t *testing.T) {
 		"type": "doc",
 		"content": []any{
 			map[string]any{
-				"type": "customEmbed",
+				"type": "fileAttachment",
 				"attrs": map[string]any{
 					"sources": []any{"javascript:alert(1)", "vbscript:msgbox(1)", "http://ok.example", "12:30", "16:9"},
 					"nested":  []any{[]any{"javascript:alert(2)"}},
@@ -483,12 +483,97 @@ func TestParseTipTapDocumentNeutralizesBareArrayURLStrings(t *testing.T) {
 	require.Equal(t, "http://ok.example", sources[2])
 }
 
+func TestParseTipTapDocumentSanitizesDataAttrs(t *testing.T) {
+	// A data-* attribute is not necessarily a URL: an extension may store a ratio or timestamp
+	// under a data-* key. Such colon-bearing values must be preserved (the strict URL allowlist
+	// would parse the leading token as a scheme and blank them), while a dangerous scheme carried
+	// under a data-* key is still neutralized, and a non-string data-* value is left untouched.
+	raw := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "fileAttachment",
+				"attrs": map[string]any{
+					"data-ratio":   "16:9",
+					"data-time":    "12:30",
+					"data-src":     "https://ok.example/img.png",
+					"data-onnav":   "javascript:alert(1)",
+					"data-vb":      "vbscript:msgbox(1)",
+					"data-index":   float64(5),
+					"data-payload": "data:text/html,<script>alert(1)</script>",
+					// Mixed-case key: the data- prefix is matched case-insensitively (the key is
+					// lowercased before the prefix test), so a dangerous scheme here is still blanked
+					// and a colon-bearing non-URL value is still preserved.
+					"DATA-Nav": "javascript:alert(2)",
+					"Data-Ok":  "21:9",
+					// Non-string container under a data-* key: stripDangerousKeys skips the non-string
+					// value, and the recursive attr walk sanitizes the nested map's designated URL key.
+					"data-config": map[string]any{"href": "javascript:alert(3)", "keep": "plain"},
+				},
+			},
+		},
+	}
+	b, err := json.Marshal(raw)
+	require.NoError(t, err)
+	doc, err := model.ParseTipTapDocument(string(b))
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(marshal(t, doc)), &parsed))
+	attrs := parsed["content"].([]any)[0].(map[string]any)["attrs"].(map[string]any)
+
+	require.Equal(t, "16:9", attrs["data-ratio"], "a non-URL ratio under a data-* key must be preserved")
+	require.Equal(t, "12:30", attrs["data-time"], "a non-URL timestamp under a data-* key must be preserved")
+	require.Equal(t, "https://ok.example/img.png", attrs["data-src"], "a safe URL under a data-* key must be preserved")
+	require.Equal(t, "", attrs["data-onnav"], "a javascript: scheme under a data-* key must be neutralized")
+	require.Equal(t, "", attrs["data-vb"], "a vbscript: scheme under a data-* key must be neutralized")
+	require.Equal(t, float64(5), attrs["data-index"], "a non-string data-* value must be left untouched")
+	require.Equal(t, "", attrs["data-payload"], "a non-image data: URI under a data-* key must be neutralized")
+	require.Equal(t, "", attrs["DATA-Nav"], "a dangerous scheme under a mixed-case data-* key must be neutralized")
+	require.Equal(t, "21:9", attrs["Data-Ok"], "a non-URL value under a mixed-case data-* key must be preserved")
+
+	config, ok := attrs["data-config"].(map[string]any)
+	require.True(t, ok, "a nested map under a data-* key must be preserved as a map")
+	require.Equal(t, "", config["href"], "a dangerous URL nested under a data-* map must be sanitized recursively")
+	require.Equal(t, "plain", config["keep"], "a non-URL sibling in the nested map must be preserved")
+}
+
 func TestParseTipTapDocumentRejectsTooDeep(t *testing.T) {
 	// A pathologically deep document is rejected rather than walked.
 	depth := 200
-	deep := `{"type":"doc","content":` + strings.Repeat(`[{"type":"x","content":`, depth) + `[]` + strings.Repeat(`}]`, depth) + `}`
+	deep := `{"type":"doc","content":` + strings.Repeat(`[{"type":"blockquote","content":`, depth) + `[]` + strings.Repeat(`}]`, depth) + `}`
 	_, err := model.ParseTipTapDocument(deep)
 	require.Error(t, err, "content nested beyond the limit must be rejected")
+}
+
+func TestParseTipTapDocumentRejectsOffSchemaNodeType(t *testing.T) {
+	// A node type outside the allowlist is rejected outright, so a client node type the server does
+	// not know about surfaces as a loud failure rather than passing through unrecognized.
+	_, err := model.ParseTipTapDocument(`{"type":"doc","content":[{"type":"widget","content":[]}]}`)
+	require.Error(t, err, "an off-schema node type must be rejected")
+}
+
+func TestParseTipTapDocumentRejectsOffSchemaMarkType(t *testing.T) {
+	// Mark types are allowlisted the same as node types: a mark outside the schema is rejected.
+	_, err := model.ParseTipTapDocument(`{"type":"doc","content":[{"type":"text","text":"x","marks":[{"type":"blink"}]}]}`)
+	require.Error(t, err, "an off-schema mark type must be rejected")
+}
+
+func TestParseTipTapDocumentRejectsAllowlistedTypeInWrongCase(t *testing.T) {
+	// The allowlist matches case-sensitively (TipTap schema names are camelCase). A case variant of an
+	// allowed type is rejected — this also guards the denylist->allowlist switch, since the old
+	// case-insensitive denylist would have lowercased "Paragraph" and let it through.
+	_, err := model.ParseTipTapDocument(`{"type":"doc","content":[{"type":"Paragraph"}]}`)
+	require.Error(t, err, "a wrong-case node type must be rejected under the case-sensitive allowlist")
+}
+
+func TestParseTipTapDocumentAllowsSchemaNodeTypes(t *testing.T) {
+	// Representative core-schema and extension node types must pass sanitization unchanged.
+	for _, nodeType := range []string{"heading", "table", "callout", "taskList", "taskItem", "channelMention", "video", "fileAttachment", "imagePlaceholder", "imageResize"} {
+		doc := `{"type":"doc","content":[{"type":"` + nodeType + `","content":[]}]}`
+		_, err := model.ParseTipTapDocument(doc)
+		require.NoError(t, err, "schema node type %q must be allowed", nodeType)
+	}
 }
 
 func TestParseTipTapDocumentStripsAdditionalDangerousAttrs(t *testing.T) {
@@ -497,7 +582,7 @@ func TestParseTipTapDocumentStripsAdditionalDangerousAttrs(t *testing.T) {
 		"type": "doc",
 		"content": []any{
 			map[string]any{
-				"type": "form",
+				"type": "image",
 				"attrs": map[string]any{
 					"formaction": "https://evil.example",
 					"dynsrc":     "javascript:alert(1)",

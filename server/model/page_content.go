@@ -20,9 +20,13 @@ const (
 )
 
 // TipTapDocument is the parsed form of a TipTap editor document. Content is left as an untyped node
-// tree because the TipTap schema is open (editor extensions add node/mark types). Instances must be
-// produced by ParseTipTapDocument for the sanitization invariant to hold — a value built any other
-// way has not passed sanitizeTipTapDocument and must not be stored or rendered.
+// tree because node attributes and nesting vary per editor extension; the permitted node and mark
+// type names are constrained by allowedNodeTypes/allowedMarkTypes during sanitization. Client-supplied
+// content must be produced by ParseTipTapDocument for the sanitization invariant to hold — a value
+// decoded from client JSON any other way has not passed sanitizeTipTapDocument and must not be
+// stored or rendered. The one exception is a document assembled internally from trusted parts (e.g.
+// convertPlainTextToTipTap, which emits only paragraph and text nodes with no attrs or marks): it is
+// safe by construction and needs no sanitization pass.
 type TipTapDocument struct {
 	Type    string           `json:"type"`
 	Content []map[string]any `json:"content"`
@@ -123,53 +127,22 @@ const maxTipTapDepth = 100
 // maxTipTapNodes caps the total number of content nodes in a TipTap document. A 2 MiB JSON payload
 // can contain hundreds of thousands of tiny nodes; unmarshaling them before sanitization causes
 // significant allocation and CPU amplification. The plain-text path is capped at maxPlainTextParagraphs
-// (10 000 paragraphs → ~10 000 nodes); rich documents with ~5 inline nodes per paragraph stay well
-// under 50 000 for any sane document.
+// (10 000 paragraphs → ~20 000 nodes, since each non-empty line is a paragraph plus a text child);
+// rich documents with ~5 inline nodes per paragraph stay well under 50 000 for any sane document.
 const maxTipTapNodes = 50_000
 
 var errAttrDepthExceeded = errors.New("content attribute nesting exceeds the maximum depth")
 
-// countTipTapNodes returns the total number of nodes in the subtree rooted at node, bounding
-// recursion at maxTipTapDepth. It stops counting once the running total exceeds the limit so that
-// a document with millions of nodes does not incur a full traversal just to fail the check.
-func countTipTapNodes(node map[string]any, depth, runningTotal, limit int) int {
-	if depth > maxTipTapDepth || runningTotal > limit {
-		return runningTotal
-	}
-	runningTotal++
-	if contentVal, ok := node["content"]; ok {
-		if children, ok := contentVal.([]any); ok {
-			for _, child := range children {
-				if childNode, ok := child.(map[string]any); ok {
-					runningTotal = countTipTapNodes(childNode, depth+1, runningTotal, limit)
-					if runningTotal > limit {
-						return runningTotal
-					}
-				}
-			}
-		}
-	}
-	return runningTotal
-}
-
 func sanitizeTipTapDocument(doc *TipTapDocument) error {
-	// Reject documents with pathologically many nodes before the recursive sanitization walk,
-	// which would otherwise allocate without bound on a crafted payload.
-	total := 0
-	for _, node := range doc.Content {
-		if node != nil {
-			total = countTipTapNodes(node, 0, total, maxTipTapNodes)
-		}
-		if total > maxTipTapNodes {
-			return errors.Errorf("content exceeds the maximum of %d nodes", maxTipTapNodes)
-		}
-	}
-
+	// count is a running node budget shared across the walk: sanitizeTipTapNode increments it per
+	// node and bails once it crosses maxTipTapNodes, so a crafted payload is rejected before the
+	// walk allocates without bound — without a separate counting pass over the whole tree.
+	count := 0
 	for i := range doc.Content {
 		if doc.Content[i] == nil {
 			return errors.New("content document nodes must be objects")
 		}
-		if err := sanitizeTipTapNode(doc.Content[i], 0); err != nil {
+		if err := sanitizeTipTapNode(doc.Content[i], 0, &count); err != nil {
 			return err
 		}
 	}
@@ -186,43 +159,60 @@ var urlAttrKeys = map[string]struct{}{
 	"xlinkhref":  {},
 }
 
-// forbiddenNodeTypes are TipTap node type values rejected outright because they map to HTML
-// elements that can execute script or embed foreign content. A full allowlist keyed to the editor
-// schema would be the stronger posture; this denylist stops the most dangerous types now.
-var forbiddenNodeTypes = map[string]struct{}{
-	"script":           {},
-	"iframe":           {},
-	"embed":            {},
-	"object":           {},
-	"noscript":         {},
-	"template":         {},
-	"style":            {},
-	"link":             {},
-	"svg":              {},
-	"math":             {},
-	"animate":          {},
-	"animatetransform": {},
-	"foreignobject":    {},
-	"maction":          {},
+// allowedNodeTypes is the allowlist of TipTap node type values permitted in stored content, keyed to
+// the core WysiwygEditor schema plus the extensions the page editor augments it with. A node type not
+// listed here is rejected outright: this pins the server's accepted node set to the client's schema so
+// the two cannot drift silently, and it fails closed for any script- or embed-bearing type the client
+// never emits. Matched case-sensitively, since TipTap schema names are case-sensitive camelCase.
+//
+// This is a hand-maintained mirror of the editor schema: when the page editor gains a node type — a
+// core WysiwygEditor/StarterKit change or a Docs-specific extension — add it here in the same change,
+// or the new content is rejected on save.
+var allowedNodeTypes = map[string]struct{}{
+	// Core WysiwygEditor schema (StarterKit + Link + CodeBlockLowlight + Table).
+	"doc":            {},
+	"paragraph":      {},
+	"text":           {},
+	"heading":        {},
+	"hardBreak":      {},
+	"horizontalRule": {},
+	"blockquote":     {},
+	"codeBlock":      {},
+	"bulletList":     {},
+	"orderedList":    {},
+	"listItem":       {},
+	"table":          {},
+	"tableRow":       {},
+	"tableCell":      {},
+	"tableHeader":    {},
+	// Page editor extensions layered on the core schema.
+	"taskList":         {},
+	"taskItem":         {},
+	"mention":          {},
+	"channelMention":   {},
+	"callout":          {},
+	"image":            {},
+	"imageResize":      {},
+	"imagePlaceholder": {},
+	"video":            {},
+	"fileAttachment":   {},
 }
 
-// forbiddenMarkTypes are TipTap mark type values rejected outright. This mirrors forbiddenNodeTypes
-// except that "link" is valid as a mark (TipTap's inline hyperlink) — its href is sanitized by
-// sanitizeURL rather than being blocked outright.
-var forbiddenMarkTypes = map[string]struct{}{
-	"script":           {},
-	"iframe":           {},
-	"embed":            {},
-	"object":           {},
-	"noscript":         {},
-	"template":         {},
-	"style":            {},
-	"svg":              {},
-	"math":             {},
-	"animate":          {},
-	"animatetransform": {},
-	"foreignobject":    {},
-	"maction":          {},
+// allowedMarkTypes is the allowlist of TipTap mark type values, keyed to the core WysiwygEditor
+// schema plus the page editor's extensions. Like allowedNodeTypes, a mark type not listed here is
+// rejected rather than passed through. "link" is a mark (TipTap's inline hyperlink); its href is
+// sanitized by sanitizeURL.
+var allowedMarkTypes = map[string]struct{}{
+	// Core WysiwygEditor marks.
+	"bold":      {},
+	"italic":    {},
+	"strike":    {},
+	"code":      {},
+	"underline": {},
+	"link":      {},
+	// Page editor extensions.
+	"textStyle":     {},
+	"commentAnchor": {},
 }
 
 // dangerousAttrKeys are attribute keys (matched case-insensitively) stripped outright regardless of
@@ -255,16 +245,23 @@ func stripDangerousKeys(m map[string]any) {
 			delete(m, key)
 			continue
 		}
-		// data-* attributes may carry URL values (data-href, data-src, data-url, etc.) that a
-		// lenient client renderer can treat as navigation targets; sanitize them as URLs.
-		isURL := strings.HasPrefix(lower, "data-")
-		if !isURL {
-			_, isURL = urlAttrKeys[lower]
+		// A data-* attribute may carry a URL a lenient client renderer treats as a navigation
+		// target, but it is not necessarily one: an editor extension may store a ratio ("16:9"), a
+		// timestamp ("12:30"), or any other colon-bearing value under a data-* key. The strict URL
+		// allowlist would read the leading token as a scheme and blank every such value, so
+		// neutralize only the unambiguously dangerous schemes here (javascript:/vbscript:/non-image
+		// data:), matching the bare-array-string path. A non-string value (number, nested map/array)
+		// carries no scheme to strip and is left for the recursive attr walk to handle.
+		if strings.HasPrefix(lower, "data-") {
+			if v, ok := val.(string); ok {
+				m[key] = neutralizeAmbiguousURLScheme(v)
+			}
+			continue
 		}
-		if isURL {
-			// A URL-valued attribute must be a string. A non-string value (e.g. a JSON array) can
-			// be coerced back into a dangerous string by a client renderer, so drop it rather than
-			// leave it untouched.
+		// A designated URL key (href, src, ...) genuinely holds a URL, so apply the strict scheme
+		// allowlist. A non-string value (e.g. a JSON array) can be coerced back into a dangerous
+		// string by a client renderer, so drop it rather than leave it untouched.
+		if _, isURL := urlAttrKeys[lower]; isURL {
 			v, ok := val.(string)
 			if !ok {
 				delete(m, key)
@@ -309,7 +306,7 @@ func sanitizeAttrValue(val any, depth int) error {
 	case []any:
 		for i, item := range v {
 			if s, ok := item.(string); ok {
-				v[i] = neutralizeBareArrayURLString(s)
+				v[i] = neutralizeAmbiguousURLScheme(s)
 				continue
 			}
 			if err := sanitizeAttrValue(item, depth+1); err != nil {
@@ -350,12 +347,16 @@ func sanitizeObjAttrsAndFlatKeys(obj map[string]any, attrsErrMsg string, skipKey
 	return nil
 }
 
-func sanitizeTipTapNode(node map[string]any, depth int) error {
+func sanitizeTipTapNode(node map[string]any, depth int, count *int) error {
 	if node == nil {
 		return errors.New("content node must not be null")
 	}
 	if depth > maxTipTapDepth {
 		return errors.New("content nesting exceeds the maximum depth")
+	}
+	*count++
+	if *count > maxTipTapNodes {
+		return errors.Errorf("content exceeds the maximum of %d nodes", maxTipTapNodes)
 	}
 
 	// Strip dangerous/URL keys placed directly on the node object, then sanitize its attrs. The
@@ -367,7 +368,7 @@ func sanitizeTipTapNode(node map[string]any, depth int) error {
 	if !ok || nodeType == "" {
 		return errors.New("content node must have a non-empty type field")
 	}
-	if _, forbidden := forbiddenNodeTypes[strings.ToLower(nodeType)]; forbidden {
+	if _, allowed := allowedNodeTypes[nodeType]; !allowed {
 		return errors.Errorf("content node type %q is not allowed", nodeType)
 	}
 
@@ -392,7 +393,7 @@ func sanitizeTipTapNode(node map[string]any, depth int) error {
 			if !ok || markType == "" {
 				return errors.New("content mark must have a non-empty type field")
 			}
-			if _, forbidden := forbiddenMarkTypes[strings.ToLower(markType)]; forbidden {
+			if _, allowed := allowedMarkTypes[markType]; !allowed {
 				return errors.Errorf("content mark type %q is not allowed", markType)
 			}
 			if err := sanitizeObjAttrsAndFlatKeys(markNode, "content mark attrs must be an object", markSkipKeys, depth); err != nil {
@@ -411,7 +412,7 @@ func sanitizeTipTapNode(node map[string]any, depth int) error {
 			if !ok {
 				return errors.New("content child must be an object")
 			}
-			if err := sanitizeTipTapNode(childNode, depth+1); err != nil {
+			if err := sanitizeTipTapNode(childNode, depth+1, count); err != nil {
 				return err
 			}
 		}
@@ -527,7 +528,8 @@ func isSafeImageDataURL(url, lower string) bool {
 // sanitizeURL returns the URL unchanged if its scheme is on the allowlist (or it is a relative
 // reference), and "" otherwise. It defends against control-character, leading-whitespace, and
 // HTML-entity obfuscation of dangerous schemes (e.g. "java&Tab;script&colon;alert(1)"). Applied to a
-// value under a URL-designated attribute key (href, src, data-*, …).
+// value under a URL-designated attribute key (href, src, poster, xlink:href). data-* keys are not
+// necessarily URLs and take the lenient neutralizeAmbiguousURLScheme path instead.
 func sanitizeURL(url string) string {
 	scheme, lower, hasScheme := decodeURLScheme(url)
 	if !hasScheme {
@@ -546,14 +548,14 @@ func sanitizeURL(url string) string {
 	}
 }
 
-// neutralizeBareArrayURLString blanks a string reached as a bare element of an array attribute value
-// if it carries a script-executing or foreign-content URL scheme. Unlike sanitizeURL (a strict
-// allowlist applied where an attribute key marks the value a URL), a bare array element has no key to
-// mark it, so only the unambiguously dangerous schemes are neutralized: a plain colon-bearing string
-// an extension may legitimately store in an array — a "12:30" timestamp, a "16:9" ratio — is
-// preserved, while a javascript:/vbscript:/non-image data: payload smuggled through a non-URL array
-// key is dropped.
-func neutralizeBareArrayURLString(s string) string {
+// neutralizeAmbiguousURLScheme blanks a string that carries a script-executing or foreign-content
+// URL scheme, for values that are not unambiguously URLs. It is reached two ways: a bare element of
+// an array attribute value (no key marks it a URL), and a data-* attribute value (whose key may mark
+// a URL but need not — an extension may store a "12:30" timestamp or "16:9" ratio there). Unlike
+// sanitizeURL (a strict allowlist applied where an attribute key designates the value a URL), only
+// the unambiguously dangerous schemes are neutralized: a plain colon-bearing string is preserved,
+// while a javascript:/vbscript:/non-image data: payload is dropped.
+func neutralizeAmbiguousURLScheme(s string) string {
 	scheme, lower, hasScheme := decodeURLScheme(s)
 	if !hasScheme {
 		return s

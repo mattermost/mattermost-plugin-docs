@@ -175,9 +175,9 @@ func TestServiceMovePageToSpace_NoOpPublishesNothing(t *testing.T) {
 }
 
 // TestServiceUpdatePageDraft_PublishesPresenceEvent pins page_presence_updated: the presence-snapshot
-// payload ({page_id, space_id, active_editors, as_of}) — distinct from the {page_id, space_id}
-// mutation shape — broadcast to the space's backing channel. An autosave is the heartbeat, so the
-// saving user appears in active_editors.
+// payload ({page_id, space_id, active_editors, snapshot_at}) — unlike the other page_* events, which carry
+// only {page_id, space_id} as a change signal — broadcast to the space's backing channel. An autosave
+// is the heartbeat, so the saving user appears in active_editors.
 func TestServiceUpdatePageDraft_PublishesPresenceEvent(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
@@ -201,7 +201,7 @@ func TestServiceUpdatePageDraft_PublishesPresenceEvent(t *testing.T) {
 			return ok &&
 				payload["page_id"] == page.Id &&
 				payload["space_id"] == space.Id &&
-				payload["as_of"] != nil &&
+				payload["snapshot_at"] != nil &&
 				payload["active_timeout_ms"] == int64(5*60*1000) &&
 				slices.Contains(editors, userID)
 		}),
@@ -232,7 +232,7 @@ func TestServicePublishPageDraft_PublishesCreatedEvent(t *testing.T) {
 			return ok &&
 				payload["page_id"] == page.Id &&
 				payload["space_id"] == space.Id &&
-				payload["as_of"] != nil &&
+				payload["snapshot_at"] != nil &&
 				len(editors) == 0
 		}),
 		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
@@ -272,7 +272,7 @@ func TestServicePublishPageDraft_PublishesUpdatedEvent(t *testing.T) {
 			return ok &&
 				payload["page_id"] == republished.Id &&
 				payload["space_id"] == space.Id &&
-				payload["as_of"] != nil &&
+				payload["snapshot_at"] != nil &&
 				payload["active_timeout_ms"] == int64(5*60*1000) &&
 				len(editors) == 0
 		}),
@@ -307,7 +307,7 @@ func TestServiceDeletePageDraft_PublishesPresenceEvent(t *testing.T) {
 			return ok &&
 				payload["page_id"] == page.Id &&
 				payload["space_id"] == space.Id &&
-				payload["as_of"] != nil &&
+				payload["snapshot_at"] != nil &&
 				payload["active_timeout_ms"] == int64(5*60*1000) &&
 				len(editors) == 0
 		}),

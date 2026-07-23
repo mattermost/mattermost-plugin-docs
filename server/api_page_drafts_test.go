@@ -278,9 +278,21 @@ func TestHandler_PublishConflict409(t *testing.T) {
 	// User A publishes against the now-stale baseline — must get 409.
 	rec = h.do(t, http.MethodPost, base+"/pages/"+pageID+"/draft/publish", userA, nil)
 	require.Equal(t, http.StatusConflict, rec.Code, "stale baseline must return 409 Conflict")
+
+	// The 409 body carries the current server page so the client can diff and re-baseline without a
+	// follow-up read: it reflects user B's winning edit and the advanced EditAt.
+	var conflict struct {
+		Error       *mmmodel.AppError `json:"error"`
+		CurrentPage *model.Page       `json:"current_page"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &conflict))
+	require.NotNil(t, conflict.Error, "conflict body must include the error")
+	require.NotNil(t, conflict.CurrentPage, "conflict body must include the current server page")
+	require.Equal(t, "Edit by B", conflict.CurrentPage.Title, "current page must reflect the winning edit")
+	require.Greater(t, conflict.CurrentPage.EditAt, editAt, "current page must carry the advanced baseline")
 }
 
-// TestHandler_DeletePageDraft verifies the DELETE endpoint: 204 on success, draft is gone
+// TestHandler_DeletePageDraft verifies the DELETE endpoint: 200 on success, draft is gone
 // afterwards, and 404 when no draft exists.
 func TestHandler_DeletePageDraft(t *testing.T) {
 	h := openTestPlugin(t, nil)
@@ -345,19 +357,19 @@ func TestHandler_ActiveEditorsResponseBody(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &page))
 
 	// No edit draft open yet — active_editors must be an empty list, not null. The response also
-	// carries as_of and active_timeout_ms, mirroring the page_presence_updated WS payload so a client
+	// carries snapshot_at and active_timeout_ms, mirroring the page_presence_updated WS payload so a client
 	// resyncing over REST can reason about snapshot staleness the same way.
 	rec = h.do(t, http.MethodGet, base+"/pages/"+pageID+"/active-editors", userID, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 	var resp struct {
 		ActiveEditors   []string `json:"active_editors"`
-		AsOf            int64    `json:"as_of"`
+		SnapshotAt      int64    `json:"snapshot_at"`
 		ActiveTimeoutMs int64    `json:"active_timeout_ms"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.NotNil(t, resp.ActiveEditors)
 	require.Empty(t, resp.ActiveEditors)
-	require.Positive(t, resp.AsOf, "response must carry the snapshot timestamp")
+	require.Positive(t, resp.SnapshotAt, "response must carry the snapshot timestamp")
 	require.Equal(t, int64(5*60*1000), resp.ActiveTimeoutMs, "response must carry the active-editor window")
 
 	// Open an edit draft — the user must now appear as an active editor.

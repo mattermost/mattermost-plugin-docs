@@ -65,8 +65,7 @@ var (
 	)`, MaxPageHierarchyDepth)
 )
 
-// computeDescendantsCTE generates the recursive (WITH RECURSIVE) CTE — which squirrel cannot
-// express, hence raw SQL — that walks the live subtree below a page,
+// computeDescendantsCTE generates the recursive CTE that walks the live subtree below a page,
 // excluding snapshot rows (OriginalId != "") like the ancestry and subtree CTEs above, and
 // excluding the root node, returning full page columns plus the node's depth. depth counts
 // edges below the requested page: the root is seeded at 0, so a direct child is depth 1. The

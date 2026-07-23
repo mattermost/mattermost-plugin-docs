@@ -717,8 +717,8 @@ func (s *Store) GetSpacePages(spaceID string, offset, limit int) ([]*model.PageS
 // mismatch (stale optimistic-lock baseline) returns ErrConflict. In both conflict cases the whole
 // transaction is rolled back.
 //
-// draftUpdateAt pins the draft delete to the version the caller read; a concurrent autosave rolls
-// the publish back as a ReasonConcurrentAutosave conflict rather than committing older content.
+// draftUpdateAt pins the draft delete to the version the caller read (see the delete query below
+// for how a version mismatch rolls the whole publish back).
 func (s *Store) PublishDraft(isNewPage bool, page *model.Page, userID, spaceID string, force bool, maxDepth int, draftUpdateAt int64) (_ *model.Page, err error) {
 	if page == nil {
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "page", Value: nil}

@@ -21,14 +21,15 @@ func presenceBroadcastKey(pageID, userID string) string {
 // UpdatePageDraft upserts the calling user's autosave draft for a page in a space. channelID is
 // the space's backing channel, used to scope the presence broadcast.
 //
-// PageId is the unified page id stable across the draft → publish lifecycle, so a draft may exist
-// before the page is published. The space must exist and be live. The caller owns the draft: userID
-// is always sourced from the request, never the request body.
+// draft.PageId is the unified page id, allocated up front and stable across the draft → publish
+// lifecycle. It is reserved before any published page row exists, so carrying a valid page id does
+// not imply the page is published — a draft may exist first. The space must exist and be live. The
+// caller owns the draft: draft.UserId is always sourced from the request, never the request body.
 //
 // An autosave may omit fields the editor didn't change; omitted fields are preserved, so concurrent
 // heartbeats cannot clobber each other's changes.
 // parentID encodes the write intent for ParentId: nil preserves the stored value, a pointer to ""
-// clears to root, and a pointer to a valid ID sets the parent. See store.UpsertDraft for details.
+// clears to root, and a pointer to a valid ID sets the parent.
 // props encodes the write intent for Props: nil preserves the stored map, a non-nil pointer replaces
 // it wholesale (an empty map clears all keys); its serialized size is validated here.
 func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs *mmmodel.StringArray, props *mmmodel.StringInterface, channelID string) (*model.Draft, *mmmodel.AppError) {
@@ -60,7 +61,7 @@ func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs 
 	// unsanitized markup. Defense-in-depth: only the author can read a draft back today, but any
 	// future reader of Draft.Body inherits a sanitized value.
 	if draft.Body != "" {
-		sanitizedBody, _, contentErr := normalizePageContent("UpdatePageDraft", draft.Body)
+		sanitizedBody, contentErr := sanitizeContentBody("UpdatePageDraft", draft.Body)
 		if contentErr != nil {
 			return nil, contentErr
 		}
@@ -91,12 +92,6 @@ func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs 
 		}
 	}
 
-	// pageIsLiveResolved is true when the not-found branch below has already
-	// checked whether a live page exists in the space. The post-upsert check
-	// reads this flag to skip calling PageExistsInSpace a second time.
-	pageIsLive := false
-	pageIsLiveResolved := false
-
 	existingDraft, existingDraftErr := s.store.GetDraft(draft.UserId, draft.PageId)
 	switch {
 	case existingDraftErr != nil && !store.IsErrNotFound(existingDraftErr):
@@ -111,12 +106,10 @@ func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs 
 		// DOCS_Draft row, so its author reaches this method through the "existing draft" branch
 		// above (user-scoped GetDraft), never here.
 		// This prevents PATCH /spaces/X/pages/<random-id>/draft from ghost-drafting a non-existent page.
-		var existsErr error
-		pageIsLive, existsErr = s.store.PageExistsInSpace(draft.PageId, draft.SpaceId)
+		pageIsLive, existsErr := s.store.PageExistsInSpace(draft.PageId, draft.SpaceId)
 		if existsErr != nil {
 			return nil, storeAppError("UpdatePageDraft", existsErr)
 		}
-		pageIsLiveResolved = true
 		if !pageIsLive {
 			return nil, mmmodel.NewAppError("UpdatePageDraft", "app.page_draft.update.page_not_found.app_error", nil, "", http.StatusNotFound)
 		}
@@ -138,29 +131,25 @@ func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs 
 	// New-page drafts (no published page row yet) must not broadcast presence to the space channel:
 	// that would expose the reserved page ID and the author's identity to all space members before
 	// the page exists. Send the event only to the author so their own UI can track the session.
-	// UpsertDraft already determined liveness as part of the same call, so reuse its result here;
-	// only the no-existing-draft branch above resolved it independently.
-	if !pageIsLiveResolved {
-		pageIsLive = savedPageWasLive
-	}
-	if !pageIsLive {
+	// UpsertDraft determined liveness as part of the same call, so trust its result here.
+	if !savedPageWasLive {
 		s.publishSelfPresence(saved)
 		return saved, nil
 	}
 
 	// Existing published page: rate-limited channel-wide broadcast so other viewers see this user
-	// in the active-editors indicator. Key by page+user so concurrent editors don't suppress each
-	// other's first broadcast.
+	// in the active-editors indicator. The rate-limit bucket is keyed per (page, user) so each editor
+	// gets an independent limit — one editor's broadcast can't rate-limit another editor on the same page.
 	presenceKey := presenceBroadcastKey(saved.PageId, saved.UserId)
 	now := mmmodel.GetMillis()
-	s.sweepPresenceBroadcastLast(now)
-	existing, loaded := s.presenceBroadcastLast.LoadOrStore(presenceKey, now)
+	s.sweepPresenceBroadcastTimes(now)
+	existing, loaded := s.presenceBroadcastTimes.LoadOrStore(presenceKey, now)
 	if loaded {
 		lastTime, ok := existing.(int64)
 		if !ok || now-lastTime < presenceBroadcastMinIntervalMs {
 			return saved, nil
 		}
-		if !s.presenceBroadcastLast.CompareAndSwap(presenceKey, existing, now) {
+		if !s.presenceBroadcastTimes.CompareAndSwap(presenceKey, existing, now) {
 			return saved, nil
 		}
 	}
@@ -230,9 +219,6 @@ func (s *Service) CreateSpaceDraft(userID, spaceID, title, pageParentID string) 
 		return nil, storeAppError("CreateSpaceDraft", err)
 	}
 
-	// Broadcast only to the author: the page is not yet published, so broadcasting channel-wide
-	// would expose the reserved page ID and the author's identity to all space members.
-	s.publishSelfPresence(saved)
 	return saved, nil
 }
 
@@ -371,12 +357,17 @@ func (s *Service) GetPageDraftsForSpace(userID, spaceID string, page, perPage in
 	return drafts, hasMore, nil
 }
 
-// PublishPageDraft publishes the calling user's draft for pageID in spaceID as a page. The draft
-// is validated, new-vs-existing state is re-derived from the database (no client trust), and the
-// page write + draft delete are committed in a single store transaction.
+// PublishPageDraft publishes the calling user's draft for pageID in spaceID as a page, creating the
+// page on first publish or updating it if it already exists. pageID is the id reserved when editing
+// began (see CreateSpaceDraft) and is stable across the draft → publish lifecycle, so its presence
+// does not imply a published page yet: whether this is a create or an edit is re-derived from the
+// database (no client trust). The draft is validated, and the page write + draft delete are
+// committed in a single store transaction.
 // Returns (page, wasCreated, appErr):
 //   - wasCreated=true → a new page was inserted by this call (handler should return 201)
 //   - wasCreated=false → an existing page was updated, or a concurrent create was adopted (return 200)
+//   - appErr is a 409 edit conflict → page is the current server page (or nil if the re-read failed),
+//     so the caller can surface a diff without a follow-up read; on every other error page is nil.
 func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (*model.Page, bool, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(userID) {
 		return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
@@ -541,10 +532,21 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 				nil, "", http.StatusConflict).Wrap(storeErr)
 
 		// Someone else edited the page since the baseline was captured. The client must re-read the page
-		// and publish against a fresh baseline (or force).
+		// and publish against a fresh baseline (or force). Return the current server page alongside the
+		// conflict so the client can diff and re-baseline in one round-trip rather than a follow-up GET.
+		// The pre-lock `existing` snapshot is stale by definition here, so re-read the live page.
 		case store.ConflictReason(storeErr) == store.ReasonConcurrentEdit:
-			return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.edit_conflict.app_error",
+			editConflictErr := mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.edit_conflict.app_error",
 				nil, "", http.StatusConflict).Wrap(storeErr)
+			current, getErr := s.GetPage(pageID)
+			if getErr != nil {
+				// A concurrent delete can remove the page between the conflict and this re-read; fall
+				// back to a bare conflict and let the client GET the page itself.
+				s.log.Warn("failed to re-read page for edit-conflict body",
+					"page_id", pageID, "user_id", userID, "err", getErr)
+				return nil, false, editConflictErr
+			}
+			return current, false, editConflictErr
 
 		case store.IsErrConflict(storeErr):
 			if isNewPage {

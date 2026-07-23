@@ -195,10 +195,15 @@ func TestPublishStaleBaselineConflicts(t *testing.T) {
 	_, appErr = h.svc.UpdatePage(page.Id, space.Id, &model.PagePatch{Body: &concurrent}, new(staleEditAt), false, userID)
 	require.Nil(t, appErr)
 
-	// Publishing the draft against the now-stale baseline must 409.
-	_, _, appErr = h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
+	// Publishing the draft against the now-stale baseline must 409, and return the current server
+	// page (the concurrent edit's content + advanced baseline) so the caller can diff without a
+	// follow-up read.
+	current, _, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusConflict, appErr.StatusCode)
+	require.NotNil(t, current, "edit conflict must return the current server page")
+	require.Contains(t, current.Body, "concurrent", "current page must reflect the concurrent edit")
+	require.Greater(t, current.EditAt, staleEditAt, "current page must carry the advanced baseline")
 }
 
 // TestPublishAfterPageDeleteReturns404 verifies that deleting a page cascade-deletes its drafts,
@@ -277,7 +282,7 @@ func TestActiveEditorsSurfacesHeartbeat(t *testing.T) {
 	snapshot, appErr := h.svc.GetPageActiveEditors(page.Id, space.Id)
 	require.Nil(t, appErr)
 	require.Contains(t, snapshot.ActiveEditors, userID)
-	require.Positive(t, snapshot.AsOf)
+	require.Positive(t, snapshot.SnapshotAt)
 	require.Equal(t, int64(5*60*1000), snapshot.ActiveTimeoutMs)
 }
 
@@ -720,9 +725,9 @@ func TestUpdatePageDraftRejectsDraftHierarchyTooDeep(t *testing.T) {
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
-	// Build a chain of draftCycleCheckMaxDepth+1 drafts. The first draft is the root
+	// Build a chain of model.MaxPageDepth+1 drafts. The first draft is the root
 	// (no parent). Each subsequent draft sets its parent to the previous one.
-	// draftCycleCheckMaxDepth is 10; a chain of 10 drafts fills the limit, so
+	// model.MaxPageDepth is 10; a chain of 10 drafts fills the limit, so
 	// adding one more child is the first rejection.
 	const chainLen = 10
 	drafts := make([]*model.Draft, chainLen)

@@ -129,6 +129,11 @@ func (p *Plugin) handleDeletePageDraft(w http.ResponseWriter, r *http.Request) {
 // handleCreateSpaceDraft handles POST /api/v1/spaces/{space_id}/drafts
 // It creates a new-page draft (no Pages row) with a server-generated page id, reserving the id
 // before the page is published so a new page has a stable link from the start.
+//
+// The page id is generated server-side and returned only in the response body, so the caller
+// cannot address the page until this call completes: subsequent requests (autosave to
+// .../pages/{page_id}/draft, publish) all key off the returned id. A new page therefore costs
+// one round-trip before it is editable; the id is not caller-supplied.
 func (p *Plugin) handleCreateSpaceDraft(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	spaceID := vars["space_id"]
@@ -186,6 +191,12 @@ func (p *Plugin) handlePublishPageDraft(w http.ResponseWriter, r *http.Request) 
 
 	page, wasCreated, appErr := p.service.PublishPageDraft(userID, spaceID, pageID, req.Force)
 	if appErr != nil {
+		// An edit conflict returns the current server page alongside the error so the client can
+		// diff and re-baseline without a follow-up read; every other error carries no page.
+		if page != nil {
+			p.writeConflictWithPage(w, appErr, page)
+			return
+		}
 		p.writeAppError(w, appErr)
 		return
 	}

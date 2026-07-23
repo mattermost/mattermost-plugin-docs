@@ -134,6 +134,23 @@ func (p *Plugin) writeAppError(w http.ResponseWriter, appErr *mmmodel.AppError) 
 	writeJSON(w, appErr.StatusCode, &safe)
 }
 
+// conflictResponse is the 409 body for an edit conflict on publish: the scrubbed AppError plus the
+// current server page. It lets a client diff and re-baseline against the live page (its EditAt) in
+// one round-trip instead of following up with a GET. The whole page is returned rather than a
+// curated snapshot — it is the complete source of truth, and the client renders whatever it needs.
+type conflictResponse struct {
+	Error       *mmmodel.AppError `json:"error"`
+	CurrentPage *model.Page       `json:"current_page"`
+}
+
+// writeConflictWithPage writes a conflictResponse using the AppError's own StatusCode (409) as the
+// HTTP status. DetailedError is scrubbed first, matching writeAppError.
+func (p *Plugin) writeConflictWithPage(w http.ResponseWriter, appErr *mmmodel.AppError, current *model.Page) {
+	safe := *appErr
+	safe.WipeDetailed()
+	writeJSON(w, appErr.StatusCode, conflictResponse{Error: &safe, CurrentPage: current})
+}
+
 // writeJSON serialises v as a JSON body with the given status.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

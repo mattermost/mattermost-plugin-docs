@@ -568,8 +568,8 @@ func TestPageMutations_ScopedToSpace(t *testing.T) {
 
 // TestMovePageToSpace_ConcurrentAutosaveInvariants exercises the space-row FOR UPDATE
 // serialization that guards a cross-space move against a simultaneous autosave on a draft of the
-// moving page. MovePageToSpace and UpsertDraft both take lockLiveSpace on the source space
-// (page_move.go:52, draft_store.go:257), so the two transactions serialize on the same row. The
+// moving page. MovePageToSpace and UpsertDraft both take lockLiveSpace on the source space, so the
+// two transactions serialize on the same row. The
 // test does not assert which one wins — it asserts that whichever ordering the lock produces, the
 // committed state is one of the legal outcomes: the page reaches the target space, and its draft is
 // re-homed there exactly once, never duplicated across spaces, orphaned in the source, or left

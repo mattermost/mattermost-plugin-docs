@@ -25,9 +25,15 @@ import (
 func normalizePageContent(where, body string) (normBody, searchText string, appErr *mmmodel.AppError) {
 	normBody, searchText, err := validateAndNormalizeContent(body)
 	if err != nil {
-		return "", "", mmmodel.NewAppError(where, "app.page.invalid_content.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+		return "", "", wrapContentError(where, err)
 	}
 	return normBody, searchText, nil
+}
+
+// wrapContentError renders a content validation/normalization failure as the shared invalid-content
+// AppError, so the error key and status stay defined in one place across content callers.
+func wrapContentError(where string, err error) *mmmodel.AppError {
+	return mmmodel.NewAppError(where, "app.page.invalid_content.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 }
 
 // normalizePatchContent normalizes a page patch's Body in place when present, recomputing
@@ -48,43 +54,77 @@ func normalizePatchContent(where string, patch *model.PagePatch) *mmmodel.AppErr
 	return nil
 }
 
+// sanitizeContentBody validates and normalizes a body without deriving SearchText, for callers
+// (draft autosave) that store only the body. It skips the full-text walk BuildSearchText performs
+// on every call — a waste on the highest-frequency write path when the result is discarded.
+func sanitizeContentBody(where, body string) (string, *mmmodel.AppError) {
+	doc, empty, err := normalizeContentToDoc(body)
+	if err != nil {
+		return "", wrapContentError(where, err)
+	}
+	if empty {
+		return body, nil
+	}
+	normBody, err := marshalTipTapDoc(doc)
+	if err != nil {
+		return "", wrapContentError(where, err)
+	}
+	return normBody, nil
+}
+
 // validateAndNormalizeContent validates and normalizes TipTap/plain-text page content.
 // Returns (normalizedBody, searchText, error). An empty content string is returned as-is (no-op).
 func validateAndNormalizeContent(content string) (normBody, searchText string, err error) {
-	if content == "" {
+	doc, empty, err := normalizeContentToDoc(content)
+	if err != nil {
+		return "", "", err
+	}
+	if empty {
 		return content, "", nil
+	}
+	normBody, err = marshalTipTapDoc(doc)
+	if err != nil {
+		return "", "", err
+	}
+	return normBody, model.BuildSearchText(doc), nil
+}
+
+// normalizeContentToDoc validates content and returns its normalized TipTap document. empty is true
+// for an empty content string ("") — a no-op the caller returns as-is.
+func normalizeContentToDoc(content string) (doc model.TipTapDocument, empty bool, err error) {
+	if content == "" {
+		return model.TipTapDocument{}, true, nil
 	}
 	// Treat the body as TipTap only when it is actually valid JSON: a plain-text body that merely
 	// starts with "{" (e.g. "{shrug}") is not JSON and must be wrapped, not rejected. A body that is
 	// valid JSON but not a "doc" is a genuine content error and ParseTipTapDocument rejects it.
 	idx := strings.IndexFunc(content, func(r rune) bool { return !unicode.IsSpace(r) })
 	if idx >= 0 && content[idx] == '{' {
-		doc, parseErr := model.ParseTipTapDocument(content)
+		parsed, parseErr := model.ParseTipTapDocument(content)
 		if parseErr == nil {
-			return marshalTipTapDoc(doc)
+			return parsed, false, nil
 		}
-		err = parseErr
 		var syntaxErr *json.SyntaxError
-		if !errors.As(err, &syntaxErr) {
-			return "", "", err
+		if !errors.As(parseErr, &syntaxErr) {
+			return model.TipTapDocument{}, false, parseErr
 		}
 		// SyntaxError → not valid JSON → fall through to plain-text wrapping.
 	}
 	// Non-JSON content: wrap in a minimal TipTap doc.
-	doc, err := convertPlainTextToTipTap(content)
+	wrapped, err := convertPlainTextToTipTap(content)
 	if err != nil {
-		return "", "", err
+		return model.TipTapDocument{}, false, err
 	}
-	return marshalTipTapDoc(doc)
+	return wrapped, false, nil
 }
 
-// marshalTipTapDoc serializes a TipTapDocument and derives its search text.
-func marshalTipTapDoc(doc model.TipTapDocument) (string, string, error) {
+// marshalTipTapDoc serializes a TipTapDocument to its stored JSON form.
+func marshalTipTapDoc(doc model.TipTapDocument) (string, error) {
 	sanitized, err := json.Marshal(doc)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	return string(sanitized), model.BuildSearchText(doc), nil
+	return string(sanitized), nil
 }
 
 // maxPlainTextParagraphs caps the number of paragraph nodes produced when converting plain text

@@ -22,30 +22,36 @@ const activeEditorTimeoutMs int64 = 5 * 60 * 1000
 const presenceBroadcastMinIntervalMs int64 = 30 * 1000
 
 // presenceBroadcastSweepIntervalMs is the minimum time between sweeps of the broadcast rate-limit
-// map. Sweeping is opportunistic — it runs on an autosave that finds the interval elapsed — so this
-// bounds how often an autosave pays for a full scan of the map.
+// map. Sweeping is opportunistic — it runs on the first autosave after the interval has elapsed — so
+// an autosave performs a full scan of the map at most once per interval.
 const presenceBroadcastSweepIntervalMs int64 = 5 * 60 * 1000
 
 func activeEditorSince() int64 {
 	return mmmodel.GetMillis() - activeEditorTimeoutMs
 }
 
-// sweepPresenceBroadcastLast drops rate-limit entries older than the active-editor window. An entry
-// that old suppresses nothing — the next autosave is past presenceBroadcastMinIntervalMs and
-// broadcasts either way — so dropping it preserves behavior while bounding the map for sessions
-// abandoned without a discard or publish. CompareAndDelete leaves concurrently refreshed entries be.
-func (s *Service) sweepPresenceBroadcastLast(now int64) {
-	last := s.presenceSweepLast.Load()
+// sweepPresenceBroadcastTimes removes stale entries from the broadcast rate-limit map to bound its
+// size. An entry is normally removed when its session ends (discard or publish); this sweep is the
+// fallback for sessions abandoned without either.
+//
+// It removes entries older than the active-editor window (activeEditorTimeoutMs). Removing such an
+// entry cannot change behavior: the map only suppresses a broadcast within
+// presenceBroadcastMinIntervalMs of the stored time, and an entry this old is already far past that
+// window, so the next autosave broadcasts whether or not the entry is still present. CompareAndDelete
+// removes only an entry whose value is unchanged, so one a concurrent autosave just refreshed is
+// left in place.
+func (s *Service) sweepPresenceBroadcastTimes(now int64) {
+	last := s.lastPresenceSweepAt.Load()
 	if now-last < presenceBroadcastSweepIntervalMs {
 		return
 	}
-	if !s.presenceSweepLast.CompareAndSwap(last, now) {
+	if !s.lastPresenceSweepAt.CompareAndSwap(last, now) {
 		return
 	}
 
-	s.presenceBroadcastLast.Range(func(key, value any) bool {
+	s.presenceBroadcastTimes.Range(func(key, value any) bool {
 		if ts, ok := value.(int64); ok && now-ts >= activeEditorTimeoutMs {
-			s.presenceBroadcastLast.CompareAndDelete(key, value)
+			s.presenceBroadcastTimes.CompareAndDelete(key, value)
 		}
 		return true
 	})
@@ -73,26 +79,26 @@ func (s *Service) publishSelfPresence(draft *model.Draft) {
 		"page_id":           draft.PageId,
 		"space_id":          draft.SpaceId,
 		"active_editors":    []string{draft.UserId},
-		"as_of":             mmmodel.GetMillis(),
+		"snapshot_at":       mmmodel.GetMillis(),
 		"active_timeout_ms": activeEditorTimeoutMs,
 	}, draft.UserId)
 }
 
 // broadcastPagePresence fans a page_presence_updated event out to the space audience on channelID
-// (the space's backing channel), carrying the current active-editor set, as_of, and active_timeout_ms.
+// (the space's backing channel), carrying the current active-editor set, snapshot_at, and active_timeout_ms.
 // Best-effort: failures are swallowed.
 //
 // Broadcasts fire only on user actions (autosave, discard, publish), never periodically, so a client
 // that receives no newer snapshot cannot distinguish a still-active editor from one whose session
 // ended abnormally. active_timeout_ms lets it expire the snapshot's editors on its own once
-// as_of + active_timeout_ms has passed.
+// snapshot_at + active_timeout_ms has passed.
 func (s *Service) broadcastPagePresence(pageID, spaceID, channelID string) {
 	if s.client == nil {
 		return
 	}
-	// Stamp as_of before the editors query so it marks when the snapshot was taken, not when the
+	// Stamp snapshot_at before the editors query so it marks when the snapshot was taken, not when the
 	// broadcast finished assembling — clients use it to discard out-of-order snapshots.
-	asOf := mmmodel.GetMillis()
+	snapshotAt := mmmodel.GetMillis()
 	editors, ok := s.getActiveEditors(pageID, spaceID)
 	if !ok {
 		return
@@ -101,7 +107,7 @@ func (s *Service) broadcastPagePresence(pageID, spaceID, channelID string) {
 		"page_id":           pageID,
 		"space_id":          spaceID,
 		"active_editors":    editors,
-		"as_of":             asOf,
+		"snapshot_at":       snapshotAt,
 		"active_timeout_ms": activeEditorTimeoutMs,
 	}, channelID)
 }
@@ -110,16 +116,16 @@ func (s *Service) broadcastPagePresence(pageID, spaceID, channelID string) {
 // following broadcast is not suppressed, then broadcasts channel-wide. Used whenever a draft session
 // ends (discard, publish, race-loss cleanup) and the active-editors indicator must drop this user.
 func (s *Service) clearThrottleAndBroadcastPagePresence(pageID, userID, spaceID, channelID string) {
-	s.presenceBroadcastLast.Delete(presenceBroadcastKey(pageID, userID))
+	s.presenceBroadcastTimes.Delete(presenceBroadcastKey(pageID, userID))
 	s.broadcastPagePresence(pageID, spaceID, channelID)
 }
 
 // PageActiveEditors is the editor-presence snapshot returned by the REST active-editors endpoint. Its
-// fields mirror the page_presence_updated WebSocket payload (active_editors, as_of, active_timeout_ms)
+// fields mirror the page_presence_updated WebSocket payload (active_editors, snapshot_at, active_timeout_ms)
 // so a client sees the same presence contract whether it resyncs over REST or receives a live event.
 type PageActiveEditors struct {
 	ActiveEditors   []string `json:"active_editors"`
-	AsOf            int64    `json:"as_of"`
+	SnapshotAt      int64    `json:"snapshot_at"`
 	ActiveTimeoutMs int64    `json:"active_timeout_ms"`
 }
 
@@ -141,15 +147,15 @@ func (s *Service) GetPageActiveEditors(pageID, spaceID string) (*PageActiveEdito
 	if !exists {
 		return nil, mmmodel.NewAppError("GetPageActiveEditors", "app.page.not_found.app_error", nil, "", http.StatusNotFound)
 	}
-	// Stamp as_of before the query so it marks when the snapshot was taken, matching the WS event.
-	asOf := mmmodel.GetMillis()
-	editors, storeErr := s.store.GetPageActiveEditors(pageID, spaceID, asOf-activeEditorTimeoutMs)
+	// Stamp snapshot_at before the query so it marks when the snapshot was taken, matching the WS event.
+	snapshotAt := mmmodel.GetMillis()
+	editors, storeErr := s.store.GetPageActiveEditors(pageID, spaceID, snapshotAt-activeEditorTimeoutMs)
 	if storeErr != nil {
 		return nil, storeAppError("GetPageActiveEditors", storeErr)
 	}
 	return &PageActiveEditors{
 		ActiveEditors:   editors,
-		AsOf:            asOf,
+		SnapshotAt:      snapshotAt,
 		ActiveTimeoutMs: activeEditorTimeoutMs,
 	}, nil
 }

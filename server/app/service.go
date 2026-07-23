@@ -40,19 +40,22 @@ type Service struct {
 	log    Logger
 	client *pluginapi.Client
 
-	// presenceBroadcastLast records the last autosave-triggered presence broadcast time (ms) per
-	// (pageID, userID), used to rate-limit high-frequency autosave broadcasts. Delete and publish paths bypass
-	// this and always broadcast.
+	// presenceBroadcastTimes records the last channel-wide presence broadcast time (ms) per
+	// (pageID, userID). Autosave cadence is client-driven and unbounded server-side, and every autosave
+	// on a live page would otherwise fan a presence event out to the whole channel, so this caps those
+	// broadcasts to at most one per presenceBroadcastMinIntervalMs per (page, user). Delete and publish
+	// paths bypass this and always broadcast.
 	//
 	// The map is per-process, so each node throttles independently: a user whose autosaves are
 	// spread across nodes can broadcast more often than the interval implies. That is acceptable —
 	// the payload is queried fresh from the shared DB on every broadcast, so the throttle only
 	// trades broadcast volume, never correctness. Entries are dropped on discard and publish, and
-	// swept by age via sweepPresenceBroadcastLast for sessions abandoned without either.
-	presenceBroadcastLast sync.Map
+	// swept by age via sweepPresenceBroadcastTimes for sessions abandoned without either.
+	presenceBroadcastTimes sync.Map
 
-	// presenceSweepLast is the last time presenceBroadcastLast was swept (ms).
-	presenceSweepLast atomic.Int64
+	// lastPresenceSweepAt is the timestamp (ms) of the most recent presenceBroadcastTimes sweep, used
+	// to rate-limit the sweep itself to once per presenceBroadcastSweepIntervalMs.
+	lastPresenceSweepAt atomic.Int64
 }
 
 // New creates a Service wired to the given store, logger, and optional pluginapi client.
