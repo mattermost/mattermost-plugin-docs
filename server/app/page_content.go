@@ -15,17 +15,20 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-// normalizePageContent validates and normalizes a page body, deriving SearchText from it. Returns a
-// 400 AppError when the body is not valid TipTap content.
+// normalizePageContent normalizes a page body — validating it as TipTap content and deriving
+// SearchText from it. Returns a 400 AppError when the body is not valid TipTap content.
 //
 // An empty body ("") is returned as-is, representing "no content"; the draft path instead seeds new
 // pages with model.EmptyTipTapJSON (a rendered-empty document). These are two DISTINCT empty
 // representations, and consumers may assign them different meaning: the publish path treats "" as
 // "field not sent, preserve the existing page body" and EmptyTipTapJSON as "explicitly cleared".
 func normalizePageContent(where, body string) (normBody, searchText string, appErr *mmmodel.AppError) {
-	normBody, searchText, err := validateAndNormalizeContent(body)
+	normBody, doc, empty, err := normalizeContent(body)
 	if err != nil {
 		return "", "", wrapContentError(where, err)
+	}
+	if !empty {
+		searchText = model.BuildSearchText(doc)
 	}
 	return normBody, searchText, nil
 }
@@ -54,43 +57,40 @@ func normalizePatchContent(where string, patch *model.PagePatch) *mmmodel.AppErr
 	return nil
 }
 
-// sanitizeContentBody validates and normalizes a body without deriving SearchText, for callers
-// (draft autosave) that store only the body. It skips the full-text walk BuildSearchText performs
-// on every call — a waste on the highest-frequency write path when the result is discarded.
-func sanitizeContentBody(where, body string) (string, *mmmodel.AppError) {
-	doc, empty, err := normalizeContentToDoc(body)
-	if err != nil {
-		return "", wrapContentError(where, err)
-	}
-	if empty {
-		return body, nil
-	}
-	normBody, err := marshalTipTapDoc(doc)
+// normalizeContentBody normalizes a body without deriving SearchText, for callers (draft autosave)
+// that store only the body. It shares normalizeContent with normalizePageContent but discards the
+// parsed doc, so it skips the full-text BuildSearchText walk that normalizeContent's caller would
+// otherwise run on every call — a waste on the highest-frequency write path.
+func normalizeContentBody(where, body string) (string, *mmmodel.AppError) {
+	normBody, _, _, err := normalizeContent(body)
 	if err != nil {
 		return "", wrapContentError(where, err)
 	}
 	return normBody, nil
 }
 
-// validateAndNormalizeContent validates and normalizes TipTap/plain-text page content.
-// Returns (normalizedBody, searchText, error). An empty content string is returned as-is (no-op).
-func validateAndNormalizeContent(content string) (normBody, searchText string, err error) {
-	doc, empty, err := normalizeContentToDoc(content)
+// normalizeContent normalizes TipTap/plain-text page content to its stored body form, returning the
+// parsed doc and empty flag so callers decide whether to derive SearchText (normalizePageContent
+// does; normalizeContentBody skips it). Returns a raw error; callers wrap it via wrapContentError.
+// An empty content string ("") is returned as-is (no-op), with a zero-value doc.
+func normalizeContent(content string) (normBody string, doc model.TipTapDocument, empty bool, err error) {
+	doc, empty, err = normalizeContentToDoc(content)
 	if err != nil {
-		return "", "", err
+		return "", model.TipTapDocument{}, false, err
 	}
 	if empty {
-		return content, "", nil
+		return content, doc, true, nil
 	}
 	normBody, err = marshalTipTapDoc(doc)
 	if err != nil {
-		return "", "", err
+		return "", model.TipTapDocument{}, false, err
 	}
-	return normBody, model.BuildSearchText(doc), nil
+	return normBody, doc, false, nil
 }
 
-// normalizeContentToDoc validates content and returns its normalized TipTap document. empty is true
-// for an empty content string ("") — a no-op the caller returns as-is.
+// normalizeContentToDoc normalizes content and returns its TipTap document, validating it and
+// rejecting invalid TipTap. empty is true for an empty content string ("") — a no-op the caller
+// returns as-is.
 func normalizeContentToDoc(content string) (doc model.TipTapDocument, empty bool, err error) {
 	if content == "" {
 		return model.TipTapDocument{}, true, nil

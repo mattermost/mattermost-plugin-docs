@@ -57,15 +57,16 @@ func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs 
 		draft.Title = title
 	}
 
-	// Sanitize the draft body on the same content path as publish, so a stored draft never holds
-	// unsanitized markup. Defense-in-depth: only the author can read a draft back today, but any
-	// future reader of Draft.Body inherits a sanitized value.
+	// Normalize the draft body on the same content path as publish, so a stored draft never holds
+	// unsanitized markup (normalization parses the body through the TipTap sanitizer). Defense-in-depth:
+	// only the author can read a draft back today, but any future reader of Draft.Body inherits a
+	// sanitized value.
 	if draft.Body != "" {
-		sanitizedBody, contentErr := sanitizeContentBody("UpdatePageDraft", draft.Body)
+		normalizedBody, contentErr := normalizeContentBody("UpdatePageDraft", draft.Body)
 		if contentErr != nil {
 			return nil, contentErr
 		}
-		draft.Body = sanitizedBody
+		draft.Body = normalizedBody
 	}
 
 	// Validate the written Props size here: props is passed to the store separately (pointer intent),

@@ -14,57 +14,57 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-func TestValidateAndNormalizeContent(t *testing.T) {
+func TestNormalizePageContent(t *testing.T) {
 	t.Run("empty content is a no-op", func(t *testing.T) {
-		body, search, err := validateAndNormalizeContent("")
-		require.NoError(t, err)
+		body, search, appErr := normalizePageContent("Test", "")
+		require.Nil(t, appErr)
 		require.Equal(t, "", body)
 		require.Equal(t, "", search)
 	})
 
 	t.Run("TipTap JSON is normalized and search text derived", func(t *testing.T) {
-		body, search, err := validateAndNormalizeContent(`{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"hello world"}]}]}`)
-		require.NoError(t, err)
+		body, search, appErr := normalizePageContent("Test", `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"hello world"}]}]}`)
+		require.Nil(t, appErr)
 		require.Contains(t, body, "hello world")
 		require.Equal(t, "hello world", search)
 	})
 
 	t.Run("plain text is wrapped into a TipTap doc", func(t *testing.T) {
-		body, search, err := validateAndNormalizeContent("just text")
-		require.NoError(t, err)
+		body, search, appErr := normalizePageContent("Test", "just text")
+		require.Nil(t, appErr)
 		require.True(t, strings.HasPrefix(body, `{"type":"doc"`), "plain text should be wrapped: %s", body)
 		require.Contains(t, body, "just text")
 		require.Equal(t, "just text", search)
 	})
 
 	t.Run("malformed TipTap JSON is rejected", func(t *testing.T) {
-		_, _, err := validateAndNormalizeContent(`{"type":"bogus"}`)
-		require.Error(t, err)
+		_, _, appErr := normalizePageContent("Test", `{"type":"bogus"}`)
+		require.NotNil(t, appErr)
 	})
 
 	t.Run("javascript URL is stripped on normalization", func(t *testing.T) {
-		body, _, err := validateAndNormalizeContent(`{"type":"doc","content":[{"type":"text","text":"x","marks":[{"type":"link","attrs":{"href":"javascript:alert(1)"}}]}]}`)
-		require.NoError(t, err)
+		body, _, appErr := normalizePageContent("Test", `{"type":"doc","content":[{"type":"text","text":"x","marks":[{"type":"link","attrs":{"href":"javascript:alert(1)"}}]}]}`)
+		require.Nil(t, appErr)
 		require.NotContains(t, body, "javascript:alert")
 	})
 
 	t.Run("string starting with { but not valid JSON is wrapped as plain text", func(t *testing.T) {
-		body, search, err := validateAndNormalizeContent("{shrug}")
-		require.NoError(t, err)
+		body, search, appErr := normalizePageContent("Test", "{shrug}")
+		require.Nil(t, appErr)
 		require.True(t, strings.HasPrefix(body, `{"type":"doc"`), "brace-leading non-JSON must be wrapped as plain text: %s", body)
 		require.Equal(t, "{shrug}", search)
 	})
 
 	t.Run("multiline plain text becomes multiple paragraphs", func(t *testing.T) {
-		body, _, err := validateAndNormalizeContent("line one\nline two")
-		require.NoError(t, err)
+		body, _, appErr := normalizePageContent("Test", "line one\nline two")
+		require.Nil(t, appErr)
 		require.Contains(t, body, "line one")
 		require.Contains(t, body, "line two")
 	})
 
 	t.Run("plain text preserves leading whitespace within lines", func(t *testing.T) {
-		body, _, err := validateAndNormalizeContent("  indented line")
-		require.NoError(t, err)
+		body, _, appErr := normalizePageContent("Test", "  indented line")
+		require.Nil(t, appErr)
 		require.Contains(t, body, `"  indented line"`, "leading spaces must not be stripped from paragraph text")
 	})
 }
