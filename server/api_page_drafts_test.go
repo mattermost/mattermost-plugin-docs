@@ -16,6 +16,7 @@ import (
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
+	"github.com/mattermost/mattermost-plugin-docs/server/app"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
@@ -370,7 +371,7 @@ func TestHandler_ActiveEditorsResponseBody(t *testing.T) {
 	require.NotNil(t, resp.ActiveEditors)
 	require.Empty(t, resp.ActiveEditors)
 	require.Positive(t, resp.SnapshotAt, "response must carry the snapshot timestamp")
-	require.Equal(t, int64(5*60*1000), resp.ActiveTimeoutMs, "response must carry the active-editor window")
+	require.Equal(t, app.ActiveEditorTimeoutMs, resp.ActiveTimeoutMs, "response must carry the active-editor window")
 
 	// Open an edit draft — the user must now appear as an active editor.
 	rec = h.do(t, http.MethodPatch, base+"/pages/"+pageID+"/draft", userID, map[string]any{

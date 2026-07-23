@@ -11,11 +11,11 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-// activeEditorTimeoutMs is the window within which a draft autosave keeps a user counted as an
+// ActiveEditorTimeoutMs is the window within which a draft autosave keeps a user counted as an
 // active editor. Presence is derived from the shared DOCS_Draft table: the editor's autosave is
 // the heartbeat, so an editor with a draft updated inside this window is "active". Because the
 // list comes from the master DB, it is correct across an HA cluster.
-const activeEditorTimeoutMs int64 = 5 * 60 * 1000
+const ActiveEditorTimeoutMs int64 = 5 * 60 * 1000
 
 // presenceBroadcastMinIntervalMs is the minimum time between autosave-triggered presence broadcasts
 // for the same page. Delete and publish paths always broadcast regardless of this interval.
@@ -27,14 +27,14 @@ const presenceBroadcastMinIntervalMs int64 = 30 * 1000
 const presenceBroadcastSweepIntervalMs int64 = 5 * 60 * 1000
 
 func activeEditorSince() int64 {
-	return mmmodel.GetMillis() - activeEditorTimeoutMs
+	return mmmodel.GetMillis() - ActiveEditorTimeoutMs
 }
 
 // sweepPresenceBroadcastTimes removes stale entries from the broadcast rate-limit map to bound its
 // size. An entry is normally removed when its session ends (discard or publish); this sweep is the
 // fallback for sessions abandoned without either.
 //
-// It removes entries older than the active-editor window (activeEditorTimeoutMs). Removing such an
+// It removes entries older than the active-editor window (ActiveEditorTimeoutMs). Removing such an
 // entry cannot change behavior: the map only suppresses a broadcast within
 // presenceBroadcastMinIntervalMs of the stored time, and an entry this old is already far past that
 // window, so the next autosave broadcasts whether or not the entry is still present. CompareAndDelete
@@ -50,7 +50,7 @@ func (s *Service) sweepPresenceBroadcastTimes(now int64) {
 	}
 
 	s.presenceBroadcastTimes.Range(func(key, value any) bool {
-		if ts, ok := value.(int64); ok && now-ts >= activeEditorTimeoutMs {
+		if ts, ok := value.(int64); ok && now-ts >= ActiveEditorTimeoutMs {
 			s.presenceBroadcastTimes.CompareAndDelete(key, value)
 		}
 		return true
@@ -80,7 +80,7 @@ func (s *Service) publishSelfPresence(draft *model.Draft) {
 		"space_id":          draft.SpaceId,
 		"active_editors":    []string{draft.UserId},
 		"snapshot_at":       mmmodel.GetMillis(),
-		"active_timeout_ms": activeEditorTimeoutMs,
+		"active_timeout_ms": ActiveEditorTimeoutMs,
 	}, draft.UserId)
 }
 
@@ -108,7 +108,7 @@ func (s *Service) broadcastPagePresence(pageID, spaceID, channelID string) {
 		"space_id":          spaceID,
 		"active_editors":    editors,
 		"snapshot_at":       snapshotAt,
-		"active_timeout_ms": activeEditorTimeoutMs,
+		"active_timeout_ms": ActiveEditorTimeoutMs,
 	}, channelID)
 }
 
@@ -149,13 +149,13 @@ func (s *Service) GetPageActiveEditors(pageID, spaceID string) (*PageActiveEdito
 	}
 	// Stamp snapshot_at before the query so it marks when the snapshot was taken, matching the WS event.
 	snapshotAt := mmmodel.GetMillis()
-	editors, storeErr := s.store.GetPageActiveEditors(pageID, spaceID, snapshotAt-activeEditorTimeoutMs)
+	editors, storeErr := s.store.GetPageActiveEditors(pageID, spaceID, snapshotAt-ActiveEditorTimeoutMs)
 	if storeErr != nil {
 		return nil, storeAppError("GetPageActiveEditors", storeErr)
 	}
 	return &PageActiveEditors{
 		ActiveEditors:   editors,
 		SnapshotAt:      snapshotAt,
-		ActiveTimeoutMs: activeEditorTimeoutMs,
+		ActiveTimeoutMs: ActiveEditorTimeoutMs,
 	}, nil
 }

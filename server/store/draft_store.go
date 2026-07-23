@@ -188,7 +188,9 @@ FROM chain`, model.MaxPageDepth, model.MaxPageDepth)
 		if err != nil {
 			return errors.Wrap(err, "cycle check: failed to read live ancestor depth")
 		}
-		// liveDepth counts the ancestor itself; +1 for the new leaf being validated.
+		// Total depth = liveDepth + ChainDepth + 1: liveDepth is the live ancestor's own absolute
+		// depth (counts the ancestor itself), ChainDepth is the number of draft hops from that
+		// ancestor down to the new parent, and +1 places the new leaf one level below its parent.
 		if liveDepth+result.ChainDepth+1 > model.MaxPageDepth {
 			return &ErrInvalidInput{Entity: "Draft", Field: "ParentId", Value: startParentID, Reason: ReasonDraftTooDeep}
 		}
@@ -308,7 +310,7 @@ func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmod
 		// scoping.
 		pageWasLive = true
 		if page.DeleteAt != 0 || page.OriginalId != "" || page.SpaceID != draft.SpaceId {
-			return nil, false, &ErrInvalidInput{Entity: "Draft", Field: "PageId", Value: draft.PageId}
+			return nil, false, &ErrInvalidInput{Entity: "Draft", Field: "PageId", Value: draft.PageId, Reason: ReasonPageNotLive}
 		}
 		// Establish-time baseline sanity check: on the establishing INSERT (no draft row yet), a
 		// baseline ahead of the live page is impossible — the client cannot have seen a version newer

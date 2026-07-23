@@ -18,7 +18,7 @@ const (
 	// quotes, backslashes, and control characters are escaped (worst case ~6x for all-control-char
 	// input). Size the transport cap for that worst case plus headroom for the title/props/file-ids
 	// and JSON envelope; the decoded body stays capped at model.PageBodyMaxBytes during normalization.
-	draftBodyHeadroomBytes = 64 * 1024 // headroom for the title/props/file-ids and JSON envelope
+	draftBodyHeadroomBytes = 64 * 1024
 	maxDraftBodyBytes      = 6*model.PageBodyMaxBytes + draftBodyHeadroomBytes
 )
 
@@ -58,9 +58,11 @@ func (p *Plugin) handleUpdatePageDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// base_edit_at nil → 0 (no baseline: a new-page draft, or an existing-page edit that omitted it,
-	// which fails closed to a forced publish). Props flows via the pointer below (like file_ids), so it
-	// is not set on the struct here.
+	// base_edit_at nil → 0 (no baseline). A new-page draft legitimately has no baseline. For an
+	// existing published page the client must send base_edit_at on every autosave (see the handler doc
+	// above): omitting it on the first autosave of an edit session is rejected with 409, because the
+	// store will not open an edit-session draft against a live page without a baseline. Props flows via
+	// the pointer below (like file_ids), so it is not set on the struct here.
 	var baseEditAt int64
 	if req.BaseEditAt != nil {
 		baseEditAt = *req.BaseEditAt

@@ -316,6 +316,10 @@ const (
 	ReasonDraftCycle              = "draft_cycle"
 	ReasonDraftTooDeep            = "draft_too_deep"
 	ReasonDraftQuotaExceeded      = "draft_quota_exceeded"
+	// ReasonPageNotLive marks an autosave whose target page was deleted, snapshotted, or moved out
+	// of the draft's space between the app-layer pre-check and the locked read — a concurrent state
+	// change, not bad input, so the caller maps it to 404 rather than a generic 400.
+	ReasonPageNotLive = "page_not_live"
 )
 
 func (e *ErrInvalidInput) Error() string {
@@ -326,6 +330,16 @@ func (e *ErrInvalidInput) Error() string {
 func IsErrInvalidInput(err error) bool {
 	var e *ErrInvalidInput
 	return errors.As(err, &e)
+}
+
+// InvalidInputReason returns the Reason of the ErrInvalidInput in err's chain, or "" if err is not
+// an ErrInvalidInput or carries no reason.
+func InvalidInputReason(err error) string {
+	var e *ErrInvalidInput
+	if errors.As(err, &e) {
+		return e.Reason
+	}
+	return ""
 }
 
 // Conflict reasons let a caller tell one CAS failure from another without parsing Resource. An

@@ -13,6 +13,7 @@ import (
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
+	"github.com/mattermost/mattermost-plugin-docs/server/app"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
@@ -283,7 +284,7 @@ func TestActiveEditorsSurfacesHeartbeat(t *testing.T) {
 	require.Nil(t, appErr)
 	require.Contains(t, snapshot.ActiveEditors, userID)
 	require.Positive(t, snapshot.SnapshotAt)
-	require.Equal(t, int64(5*60*1000), snapshot.ActiveTimeoutMs)
+	require.Equal(t, app.ActiveEditorTimeoutMs, snapshot.ActiveTimeoutMs)
 }
 
 func TestPublishSetsLastModifiedBy(t *testing.T) {

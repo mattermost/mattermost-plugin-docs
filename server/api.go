@@ -138,6 +138,12 @@ func (p *Plugin) writeAppError(w http.ResponseWriter, appErr *mmmodel.AppError) 
 // current server page. It lets a client diff and re-baseline against the live page (its EditAt) in
 // one round-trip instead of following up with a GET. The whole page is returned rather than a
 // curated snapshot — it is the complete source of truth, and the client renders whatever it needs.
+//
+// This is intentionally richer than the other optimistic-lock 409s (handleUpdatePage, handleMovePage,
+// handleMovePageToSpace), which return a bare AppError and expect the client to re-read via GET.
+// Publish embeds the page because it is the one conflict where the client needs the full current
+// content immediately to diff its pending draft against; the edit/move conflicts only need the caller
+// to retry against a fresh baseline. New page-mutation 409s should align with one of these two shapes.
 type conflictResponse struct {
 	Error       *mmmodel.AppError `json:"error"`
 	CurrentPage *model.Page       `json:"current_page"`
