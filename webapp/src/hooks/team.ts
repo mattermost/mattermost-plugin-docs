@@ -1,15 +1,12 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {useAppDispatch} from 'hooks/redux';
-import {useEffect} from 'react';
+import {useMemo} from 'react';
 import {useSelector} from 'react-redux';
 
 import type {GlobalState} from '@mattermost/types/store';
 
-import {selectTeam} from 'mattermost-redux/actions/teams';
-import {getCurrentTeam, getCurrentTeamId, getMyTeams} from 'mattermost-redux/selectors/entities/teams';
-import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
+import {getCurrentTeam, getMyTeams} from 'mattermost-redux/selectors/entities/teams';
 
 type TeamContext = {
     id: string;
@@ -29,55 +26,9 @@ export function useTeamContext(): TeamContext {
     };
 }
 
-// Mattermost webapp (and the Playbooks product) persist the user's last-active
-// team under `user_prev_team:{userId}`. Docs shares the key so the team you
-// leave in Channels — or here — is restored across products and refreshes.
-const previousTeamIdKey = (userId: string) => `user_prev_team:${userId}`;
-
-function readPreviousTeamId(userId: string): string | null {
-    try {
-        return window.localStorage.getItem(previousTeamIdKey(userId));
-    } catch {
-        return null;
-    }
-}
-
-function writePreviousTeamId(userId: string, teamId: string) {
-    try {
-        window.localStorage.setItem(previousTeamIdKey(userId), teamId);
-    } catch {
-        // Ignore storage failures (private mode, quota); the next refresh just
-        // falls back to a default team.
-    }
-}
-
-// Team-scoped Docs URLs (/{team}/spaces/…) let core resolve the team from the
-// URL (MM-69728). This remains a defensive fallback: if `currentTeamId` is still
-// empty (e.g. reached via the global switcher link before a team is selected),
-// restore the last-active team from localStorage — validated against the user's
-// teams, with a first-team fallback — and keep it persisted, mirroring Channels
-// and Playbooks. Call once from the product root.
-export function useEnsureCurrentTeam(): void {
-    const dispatch = useAppDispatch();
-    const userId = useSelector(getCurrentUserId);
-    const currentTeamId = useSelector(getCurrentTeamId);
-    const myTeams = useSelector(getMyTeams);
-
-    useEffect(() => {
-        if (currentTeamId || !userId) {
-            return;
-        }
-
-        const restored = readPreviousTeamId(userId);
-        const teamId = restored && myTeams.some((team) => team.id === restored) ? restored : (myTeams[0]?.id ?? '');
-        if (teamId) {
-            dispatch(selectTeam(teamId));
-        }
-    }, [currentTeamId, userId, myTeams, dispatch]);
-
-    useEffect(() => {
-        if (currentTeamId && userId) {
-            writePreviousTeamId(userId, currentTeamId);
-        }
-    }, [currentTeamId, userId]);
+// Maps team id → URL name for the user's teams. The cross-team switcher uses it
+// to route a result to its own team's URL (team names, not ids, are in the URL).
+export function useTeamNamesById(): Map<string, string> {
+    const teams = useSelector(getMyTeams);
+    return useMemo(() => new Map(teams.map((team) => [team.id, team.name])), [teams]);
 }
