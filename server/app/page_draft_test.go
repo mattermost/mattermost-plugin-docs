@@ -9,9 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/app"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
@@ -84,9 +86,10 @@ func TestPublishEmptyDraftBodyDoesNotWipePage(t *testing.T) {
 // TestPublishNoOpDraftDiscardsAndReturnsExistingPage verifies that publishing a draft that carries
 // no content change — only the optimistic-lock baseline, no Title, no Body — is treated as a
 // discard rather than a no-op page write: the draft is deleted, the existing page comes back
-// unchanged, and wasCreated is false.
+// unchanged with its EditAt intact, no page_updated event fires, and wasCreated is false.
 func TestPublishNoOpDraftDiscardsAndReturnsExistingPage(t *testing.T) {
-	h := openTestService(t)
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
@@ -104,6 +107,8 @@ func TestPublishNoOpDraftDiscardsAndReturnsExistingPage(t *testing.T) {
 	require.False(t, wasCreated, "a no-content publish must not report a creation")
 	require.Equal(t, page.Title, result.Title, "the page's title must be unchanged")
 	require.Contains(t, result.Body, "original", "the page's body must be unchanged")
+	require.Equal(t, page.EditAt, result.EditAt, "a no-content publish must not bump EditAt")
+	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "page_updated", mock.Anything, mock.Anything)
 
 	// The draft was consumed: it was converted into a discard rather than left in place.
 	_, appErr = h.svc.GetPageDraft(userID, space.Id, page.Id)

@@ -7,8 +7,6 @@ import (
 	"net/http"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
-
-	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
 // ActiveEditorTimeoutMs is the window within which a draft autosave keeps a user counted as an
@@ -72,16 +70,17 @@ func (s *Service) getActiveEditors(pageID, spaceID string) ([]string, bool) {
 	return editors, true
 }
 
-// publishSelfPresence sends a presence snapshot to the draft's author only. Used when the page is
-// not yet published (no channel to broadcast to), so only the author's own UI learns of the session.
-func (s *Service) publishSelfPresence(draft *model.Draft) {
+// publishSelfPresence sends a presence snapshot to userID only. Used when the page is not yet
+// published (no channel to broadcast to), so only the author's own UI learns of the session:
+// editors is the author's own ID while the session is active, and empty when it ends.
+func (s *Service) publishSelfPresence(userID, pageID, spaceID string, editors []string) {
 	s.publishToUser(wsEventPagePresenceUpdated, map[string]any{
-		"page_id":           draft.PageId,
-		"space_id":          draft.SpaceId,
-		"active_editors":    []string{draft.UserId},
+		"page_id":           pageID,
+		"space_id":          spaceID,
+		"active_editors":    editors,
 		"snapshot_at":       mmmodel.GetMillis(),
 		"active_timeout_ms": ActiveEditorTimeoutMs,
-	}, draft.UserId)
+	}, userID)
 }
 
 // broadcastPagePresence fans a page_presence_updated event out to the space audience on channelID

@@ -140,7 +140,7 @@ func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs 
 	// the page exists. Send the event only to the author so their own UI can track the session.
 	// UpsertDraft determined liveness as part of the same call, so trust its result here.
 	if !savedPageWasLive {
-		s.publishSelfPresence(saved)
+		s.publishSelfPresence(saved.UserId, saved.PageId, saved.SpaceId, []string{saved.UserId})
 		return saved, nil
 	}
 
@@ -286,7 +286,8 @@ func (s *Service) GetPageDraft(userID, spaceID, pageID string) (*model.Draft, *m
 	return draft, nil
 }
 
-// DeletePageDraft removes the calling user's draft for the given page (on publish or discard).
+// DeletePageDraft removes the calling user's draft for the given page — the discard path. (A
+// publish deletes the draft inside the store.PublishDraft transaction without calling here.)
 // Returns not-found when no draft exists. channelID is the space's backing channel, used to scope
 // the presence broadcast.
 func (s *Service) DeletePageDraft(userID, spaceID, pageID, channelID string) *mmmodel.AppError {
@@ -334,9 +335,10 @@ func (s *Service) DeletePageDraft(userID, spaceID, pageID, channelID string) *mm
 	}
 
 	// Presence cleanup: only broadcast channel-wide if the page is published. A new-page draft
-	// discard was never visible to the channel (no channel broadcast on create), so no cleanup
-	// broadcast is needed.
+	// discard was never visible to the channel (no channel broadcast on create) — its session was
+	// announced to the author alone (publishSelfPresence), so clear it the same way.
 	if !pageWasLive {
+		s.publishSelfPresence(userID, pageID, spaceID, []string{})
 		return nil
 	}
 	s.clearThrottleAndBroadcastPagePresence(pageID, userID, spaceID, channelID)
@@ -442,7 +444,7 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 	// A "baseline-only" edit draft carries an optimistic-lock baseline but no populated field, so
 	// there is no page change to write; discard it rather than bumping EditAt for nothing (see helper).
 	if !isNewPage && pageForWrite.Title == "" && pageForWrite.Body == "" && len(pageForWrite.Props) == 0 {
-		return s.discardBaselineOnlyDraft(userID, pageID, spaceID, existing, draft.UpdateAt)
+		return s.discardBaselineOnlyDraft(userID, pageID, spaceID, draft.UpdateAt)
 	}
 
 	// 6. Atomic write: page + draft-delete in one transaction. draft.UpdateAt is passed through so a
@@ -598,8 +600,9 @@ func (s *Service) buildPageForPublish(isNewPage bool, pageID, spaceID, userID st
 // This is NOT a user who cleared the document: a cleared doc is EmptyTipTapJSON, a non-empty Body
 // that publishes normally; empty here means "never sent". With every field empty there is no page
 // change to write. Publishing would still bump EditAt and emit page_updated with no actual change,
-// invalidating other editors' baselines for nothing. So delete the draft and return the page as-is.
-func (s *Service) discardBaselineOnlyDraft(userID, pageID, spaceID string, existing *model.Page, draftUpdateAt int64) (*model.Page, bool, *mmmodel.AppError) {
+// invalidating other editors' baselines for nothing. So delete the draft and return the page from a
+// fresh read — not the caller's pre-lock snapshot, which a concurrent edit may have outdated.
+func (s *Service) discardBaselineOnlyDraft(userID, pageID, spaceID string, draftUpdateAt int64) (*model.Page, bool, *mmmodel.AppError) {
 	deleted, delErr := s.store.DeleteDraftVersion(userID, pageID, draftUpdateAt)
 	if delErr != nil {
 		return nil, false, storeAppError("PublishPageDraft", delErr)
@@ -610,8 +613,12 @@ func (s *Service) discardBaselineOnlyDraft(userID, pageID, spaceID string, exist
 		return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.draft_changed.app_error",
 			nil, "", http.StatusConflict)
 	}
-	s.clearThrottleAndBroadcastPagePresence(pageID, userID, spaceID, existing.ChannelId)
-	return existing, false, nil
+	current, getErr := s.GetPage(pageID)
+	if getErr != nil {
+		return nil, false, getErr
+	}
+	s.clearThrottleAndBroadcastPagePresence(pageID, userID, spaceID, current.ChannelId)
+	return current, false, nil
 }
 
 // adoptPublishRaceWinner handles the PK-collision case on the new-page publish path: a concurrent

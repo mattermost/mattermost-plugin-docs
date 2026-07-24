@@ -351,6 +351,45 @@ func TestServiceUpdatePageDraft_NewPageDraftPublishesToUserOnly(t *testing.T) {
 		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
 }
 
+// TestServiceDeletePageDraft_NewPageDraftClearsSelfPresenceOnly pins that discarding a draft for a
+// not-yet-published page clears presence the same way the session was announced: an empty snapshot
+// sent to the author only, never to the space channel (the session was never visible there).
+func TestServiceDeletePageDraft_NewPageDraftClearsSelfPresenceOnly(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+
+	// Create a new-page draft — no published page row exists yet.
+	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Unpublished", "")
+	require.Nil(t, appErr)
+
+	// Reset call log so only the discard's broadcast is observed.
+	mockAPI.Calls = nil
+
+	require.Nil(t, h.svc.DeletePageDraft(userID, space.Id, draft.PageId, channelID))
+
+	// The clear must be user-scoped and carry the empty editor set ([] not null).
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_presence_updated",
+		mock.MatchedBy(func(payload map[string]any) bool {
+			editors, ok := payload["active_editors"].([]string)
+			return ok &&
+				payload["page_id"] == draft.PageId &&
+				payload["space_id"] == space.Id &&
+				payload["snapshot_at"] != nil &&
+				payload["active_timeout_ms"] == app.ActiveEditorTimeoutMs &&
+				len(editors) == 0
+		}),
+		&mmmodel.WebsocketBroadcast{UserId: userID})
+
+	// Must not broadcast to the channel: the draft was never visible there.
+	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "page_presence_updated",
+		mock.Anything,
+		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
+}
+
 // TestServiceUpdatePageDraft_PresenceRateLimitSuppressesSecondBroadcast verifies that a second
 // autosave within presenceBroadcastMinIntervalMs does not trigger a second channel broadcast.
 // The rate-limit prevents flooding the channel on every keystroke.
