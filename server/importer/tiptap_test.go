@@ -40,6 +40,23 @@ func TestCanonicalize_RejectsNonArrayContent(t *testing.T) {
 	}
 }
 
+func TestCanonicalize_RejectsMissingNodeType(t *testing.T) {
+	// A child node with no type is structurally invalid, not an unknown type.
+	body := `{"type":"doc","content":[{"attrs":{"x":1},"content":[{"type":"text","text":"hi"}]}]}`
+	_, _, _, err := CanonicalizeAndExtractSearchText(body)
+	if te, ok := err.(*TipTapError); !ok || te.Code != TipTapErrMissingType {
+		t.Fatalf("err = %v, want %s", err, TipTapErrMissingType)
+	}
+}
+
+func TestCanonicalize_RejectsTextNodeWithoutText(t *testing.T) {
+	body := `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text"}]}]}`
+	_, _, _, err := CanonicalizeAndExtractSearchText(body)
+	if te, ok := err.(*TipTapError); !ok || te.Code != TipTapErrBadText {
+		t.Fatalf("err = %v, want %s", err, TipTapErrBadText)
+	}
+}
+
 func TestSearchText_ParagraphsHeadingsHardBreak(t *testing.T) {
 	doc := map[string]any{
 		"type": "doc",
@@ -115,18 +132,18 @@ func TestLinkDiscovery_OnlyApprovedAttrs(t *testing.T) {
 			map[string]any{
 				"type": "paragraph",
 				"content": []any{
-					// link mark with a page-id placeholder href
+					// link mark with a page-id placeholder href (producer emits braced form)
 					map[string]any{
 						"type":  "text",
 						"text":  "see other page",
-						"marks": []any{map[string]any{"type": "link", "attrs": map[string]any{"href": "CONF_PAGE_ID:101"}}},
+						"marks": []any{map[string]any{"type": "link", "attrs": map[string]any{"href": "{{CONF_PAGE_ID:101}}"}}},
 					},
 					// ordinary text mentioning a placeholder token (must NOT be an approved link)
-					map[string]any{"type": "text", "text": "the token CONF_PAGE_ID:999 appears here"},
+					map[string]any{"type": "text", "text": "the token {{CONF_PAGE_ID:999}} appears here"},
 				},
 			},
 			// image node with attachment placeholder src
-			map[string]any{"type": "image", "attrs": map[string]any{"src": "CONF_ATTACHMENT:300"}},
+			map[string]any{"type": "image", "attrs": map[string]any{"src": "{{CONF_ATTACHMENT:300}}"}},
 		},
 	}
 	_, _, links, err := CanonicalizeAndExtractSearchText(marshal(doc))

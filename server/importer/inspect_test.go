@@ -202,24 +202,8 @@ func TestInspect_MissingParent(t *testing.T) {
 }
 
 func TestInspect_DepthExceeded(t *testing.T) {
-	// Build a chain of 12 pages (depth 11 at the deepest) which must be rejected.
-	lines := []string{versionLine(), spaceLine()}
-	prev := ""
-	for i := 0; i <= 11; i++ {
-		id := string(rune('a'+i)) + "id"
-		lines = append(lines, pageLine(t, id, prev, "P", docString("x")))
-		prev = id
-	}
-	lines = append(lines, resolveLine())
-	jsonl := joinLines(lines...)
-	_, err := newBundle(jsonl, baseManifest(12, 0, 0)).inspect(t, InspectOptions{})
-	if got := inspectErrCode(err); got != InspectErrDepthExceeded {
-		t.Fatalf("code = %q, want %q", got, InspectErrDepthExceeded)
-	}
-}
-
-func TestInspect_DepthTenAllowed(t *testing.T) {
-	// A chain of 11 pages has a maximum depth of 10, which is allowed.
+	// A chain of 11 pages puts the deepest page at depth 11 (root is depth 1), which exceeds the
+	// depth-10 limit and must be rejected — matching the app-layer bound enforced at execution.
 	lines := []string{versionLine(), spaceLine()}
 	prev := ""
 	for i := 0; i <= 10; i++ {
@@ -230,6 +214,23 @@ func TestInspect_DepthTenAllowed(t *testing.T) {
 	lines = append(lines, resolveLine())
 	jsonl := joinLines(lines...)
 	_, err := newBundle(jsonl, baseManifest(11, 0, 0)).inspect(t, InspectOptions{})
+	if got := inspectErrCode(err); got != InspectErrDepthExceeded {
+		t.Fatalf("code = %q, want %q", got, InspectErrDepthExceeded)
+	}
+}
+
+func TestInspect_DepthTenAllowed(t *testing.T) {
+	// A chain of 10 pages reaches depth 10 (root is depth 1), the deepest allowed.
+	lines := []string{versionLine(), spaceLine()}
+	prev := ""
+	for i := 0; i <= 9; i++ {
+		id := string(rune('a'+i)) + "id"
+		lines = append(lines, pageLine(t, id, prev, "P", docString("x")))
+		prev = id
+	}
+	lines = append(lines, resolveLine())
+	jsonl := joinLines(lines...)
+	_, err := newBundle(jsonl, baseManifest(10, 0, 0)).inspect(t, InspectOptions{})
 	if err != nil {
 		t.Fatalf("depth 10 should be allowed, got %v", err)
 	}
@@ -314,6 +315,48 @@ func TestInspect_SpaceKeyMismatch(t *testing.T) {
 	_, err := newBundle(jsonl, baseManifest(1, 0, 0)).inspect(t, InspectOptions{})
 	if got := inspectErrCode(err); got != InspectErrSpaceKeyMismatch {
 		t.Fatalf("code = %q, want %q", got, InspectErrSpaceKeyMismatch)
+	}
+}
+
+func TestInspect_TitleTooLong(t *testing.T) {
+	longTitle := strings.Repeat("x", 300) // > model.PageTitleMaxRunes (255)
+	jsonl := joinLines(versionLine(), spaceLine(),
+		pageLine(t, "100", "", longTitle, docString("x")), resolveLine())
+	_, err := newBundle(jsonl, baseManifest(1, 0, 0)).inspect(t, InspectOptions{})
+	if got := inspectErrCode(err); got != InspectErrPageTitleTooLong {
+		t.Fatalf("code = %q, want %q", got, InspectErrPageTitleTooLong)
+	}
+}
+
+func TestInspect_ManifestWarningsCapped(t *testing.T) {
+	b := validBundle(t)
+	total := MaxManifestWarnings + 500
+	b.manifest.Warnings = make([]string, total)
+	for i := range b.manifest.Warnings {
+		b.manifest.Warnings[i] = "w"
+	}
+	res, err := b.inspect(t, InspectOptions{})
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	warnIssues := 0
+	sawSuppressionNote := false
+	for _, is := range res.Issues {
+		if is.Code == IssueManifestWarning {
+			warnIssues++
+			if is.Details != nil {
+				if _, ok := is.Details["suppressed"]; ok {
+					sawSuppressionNote = true
+				}
+			}
+		}
+	}
+	// At most MaxManifestWarnings individual warnings plus one aggregate suppression note.
+	if warnIssues > MaxManifestWarnings+1 {
+		t.Errorf("manifest warning issues = %d, want <= %d", warnIssues, MaxManifestWarnings+1)
+	}
+	if !sawSuppressionNote {
+		t.Errorf("expected an aggregate suppression issue when warnings exceed the cap")
 	}
 }
 
