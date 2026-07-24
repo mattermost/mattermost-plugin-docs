@@ -48,9 +48,15 @@ const Menu = ({ariaLabel, items, align = 'left', tooltip, trigger}: Props) => (
                             <BaseMenu.Item
                                 className={classNames(styles.item, {
                                     [styles.destructive]: item.isDestructive,
-                                    [styles.link]: item.isLink,
+                                    [styles.link]: item.isLink || Boolean(item.href),
                                 })}
                                 onClick={item.onClick}
+                                render={item.href ? (
+                                    <a
+                                        href={item.href}
+                                        {...(item.external ? {target: '_blank', rel: 'noopener noreferrer'} : {})}
+                                    />
+                                ) : undefined}
                             >
                                 {item.leadingIcon && <span className={styles.itemIcon}>{item.leadingIcon}</span>}
                                 <span className={styles.itemText}>

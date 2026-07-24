@@ -12,4 +12,10 @@ export type MenuItemSpec = {
     isDestructive?: boolean;
     isLink?: boolean;
     hasDivider?: boolean;
+
+    // When set, the item renders as a real anchor (proper semantics, keyboard
+    // and middle-click support) instead of a button. `external` opens in a new
+    // tab with a safe rel.
+    href?: string;
+    external?: boolean;
 };
