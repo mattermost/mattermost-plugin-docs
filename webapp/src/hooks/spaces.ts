@@ -9,14 +9,19 @@ import {DOCS_KEYWORD} from 'routing/paths';
 import {createSpaceFormSchema, slugify} from 'validation/space_schema';
 
 import {createSpace} from 'store/actions';
-import {getRecentSpaceSummaries, getSpace, getSpaces, isSlugAvailable} from 'store/selectors';
+import {getAllSpaces, getRecentSpaceSummaries, getSpace, getSpacesForCurrentTeam, isSlugAvailable} from 'store/selectors';
 
 import type {UrlInputHandle} from 'components/form-controls/url_input';
 
 import type {Space, SpaceSummary, SpaceVisibility} from 'types/docs';
 
 export function useSpaces(): Space[] {
-    return useAppSelector(getSpaces);
+    return useAppSelector(getSpacesForCurrentTeam);
+}
+
+// All of the user's spaces across teams — for the cross-team docs switcher.
+export function useAllSpaces(): Space[] {
+    return useAppSelector(getAllSpaces);
 }
 
 export function useSpace(id?: string): Space | undefined {

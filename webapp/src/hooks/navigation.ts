@@ -32,6 +32,10 @@ export function useDocsNavigation() {
     const goHome = useCallback(() => history.push(docsHomePath(teamName)), [history, teamName]);
     const navigate = useCallback((space: string, page?: string) => history.push(docsPath(teamName, space, page)), [history, teamName]);
 
+    // Navigate into an explicit team (the cross-team switcher routes a result to
+    // its own team). Core re-initializes team context from the URL on arrival.
+    const navigateInTeam = useCallback((team: string, space: string, page?: string) => history.push(docsPath(team, space, page)), [history]);
+
     return {
         teamName,
         spaceId,
@@ -41,6 +45,7 @@ export function useDocsNavigation() {
         goToDraft,
         goHome,
         navigate,
+        navigateInTeam,
 
         // Re-exported for declarative use, e.g. <Link to={paths.space(id)}>.
         // Team is pre-bound so call sites match the imperative helpers.

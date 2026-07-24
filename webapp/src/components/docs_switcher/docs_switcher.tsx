@@ -4,7 +4,8 @@
 import classNames from 'classnames';
 import {useDocsSearch, useRecentDocs} from 'hooks/docs';
 import {useDocsNavigation} from 'hooks/navigation';
-import {useSpaces} from 'hooks/spaces';
+import {useAllSpaces} from 'hooks/spaces';
+import {useTeamNamesById} from 'hooks/team';
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useIntl} from 'react-intl';
 
@@ -32,17 +33,24 @@ const optionId = (index: number) => `docs-switcher-option-${index}`;
 
 const DocsSwitcher = ({onClose}: Props) => {
     const {formatMessage} = useIntl();
-    const {navigate} = useDocsNavigation();
+    const {navigate, navigateInTeam} = useDocsNavigation();
     const [query, setQuery] = useState('');
     const [activeIndex, setActiveIndex] = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);
     const trimmed = query.trim().toLowerCase();
     const hasQuery = trimmed.length > 0;
 
-    const allSpaces = useSpaces();
+    const allSpaces = useAllSpaces();
     const recent = useRecentDocs();
     const results = useDocsSearch(query);
-    const spaceTitleById = useMemo(() => new Map(allSpaces.map((space) => [space.id, space.title])), [allSpaces]);
+    const teamNamesById = useTeamNamesById();
+
+    // Cross-team: each space's title and owning team, so a result can render its
+    // space label and route to that space's own team.
+    const spaceMetaById = useMemo(
+        () => new Map(allSpaces.map((space) => [space.id, {title: space.title, teamName: teamNamesById.get(space.team_id)}])),
+        [allSpaces, teamNamesById],
+    );
 
     const groups: Group[] = useMemo(() => {
         let i = 0;
@@ -87,13 +95,19 @@ const DocsSwitcher = ({onClose}: Props) => {
         if (!entry) {
             return;
         }
-        if (entry.kind === 'space') {
-            navigate(entry.space.id);
+        const spaceId = entry.kind === 'space' ? entry.space.id : entry.page.space_id;
+        const pageId = entry.kind === 'space' ? undefined : entry.page.id;
+        const teamName = spaceMetaById.get(spaceId)?.teamName;
+
+        // Route to the space's own team; fall back to the current team if the
+        // space's team name isn't resolvable.
+        if (teamName) {
+            navigateInTeam(teamName, spaceId, pageId);
         } else {
-            navigate(entry.page.space_id, entry.page.id);
+            navigate(spaceId, pageId);
         }
         onClose();
-    }, [navigate, onClose]);
+    }, [spaceMetaById, navigateInTeam, navigate, onClose]);
 
     const onInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (total === 0) {
@@ -146,7 +160,7 @@ const DocsSwitcher = ({onClose}: Props) => {
                 <>
                     <span className={styles.itemIcon}><TextBoxOutlineIcon size={16}/></span>
                     <span className={styles.itemLabel}>{entry.page.title}</span>
-                    <span className={styles.itemMeta}>{spaceTitleById.get(entry.page.space_id)}</span>
+                    <span className={styles.itemMeta}>{spaceMetaById.get(entry.page.space_id)?.title}</span>
                 </>
             )}
         </button>

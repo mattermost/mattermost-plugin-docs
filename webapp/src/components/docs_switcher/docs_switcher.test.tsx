@@ -12,16 +12,20 @@ import {renderWithContext} from '../../../tests/react_testing_utils';
 
 const state = {
     docs: {
-        spaces: {byId: {eng: makeSpace('eng', 'Engineering'), sales: makeSpace('sales', 'Sales')}, order: ['eng', 'sales']},
-        pages: {byId: {}, bySpace: {}},
+        spaces: {eng: makeSpace('eng', 'Engineering', 'team1'), sales: makeSpace('sales', 'Sales', 'team1')},
+        spacesInTeam: {team1: new Set(['eng', 'sales'])},
+        pages: {},
+        pagesInSpace: {},
     },
     currentTeam: makeTeam('team1', 'myteam'),
 };
 
 const stateWithPage = {
     docs: {
-        spaces: {byId: {eng: makeSpace('eng', 'Engineering')}, order: ['eng']},
-        pages: {byId: {onboarding: makePage('onboarding', 'eng', 'Onboarding')}, bySpace: {eng: ['onboarding']}},
+        spaces: {eng: makeSpace('eng', 'Engineering', 'team1')},
+        spacesInTeam: {team1: new Set(['eng'])},
+        pages: {onboarding: makePage('onboarding', 'eng', 'Onboarding')},
+        pagesInSpace: {eng: new Set(['onboarding'])},
     },
     currentTeam: makeTeam('team1', 'myteam'),
 };
@@ -82,5 +86,29 @@ describe('DocsSwitcher', () => {
         fireEvent.click(screen.getByRole('option', {name: /Onboarding/}));
 
         expect(history.location.pathname).toBe('/myteam/spaces/eng/onboarding');
+    });
+
+    it('lists spaces across teams and navigates to a result in its own team', () => {
+        const crossTeamState = {
+            docs: {
+                spaces: {
+                    eng: makeSpace('eng', 'Engineering', 'team1'),
+                    design: makeSpace('design', 'Design', 'team2'),
+                },
+                spacesInTeam: {team1: new Set(['eng']), team2: new Set(['design'])},
+                pages: {},
+                pagesInSpace: {},
+            },
+            currentTeam: makeTeam('team1', 'myteam'),
+            teams: [makeTeam('team1', 'myteam'), makeTeam('team2', 'otherteam')],
+        };
+        const {history} = renderWithContext(<DocsSwitcher onClose={jest.fn()}/>, {state: crossTeamState});
+
+        // Both teams' spaces are listed even though the current team is team1.
+        expect(screen.getByRole('option', {name: /Engineering/})).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('option', {name: /Design/}));
+
+        // Routed to the space's own team (team2 → otherteam), not the current one.
+        expect(history.location.pathname).toBe('/otherteam/spaces/design');
     });
 });
