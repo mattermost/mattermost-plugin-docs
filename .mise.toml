@@ -1,0 +1,43 @@
+[tools]
+go = "1.26.4"
+node = "24.13.1"
+
+[env]
+GOTOOLCHAIN = "local"
+GOBIN = "{{config_root}}/bin"
+
+[tasks.install-go-tools]
+description = "Install Go tools into ./bin using the configured Go toolchain"
+run = "make install-go-tools"
+
+[tasks.check]
+description = "Run all style checks"
+run = "make check-style"
+
+[tasks.check-server]
+description = "Run server Go vet and golangci-lint checks"
+run = "make check-style-server"
+
+[tasks.check-web]
+description = "Run webapp lint and type checks"
+run = "make check-style-web"
+
+[tasks.test]
+description = "Run the full test suite"
+run = "make test"
+
+[tasks.test-ci]
+description = "Run the CI-optimized test suite"
+run = "make test-ci"
+
+[tasks.build]
+description = "Build and bundle the plugin"
+run = "make dist"
+
+[tasks.dev]
+description = "Build the server and bundle, then watch webapp assets"
+run = "make watch"
+
+[tasks.deploy]
+description = "Build, bundle, and deploy the plugin to the configured Mattermost server"
+run = "make deploy"

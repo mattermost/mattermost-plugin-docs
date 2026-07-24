@@ -1,0 +1,99 @@
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
+// See LICENSE.txt for license information.
+
+package store
+
+import (
+	"fmt"
+	"strings"
+)
+
+// MaxPageHierarchyDepth limits CTE recursion depth.
+const MaxPageHierarchyDepth = 50
+
+// MaxPageDescendantsLimit is the maximum number of descendants returned by a subtree fetch.
+const MaxPageDescendantsLimit = 5000
+
+// MaxPageSiblingsLimit caps a single parent's direct live children so any reposition
+// operation (which renumbers the whole group atomically) stays bounded.
+// Matches MaxPageDescendantsLimit so a full-fan-out subtree still fits the descendant cap.
+const MaxPageSiblingsLimit = MaxPageDescendantsLimit
+
+// MaxRowsPerQuery caps unpaginated reads to prevent unbounded result sets.
+// Paginated listings reject a non-positive limit outright rather than falling back to this cap.
+const MaxRowsPerQuery = 5000
+
+var pageColListP = strings.Join(pageColumnsP, ", ")
+
+// These CTEs are built once at package init (inputs are compile-time constants) rather than on
+// every query.
+var (
+	pageDescendantsCTE = computeDescendantsCTE()
+
+	// moveAncestorsCTE walks a page's parent chain upward, excluding snapshot rows
+	// (OriginalId != ''), bounded by MaxPageHierarchyDepth. Callers run it within their own
+	// transaction so it observes locked, uncommitted state, and append their own SELECT.
+	// path breaks any corrupted ParentId cycle explicitly rather than relying on the depth
+	// bound alone.
+	moveAncestorsCTE = fmt.Sprintf(`
+	WITH RECURSIVE ancestors AS (
+		SELECT Id, ParentId, 1 AS depth, ARRAY[Id]::text[] AS path
+		FROM DOCS_Page WHERE Id = $1 AND DeleteAt = 0 AND OriginalId = ''
+		UNION ALL
+		SELECT p.Id, p.ParentId, a.depth + 1, a.path || p.Id
+		FROM DOCS_Page p
+		INNER JOIN ancestors a ON p.Id = a.ParentId
+		WHERE p.DeleteAt = 0 AND p.OriginalId = '' AND a.depth <= %d
+		  AND NOT (p.Id = ANY(a.path))
+	)`, MaxPageHierarchyDepth)
+
+	// pageSubtreeCTE walks a page's live subtree downward (root at depth 0), bounded by
+	// MaxPageHierarchyDepth so a subtree one level past the cap still emits a row rather than being
+	// silently truncated. path breaks any corrupted ParentId cycle. Callers append their own SELECT.
+	pageSubtreeCTE = fmt.Sprintf(`
+	WITH RECURSIVE page_subtree AS (
+		SELECT Id, 0 AS depth, ARRAY[Id]::text[] AS path
+		FROM DOCS_Page WHERE Id = $1 AND DeleteAt = 0 AND OriginalId = ''
+		UNION ALL
+		SELECT p.Id, ps.depth + 1, ps.path || p.Id
+		FROM DOCS_Page p
+		INNER JOIN page_subtree ps ON p.ParentId = ps.Id
+		WHERE p.DeleteAt = 0 AND p.OriginalId = '' AND ps.depth <= %d
+		  AND NOT (p.Id = ANY(ps.path))
+	)`, MaxPageHierarchyDepth)
+)
+
+// computeDescendantsCTE generates the recursive CTE that walks the live subtree below a page,
+// excluding snapshot rows (OriginalId != "") like the ancestry and subtree CTEs above, and
+// excluding the root node, returning full page columns plus the node's depth. depth counts
+// edges below the requested page: the root is seeded at 0, so a direct child is depth 1. The
+// recursion runs one level past MaxPageHierarchyDepth so an over-deep subtree row has depth >
+// MaxPageHierarchyDepth, enabling callers to detect truncation.
+// sort_path/create_path/id_path accumulate each ancestor's ordering keys so the ORDER BY below
+// yields a pre-order depth-first walk with sibling order matching GetPageChildren (SortOrder,
+// CreateAt, Id). id_path is seeded with the root ID so NOT (p.Id = ANY(d.id_path)) breaks any
+// corrupted ParentId cycle on the first repeated visit.
+func computeDescendantsCTE() string {
+	return fmt.Sprintf(`
+		WITH RECURSIVE descendants AS (
+			SELECT Id, ParentId, 0 AS depth,
+				ARRAY[]::bigint[] AS sort_path,
+				ARRAY[]::bigint[] AS create_path,
+				ARRAY[Id]::text[] AS id_path
+			FROM DOCS_Page WHERE Id = $1 AND DeleteAt = 0 AND OriginalId = ''
+			UNION ALL
+			SELECT p.Id, p.ParentId, d.depth + 1,
+				d.sort_path || p.SortOrder,
+				d.create_path || p.CreateAt,
+				d.id_path || p.Id
+			FROM DOCS_Page p
+			INNER JOIN descendants d ON p.ParentId = d.Id
+			WHERE p.DeleteAt = 0 AND p.OriginalId = '' AND d.depth < %d
+			  AND NOT (p.Id = ANY(d.id_path))
+		)`, MaxPageHierarchyDepth+1) + `
+	SELECT ` + pageColListP + `, d.depth
+	FROM descendants d
+	INNER JOIN DOCS_Page p ON p.Id = d.Id
+	WHERE d.Id != $1 AND p.DeleteAt = 0 AND p.OriginalId = ''
+	ORDER BY d.sort_path, d.create_path, d.id_path`
+}
