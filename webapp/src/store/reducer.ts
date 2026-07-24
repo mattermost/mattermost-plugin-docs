@@ -11,29 +11,41 @@ import {PageTypes, SpaceTypes} from './action_types';
 type ReceivedSpacesAction = {spaces: Space[]};
 type CreatedSpaceAction = {space: Space};
 type DeletedSpaceAction = {spaceId: string};
+type ReceivedPagesAction = {pages: Page[]};
 
-// SpaceTypes' values aren't string-literal types (manifest.id is loaded via
-// JSON.parse), so `action.type` can't discriminate a union by itself — each
-// case casts to its own shape instead, mirroring the Playbooks reducer.
+// SpaceTypes'/PageTypes' values aren't string-literal types (manifest.id is
+// loaded via JSON.parse), so `action.type` can't discriminate a union by
+// itself — each case casts to its own shape, mirroring the core channels
+// reducer.
 
-function spacesById(state: Record<string, Space> = {}, action: UnknownAction): Record<string, Space> {
+// Normalized entity maps (byId) and per-parent Set indices, modeled on core's
+// `channels` + `channelsInTeam`. Sets give O(1) membership/add/remove so
+// high-throughput WebSocket events touch only the affected entity and index.
+
+function spaces(state: Record<string, Space> = {}, action: UnknownAction): Record<string, Space> {
     switch (action.type) {
     case SpaceTypes.RECEIVED_SPACES: {
-        const receivedAction = action as unknown as ReceivedSpacesAction;
+        const {spaces: received} = action as unknown as ReceivedSpacesAction;
+        if (received.length === 0) {
+            return state;
+        }
         const next = {...state};
-        for (const space of receivedAction.spaces) {
+        for (const space of received) {
             next[space.id] = space;
         }
         return next;
     }
     case SpaceTypes.CREATED_SPACE: {
-        const createdAction = action as unknown as CreatedSpaceAction;
-        return {...state, [createdAction.space.id]: createdAction.space};
+        const {space} = action as unknown as CreatedSpaceAction;
+        return {...state, [space.id]: space};
     }
     case SpaceTypes.DELETED_SPACE: {
-        const deletedAction = action as unknown as DeletedSpaceAction;
+        const {spaceId} = action as unknown as DeletedSpaceAction;
+        if (!(spaceId in state)) {
+            return state;
+        }
         const next = {...state};
-        delete next[deletedAction.spaceId];
+        delete next[spaceId];
         return next;
     }
     default:
@@ -41,46 +53,62 @@ function spacesById(state: Record<string, Space> = {}, action: UnknownAction): R
     }
 }
 
-function spacesOrder(state: string[] = [], action: UnknownAction): string[] {
+function addSpaceToTeam(state: Record<string, Set<string>>, space: Space): Record<string, Set<string>> {
+    const next = new Set(state[space.team_id]);
+    next.add(space.id);
+    return {...state, [space.team_id]: next};
+}
+
+function spacesInTeam(state: Record<string, Set<string>> = {}, action: UnknownAction): Record<string, Set<string>> {
     switch (action.type) {
     case SpaceTypes.RECEIVED_SPACES: {
-        const receivedAction = action as unknown as ReceivedSpacesAction;
-        const incoming = receivedAction.spaces.map((space) => space.id).filter((id) => !state.includes(id));
-        return incoming.length === 0 ? state : [...state, ...incoming];
+        const {spaces: received} = action as unknown as ReceivedSpacesAction;
+        if (received.length === 0) {
+            return state;
+        }
+        const next = {...state};
+        for (const space of received) {
+            const set = new Set(next[space.team_id]);
+            set.add(space.id);
+            next[space.team_id] = set;
+        }
+        return next;
     }
     case SpaceTypes.CREATED_SPACE: {
-        const createdAction = action as unknown as CreatedSpaceAction;
-        return [createdAction.space.id, ...state.filter((id) => id !== createdAction.space.id)];
+        const {space} = action as unknown as CreatedSpaceAction;
+        return addSpaceToTeam(state, space);
     }
     case SpaceTypes.DELETED_SPACE: {
-        const deletedAction = action as unknown as DeletedSpaceAction;
-        return state.filter((id) => id !== deletedAction.spaceId);
+        const {spaceId} = action as unknown as DeletedSpaceAction;
+        const teamId = Object.keys(state).find((id) => state[id].has(spaceId));
+        if (teamId === undefined) {
+            return state;
+        }
+        const set = new Set(state[teamId]);
+        set.delete(spaceId);
+        return {...state, [teamId]: set};
     }
     default:
         return state;
     }
 }
 
-const spaces = combineReducers({byId: spacesById, order: spacesOrder});
-
-type ReceivedPagesAction = {pages: Page[]};
-
-function pagesById(state: Record<string, Page> = {}, action: UnknownAction): Record<string, Page> {
+function pages(state: Record<string, Page> = {}, action: UnknownAction): Record<string, Page> {
     switch (action.type) {
     case PageTypes.RECEIVED_PAGES: {
-        const receivedAction = action as unknown as ReceivedPagesAction;
-        if (receivedAction.pages.length === 0) {
+        const {pages: received} = action as unknown as ReceivedPagesAction;
+        if (received.length === 0) {
             return state;
         }
         const next = {...state};
-        for (const page of receivedAction.pages) {
+        for (const page of received) {
             next[page.id] = page;
         }
         return next;
     }
     case SpaceTypes.DELETED_SPACE: {
-        const deletedAction = action as unknown as DeletedSpaceAction;
-        const remaining = Object.entries(state).filter(([, page]) => page.space_id !== deletedAction.spaceId);
+        const {spaceId} = action as unknown as DeletedSpaceAction;
+        const remaining = Object.entries(state).filter(([, page]) => page.space_id !== spaceId);
         return remaining.length === Object.keys(state).length ? state : Object.fromEntries(remaining);
     }
     default:
@@ -88,27 +116,28 @@ function pagesById(state: Record<string, Page> = {}, action: UnknownAction): Rec
     }
 }
 
-function pagesBySpace(state: Record<string, string[]> = {}, action: UnknownAction): Record<string, string[]> {
+function pagesInSpace(state: Record<string, Set<string>> = {}, action: UnknownAction): Record<string, Set<string>> {
     switch (action.type) {
     case PageTypes.RECEIVED_PAGES: {
-        const receivedAction = action as unknown as ReceivedPagesAction;
-        if (receivedAction.pages.length === 0) {
+        const {pages: received} = action as unknown as ReceivedPagesAction;
+        if (received.length === 0) {
             return state;
         }
         const next = {...state};
-        for (const page of receivedAction.pages) {
-            const ids = next[page.space_id] ?? [];
-            next[page.space_id] = ids.includes(page.id) ? ids : [...ids, page.id];
+        for (const page of received) {
+            const set = new Set(next[page.space_id]);
+            set.add(page.id);
+            next[page.space_id] = set;
         }
         return next;
     }
     case SpaceTypes.DELETED_SPACE: {
-        const deletedAction = action as unknown as DeletedSpaceAction;
-        if (!(deletedAction.spaceId in state)) {
+        const {spaceId} = action as unknown as DeletedSpaceAction;
+        if (!(spaceId in state)) {
             return state;
         }
         const next = {...state};
-        delete next[deletedAction.spaceId];
+        delete next[spaceId];
         return next;
     }
     default:
@@ -116,8 +145,6 @@ function pagesBySpace(state: Record<string, string[]> = {}, action: UnknownActio
     }
 }
 
-const pages = combineReducers({byId: pagesById, bySpace: pagesBySpace});
-
-const reducer = combineReducers({spaces, pages});
+const reducer = combineReducers({spaces, spacesInTeam, pages, pagesInSpace});
 
 export default reducer;

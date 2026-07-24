@@ -14,7 +14,12 @@ import {renderWithContext} from '../../../tests/react_testing_utils';
 const team = makeTeam('team1', 'myteam');
 
 const takenSpaceState = {
-    docs: {spaces: {byId: {taken: makeSpace('taken', 'Taken')}, order: ['taken']}, pages: {byId: {}, bySpace: {}}},
+    docs: {
+        spaces: {taken: makeSpace('taken', 'Taken', 'team1')},
+        spacesInTeam: {team1: new Set(['taken'])},
+        pages: {},
+        pagesInSpace: {},
+    },
     currentTeam: team,
 };
 

@@ -18,8 +18,10 @@ import type {GlobalState} from '@mattermost/types/store';
 import type {DocsPluginState} from 'store/types';
 
 const EMPTY_DOCS_STATE: DocsPluginState = {
-    spaces: {byId: {}, order: []},
-    pages: {byId: {}, bySpace: {}},
+    spaces: {},
+    spacesInTeam: {},
+    pages: {},
+    pagesInSpace: {},
 };
 
 type TestTeam = {id: string; name: string; display_name?: string};
@@ -28,23 +30,30 @@ type TestUser = {id: string; username?: string; first_name?: string; last_name?:
 export type TestStateOptions = {
     docs?: Partial<DocsPluginState>;
     currentTeam?: TestTeam;
+
+    // The user's teams (for cross-team reads like the switcher). Defaults to just
+    // the current team.
+    teams?: TestTeam[];
     currentUser?: TestUser;
 };
 
 // Builds a host-shaped GlobalState with the Docs plugin subtree under
 // `plugins-<id>` (where the plugin's registered reducer mounts) plus the minimal
-// entities the Docs hooks read (current team + current user).
-export function makeTestState({docs, currentTeam, currentUser}: TestStateOptions = {}): GlobalState {
+// entities the Docs hooks read (current team + membership + current user).
+export function makeTestState({docs, currentTeam, teams, currentUser}: TestStateOptions = {}): GlobalState {
     const teamId = currentTeam?.id ?? '';
     const userId = currentUser?.id ?? '';
+    const allTeams = teams ?? (currentTeam ? [currentTeam] : []);
 
     return {
         ['plugins-' + manifest.id]: {...EMPTY_DOCS_STATE, ...docs},
         entities: {
             teams: {
                 currentTeamId: teamId,
-                teams: currentTeam ? {[teamId]: currentTeam} : {},
-                myMembers: {},
+
+                // delete_at + a membership are what getMyTeams filters on.
+                teams: Object.fromEntries(allTeams.map((team) => [team.id, {...team, delete_at: 0}])),
+                myMembers: Object.fromEntries(allTeams.map((team) => [team.id, {team_id: team.id, user_id: userId}])),
             },
             users: {
                 currentUserId: userId,
