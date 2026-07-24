@@ -5,14 +5,12 @@ import manifest from 'manifest';
 import type {Reducer} from 'redux';
 import {DOCS_BASE_URL, DOCS_SWITCHER_LINK_URL} from 'routing/paths';
 
-import {fetchPages, fetchSpaces} from 'store/actions';
 import reducer from 'store/reducer';
 
 import DocsRoot from 'components/docs_root/docs_root';
 import DocsSettingsButton from 'components/docs_settings_button/docs_settings_button';
 
 import type {PluginRegistry} from 'types/mattermost-webapp';
-import type {DocsStore} from 'types/store';
 
 // Compass glyph for the product-switcher icon. The host resolves this name
 // through its glyph map and renders it at size 24 (and accent-colored in the
@@ -23,7 +21,7 @@ const SWITCHER_ICON = 'file-text-outline';
 const DocsHeaderCentre = () => null;
 
 export default class Plugin {
-    public async initialize(registry: PluginRegistry, store: DocsStore) {
+    public async initialize(registry: PluginRegistry) {
         registry.registerTranslations({
             getTranslationsForLocale: (locale: string) => {
                 try {
@@ -36,9 +34,10 @@ export default class Plugin {
 
         // The host's registerReducer type is generic over UnknownAction; ours
         // only cares about its own action types and safely no-ops otherwise.
+        // Data loads when the product mounts (see useBootstrapDocs), not here —
+        // init must not fetch (no UI is shown yet, and the user may be logged
+        // out).
         registry.registerReducer(reducer as Reducer);
-        store.dispatch(fetchSpaces());
-        store.dispatch(fetchPages());
 
         registry.registerProduct({
             baseURL: DOCS_BASE_URL,

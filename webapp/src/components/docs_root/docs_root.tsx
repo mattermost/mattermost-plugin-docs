@@ -1,8 +1,8 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {useBootstrapDocs} from 'hooks/bootstrap';
 import {useDocsNavigation} from 'hooks/navigation';
-import {useEnsureCurrentTeam} from 'hooks/team';
 import React, {useCallback, useState} from 'react';
 import {useHotkeys} from 'react-hotkeys-hook';
 
@@ -14,7 +14,7 @@ import DocsMainContent from './docs_main_content';
 import styles from './docs_root.module.scss';
 
 const DocsRoot = () => {
-    useEnsureCurrentTeam();
+    useBootstrapDocs();
 
     const {spaceId, pageId} = useDocsNavigation();
 
