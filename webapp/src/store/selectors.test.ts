@@ -5,32 +5,37 @@ import manifest from 'manifest';
 
 import type {GlobalState} from '@mattermost/types/store';
 
-import {getPagesForSpace, getSpaces, isSlugAvailable} from './selectors';
+import {getPagesForSpace, getSpacesInTeam, isSlugAvailable} from './selectors';
 import {makePage, makeSpace} from './test_fixtures';
 import type {DocsPluginState} from './types';
 
 const makeState = (docsState: DocsPluginState): GlobalState =>
     ({['plugins-' + manifest.id]: docsState}) as unknown as GlobalState;
 
-describe('getSpaces', () => {
-    it('orders spaces by the order list, ignoring stale ids', () => {
-        const spaceA = makeSpace('a', 'Space A');
-        const spaceB = makeSpace('b', 'Space B');
+describe('getSpacesInTeam', () => {
+    it('resolves a team\'s ids to spaces ordered by sort_order, ignoring stale ids', () => {
+        const spaceA = makeSpace('a', 'Space A', 't1', 1);
+        const spaceB = makeSpace('b', 'Space B', 't1', 0);
 
         const state = makeState({
-            spaces: {byId: {a: spaceA, b: spaceB}, order: ['b', 'a', 'missing']},
-            pages: {byId: {}, bySpace: {}},
+            spaces: {a: spaceA, b: spaceB},
+            spacesInTeam: {t1: new Set(['a', 'b', 'missing'])},
+            pages: {},
+            pagesInSpace: {},
         });
 
-        expect(getSpaces(state)).toEqual([spaceB, spaceA]);
+        expect(getSpacesInTeam(state, 't1')).toEqual([spaceB, spaceA]);
+        expect(getSpacesInTeam(state, 't2')).toEqual([]);
     });
 });
 
 describe('isSlugAvailable', () => {
     it('is false when a space already claims the slug', () => {
         const state = makeState({
-            spaces: {byId: {taken: makeSpace('taken', 'Taken')}, order: ['taken']},
-            pages: {byId: {}, bySpace: {}},
+            spaces: {taken: makeSpace('taken', 'Taken')},
+            spacesInTeam: {},
+            pages: {},
+            pagesInSpace: {},
         });
 
         expect(isSlugAvailable(state, 'taken')).toBe(false);
@@ -44,8 +49,10 @@ describe('getPagesForSpace', () => {
         const page2 = makePage('p2', 'space-b', 'Page 2');
 
         const state = makeState({
-            spaces: {byId: {}, order: []},
-            pages: {byId: {p1: page1, p2: page2}, bySpace: {'space-a': ['p1'], 'space-b': ['p2']}},
+            spaces: {},
+            spacesInTeam: {},
+            pages: {p1: page1, p2: page2},
+            pagesInSpace: {'space-a': new Set(['p1']), 'space-b': new Set(['p2'])},
         });
 
         expect(getPagesForSpace(state, 'space-a')).toEqual([page1]);
