@@ -10,8 +10,10 @@ const NPM_TARGET = process.env.npm_lifecycle_event; //eslint-disable-line no-pro
 const isDev = NPM_TARGET === 'debug' || NPM_TARGET === 'debug:watch';
 
 const plugins = [
-    // Shim Node's `process` for dependencies (react-is, etc.) that read it at
-    // runtime; without this the plugin bundle throws "process is not defined".
+    // Shim Node's `process` for transitive deps whose Node-detection paths read
+    // a bare `process` (e.g. `process && process.versions`) at runtime. The
+    // production build strips these under minification, but the debug build
+    // keeps them and throws "process is not defined" without this shim.
     new webpack.ProvidePlugin({
         process: 'process/browser.js',
     }),
@@ -91,6 +93,14 @@ const config = {
                 ],
             },
             {
+                // Inline binary assets into the single plugin bundle, matching
+                // Playbooks/Calls. Emitting separate resource files instead
+                // (`asset`/`asset/resource`, plus code-split chunks) requires an
+                // output.publicPath under the plugin's static route and a backend
+                // handler to serve it (as Boards does) — which also becomes
+                // necessary to support subpath-hosted Mattermost instances.
+                // Adopt that when real, large binary assets or chunking land; no
+                // such assets are imported today.
                 test: /\.(png|eot|tiff|svg|woff2|woff|ttf|gif|mp3|jpg|jpeg)$/,
                 type: 'asset/inline',
             },
