@@ -80,6 +80,9 @@ func TestImportJob_IsValid(t *testing.T) {
 		"bad bundle sha":    func(j *ImportJob) { j.BundleSha256 = "nothex" },
 		"bad preflight rev": func(j *ImportJob) { j.PreflightRevision = "short" },
 		"zero timestamps":   func(j *ImportJob) { j.CreateAt = 0 },
+		"long space title":  func(j *ImportJob) { j.ConfirmedSpaceTitle = strings.Repeat("x", ImportSpaceTitleMaxRunes+1) },
+		"long source name":  func(j *ImportJob) { j.SelectedSourceDisplayName = strings.Repeat("x", ImportDisplayNameMaxRunes+1) },
+		"long error code":   func(j *ImportJob) { j.ErrorCode = strings.Repeat("x", ImportErrorCodeMaxRunes+1) },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -114,6 +117,34 @@ func TestImportSource_IsValid(t *testing.T) {
 	bad2.ExternalSpaceKey = ""
 	if err := bad2.IsValid(); err == nil {
 		t.Errorf("empty space key should be rejected")
+	}
+	bad3 := *valid
+	bad3.DisplayName = strings.Repeat("x", ImportDisplayNameMaxRunes+1)
+	if err := bad3.IsValid(); err == nil {
+		t.Errorf("over-long display name should be rejected")
+	}
+}
+
+func TestImportIssueRecord_IsValid(t *testing.T) {
+	valid := &ImportIssueRecord{Stage: ImportStagePreflight, Severity: ImportSeverityWarning, Code: "some_code", Message: "m"}
+	if err := valid.IsValid(); err != nil {
+		t.Fatalf("valid issue rejected: %v", err)
+	}
+	tests := map[string]func(*ImportIssueRecord){
+		"bad stage":    func(r *ImportIssueRecord) { r.Stage = "nowhere" },
+		"bad severity": func(r *ImportIssueRecord) { r.Severity = "meh" },
+		"empty code":   func(r *ImportIssueRecord) { r.Code = "" },
+		"long code":    func(r *ImportIssueRecord) { r.Code = strings.Repeat("c", ImportIssueCodeMaxRunes+1) },
+		"empty msg":    func(r *ImportIssueRecord) { r.Message = "" },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := *valid
+			mutate(&r)
+			if err := r.IsValid(); err == nil {
+				t.Errorf("expected rejection for %q", name)
+			}
+		})
 	}
 }
 

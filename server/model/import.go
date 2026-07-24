@@ -6,6 +6,7 @@ package model
 import (
 	"net/http"
 	"regexp"
+	"unicode/utf8"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 )
@@ -417,6 +418,17 @@ func (j *ImportJob) IsValid() *mmmodel.AppError {
 	if !IsValidImportHash(j.PreflightRevision) {
 		return mmmodel.NewAppError(where, "model.import_job.is_valid.preflight_revision.app_error", nil, "id="+j.Id, http.StatusBadRequest)
 	}
+	// Enforce the string-length bounds that back the DB VARCHAR columns, so an over-long value is
+	// rejected here rather than as an opaque PostgreSQL constraint violation on insert.
+	if utf8.RuneCountInString(j.ConfirmedSpaceTitle) > ImportSpaceTitleMaxRunes {
+		return mmmodel.NewAppError(where, "model.import_job.is_valid.space_title_length.app_error", map[string]any{"MaxLength": ImportSpaceTitleMaxRunes}, "id="+j.Id, http.StatusBadRequest)
+	}
+	if utf8.RuneCountInString(j.SelectedSourceDisplayName) > ImportDisplayNameMaxRunes {
+		return mmmodel.NewAppError(where, "model.import_job.is_valid.source_display_name_length.app_error", map[string]any{"MaxLength": ImportDisplayNameMaxRunes}, "id="+j.Id, http.StatusBadRequest)
+	}
+	if utf8.RuneCountInString(j.ErrorCode) > ImportErrorCodeMaxRunes {
+		return mmmodel.NewAppError(where, "model.import_job.is_valid.error_code_length.app_error", map[string]any{"MaxLength": ImportErrorCodeMaxRunes}, "id="+j.Id, http.StatusBadRequest)
+	}
 	if j.CreateAt == 0 || j.UpdateAt == 0 || j.RetainUntil == 0 {
 		return mmmodel.NewAppError(where, "model.import_job.is_valid.timestamps.app_error", nil, "id="+j.Id, http.StatusBadRequest)
 	}
@@ -441,8 +453,34 @@ func (s *ImportSource) IsValid() *mmmodel.AppError {
 	if s.ExternalSpaceKey == "" {
 		return mmmodel.NewAppError(where, "model.import_source.is_valid.space_key.app_error", nil, "id="+s.Id, http.StatusBadRequest)
 	}
+	if utf8.RuneCountInString(s.DisplayName) > ImportDisplayNameMaxRunes {
+		return mmmodel.NewAppError(where, "model.import_source.is_valid.display_name_length.app_error", map[string]any{"MaxLength": ImportDisplayNameMaxRunes}, "id="+s.Id, http.StatusBadRequest)
+	}
 	if s.CreateAt == 0 || s.UpdateAt == 0 {
 		return mmmodel.NewAppError(where, "model.import_source.is_valid.timestamps.app_error", nil, "id="+s.Id, http.StatusBadRequest)
+	}
+	return nil
+}
+
+// IsValid checks an ImportIssueRecord's enumerated values and the code-length bound that backs the
+// DOCS_ImportIssue.Code VARCHAR(64) column, so an over-long or unknown code is rejected before insert.
+func (r *ImportIssueRecord) IsValid() *mmmodel.AppError {
+	where := "ImportIssueRecord.IsValid"
+	switch r.Stage {
+	case ImportStageInspection, ImportStagePreflight, ImportStageExecution:
+	default:
+		return mmmodel.NewAppError(where, "model.import_issue.is_valid.stage.app_error", nil, "", http.StatusBadRequest)
+	}
+	switch r.Severity {
+	case ImportSeverityInfo, ImportSeverityWarning, ImportSeverityError:
+	default:
+		return mmmodel.NewAppError(where, "model.import_issue.is_valid.severity.app_error", nil, "", http.StatusBadRequest)
+	}
+	if r.Code == "" || utf8.RuneCountInString(r.Code) > ImportIssueCodeMaxRunes {
+		return mmmodel.NewAppError(where, "model.import_issue.is_valid.code.app_error", map[string]any{"MaxLength": ImportIssueCodeMaxRunes}, "", http.StatusBadRequest)
+	}
+	if r.Message == "" {
+		return mmmodel.NewAppError(where, "model.import_issue.is_valid.message.app_error", nil, "", http.StatusBadRequest)
 	}
 	return nil
 }
