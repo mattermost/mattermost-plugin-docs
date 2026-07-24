@@ -7,7 +7,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
+
+// MaxManifestWarnings bounds how many producer manifest warnings are materialized as inspection
+// issues. A valid sub-limit manifest could otherwise carry hundreds of thousands of warnings; each
+// copied into an issue struct, that would let a single upload retain a large multiple of the
+// manifest size, and concurrent uploads could exhaust plugin memory. Warnings beyond the cap are
+// summarized in one aggregate issue rather than materialized individually.
+const MaxManifestWarnings = 1000
 
 // Manifest mirrors the fields of the producer's import-manifest.json that the importer reads.
 // Unknown fields are ignored (forward-compatible).
@@ -95,6 +105,7 @@ const (
 	InspectErrPageMissingID        = "page_missing_external_id"
 	InspectErrDuplicatePageID      = "page_duplicate_external_id"
 	InspectErrPageMissingTitle     = "page_missing_title"
+	InspectErrPageTitleTooLong     = "page_title_too_long"
 	InspectErrParentNotSeen        = "page_parent_not_seen"
 	InspectErrCycle                = "page_cycle"
 	InspectErrDepthExceeded        = "page_depth_exceeded"
@@ -234,11 +245,26 @@ func Inspect(contents *ArchiveContents, opts InspectOptions) (*InspectionResult,
 		SpaceName:      manifest.Source.SpaceName,
 	}
 
-	// Copy manifest warnings into issues.
-	for _, w := range manifest.Warnings {
+	// Copy manifest warnings into issues, bounded by MaxManifestWarnings so a manifest packed with
+	// warnings cannot force unbounded issue allocation.
+	warnings := manifest.Warnings
+	suppressed := 0
+	if len(warnings) > MaxManifestWarnings {
+		suppressed = len(warnings) - MaxManifestWarnings
+		warnings = warnings[:MaxManifestWarnings]
+	}
+	for _, w := range warnings {
 		res.Issues = append(res.Issues, InspectionIssue{
 			Severity: SeverityWarning, Code: IssueManifestWarning, Message: w,
 			Remediation: "Review the producer warning; it does not block import.",
+		})
+	}
+	if suppressed > 0 {
+		res.Issues = append(res.Issues, InspectionIssue{
+			Severity: SeverityWarning, Code: IssueManifestWarning,
+			Message:     fmt.Sprintf("%d additional manifest warnings were suppressed (limit %d)", suppressed, MaxManifestWarnings),
+			Remediation: "Only the first manifest warnings are reported individually.",
+			Details:     map[string]any{"suppressed": suppressed, "limit": MaxManifestWarnings},
 		})
 	}
 	// Attachments are never verified in this release.
@@ -439,6 +465,11 @@ func normalizePage(
 	if title == "" {
 		return nil, inspectErr(InspectErrPageMissingTitle, "line %d: page %q is missing a title", lineNo, externalID)
 	}
+	// Reject an over-long title at inspection so it fails early here rather than at execution, where
+	// Page.IsValid enforces the same PageTitleMaxRunes bound.
+	if utf8.RuneCountInString(title) > model.PageTitleMaxRunes {
+		return nil, inspectErr(InspectErrPageTitleTooLong, "line %d: page %q title exceeds %d runes", lineNo, externalID, model.PageTitleMaxRunes)
+	}
 
 	// Space key must match the manifest.
 	if err := requireSameSpaceKey(fmt.Sprintf("page %q space_import_source_id", externalID), stringOrEmpty(page.SpaceImportSourceID), manifest.Source.SpaceKey); err != nil {
@@ -559,12 +590,19 @@ func allowlistSourceProps(props map[string]any) map[string]any {
 	return out
 }
 
+// MaxHierarchyDepth is the maximum page depth the importer accepts, mirroring app.MaxPageDepth: a
+// root page is depth 1, so a chain of 10 pages is the deepest allowed and an 11-page chain is
+// rejected. The value is duplicated (rather than imported from the app package) to keep this pure
+// package free of a dependency cycle; both must move together.
+const MaxHierarchyDepth = 10
+
 // verifyHierarchy independently recomputes each page's depth from the parent map, rejecting cycles,
-// missing parents, and depth greater than 10. It does not trust any producer flattening claim.
+// missing parents, and depth greater than MaxHierarchyDepth. It counts the root as depth 1 so the
+// bound matches the app-layer depth enforced at execution, and does not trust any producer
+// flattening claim.
 func verifyHierarchy(pages []StagedPage, parentOf map[string]string) error {
-	const maxDepth = 10
 	for _, p := range pages {
-		depth := 0
+		depth := 1 // the page itself counts as one level; root is depth 1
 		cur := p.ExternalID
 		for {
 			parent := parentOf[cur]
@@ -575,10 +613,10 @@ func verifyHierarchy(pages []StagedPage, parentOf map[string]string) error {
 				return inspectErr(InspectErrParentNotSeen, "page %q references missing parent %q", p.ExternalID, parent)
 			}
 			depth++
-			if depth > maxDepth {
-				return inspectErr(InspectErrDepthExceeded, "page %q exceeds maximum hierarchy depth of %d", p.ExternalID, maxDepth)
+			if depth > MaxHierarchyDepth {
+				return inspectErr(InspectErrDepthExceeded, "page %q exceeds maximum hierarchy depth of %d", p.ExternalID, MaxHierarchyDepth)
 			}
-			if depth > len(parentOf) {
+			if depth > len(parentOf)+1 {
 				return inspectErr(InspectErrCycle, "page %q is part of a parent cycle", p.ExternalID)
 			}
 			cur = parent

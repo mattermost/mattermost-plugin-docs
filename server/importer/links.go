@@ -3,11 +3,12 @@
 
 package importer
 
-import "strings"
+import "regexp"
 
-// Confluence link placeholder prefixes the producer emits inside TipTap link mark hrefs and image
-// src attributes. V1 discovers these structurally but never rewrites them: there is no canonical
-// Docs reader URL in this repository yet.
+// Confluence link placeholder names the mmetl producer emits inside TipTap link mark hrefs and
+// image src attributes. The producer wraps them in double braces, e.g. "{{CONF_PAGE_ID:101}}"
+// (see mmetl services/confluence/links.go). V1 discovers these structurally but never rewrites
+// them: there is no canonical Docs reader URL in this repository yet.
 const (
 	PlaceholderPageID     = "CONF_PAGE_ID"
 	PlaceholderPageTitle  = "CONF_PAGE_TITLE"
@@ -26,8 +27,8 @@ const (
 )
 
 // DiscoveredLink is one placeholder found in an approved attribute (link mark href or image src).
-// Raw is the exact attribute value; Target is the portion after the placeholder prefix and colon
-// (e.g. the page ID or title), when present.
+// Raw is the exact attribute value; Target is the placeholder's argument (e.g. the page ID or
+// title) with the braces and prefix removed.
 type DiscoveredLink struct {
 	Kind   LinkKind `json:"kind"`
 	Raw    string   `json:"raw"`
@@ -40,23 +41,7 @@ type DiscoveredLink struct {
 	InText bool `json:"in_text"`
 }
 
-// classifyPlaceholder inspects an attribute value and returns a DiscoveredLink when it begins with
-// a recognized placeholder prefix, plus ok=true. A value that merely contains a placeholder token
-// somewhere other than the start is not treated as a placeholder here (ordinary text is reported
-// separately by the caller).
-func classifyPlaceholder(value string, inImageSrc bool) (DiscoveredLink, bool) {
-	for prefix, kind := range placeholderKinds {
-		if value == prefix || strings.HasPrefix(value, prefix+":") {
-			target := ""
-			if len(value) > len(prefix)+1 {
-				target = value[len(prefix)+1:]
-			}
-			return DiscoveredLink{Kind: kind, Raw: value, Target: target, InImageSrc: inImageSrc}, true
-		}
-	}
-	return DiscoveredLink{}, false
-}
-
+// placeholderKinds maps a recognized link/attachment placeholder name to its kind.
 var placeholderKinds = map[string]LinkKind{
 	PlaceholderPageID:     LinkKindPageID,
 	PlaceholderPageTitle:  LinkKindPageTitle,
@@ -64,14 +49,34 @@ var placeholderKinds = map[string]LinkKind{
 	PlaceholderAttachment: LinkKindAttachment,
 }
 
-// containsPlaceholderToken reports whether s contains any placeholder prefix token anywhere. Used
-// to flag placeholders that appear in ordinary text (which V1 never rewrites) so the report can
-// note them.
-func containsPlaceholderToken(s string) bool {
-	for prefix := range placeholderKinds {
-		if strings.Contains(s, prefix) {
-			return true
-		}
+// linkPlaceholderRe matches a producer link/attachment placeholder of the form
+// "{{CONF_PAGE_ID:target}}", capturing the placeholder name and its target argument. The producer
+// URL-escapes the target, so it never itself contains "}".
+var linkPlaceholderRe = regexp.MustCompile(`\{\{(CONF_PAGE_ID|CONF_PAGE_TITLE|CONF_FILE|CONF_ATTACHMENT):([^}]*)\}\}`)
+
+// anyPlaceholderRe matches any Confluence placeholder token (including e.g. CONF_USER) so a
+// placeholder left in ordinary text can be flagged even when it is not one of the link kinds.
+var anyPlaceholderRe = regexp.MustCompile(`\{\{CONF_[A-Z_]+:[^}]*\}\}`)
+
+// classifyPlaceholder inspects an approved attribute value (a link href or image src) and returns a
+// DiscoveredLink when it contains a recognized "{{CONF_...:target}}" placeholder, plus ok=true. The
+// producer sets the whole attribute to the placeholder, but this tolerates surrounding text by
+// matching the first placeholder anywhere in the value.
+func classifyPlaceholder(value string, inImageSrc bool) (DiscoveredLink, bool) {
+	m := linkPlaceholderRe.FindStringSubmatch(value)
+	if m == nil {
+		return DiscoveredLink{}, false
 	}
-	return false
+	return DiscoveredLink{
+		Kind:       placeholderKinds[m[1]],
+		Raw:        value,
+		Target:     m[2],
+		InImageSrc: inImageSrc,
+	}, true
+}
+
+// containsPlaceholderToken reports whether s contains any Confluence "{{CONF_...:...}}" placeholder
+// token. Used to flag placeholders that appear in ordinary text (which V1 never rewrites).
+func containsPlaceholderToken(s string) bool {
+	return anyPlaceholderRe.MatchString(s)
 }

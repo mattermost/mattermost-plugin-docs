@@ -29,6 +29,7 @@ func tiptapErr(code, format string, args ...any) *TipTapError {
 const (
 	TipTapErrInvalidJSON    = "tiptap_invalid_json"
 	TipTapErrNotDoc         = "tiptap_not_doc"
+	TipTapErrMissingType    = "tiptap_missing_type"
 	TipTapErrBadContent     = "tiptap_bad_content"
 	TipTapErrBadMarks       = "tiptap_bad_marks"
 	TipTapErrBadText        = "tiptap_bad_text"
@@ -126,7 +127,14 @@ func (w *tiptapWalker) walkNode(node map[string]any, depth int) error {
 		return tiptapErr(TipTapErrTooDeep, "document nesting exceeds depth %d", MaxTipTapDepth)
 	}
 
-	nodeType, _ := node["type"].(string)
+	// Every node must carry a non-empty string type. A missing or empty type is not an "unknown
+	// type" (which is preserved) but a structurally invalid node ProseMirror/TipTap clients cannot
+	// deserialize.
+	rawType, hasType := node["type"]
+	nodeType, typeIsString := rawType.(string)
+	if !hasType || !typeIsString || nodeType == "" {
+		return tiptapErr(TipTapErrMissingType, "node is missing a non-empty string type")
+	}
 
 	// Marks (if present) must be an array; scan link marks for placeholder hrefs.
 	if rawMarks, present := node["marks"]; present {
@@ -155,15 +163,16 @@ func (w *tiptapWalker) walkNode(node map[string]any, depth int) error {
 	switch nodeType {
 	case nodeTypeText:
 		rawText, present := node["text"]
-		if present {
-			text, ok := rawText.(string)
-			if !ok {
-				return tiptapErr(TipTapErrBadText, "text node has a non-string text field")
-			}
-			w.search.WriteString(text)
-			if containsPlaceholderToken(text) {
-				w.links = append(w.links, DiscoveredLink{Raw: text, InText: true})
-			}
+		if !present {
+			return tiptapErr(TipTapErrBadText, "text node is missing its text field")
+		}
+		text, ok := rawText.(string)
+		if !ok {
+			return tiptapErr(TipTapErrBadText, "text node has a non-string text field")
+		}
+		w.search.WriteString(text)
+		if containsPlaceholderToken(text) {
+			w.links = append(w.links, DiscoveredLink{Raw: text, InText: true})
 		}
 	case nodeTypeHardBreak:
 		w.search.WriteByte('\n')
