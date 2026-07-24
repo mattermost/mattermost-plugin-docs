@@ -2,6 +2,7 @@
 // See LICENSE.txt for license information.
 
 import type {History} from 'history';
+import type {ComponentType, ReactNode} from 'react';
 import type {Action} from 'redux';
 
 // Hand-typed view of the API the host web app attaches to `window` for plugins
@@ -35,6 +36,32 @@ type WebappUtils = {
 };
 
 const webappUtils = (): WebappUtils => (window as unknown as {WebappUtils?: WebappUtils}).WebappUtils ?? {};
+
+// Relative-range spec entries accepted by the host Timestamp `units` prop: a
+// unit name, a [unit, value] tuple, or a range descriptor object. Mirrors
+// core's RangeDescriptor without pulling in its private types.
+export type TimestampUnit = string | [string, number] | {within?: [string, number]; equals?: [string, number]; display: ReactNode | [string] | [string, number]};
+
+type TimestampProps = {
+    value?: number | Date;
+    units?: TimestampUnit[];
+    useTime?: boolean | object;
+    useDate?: boolean | object;
+    useRelative?: boolean;
+    style?: 'narrow' | 'short' | 'long';
+    children?: ReactNode;
+};
+
+// Core exposes shared React components to plugins on `window.Components`
+// (core's plugins/export.ts). Timestamp renders localized, timezone-aware
+// relative/absolute times so plugins don't hand-roll date formatting.
+type HostComponents = {
+    Timestamp?: ComponentType<TimestampProps>;
+};
+
+const hostComponents = (): HostComponents => (window as unknown as {Components?: HostComponents}).Components ?? {};
+
+export const Timestamp = hostComponents().Timestamp;
 
 export function getBrowserHistory(): History | undefined {
     return webappUtils().browserHistory;

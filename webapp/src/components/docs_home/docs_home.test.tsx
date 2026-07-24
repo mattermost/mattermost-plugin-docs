@@ -49,7 +49,7 @@ describe('DocsHome', () => {
     });
 
     it('greets the user and lists recent spaces, navigating on click', () => {
-        mockSummaries = [{space: {...makeSpace('eng', 'Engineering'), icon: '📘'}, pageCount: 3, viewedLabel: 'today'}];
+        mockSummaries = [{space: {...makeSpace('eng', 'Engineering'), icon: '📘'}, pageCount: 3, lastViewedAt: Date.now() - (12 * 60 * 1000)}];
 
         renderWithContext(<DocsHome onCreateSpace={jest.fn()}/>);
 

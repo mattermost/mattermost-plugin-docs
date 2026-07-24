@@ -5,7 +5,9 @@ import {useDocsNavigation} from 'hooks/navigation';
 import {useRecentSpaceSummaries} from 'hooks/spaces';
 import {useCurrentUser} from 'hooks/user';
 import React from 'react';
-import {defineMessages, useIntl} from 'react-intl';
+import {FormattedMessage, defineMessages, useIntl} from 'react-intl';
+import {Timestamp} from 'webapp_globals';
+import type {TimestampUnit} from 'webapp_globals';
 
 import CreationOutlineIcon from '@mattermost/compass-icons/components/creation-outline';
 import NotebookOutlineIcon from '@mattermost/compass-icons/components/notebook-outline';
@@ -132,14 +134,44 @@ const Greeting = ({name}: {name: string}) => {
     );
 };
 
+const justNow = (
+    <FormattedMessage
+        id='docs.home.space.justNow'
+        defaultMessage='just now'
+    />
+);
+
+// Relative-time buckets for the "Viewed …" label, handed to the host Timestamp.
+// Negative bounds select past ranges; below 45s reads "just now".
+const VIEWED_TIME_SPEC: TimestampUnit[] = [
+    {within: ['second', -45], display: justNow},
+    ['minute', -59],
+    ['hour', -48],
+    ['day', -30],
+    ['month', -12],
+    'year',
+];
+
 const SpaceCard = ({summary, onOpen}: {summary: SpaceSummary; onOpen: (id: string) => void}) => {
     const {formatMessage} = useIntl();
-    const {space, pageCount, viewedLabel} = summary;
+    const {space, pageCount, lastViewedAt} = summary;
 
     const pages = formatMessage(
         {id: 'docs.home.space.pageCount', defaultMessage: '{count, plural, one {# page} other {# pages}}'},
         {count: pageCount},
     );
+
+    // Timestamp's `style` is a narrow/short/long format variant, not a DOM style object.
+    /* eslint-disable react/style-prop-object */
+    const relative = lastViewedAt !== undefined && Timestamp ? (
+        <Timestamp
+            value={lastViewedAt}
+            units={VIEWED_TIME_SPEC}
+            useTime={false}
+            style='narrow'
+        />
+    ) : null;
+    /* eslint-enable react/style-prop-object */
 
     return (
         <button
@@ -156,8 +188,19 @@ const SpaceCard = ({summary, onOpen}: {summary: SpaceSummary; onOpen: (id: strin
             <span className={styles.spaceCardText}>
                 <span className={styles.spaceCardName}>{space.title}</span>
                 <span className={styles.spaceCardMeta}>
-                    {/* eslint-disable-next-line formatjs/no-literal-string-in-jsx -- localized fragments joined by a decorative separator */}
-                    {viewedLabel ? `${pages} · ${viewedLabel}` : pages}
+                    {relative ? (
+                        <>
+                            {pages}
+
+                            {/* eslint-disable-next-line formatjs/no-literal-string-in-jsx -- decorative separator between metadata segments */}
+                            {' · '}
+                            <FormattedMessage
+                                id='docs.home.space.viewed'
+                                defaultMessage='Viewed {relative}'
+                                values={{relative}}
+                            />
+                        </>
+                    ) : pages}
                 </span>
             </span>
         </button>

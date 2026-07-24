@@ -58,12 +58,17 @@ export const recentSpaceIds = ['project-avalanche'];
 export const recentPageIds = ['operational-procedures', 'overview-flight-comms', 'communication-protocols'];
 
 // Recently-viewed-spaces summaries for the Home listing (page counts and
-// viewed labels are mocked until the server provides them).
-export const recentSpaceSummaries: Array<{spaceId: string; pageCount: number; viewedLabel: string}> = [
-    {spaceId: 'project-avalanche', pageCount: 12, viewedLabel: 'Viewed 12m ago'},
-    {spaceId: 'incident-handbook', pageCount: 25, viewedLabel: 'Viewed 18m ago'},
-    {spaceId: 'contributor-wiki', pageCount: 48, viewedLabel: 'Viewed 18m ago'},
-    {spaceId: 'product-support', pageCount: 4, viewedLabel: 'Viewed 2d ago'},
-    {spaceId: 'release-discussion', pageCount: 5, viewedLabel: 'Viewed 2d ago'},
-    {spaceId: 'security-incident-handbook', pageCount: 5, viewedLabel: 'Viewed 2d ago'},
+// last-viewed timestamps are mocked until the server provides them; the client
+// formats the timestamp into a relative label at render).
+const MINUTE = 60 * 1000;
+const DAY = 24 * 60 * MINUTE;
+const now = Date.now();
+
+export const recentSpaceSummaries: Array<{spaceId: string; pageCount: number; lastViewedAt: number}> = [
+    {spaceId: 'project-avalanche', pageCount: 12, lastViewedAt: now - (12 * MINUTE)},
+    {spaceId: 'incident-handbook', pageCount: 25, lastViewedAt: now - (18 * MINUTE)},
+    {spaceId: 'contributor-wiki', pageCount: 48, lastViewedAt: now - (18 * MINUTE)},
+    {spaceId: 'product-support', pageCount: 4, lastViewedAt: now - (2 * DAY)},
+    {spaceId: 'release-discussion', pageCount: 5, lastViewedAt: now - (2 * DAY)},
+    {spaceId: 'security-incident-handbook', pageCount: 5, lastViewedAt: now - (2 * DAY)},
 ];

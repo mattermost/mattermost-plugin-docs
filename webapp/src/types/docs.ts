@@ -58,8 +58,9 @@ export type SpaceSummary = {
     space: Space;
     pageCount: number;
 
-    // Human-readable "Viewed 12m ago"-style label (server-provided later).
-    viewedLabel?: string;
+    // Epoch ms of the viewer's last visit; the client formats it into a
+    // "Viewed 12m ago"-style label at render (server-provided later).
+    lastViewedAt?: number;
 };
 
 export type SpaceCategoryType = 'favorites' | 'spaces';
