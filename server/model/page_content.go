@@ -469,16 +469,18 @@ func isBase64ImagePayload(url string) bool {
 	return slices.Contains(safeImageMIMETypes, contentType)
 }
 
-// urlScheme returns the lowercased scheme of a URL and whether one is present. A scheme must sit at
-// the very start and precede any '/', '?', or '#', matching how browsers parse schemes; a relative
-// reference (no scheme) returns ("", false).
-func urlScheme(s string) (string, bool) {
-	for i, r := range s {
+// urlScheme returns the scheme of a URL and whether one is present. lower must already be
+// lowercased (decodeURLScheme passes its lowered form): the character check below accepts only a-z,
+// so an uppercase scheme would be reported as absent. A scheme must sit at the very start and
+// precede any '/', '?', or '#', matching how browsers parse schemes; a relative reference (no
+// scheme) returns ("", false).
+func urlScheme(lower string) (string, bool) {
+	for i, r := range lower {
 		if r == ':' {
 			if i == 0 {
 				return "", false
 			}
-			return s[:i], true
+			return lower[:i], true
 		}
 		if r == '/' || r == '?' || r == '#' {
 			return "", false

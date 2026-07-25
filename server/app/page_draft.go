@@ -467,9 +467,9 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 		case store.ConflictReason(storeErr) == store.ReasonConcurrentEdit:
 			editConflictErr := mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.edit_conflict.app_error",
 				nil, "", http.StatusConflict).Wrap(storeErr)
-			current, getErr := s.GetPage(pageID)
+			current, getErr := s.GetPageInSpace("PublishPageDraft", pageID, spaceID, false)
 			if getErr != nil {
-				// A concurrent delete can remove the page between the conflict and this re-read; fall
+				// A concurrent delete or cross-space move can make the page unreadable here; fall
 				// back to a bare conflict and let the client GET the page itself.
 				s.log.Warn("failed to re-read page for edit-conflict body",
 					"page_id", pageID, "user_id", userID, "err", getErr)
