@@ -59,8 +59,7 @@ func normalizePatchContent(where string, patch *model.PagePatch) *mmmodel.AppErr
 
 // normalizeContentBody normalizes a body without deriving SearchText, for callers (draft autosave)
 // that store only the body. It shares normalizeContent with normalizePageContent but discards the
-// parsed doc, so it skips the full-text BuildSearchText walk that normalizeContent's caller would
-// otherwise run on every call — a waste on the highest-frequency write path.
+// parsed doc.
 func normalizeContentBody(where, body string) (string, *mmmodel.AppError) {
 	normBody, _, _, err := normalizeContent(body)
 	if err != nil {
@@ -94,6 +93,11 @@ func normalizeContent(content string) (normBody string, doc model.TipTapDocument
 func normalizeContentToDoc(content string) (doc model.TipTapDocument, empty bool, err error) {
 	if content == "" {
 		return model.TipTapDocument{}, true, nil
+	}
+	// Reject over-limit content up front for both input forms: ParseTipTapDocument enforces the
+	// same cap only on the JSON path.
+	if len(content) > model.PageBodyMaxBytes {
+		return model.TipTapDocument{}, false, errors.New("content exceeds the maximum body size")
 	}
 	// Treat the body as TipTap only when it is actually valid JSON: a plain-text body that merely
 	// starts with "{" (e.g. "{shrug}") is not JSON and must be wrapped, not rejected. A body that is

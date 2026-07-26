@@ -463,8 +463,8 @@ func (s *Store) rewriteSubtreeSpace(tx *sqlx.Tx, ids []string, sourceSpaceID, ta
 		if err != nil {
 			return errors.Wrap(err, "failed to count mover drafts in target space")
 		}
-		if targetDraftCount+movedDraftCount > MaxDraftsPerUserPerSpace {
-			return &ErrLimitExceeded{Resource: "Draft", Limit: MaxDraftsPerUserPerSpace, Reason: ReasonDraftQuotaExceeded}
+		if targetDraftCount+movedDraftCount > model.MaxDraftsPerUserPerSpace {
+			return &ErrLimitExceeded{Resource: "Draft", Limit: model.MaxDraftsPerUserPerSpace, Reason: ReasonDraftQuotaExceeded}
 		}
 	}
 

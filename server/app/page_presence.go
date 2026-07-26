@@ -28,6 +28,17 @@ func activeEditorSince() int64 {
 	return mmmodel.GetMillis() - ActiveEditorTimeoutMs
 }
 
+func presenceBroadcastKey(pageID, userID string) string {
+	return pageID + ":" + userID
+}
+
+// clearPresenceThrottle removes the (pageID, userID) broadcast rate-limit entry, so the next
+// broadcast for that editor is not suppressed and a later session starts unthrottled. Called
+// whenever a draft session ends.
+func (s *Service) clearPresenceThrottle(pageID, userID string) {
+	s.presenceBroadcastTimes.Delete(presenceBroadcastKey(pageID, userID))
+}
+
 // sweepPresenceBroadcastTimes removes stale entries from the broadcast rate-limit map to bound its
 // size. An entry is normally removed when its session ends (discard or publish); this sweep is the
 // fallback for sessions abandoned without either.
@@ -85,22 +96,24 @@ func (s *Service) publishSelfPresence(userID, pageID, spaceID string, editors []
 
 // broadcastPagePresence fans a page_presence_updated event out to the space audience on channelID
 // (the space's backing channel), carrying the current active-editor set, snapshot_at, and active_timeout_ms.
-// Best-effort: failures are swallowed.
+// Best-effort: failures are logged, never surfaced. The return value reports whether a snapshot was
+// actually published, so a throttling caller can release its claimed slot on failure; a nil client
+// (store-only unit tests) is a deliberate no-op, not a failure.
 //
 // Broadcasts fire only on user actions (autosave, discard, publish), never periodically, so a client
 // that receives no newer snapshot cannot distinguish a still-active editor from one whose session
 // ended abnormally. active_timeout_ms lets it expire the snapshot's editors on its own once
 // snapshot_at + active_timeout_ms has passed.
-func (s *Service) broadcastPagePresence(pageID, spaceID, channelID string) {
+func (s *Service) broadcastPagePresence(pageID, spaceID, channelID string) bool {
 	if s.client == nil {
-		return
+		return true
 	}
 	// Stamp snapshot_at before the editors query so it marks when the snapshot was taken, not when the
 	// broadcast finished assembling — clients use it to discard out-of-order snapshots.
 	snapshotAt := mmmodel.GetMillis()
 	editors, ok := s.getActiveEditors(pageID, spaceID)
 	if !ok {
-		return
+		return false
 	}
 	s.publishToChannels(wsEventPagePresenceUpdated, map[string]any{
 		"page_id":           pageID,
@@ -109,13 +122,54 @@ func (s *Service) broadcastPagePresence(pageID, spaceID, channelID string) {
 		"snapshot_at":       snapshotAt,
 		"active_timeout_ms": ActiveEditorTimeoutMs,
 	}, channelID)
+	return true
 }
 
-// clearThrottleAndBroadcastPagePresence clears the rate-limit entry for (pageID, userID) so the
-// following broadcast is not suppressed, then broadcasts channel-wide. Used whenever a draft session
-// ends (discard, publish, race-loss cleanup) and the active-editors indicator must drop this user.
-func (s *Service) clearThrottleAndBroadcastPagePresence(pageID, userID, spaceID, channelID string) {
-	s.presenceBroadcastTimes.Delete(presenceBroadcastKey(pageID, userID))
+// maybeBroadcastDraftPresence performs the rate-limited presence broadcast that follows a
+// successful autosave. The rate-limit bucket is keyed per (page, user) so each editor gets an
+// independent limit — one editor's broadcast can't rate-limit another editor on the same page —
+// and it covers both audiences below, so autosave cadence cannot flood either.
+//
+// The claimed slot is released again when the channel broadcast fails (a store error while
+// assembling the snapshot), so the next autosave retries immediately instead of waiting out the
+// full throttle window on an attempt that published nothing.
+func (s *Service) maybeBroadcastDraftPresence(pageWasLive bool, pageID, userID, spaceID, channelID string) {
+	presenceKey := presenceBroadcastKey(pageID, userID)
+	now := mmmodel.GetMillis()
+	s.sweepPresenceBroadcastTimes(now)
+	existing, loaded := s.presenceBroadcastTimes.LoadOrStore(presenceKey, now)
+	if loaded {
+		lastTime, ok := existing.(int64)
+		if !ok || now-lastTime < presenceBroadcastMinIntervalMs {
+			return
+		}
+		if !s.presenceBroadcastTimes.CompareAndSwap(presenceKey, existing, now) {
+			return
+		}
+	}
+	// New-page drafts (no published page row yet) must not broadcast presence to the space channel:
+	// that would expose the reserved page ID and the author's identity to all space members before
+	// the page exists. Send the event only to the author so their own UI can track the session.
+	if !pageWasLive {
+		s.publishSelfPresence(userID, pageID, spaceID, []string{userID})
+		return
+	}
+	if !s.broadcastPagePresence(pageID, spaceID, channelID) {
+		s.presenceBroadcastTimes.CompareAndDelete(presenceKey, now)
+	}
+}
+
+// endDraftPresenceSession clears the (pageID, userID) rate-limit entry — so the announcement below
+// is never suppressed and a later session starts unthrottled — and announces the end of a draft
+// session: channel-wide when the page is live, to the author alone otherwise (an unpublished
+// new-page draft's session was never visible to the channel, so it ends the same way it was
+// announced, with an empty editor set).
+func (s *Service) endDraftPresenceSession(pageWasLive bool, pageID, userID, spaceID, channelID string) {
+	s.clearPresenceThrottle(pageID, userID)
+	if !pageWasLive {
+		s.publishSelfPresence(userID, pageID, spaceID, []string{})
+		return
+	}
 	s.broadcastPagePresence(pageID, spaceID, channelID)
 }
 
@@ -130,8 +184,8 @@ type PageActiveEditors struct {
 
 // GetPageActiveEditors returns the editor-presence snapshot for the given page in the given space,
 // after confirming the page exists in that space. Returns 404 if the page is unknown or belongs to
-// another space, and 500 on a store failure (unlike the best-effort getActiveEditors, this backs a
-// REST read that must not report "nobody editing" when the query actually failed).
+// another space; store failures are propagated (unlike the best-effort getActiveEditors, this backs
+// a REST read that must not report "nobody editing" when the query actually failed).
 func (s *Service) GetPageActiveEditors(pageID, spaceID string) (*PageActiveEditors, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("GetPageActiveEditors", "app.page.presence.invalid_page_id.app_error", nil, "", http.StatusBadRequest)

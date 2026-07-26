@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -17,7 +18,6 @@ import (
 
 	"github.com/mattermost/mattermost-plugin-docs/server/app"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
-	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
 // docWith returns a minimal TipTap document whose paragraph contains text.
@@ -250,6 +250,77 @@ func TestDeletePageDraftRejectsWrongSpace(t *testing.T) {
 	got, appErr := h.svc.GetPageDraft(userID, spaceA.Id, draft.PageId)
 	require.Nil(t, appErr, "draft must survive a delete attempt through the wrong space")
 	require.Equal(t, draft.PageId, got.PageId)
+}
+
+// TestPublishPageDraftConcurrentPublishesConverge races two publishes of the same new-page draft
+// (a double-clicked publish). The winner is not fixed, so the assertions are outcome invariants:
+// exactly one publish creates the page; the other either adopts the winner (success without
+// wasCreated — see adoptPublishRaceWinner) or reports a benign already-published outcome (404
+// draft gone / 409 conflict). Either way the page ends up live and the draft consumed.
+func TestPublishPageDraftConcurrentPublishesConverge(t *testing.T) {
+	h := openTestService(t)
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
+	userID := mmmodel.NewId()
+
+	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Doc", "")
+	require.Nil(t, appErr)
+	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: draft.PageId, Title: "Doc", Body: docWith("race")}, nil, nil, nil, "")
+	require.Nil(t, appErr)
+
+	type result struct {
+		page    *model.Page
+		created bool
+		appErr  *mmmodel.AppError
+	}
+	results := make([]result, 2)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Go(func() {
+			<-start
+			p, created, pubErr := h.svc.PublishPageDraft(userID, space.Id, draft.PageId, false)
+			results[i] = result{page: p, created: created, appErr: pubErr}
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	var created, benign int
+	for _, r := range results {
+		switch {
+		case r.appErr == nil && r.created:
+			created++
+			require.Equal(t, draft.PageId, r.page.Id)
+		case r.appErr == nil:
+			// Adopted the winner: same live page, without wasCreated.
+			require.Equal(t, draft.PageId, r.page.Id)
+		default:
+			require.Contains(t, []int{http.StatusNotFound, http.StatusConflict}, r.appErr.StatusCode,
+				"the losing publish may only fail benignly, got %v", r.appErr)
+			benign++
+		}
+	}
+	require.Equal(t, 1, created, "exactly one concurrent publish must create the page, got %+v", results)
+	require.LessOrEqual(t, benign, 1)
+
+	// Converged state: the draft is consumed and the page is live in the space.
+	_, appErr = h.svc.GetPageDraft(userID, space.Id, draft.PageId)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusNotFound, appErr.StatusCode, "the draft must be consumed by the publish")
+	snapshot, appErr := h.svc.GetPageActiveEditors(draft.PageId, space.Id)
+	require.Nil(t, appErr, "the published page must resolve in its space")
+	require.Empty(t, snapshot.ActiveEditors)
+}
+
+// TestGetPageActiveEditorsUnknownPageReturns404 pins the plain not-found case: a page id with no
+// row at all (as opposed to a page living in another space, covered below).
+func TestGetPageActiveEditorsUnknownPageReturns404(t *testing.T) {
+	h := openTestService(t)
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
+
+	_, appErr := h.svc.GetPageActiveEditors(mmmodel.NewId(), space.Id)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusNotFound, appErr.StatusCode)
 }
 
 func TestGetPageActiveEditorsRejectsWrongSpace(t *testing.T) {
@@ -873,7 +944,7 @@ func TestCreateSpaceDraftEnforcesQuota(t *testing.T) {
 	// would be slow and the store enforcement path (inside UpsertDraft's transaction) is what
 	// we're testing.
 	now := mmmodel.GetMillis()
-	for i := range store.MaxDraftsPerUserPerSpace {
+	for i := range model.MaxDraftsPerUserPerSpace {
 		pageID := mmmodel.NewId()
 		title := fmt.Sprintf("draft-%d", i)
 		_, err := h.db.Exec(
@@ -887,4 +958,136 @@ func TestCreateSpaceDraftEnforcesQuota(t *testing.T) {
 	_, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "One Too Many", "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusTooManyRequests, appErr.StatusCode)
+}
+
+// TestGetPageDraftRejectsInvalidIDs exercises GetPageDraft's three input-validation branches at
+// the service layer, independent of HTTP routing.
+func TestGetPageDraftRejectsInvalidIDs(t *testing.T) {
+	h := openTestService(t)
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
+	userID, pageID := mmmodel.NewId(), mmmodel.NewId()
+
+	cases := []struct {
+		name                    string
+		userID, spaceID, pageID string
+	}{
+		{"invalid user id", "not-valid", space.Id, pageID},
+		{"invalid space id", userID, "not-valid", pageID},
+		{"invalid page id", userID, space.Id, "not-valid"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, appErr := h.svc.GetPageDraft(tc.userID, tc.spaceID, tc.pageID)
+			require.NotNil(t, appErr)
+			require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+		})
+	}
+}
+
+// TestGetPageDraftsForSpaceRejectsInvalidIDs exercises the list endpoint's service-level input
+// validation, which handler tests reach only through valid routes.
+func TestGetPageDraftsForSpaceRejectsInvalidIDs(t *testing.T) {
+	h := openTestService(t)
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
+
+	_, _, appErr := h.svc.GetPageDraftsForSpace("not-valid", space.Id, 0, 10)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+
+	_, _, appErr = h.svc.GetPageDraftsForSpace(mmmodel.NewId(), "not-valid", 0, 10)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+}
+
+func TestGetPageActiveEditorsRejectsInvalidSpaceID(t *testing.T) {
+	h := openTestService(t)
+
+	_, appErr := h.svc.GetPageActiveEditors(mmmodel.NewId(), "not-valid")
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+}
+
+// TestPublishForceAppliesDraftFieldOverConcurrentEdit covers the force-publish interaction where
+// the concurrent edit touched BOTH a field the draft changed and one it did not: the draft's
+// value must win for the field it carries, while the concurrent value survives for the field the
+// draft left unset.
+func TestPublishForceAppliesDraftFieldOverConcurrentEdit(t *testing.T) {
+	h := openTestService(t)
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
+	userID := mmmodel.NewId()
+
+	page := publishNewPage(t, h, space.Id, userID, "Original title", "original body")
+	baseEditAt := page.EditAt
+
+	// A title-only edit draft baselined at the current EditAt.
+	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
+		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Draft title",
+		BaseEditAt: baseEditAt,
+	}, nil, nil, nil, "")
+	require.Nil(t, appErr)
+
+	// A concurrent edit changes the title AND the body, advancing EditAt past the baseline.
+	concurrentTitle := "Concurrent title"
+	concurrentBody := docWith("concurrent body")
+	_, appErr = h.svc.UpdatePage(page.Id, space.Id,
+		&model.PagePatch{Title: &concurrentTitle, Body: &concurrentBody}, new(baseEditAt), false, userID)
+	require.Nil(t, appErr)
+
+	forced, _, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, true)
+	require.Nil(t, appErr)
+	require.Equal(t, "Draft title", forced.Title, "the field the draft carries must win under force")
+	require.Contains(t, forced.Body, "concurrent body", "a field the draft never set must keep the concurrent value")
+}
+
+// TestUpdatePageDraftRejectsOversizedFileIds covers the inline fileIDs size guard: fileIDs travels
+// to the store as a separate write-intent pointer, so Draft.IsValid never sees it and this guard
+// is the only bound on the write path.
+func TestUpdatePageDraftRejectsOversizedFileIds(t *testing.T) {
+	h := openTestService(t)
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
+	userID := mmmodel.NewId()
+
+	// 12 valid ids serialize to ~349 runes, over the DraftFileIdsMaxRunes=300 cap.
+	ids := make(mmmodel.StringArray, 0, 12)
+	for range 12 {
+		ids = append(ids, mmmodel.NewId())
+	}
+
+	_, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: mmmodel.NewId(), Title: "x"}, nil, &ids, nil, "")
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+	require.Equal(t, "model.draft.is_valid.file_ids.app_error", appErr.Id)
+}
+
+// TestUpdatePageDraftRejectsOversizedProps covers the inline props size guard: props travels to the
+// store as a separate write-intent pointer, so Draft.IsValid checks the (empty) draft.Props field
+// and this guard is the only bound on the written value.
+func TestUpdatePageDraftRejectsOversizedProps(t *testing.T) {
+	h := openTestService(t)
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
+	userID := mmmodel.NewId()
+
+	props := mmmodel.StringInterface{"k": strings.Repeat("x", model.PagePropsMaxBytes)}
+	_, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: mmmodel.NewId(), Title: "x"}, nil, nil, &props, "")
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+	require.Equal(t, "model.shared.props_too_large.app_error", appErr.Id)
+}
+
+// TestUpdatePageDraftRejectsInvalidFileId covers the per-entry id check on the fileIDs write
+// intent, including the empty entry an empty-slice clear must not admit.
+func TestUpdatePageDraftRejectsInvalidFileId(t *testing.T) {
+	h := openTestService(t)
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
+	userID := mmmodel.NewId()
+
+	for name, entry := range map[string]string{"malformed id": "not-a-valid-id", "empty entry": ""} {
+		t.Run(name, func(t *testing.T) {
+			ids := mmmodel.StringArray{entry}
+			_, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: mmmodel.NewId(), Title: "x"}, nil, &ids, nil, "")
+			require.NotNil(t, appErr)
+			require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+			require.Equal(t, "app.page_draft.update.invalid_file_id.app_error", appErr.Id)
+		})
+	}
 }

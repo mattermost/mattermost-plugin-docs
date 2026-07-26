@@ -208,6 +208,43 @@ func TestServiceUpdatePageDraft_PublishesPresenceEvent(t *testing.T) {
 		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
 }
 
+// TestServiceUpdatePageDraft_PresenceBroadcastThrottled pins the autosave presence rate limit
+// end-to-end: repeated autosaves for the same (page, user) inside presenceBroadcastMinIntervalMs
+// broadcast page_presence_updated exactly once — the first autosave claims the throttle slot and
+// the rest are suppressed. (Discard and publish bypass the throttle; they are pinned elsewhere.)
+func TestServiceUpdatePageDraft_PresenceBroadcastThrottled(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+
+	presenceBroadcasts := func() int {
+		n := 0
+		for _, c := range mockAPI.Calls {
+			if c.Method == "PublishWebSocketEvent" && len(c.Arguments) > 0 && c.Arguments[0] == "page_presence_updated" {
+				n++
+			}
+		}
+		return n
+	}
+
+	// publishNewPage ends the draft session (broadcasting presence and clearing the throttle), so
+	// count deltas from here rather than absolute totals.
+	before := presenceBroadcasts()
+	for range 3 {
+		_, appErr := h.svc.UpdatePageDraft(&model.Draft{
+			UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc",
+			BaseEditAt: page.EditAt,
+		}, nil, nil, nil, channelID)
+		require.Nil(t, appErr)
+	}
+	require.Equal(t, before+1, presenceBroadcasts(),
+		"autosaves within the throttle window must broadcast presence exactly once")
+}
+
 // TestServicePublishPageDraft_PublishesCreatedEvent pins that publishing a brand-new page's draft
 // reuses page_created (not a draft-specific event): {page_id, space_id, parent_id} payload,
 // broadcast to the new page's backing channel. Also pins the accompanying presence-clear broadcast.
@@ -225,7 +262,7 @@ func TestServicePublishPageDraft_PublishesCreatedEvent(t *testing.T) {
 		map[string]any{"page_id": page.Id, "space_id": space.Id, "parent_id": page.ParentId},
 		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
 
-	// PublishDraft bypasses DeletePageDraft, so PublishPageDraft broadcasts presence directly.
+	// The store publish transaction deletes the draft itself, bypassing DeletePageDraft, so PublishPageDraft broadcasts presence directly.
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_presence_updated",
 		mock.MatchedBy(func(payload map[string]any) bool {
 			editors, ok := payload["active_editors"].([]string)
@@ -265,7 +302,7 @@ func TestServicePublishPageDraft_PublishesUpdatedEvent(t *testing.T) {
 		map[string]any{"page_id": republished.Id, "space_id": space.Id},
 		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
 
-	// PublishDraft bypasses DeletePageDraft, so PublishPageDraft broadcasts presence directly.
+	// The store publish transaction deletes the draft itself, bypassing DeletePageDraft, so PublishPageDraft broadcasts presence directly.
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_presence_updated",
 		mock.MatchedBy(func(payload map[string]any) bool {
 			editors, ok := payload["active_editors"].([]string)

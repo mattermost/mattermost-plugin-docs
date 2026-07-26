@@ -308,6 +308,10 @@
     "translation": "The page was deleted and can no longer be published."
   },
   {
+    "id": "app.page_draft.publish.page_not_found.app_error",
+    "translation": "The page does not exist or is not accessible in this space."
+  },
+  {
     "id": "app.page_draft.publish.parent_unpublished.app_error",
     "translation": "The parent page must be published before this page can be published."
   },
@@ -345,7 +349,7 @@
   },
   {
     "id": "app.page_draft.update.nil_draft.app_error",
-    "translation": "Draft must not be nil."
+    "translation": "Draft is required."
   },
   {
     "id": "app.page_draft.update.page_not_found.app_error",

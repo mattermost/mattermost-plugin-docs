@@ -14,6 +14,10 @@ import (
 // DraftFileIdsMaxRunes is the maximum rune length of the serialized FileIds JSON array.
 const DraftFileIdsMaxRunes = 300
 
+// MaxDraftsPerUserPerSpace is the maximum number of draft rows a single user may hold in one
+// space.
+const MaxDraftsPerUserPerSpace = 100
+
 // Draft is a per-user autosave draft for a space page, stored in DOCS_Draft.
 //
 // A draft is keyed by (UserId, PageId): PageId is the page id reserved when the
@@ -49,19 +53,19 @@ type Draft struct {
 }
 
 // DraftSummary is the metadata projection returned by draft collection endpoints. It deliberately
-// omits Body, which can be up to PageBodyMaxBytes per draft. Fetch a Draft by page id when the
-// content is required.
+// omits Body and Props: Body can be up to PageBodyMaxBytes per draft, and Props is opaque and may
+// be up to PagePropsMaxBytes — matching the fields PageSummary omits for the same reason. Fetch a
+// Draft by page id when the content is required.
 type DraftSummary struct {
-	UserId       string                  `json:"user_id"`
-	SpaceId      string                  `json:"space_id"`
-	PageId       string                  `json:"page_id"`
-	ParentId     string                  `json:"parent_id"`
-	Title        string                  `json:"title"`
-	FileIds      mmmodel.StringArray     `json:"file_ids"`
-	Props        mmmodel.StringInterface `json:"props"`
-	CreateAt     int64                   `json:"create_at"`
-	UpdateAt     int64                   `json:"update_at"`
-	LastActiveAt int64                   `json:"last_active_at"`
+	UserId       string              `json:"user_id"`
+	SpaceId      string              `json:"space_id"`
+	PageId       string              `json:"page_id"`
+	ParentId     string              `json:"parent_id"`
+	Title        string              `json:"title"`
+	FileIds      mmmodel.StringArray `json:"file_ids"`
+	CreateAt     int64               `json:"create_at"`
+	UpdateAt     int64               `json:"update_at"`
+	LastActiveAt int64               `json:"last_active_at"`
 }
 
 // PreSave sanitizes Draft and defaults its Id-independent fields before insert.
@@ -131,6 +135,10 @@ func (d *Draft) IsValid() *mmmodel.AppError {
 		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.update_at.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
 	}
 
+	// Write-path contract only: PreSave always stamps LastActiveAt, so a zero here means the
+	// caller skipped PreSave. Stored rows can still legitimately hold 0 — bulk maintenance writes
+	// (cross-space move) reset LastActiveAt in SQL to drop the owner from presence — so a read
+	// path must not treat a stored 0 as invalid.
 	if d.LastActiveAt == 0 {
 		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.last_active_at.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
 	}

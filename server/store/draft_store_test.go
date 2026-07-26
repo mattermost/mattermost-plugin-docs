@@ -712,6 +712,16 @@ func TestGetActiveEditorsForPage(t *testing.T) {
 		require.NotContains(t, editors, userID)
 	})
 
+	t.Run("cutoff exactly at LastActiveAt includes the editor", func(t *testing.T) {
+		// The window is inclusive (LastActiveAt >= cutoff): a draft updated exactly at the cutoff
+		// still counts, pinning the >= predicate against an accidental strict >.
+		d, err := s.GetDraft(userID, pageID)
+		require.NoError(t, err)
+		editors, err := s.GetPageActiveEditors(pageID, space.Id, d.LastActiveAt)
+		require.NoError(t, err)
+		require.Contains(t, editors, userID)
+	})
+
 	t.Run("a different page has no editors", func(t *testing.T) {
 		editors, err := s.GetPageActiveEditors(mmmodel.NewId(), space.Id, 0)
 		require.NoError(t, err)
@@ -874,8 +884,9 @@ func TestDeleteDraftVersion(t *testing.T) {
 	})
 }
 
-// TestPublishDraft covers the atomic publish transaction at the store boundary: the new-page
-// insert-and-delete-draft path, and the edit path's optimistic-lock CAS.
+// TestPublishDraft covers the atomic publish transactions at the store boundary: the new-page
+// insert-and-delete-draft path (PublishNewPageDraft), and the edit path's optimistic-lock CAS
+// (PublishPageEditDraft).
 func TestPublishDraft(t *testing.T) {
 	t.Run("new page inserts the page and deletes the draft", func(t *testing.T) {
 		s := openTestDB(t)
@@ -889,7 +900,7 @@ func TestPublishDraft(t *testing.T) {
 		require.NoError(t, err)
 
 		page := &model.Page{Id: pageID, SpaceId: space.Id, Title: "Published", Body: `{"type":"doc","content":[]}`, UserId: userID}
-		published, err := s.PublishDraft(true, page, userID, space.Id, false, testDefaultMaxDepth, draft.UpdateAt)
+		published, err := s.PublishNewPageDraft(page, userID, space.Id, testDefaultMaxDepth, draft.UpdateAt)
 		require.NoError(t, err)
 		require.Equal(t, pageID, published.Id)
 
@@ -915,12 +926,12 @@ func TestPublishDraft(t *testing.T) {
 		draft, _, err := s.UpsertDraft(d, nil, nil, nil)
 		require.NoError(t, err)
 
-		edit := *created
-		edit.Title = "Edited"
-		edit.Body = `{"type":"doc","content":[]}`
-		edit.EditAt = created.EditAt - 1 // stale baseline
+		title := "Edited"
+		body := `{"type":"doc","content":[]}`
+		searchText := ""
+		patch := &model.PagePatch{Title: &title, Body: &body, SearchText: &searchText}
 
-		_, err = s.PublishDraft(false, &edit, userID, space.Id, false, testDefaultMaxDepth, draft.UpdateAt)
+		_, err = s.PublishPageEditDraft(created.Id, space.Id, patch, created.EditAt-1, false, userID, draft.UpdateAt) // stale baseline
 		require.True(t, store.IsErrConflict(err), "a stale baseline must conflict, got %v", err)
 	})
 
@@ -938,12 +949,12 @@ func TestPublishDraft(t *testing.T) {
 		draft, _, err := s.UpsertDraft(d2, nil, nil, nil)
 		require.NoError(t, err)
 
-		edit := *created
-		edit.Title = "Edited"
-		edit.Body = `{"type":"doc","content":[]}`
-		edit.EditAt = created.EditAt // matching baseline
+		title := "Edited"
+		body := `{"type":"doc","content":[]}`
+		searchText := ""
+		patch := &model.PagePatch{Title: &title, Body: &body, SearchText: &searchText}
 
-		published, err := s.PublishDraft(false, &edit, userID, space.Id, false, testDefaultMaxDepth, draft.UpdateAt)
+		published, err := s.PublishPageEditDraft(created.Id, space.Id, patch, created.EditAt, false, userID, draft.UpdateAt) // matching baseline
 		require.NoError(t, err)
 		require.Equal(t, "Edited", published.Title)
 		require.Greater(t, published.EditAt, created.EditAt, "publish advances EditAt")
@@ -974,12 +985,12 @@ func TestPublishDraft(t *testing.T) {
 		require.NoError(t, err)
 		require.Greater(t, newer.UpdateAt, stale.UpdateAt, "the autosave must advance UpdateAt")
 
-		edit := *created
-		edit.Title = "Published from stale content"
-		edit.Body = `{"type":"doc","content":[]}`
-		edit.EditAt = created.EditAt
+		title := "Published from stale content"
+		body := `{"type":"doc","content":[]}`
+		searchText := ""
+		patch := &model.PagePatch{Title: &title, Body: &body, SearchText: &searchText}
 
-		_, err = s.PublishDraft(false, &edit, userID, space.Id, false, testDefaultMaxDepth, stale.UpdateAt)
+		_, err = s.PublishPageEditDraft(created.Id, space.Id, patch, created.EditAt, false, userID, stale.UpdateAt)
 		require.True(t, store.IsErrConflict(err), "publishing stale draft content must conflict, got %v", err)
 
 		// The page must be untouched and the newer draft must survive for the client to republish.
@@ -1243,5 +1254,92 @@ func TestUpsertDraftResurrectionClassification(t *testing.T) {
 		require.Error(t, err)
 		require.True(t, store.IsErrConflict(err), "expected ErrConflict, got %T: %v", err, err)
 		require.Equal(t, store.ReasonConcurrentAutosave, store.ConflictReason(err))
+	})
+}
+
+// TestUpsertDraftCountsLiveAncestorDepth pins checkNoDraftCycle's live-ancestor arithmetic: the
+// live parent chain's depth counts toward model.MaxPageDepth for a new draft, including when the
+// caller holds an edit draft on the live ancestor. An edit draft's stored ParentId defaults to ”
+// (version bookkeeping, not a hierarchy edge), and a chain walk that followed it would skip the
+// ancestor's real depth and admit drafts that can never publish within the cap.
+func TestUpsertDraftCountsLiveAncestorDepth(t *testing.T) {
+	buildLiveChain := func(t *testing.T, s *store.Store, spaceID, channelID, userID string, depth int) *model.Page {
+		t.Helper()
+		parentID := ""
+		var page *model.Page
+		var err error
+		for range depth {
+			page, err = s.CreatePage(newPage(spaceID, channelID, userID, parentID), model.MaxPageDepth)
+			require.NoError(t, err)
+			parentID = page.Id
+		}
+		return page
+	}
+
+	establishEditDraft := func(t *testing.T, s *store.Store, spaceID string, page *model.Page, userID string) {
+		t.Helper()
+		d := newDraft(userID, spaceID, page.Id, "")
+		d.BaseEditAt = page.EditAt
+		_, _, err := s.UpsertDraft(d, nil, nil, nil)
+		require.NoError(t, err)
+	}
+
+	requireTooDeep := func(t *testing.T, err error) {
+		t.Helper()
+		require.Error(t, err)
+		var inv *store.ErrInvalidInput
+		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
+		require.Equal(t, store.ReasonDraftTooDeep, inv.Reason)
+	}
+
+	t.Run("rejects a draft under a cap-deep live chain despite an edit draft on the ancestor", func(t *testing.T) {
+		s := openTestDB(t)
+		space, err := s.CreateSpace(newSpace(mmmodel.NewId()))
+		require.NoError(t, err)
+		userID := mmmodel.NewId()
+
+		deepest := buildLiveChain(t, s, space.Id, space.ChannelId, userID, model.MaxPageDepth)
+		establishEditDraft(t, s, space.Id, deepest, userID)
+
+		parentID := deepest.Id
+		_, _, err = s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), parentID), &parentID, nil, nil)
+		requireTooDeep(t, err)
+	})
+
+	t.Run("accepts a draft that lands exactly at the cap below a live chain", func(t *testing.T) {
+		s := openTestDB(t)
+		space, err := s.CreateSpace(newSpace(mmmodel.NewId()))
+		require.NoError(t, err)
+		userID := mmmodel.NewId()
+
+		deepest := buildLiveChain(t, s, space.Id, space.ChannelId, userID, model.MaxPageDepth-1)
+		establishEditDraft(t, s, space.Id, deepest, userID)
+
+		parentID := deepest.Id
+		_, _, err = s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), parentID), &parentID, nil, nil)
+		require.NoError(t, err)
+	})
+
+	t.Run("combined live and draft chain depth is capped across the live boundary", func(t *testing.T) {
+		s := openTestDB(t)
+		space, err := s.CreateSpace(newSpace(mmmodel.NewId()))
+		require.NoError(t, err)
+		userID := mmmodel.NewId()
+
+		deepest := buildLiveChain(t, s, space.Id, space.ChannelId, userID, model.MaxPageDepth-2)
+		establishEditDraft(t, s, space.Id, deepest, userID)
+
+		// Two new-page drafts chained below the live ancestor land exactly at the cap.
+		parentID := deepest.Id
+		d1, _, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), parentID), &parentID, nil, nil)
+		require.NoError(t, err)
+		d1ID := d1.PageId
+		d2, _, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), d1ID), &d1ID, nil, nil)
+		require.NoError(t, err)
+
+		// One more level would publish past the cap, so it is rejected at draft time.
+		d2ID := d2.PageId
+		_, _, err = s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), d2ID), &d2ID, nil, nil)
+		requireTooDeep(t, err)
 	})
 }

@@ -52,6 +52,13 @@ func ParseTipTapDocument(contentJSON string) (TipTapDocument, error) {
 		}, nil
 	}
 
+	// Reject over-limit content before parsing: json.Unmarshal materializes every node as a
+	// map[string]any at a large multiple of its encoded size, and the per-node budget inside the
+	// sanitize walk only applies after that allocation.
+	if len(contentJSON) > PageBodyMaxBytes {
+		return TipTapDocument{}, errors.New("content exceeds the maximum body size")
+	}
+
 	var doc TipTapDocument
 	if err := json.Unmarshal([]byte(contentJSON), &doc); err != nil {
 		return TipTapDocument{}, err
@@ -124,9 +131,10 @@ func writeSearchTextPart(b *strings.Builder, part string) {
 // within a sane depth.
 const maxTipTapDepth = 100
 
-// maxTipTapNodes caps the total number of content nodes in a TipTap document. A 2 MiB JSON payload
-// can contain hundreds of thousands of tiny nodes; unmarshaling them before sanitization causes
-// significant allocation and CPU amplification. The plain-text path is capped at maxPlainTextParagraphs
+// maxTipTapNodes caps the total number of content nodes in a TipTap document, bounding the
+// sanitize walk and the stored node count. It applies after json.Unmarshal has materialized the
+// document, so it does not bound the parse itself — the pre-parse body-size check at the top of
+// ParseTipTapDocument does that. The plain-text path is capped at maxPlainTextParagraphs
 // (10 000 paragraphs → ~20 000 nodes, since each non-empty line is a paragraph plus a text child);
 // rich documents with ~5 inline nodes per paragraph stay well under 50 000 for any sane document.
 const maxTipTapNodes = 50_000
@@ -231,6 +239,13 @@ var dangerousAttrKeys = map[string]struct{}{
 	"data":       {},
 }
 
+// trimBrowserIgnoredChars trims leading/trailing ASCII space and control characters (r <= ' ') —
+// the characters an HTML tokenizer ignores around attribute names and a browser strips from the
+// ends of a URL — so a sanitizer match cannot be defeated by padding with them.
+func trimBrowserIgnoredChars(s string) string {
+	return strings.TrimFunc(s, func(r rune) bool { return r <= ' ' })
+}
+
 // stripDangerousKeys strips script-bearing keys (event handlers plus the dangerousAttrKeys set) and
 // neutralizes dangerous URL schemes on any URL-valued key, at the top level of m only. Key names are
 // matched case-insensitively, since HTML attribute names are case-insensitive.
@@ -240,7 +255,10 @@ var dangerousAttrKeys = map[string]struct{}{
 // rather than nested under its "attrs".
 func stripDangerousKeys(m map[string]any) {
 	for key, val := range m {
-		lower := strings.ToLower(key)
+		// Trim leading/trailing whitespace and control characters before matching: an HTML
+		// tokenizer treats "\tonclick" as the onclick attribute, so a key that fails to match
+		// here because of such a prefix would carry its payload through every check below.
+		lower := strings.ToLower(trimBrowserIgnoredChars(key))
 		if _, dangerous := dangerousAttrKeys[lower]; strings.HasPrefix(lower, "on") || dangerous {
 			delete(m, key)
 			continue
@@ -510,7 +528,7 @@ func decodeURLScheme(url string) (scheme, lower string, hasScheme bool) {
 	cleaned := urlStripChars.Replace(url)
 	cleaned = html.UnescapeString(cleaned)
 	cleaned = urlStripChars.Replace(cleaned)
-	cleaned = strings.TrimFunc(cleaned, func(r rune) bool { return r <= ' ' })
+	cleaned = trimBrowserIgnoredChars(cleaned)
 	lower = strings.ToLower(cleaned)
 	scheme, hasScheme = urlScheme(lower)
 	return scheme, lower, hasScheme

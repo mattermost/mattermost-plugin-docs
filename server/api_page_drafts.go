@@ -30,7 +30,9 @@ const (
 //
 // For existing published pages, the first request creates the draft (open an edit session). The client
 // must send the top-level base_edit_at field — the page's EditAt at the moment the user opened it — on
-// every autosave, so a subsequent publish can detect a concurrent edit. It is not a props key.
+// every autosave, so a subsequent publish can detect a concurrent edit. It is not a props key. The
+// stored baseline is write-once: whichever request establishes the draft row freezes it, and values
+// sent on later autosaves are ignored (re-baselining requires discarding the draft and reopening).
 //
 // For new-page drafts (no page row yet), the draft must already exist via POST
 // /spaces/{space_id}/drafts. This prevents a space member who learns another user's pending page
@@ -60,8 +62,8 @@ func (p *Plugin) handleUpdatePageDraft(w http.ResponseWriter, r *http.Request) {
 
 	// base_edit_at nil → 0 (no baseline). A new-page draft legitimately has no baseline. For an
 	// existing published page the client must send base_edit_at on every autosave (see the handler doc
-	// above): omitting it on the first autosave of an edit session is rejected with 409, because the
-	// store will not open an edit-session draft against a live page without a baseline. Props flows via
+	// above): omitting it on the first autosave of an edit session is rejected with 409 — an
+	// edit-session draft cannot be opened against a live page without a baseline. Props flows via
 	// the pointer below (like file_ids), so it is not set on the struct here.
 	var baseEditAt int64
 	if req.BaseEditAt != nil {
@@ -170,7 +172,9 @@ func (p *Plugin) handleCreateSpaceDraft(w http.ResponseWriter, r *http.Request) 
 // the draft, stored in its write-once BaseEditAt column (sent as the top-level base_edit_at field on
 // the autosave requests). This differs from the per-request base_edit_at on handleUpdatePage (and
 // expected_update_at on handleMovePage) because a publish ships whatever the draft already holds
-// rather than re-supplying a freshly-read baseline.
+// rather than re-supplying a freshly-read baseline. Because that baseline is write-once, a 409
+// edit-conflict cannot be resolved by autosaving a newer base_edit_at: the client recovers by
+// republishing with force, or by discarding the draft and reopening the edit session.
 func (p *Plugin) handlePublishPageDraft(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	spaceID := vars["space_id"]

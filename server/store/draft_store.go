@@ -16,11 +16,6 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-// MaxDraftsPerUserPerSpace is the maximum number of draft rows a single user may hold in one
-// space. Enforced atomically inside UpsertDraft after the space lock, so it holds under
-// concurrent creates.
-const MaxDraftsPerUserPerSpace = 100
-
 // maxActiveEditorsPerPage caps the number of user IDs returned by GetPageActiveEditors. A page
 // with more simultaneous editors than this cap is pathological; the cap prevents unbounded result
 // sets if LastActiveAt filtering alone is insufficient.
@@ -30,9 +25,10 @@ var draftSelectColumns = []string{
 	"UserId", "SpaceId", "PageId", "ParentId", "Title", "Body", "FileIds", "Props", "CreateAt", "UpdateAt", "LastActiveAt", "BaseEditAt",
 }
 
-// draftMetaColumns is the metadata column set for draft queries — Body omitted because it can be up to PageBodyMaxBytes per draft.
+// draftMetaColumns is the metadata column set for draft queries — Body and Props omitted because
+// they can be up to PageBodyMaxBytes and PagePropsMaxBytes per draft (see model.DraftSummary).
 var draftMetaColumns = []string{
-	"UserId", "SpaceId", "PageId", "ParentId", "Title", "FileIds", "Props", "CreateAt", "UpdateAt", "LastActiveAt",
+	"UserId", "SpaceId", "PageId", "ParentId", "Title", "FileIds", "CreateAt", "UpdateAt", "LastActiveAt",
 }
 
 // applyDraftLivenessFilter adds the space-liveness JOIN and page-liveness condition shared by
@@ -64,17 +60,18 @@ func (s *Store) deleteDraftsForPage(tx *sqlx.Tx, pageID, spaceID string) error {
 }
 
 // reparentDraftsForPage reparents every new-page draft pointing at pageID to newParentID,
-// so drafts don't retain a soft-deleted page as their pending parent. Must run inside tx.
+// so drafts don't retain a soft-deleted page as their pending parent. The spaceID predicate
+// scopes the rewrite the same way deleteDraftsForPage scopes its delete. Must run inside tx.
 //
 // UpdateAt uses GREATEST(now, UpdateAt+1) for the same reason as UpsertDraft: it must be a
-// strictly-monotonic token so PublishDraft's CAS-delete cannot match a row that a concurrent
-// autosave already advanced past this reparent.
-func (s *Store) reparentDraftsForPage(tx *sqlx.Tx, pageID, newParentID string, now int64) error {
+// strictly-monotonic token so the publish CAS-delete (deletePublishedDraftTx) cannot match a row
+// that a concurrent autosave already advanced past this reparent.
+func (s *Store) reparentDraftsForPage(tx *sqlx.Tx, pageID, newParentID, spaceID string, now int64) error {
 	query := s.getQueryBuilder().
 		Update("DOCS_Draft").
 		Set("ParentId", newParentID).
 		Set("UpdateAt", monotonicBump("UpdateAt", now)).
-		Where(sq.Eq{"ParentId": pageID})
+		Where(sq.Eq{"ParentId": pageID, "SpaceId": spaceID})
 	if _, err := s.execBuilder(tx, query); err != nil {
 		return errors.Wrap(err, "failed to reparent page drafts")
 	}
@@ -117,32 +114,35 @@ func (s *Store) countDraftsForUser(e sqlx.ExtContext, userID, spaceID string) (i
 	return count, nil
 }
 
-// draftExistsTx reports whether a draft row keyed by (userID, pageID) currently exists, read within
-// tx so it observes the transaction's own uncommitted writes.
-func (s *Store) draftExistsTx(tx *sqlx.Tx, userID, pageID string) (bool, error) {
-	var one int
+// draftExistsTx reports whether a draft row keyed by (userID, pageID) currently exists — and if so,
+// its stored SpaceId — read within tx so it observes the transaction's own uncommitted writes.
+func (s *Store) draftExistsTx(tx *sqlx.Tx, userID, pageID string) (exists bool, spaceID string, err error) {
 	builder := s.getQueryBuilder().
-		Select("1").
+		Select("SpaceId").
 		From("DOCS_Draft").
 		Where(sq.Eq{"UserId": userID, "PageId": pageID})
-	switch err := s.getBuilder(tx, &one, builder); {
+	switch err := s.getBuilder(tx, &spaceID, builder); {
 	case err == nil:
-		return true, nil
+		return true, spaceID, nil
 	case errors.Is(err, sql.ErrNoRows):
-		return false, nil
+		return false, "", nil
 	default:
-		return false, errors.Wrap(err, "failed to check draft existence")
+		return false, "", errors.Wrap(err, "failed to check draft existence")
 	}
 }
 
 // checkNoDraftCycle walks the parent chain from startParentID through the caller's draft rows and
 // returns an error if leafPageID appears anywhere in the chain (cycle) or if the total depth
-// (draft chain + live-page ancestor) would exceed model.MaxPageDepth. A published-page
-// ancestor (no matching draft row) terminates the recursion early. Squirrel cannot express
-// recursive CTEs, so raw SQL is used here.
+// (draft chain + live-page ancestor) would exceed model.MaxPageDepth. A live-page ancestor
+// terminates the recursion: an edit draft on a live page is version bookkeeping, not a hierarchy
+// edge (its ParentId is never applied at publish), so the walk follows draft ParentId links only
+// for new-page drafts and switches to the live tree (pageDepth) at the boundary. Squirrel cannot
+// express recursive CTEs, so raw SQL is used here.
 func (s *Store) checkNoDraftCycle(tx *sqlx.Tx, userID, leafPageID, startParentID string) error {
-	// The live_ancestor subquery finds the deepest node in the draft chain that has no draft row
-	// (i.e. the live-page boundary). COALESCE converts NULL to '' so the struct scan never fails.
+	// The recursive term follows a draft row only when its page is not live — an edit draft on a
+	// live page must not redirect the walk (its stored ParentId defaults to '' and would silently
+	// truncate the chain). The live_ancestor subquery finds the deepest node that IS a live page
+	// (the live-tree boundary). COALESCE converts NULL to '' so the struct scan never fails.
 	query := fmt.Sprintf(`
 WITH RECURSIVE chain(node, depth) AS (
     SELECT $1::varchar(26), 0
@@ -153,6 +153,10 @@ WITH RECURSIVE chain(node, depth) AS (
     WHERE d.UserId = $2
       AND chain.node <> ''
       AND chain.depth < %d
+      AND NOT EXISTS (
+          SELECT 1 FROM DOCS_Page lp
+          WHERE lp.Id = d.PageId AND lp.DeleteAt = 0 AND lp.OriginalId = ''
+      )
 )
 SELECT
     COALESCE(bool_or(node = $3), false)  AS is_cycle,
@@ -161,7 +165,7 @@ SELECT
     COALESCE((
         SELECT c.node FROM chain c
         WHERE c.node <> ''
-          AND NOT EXISTS (SELECT 1 FROM DOCS_Draft d2 WHERE d2.UserId = $2 AND d2.PageId = c.node)
+          AND EXISTS (SELECT 1 FROM DOCS_Page lp WHERE lp.Id = c.node AND lp.DeleteAt = 0 AND lp.OriginalId = '')
         ORDER BY c.depth DESC LIMIT 1
     ), '')                               AS live_ancestor
 FROM chain`, model.MaxPageDepth, model.MaxPageDepth)
@@ -228,7 +232,22 @@ FROM chain`, model.MaxPageDepth, model.MaxPageDepth)
 // clears all keys). This is a whole-value replace, not a key-wise merge, mirroring parentID/fileIDs.
 // The written value's serialized size must be validated by the caller (App layer): the struct's own
 // Props field — the only one IsValid checks — is not what gets written.
-func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmodel.StringArray, props *mmmodel.StringInterface) (_ *model.Draft, pageWasLive bool, err error) {
+func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmodel.StringArray, props *mmmodel.StringInterface) (*model.Draft, bool, error) {
+	return s.upsertDraft(draft, parentID, fileIDs, props, false)
+}
+
+// AutosaveDraft is UpsertDraft with the autosave-path guards enabled: it refuses to establish a new
+// draft row when the page id has no live page backing it (only CreateSpaceDraft may reserve a page
+// id, so an autosave for an unknown id cannot squat on it), and it rejects an autosave addressed to
+// a different space than an existing draft's stored SpaceId (ReasonPageNotLive) — e.g. a client
+// still saving under a stale space URL after a cross-space move re-homed the draft — preventing
+// cross-space drift. Updating the caller's own existing draft, including a new-page draft whose
+// page is not yet published, is unaffected.
+func (s *Store) AutosaveDraft(draft *model.Draft, parentID *string, fileIDs *mmmodel.StringArray, props *mmmodel.StringInterface) (*model.Draft, bool, error) {
+	return s.upsertDraft(draft, parentID, fileIDs, props, true)
+}
+
+func (s *Store) upsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmodel.StringArray, props *mmmodel.StringInterface, autosave bool) (_ *model.Draft, pageWasLive bool, err error) {
 	if draft == nil {
 		return nil, false, &ErrInvalidInput{Entity: "Draft", Field: "draft", Value: nil}
 	}
@@ -273,22 +292,28 @@ func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmod
 		return nil, false, lockErr
 	}
 
+	isExisting, existingSpaceID, existErr := s.draftExistsTx(tx, draft.UserId, draft.PageId)
+	if existErr != nil {
+		return nil, false, existErr
+	}
+	// On the autosave path an existing draft pins the space: the ON CONFLICT clause below never
+	// changes a stored SpaceId, so an upsert addressed to a different space would silently update
+	// the row's content under the wrong space URL. Reject it instead.
+	if autosave && isExisting && existingSpaceID != draft.SpaceId {
+		return nil, false, &ErrInvalidInput{Entity: "Draft", Field: "SpaceId", Value: draft.SpaceId, Reason: ReasonPageNotLive}
+	}
 	// Quota check: enforce MaxDraftsPerUserPerSpace atomically inside the space lock so
 	// concurrent CreateSpaceDraft calls in the same space cannot both pass a stale pre-check
 	// and each insert a row that pushes the total past the cap.
 	// Skip the check on the UPDATE path: updating an existing draft adds no row, so it cannot
 	// push the total over the cap.
-	isExisting, existErr := s.draftExistsTx(tx, draft.UserId, draft.PageId)
-	if existErr != nil {
-		return nil, false, existErr
-	}
 	if !isExisting {
 		count, countErr := s.countDraftsForUser(tx, draft.UserId, draft.SpaceId)
 		if countErr != nil {
 			return nil, false, countErr
 		}
-		if count >= MaxDraftsPerUserPerSpace {
-			return nil, false, &ErrLimitExceeded{Resource: "Draft", Limit: MaxDraftsPerUserPerSpace, Reason: ReasonDraftQuotaExceeded}
+		if count >= model.MaxDraftsPerUserPerSpace {
+			return nil, false, &ErrLimitExceeded{Resource: "Draft", Limit: model.MaxDraftsPerUserPerSpace, Reason: ReasonDraftQuotaExceeded}
 		}
 	}
 
@@ -314,7 +339,7 @@ func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmod
 		}
 		// Establish-time baseline sanity check: on the establishing INSERT (no draft row yet), a
 		// baseline ahead of the live page is impossible — the client cannot have seen a version newer
-		// than the one that exists — so reject it as invalid input (400 via storeAppError). isExisting
+		// than the one that exists — so reject it as invalid input. isExisting
 		// is authoritative here: lockLiveSpace's per-space FOR UPDATE serializes same-space upserts
 		// before it is read, so a concurrent establish cannot make it stale. The update path needs no
 		// guard — BaseEditAt is write-once, so the incoming value is ignored on conflict.
@@ -326,7 +351,7 @@ func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmod
 		// publish or another edit). A still-existing draft row may keep saving — the conflict is
 		// deferred to publish — but if no row exists, this upsert would re-INSERT a phantom draft
 		// that a just-committed publish deleted, so reject it as a stale edit instead. Holding the
-		// page row FOR UPDATE serializes this with PublishDraft's own draft delete, so the existence
+		// page row FOR UPDATE serializes this with the publish transaction's draft delete, so the existence
 		// check is stable within the transaction.
 		conflictReason := ""
 		base := draft.BaseEditAt
@@ -337,14 +362,14 @@ func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmod
 			// which means a concurrent publish claimed this page id. If the draft no longer
 			// exists (publish deleted it), reject rather than resurrect it — a re-INSERT here
 			// would leave stale recoverable content and ghost presence behind. Holding the page
-			// row FOR UPDATE serializes this check with PublishDraft's draft delete.
+			// row FOR UPDATE serializes this check with the publish transaction's draft delete.
 			conflictReason = ReasonConcurrentAutosave
 		}
 		if conflictReason != "" {
-			// Re-read draft existence now that the page row is locked: a concurrent PublishDraft
+			// Re-read draft existence now that the page row is locked: a concurrent publish
 			// may have committed (deleting the draft) between the pre-lock draftExistsTx above
 			// and this point, making the earlier isExisting result stale.
-			isExistingNow, reErr := s.draftExistsTx(tx, draft.UserId, draft.PageId)
+			isExistingNow, _, reErr := s.draftExistsTx(tx, draft.UserId, draft.PageId)
 			if reErr != nil {
 				return nil, false, reErr
 			}
@@ -353,7 +378,13 @@ func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmod
 			}
 		}
 	case errors.Is(pErr, sql.ErrNoRows):
-		// New-page draft: no page row to lock.
+		// New-page draft: no page row to lock. On the autosave path, a draft may only be
+		// established here when the page is live — a page id with neither a page row nor an
+		// existing draft is unknown, and autosaving it would ghost-draft (or squat on) an
+		// unreserved id. Reserving a page id is CreateSpaceDraft's job.
+		if autosave && !isExisting {
+			return nil, false, &ErrInvalidInput{Entity: "Draft", Field: "PageId", Value: draft.PageId, Reason: ReasonPageNotLive}
+		}
 	default:
 		return nil, false, errors.Wrap(pErr, "failed to lock page for draft upsert")
 	}
@@ -445,6 +476,34 @@ func (s *Store) GetDraft(userID, pageID string) (*model.Draft, error) {
 	return &draft, nil
 }
 
+// GetDraftSpaceID returns the SpaceId of the draft keyed by (userID, pageID) without fetching the
+// row, gated by the same liveness filter as GetDraft — for callers that need only the space (or
+// bare existence) and must not haul the draft body. Returns ErrNotFound when no live draft exists.
+func (s *Store) GetDraftSpaceID(userID, pageID string) (string, error) {
+	if userID == "" {
+		return "", &ErrInvalidInput{Entity: "Draft", Field: "userId", Value: userID}
+	}
+	if pageID == "" {
+		return "", &ErrInvalidInput{Entity: "Draft", Field: "pageId", Value: pageID}
+	}
+
+	builder := applyDraftLivenessFilter(
+		s.getQueryBuilder().
+			Select("d.SpaceId").
+			From("DOCS_Draft d"),
+	).Where(sq.Eq{"d.UserId": userID, "d.PageId": pageID})
+
+	var spaceID string
+	if err := s.getBuilder(s.db, &spaceID, builder); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", &ErrNotFound{EntityName: "Draft", ID: pageID}
+		}
+		return "", errors.Wrap(err, "unable_to_get_draft_space_id")
+	}
+
+	return spaceID, nil
+}
+
 // DeleteDraft removes the draft keyed by (userID, pageID), or returns ErrNotFound.
 func (s *Store) DeleteDraft(userID, pageID string) error {
 	if userID == "" {
@@ -518,8 +577,8 @@ func (s *Store) DeleteDraftReparenting(userID, spaceID, pageID string) (pageWasL
 	defer s.finalizeTransaction(tx, &err)
 
 	// Lock the space row before any draft row, matching the space→row lock order of every other
-	// structural draft mutation (UpsertDraft, PublishDraft): this serializes concurrent discards in
-	// the same chain so two cannot interleave into a dangling parent, and keeps the lock order
+	// structural draft mutation (UpsertDraft, deletePublishedDraftTx): this serializes concurrent
+	// discards in the same chain so two cannot interleave into a dangling parent, and keeps the lock order
 	// consistent to avoid an AB-BA deadlock against UpsertDraft.
 	if lockErr := s.lockLiveSpace(tx, spaceID); lockErr != nil {
 		return false, lockErr
@@ -578,7 +637,7 @@ func (s *Store) DeleteDraftReparenting(userID, spaceID, pageID string) (pageWasL
 }
 
 // GetDraftsForSpace returns the user's drafts in the given space, most-recently-updated first,
-// with Body omitted (metadata only — see draftMetaColumns). Results pass applyDraftLivenessFilter,
+// with Body and Props omitted (metadata only — see draftMetaColumns). Results pass applyDraftLivenessFilter,
 // so a soft-deleted space lists no drafts (they survive the soft-delete and reappear after
 // RestoreSpace) and a draft whose page is soft-deleted is excluded from results. Results are
 // paginated via offset/limit (see applyLimitOffset); callers must pass a positive limit.

@@ -485,3 +485,49 @@ func TestHandler_UpdatePageDraftPropsBaselineNoLongerHonored(t *testing.T) {
 	})
 	require.Equal(t, http.StatusConflict, rec.Code, "props.original_page_edit_at must not be honored as a baseline")
 }
+
+// TestHandler_PublishForceOverHTTP exercises the {"force": true} publish body through the real
+// router: a stale-baseline publish that 409s without it succeeds when the request carries force.
+func TestHandler_PublishForceOverHTTP(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	space := seedSpace(t, h.store, mmmodel.NewId())
+	userA := mmmodel.NewId()
+	userB := mmmodel.NewId()
+	base := "/api/v1/spaces/" + space.Id
+
+	// Create a new-page draft and publish it to get a live page.
+	rec := h.do(t, http.MethodPost, base+"/drafts", userA, map[string]any{"title": "Shared Doc"})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var draft model.Draft
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &draft))
+	pageID := draft.PageId
+
+	rec = h.do(t, http.MethodPost, base+"/pages/"+pageID+"/draft/publish", userA, nil)
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var page model.Page
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &page))
+	editAt := page.EditAt
+
+	// Both users open edit sessions at the same baseline; B publishes first, staling A's baseline.
+	rec = h.do(t, http.MethodPatch, base+"/pages/"+pageID+"/draft", userA, map[string]any{
+		"title":        "Edit by A",
+		"base_edit_at": editAt,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	rec = h.do(t, http.MethodPatch, base+"/pages/"+pageID+"/draft", userB, map[string]any{
+		"title":        "Edit by B",
+		"base_edit_at": editAt,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	rec = h.do(t, http.MethodPost, base+"/pages/"+pageID+"/draft/publish", userB, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Without force the stale baseline 409s; with {"force": true} in the HTTP body it publishes.
+	rec = h.do(t, http.MethodPost, base+"/pages/"+pageID+"/draft/publish", userA, nil)
+	require.Equal(t, http.StatusConflict, rec.Code)
+	rec = h.do(t, http.MethodPost, base+"/pages/"+pageID+"/draft/publish", userA, map[string]any{"force": true})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var published model.Page
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &published))
+	require.Equal(t, "Edit by A", published.Title)
+}

@@ -540,7 +540,7 @@ func TestServiceUpdatePageOversizedBody(t *testing.T) {
 	_, err := h.svc.UpdatePage(created.Id, created.SpaceId, &model.PagePatch{Body: mmmodel.NewPointer(oversized), SearchText: mmmodel.NewPointer("")}, new(created.EditAt), false, mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	require.Equal(t, "model.page.is_valid.body.app_error", err.Id)
+	require.Equal(t, "app.page.invalid_content.app_error", err.Id)
 }
 
 // TestServiceUpdatePageOversizedSearchTextIgnored verifies a caller-supplied oversized SearchText
@@ -570,7 +570,7 @@ func TestServiceCreatePageOversizedBody(t *testing.T) {
 	_, err := h.svc.CreatePage(space.Id, "", "Title", oversized, mmmodel.NewId())
 	require.NotNil(t, err)
 	require.Equal(t, http.StatusBadRequest, err.StatusCode)
-	require.Equal(t, "model.page.is_valid.body.app_error", err.Id)
+	require.Equal(t, "app.page.invalid_content.app_error", err.Id)
 }
 
 // TestServiceUpdatePageCanSetEmptyBody verifies the patch contract: a non-nil empty Body

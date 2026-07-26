@@ -245,7 +245,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		spaceB, err := s.CreateSpace(newSpace(chB))
 		require.NoError(t, err)
 		// Fill the mover's quota in the target space, so re-homing even one more trips the cap.
-		for range store.MaxDraftsPerUserPerSpace {
+		for range model.MaxDraftsPerUserPerSpace {
 			_, _, err = s.UpsertDraft(newDraft(mover, spaceB.Id, mmmodel.NewId(), ""), nil, nil, nil)
 			require.NoError(t, err)
 		}

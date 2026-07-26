@@ -316,9 +316,11 @@ const (
 	ReasonDraftCycle              = "draft_cycle"
 	ReasonDraftTooDeep            = "draft_too_deep"
 	ReasonDraftQuotaExceeded      = "draft_quota_exceeded"
-	// ReasonPageNotLive marks an autosave whose target page was deleted, snapshotted, or moved out
-	// of the draft's space between the app-layer pre-check and the locked read — a concurrent state
-	// change, not bad input, so the caller maps it to 404 rather than a generic 400.
+	// ReasonPageNotLive marks an autosave whose target is not addressable in the request's space:
+	// the page was deleted, snapshotted, or moved out of it, the existing draft belongs to another
+	// space, or the page id was never reserved at all (no page row and no draft). The caller maps
+	// it to 404 rather than a generic 400 — from the requester's view the page does not exist in
+	// that space.
 	ReasonPageNotLive = "page_not_live"
 )
 

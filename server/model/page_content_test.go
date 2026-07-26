@@ -546,6 +546,53 @@ func TestParseTipTapDocumentRejectsTooDeep(t *testing.T) {
 	require.Error(t, err, "content nested beyond the limit must be rejected")
 }
 
+func TestParseTipTapDocumentNodeDepthBoundary(t *testing.T) {
+	// Pins the exact node-nesting cutoff, mirroring maxTipTapDepth in the sanitize walk
+	// (server/model/page_content.go); a drifted or off-by-one cap fails these loudly, unlike the
+	// far-past-the-limit rejection test above.
+	const depthLimit = 100
+
+	// nestedTo builds a document whose deepest node sits at the given depth (the top-level
+	// content node is depth 0).
+	nestedTo := func(depth int) string {
+		n := depth + 1
+		return `{"type":"doc","content":` + strings.Repeat(`[{"type":"blockquote","content":`, n) + `[]` + strings.Repeat(`}]`, n) + `}`
+	}
+
+	t.Run("nesting at the limit is accepted", func(t *testing.T) {
+		_, err := model.ParseTipTapDocument(nestedTo(depthLimit))
+		require.NoError(t, err)
+	})
+
+	t.Run("nesting one past the limit is rejected", func(t *testing.T) {
+		_, err := model.ParseTipTapDocument(nestedTo(depthLimit + 1))
+		require.Error(t, err)
+	})
+}
+
+func TestParseTipTapDocumentAttrsDepthBoundary(t *testing.T) {
+	// Pins the exact attrs-nesting cutoff: the attrs walk shares maxTipTapDepth with the node walk
+	// but counts depth independently, so it gets its own boundary pin.
+	const depthLimit = 100
+
+	// attrsNestedTo builds a node whose attrs contain a map chain whose deepest map sits at the
+	// given depth (the attrs object itself is depth 0).
+	attrsNestedTo := func(depth int) string {
+		return `{"type":"doc","content":[{"type":"paragraph","attrs":` +
+			strings.Repeat(`{"a":`, depth) + `{"b":1}` + strings.Repeat(`}`, depth) + `}]}`
+	}
+
+	t.Run("attrs nesting at the limit is accepted", func(t *testing.T) {
+		_, err := model.ParseTipTapDocument(attrsNestedTo(depthLimit))
+		require.NoError(t, err)
+	})
+
+	t.Run("attrs nesting one past the limit is rejected", func(t *testing.T) {
+		_, err := model.ParseTipTapDocument(attrsNestedTo(depthLimit + 1))
+		require.Error(t, err)
+	})
+}
+
 func TestParseTipTapDocumentRejectsOffSchemaNodeType(t *testing.T) {
 	// A node type outside the allowlist is rejected outright, so a client node type the server does
 	// not know about surfaces as a loud failure rather than passing through unrecognized.
@@ -668,4 +715,37 @@ func TestBuildSearchText(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "a b c", model.BuildSearchText(doc))
 	})
+}
+
+func TestParseTipTapDocumentSanitizesWhitespacePrefixedAttrKeys(t *testing.T) {
+	// An HTML tokenizer treats "\tonclick" as the onclick attribute, so keys carrying leading or
+	// trailing whitespace/control characters must match the handler denylist and URL allowlist the
+	// same as their clean forms.
+	raw := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "image",
+				"attrs": map[string]any{
+					" onclick":  "alert(document.cookie)",
+					"\tonerror": "steal()",
+					" href":     "javascript:alert(1)",
+					"alt":       "a cat",
+				},
+			},
+		},
+	}
+	b, err := json.Marshal(raw)
+	require.NoError(t, err)
+	doc, err := model.ParseTipTapDocument(string(b))
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(marshal(t, doc)), &parsed))
+	attrs := parsed["content"].([]any)[0].(map[string]any)["attrs"].(map[string]any)
+
+	require.NotContains(t, attrs, " onclick", "whitespace-prefixed event handler must be stripped")
+	require.NotContains(t, attrs, "\tonerror", "control-char-prefixed event handler must be stripped")
+	require.Equal(t, "", attrs[" href"], "whitespace-prefixed URL key must pass through sanitizeURL")
+	require.Equal(t, "a cat", attrs["alt"], "clean attr must survive")
 }

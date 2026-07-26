@@ -114,3 +114,25 @@ func TestNormalizePatchContent(t *testing.T) {
 		require.NotContains(t, *patch.Body, "javascript:alert")
 	})
 }
+
+func TestNormalizeContentRejectsOversizedBodyBeforeParsing(t *testing.T) {
+	// The size gate must run before json.Unmarshal, so the stored-body limit — not the larger
+	// request-transport cap — bounds the parse allocation.
+	oversized := `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"` +
+		strings.Repeat("a", model.PageBodyMaxBytes) + `"}]}]}`
+	_, _, appErr := normalizePageContent("TestNormalizeContent", oversized)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+}
+
+// TestNormalizePageContentAcceptsMaxParagraphs pins the paragraph cap's boundary: a body producing
+// exactly maxPlainTextParagraphs paragraphs is accepted — the cap rejects strictly more than the
+// documented limit, not "the limit or more".
+func TestNormalizePageContentAcceptsMaxParagraphs(t *testing.T) {
+	// "x\n" repeated N-1 times splits into N-1 "x" paragraphs plus one trailing empty paragraph:
+	// exactly maxPlainTextParagraphs.
+	body := strings.Repeat("x\n", maxPlainTextParagraphs-1)
+
+	_, _, appErr := normalizePageContent("test", body)
+	require.Nil(t, appErr)
+}
