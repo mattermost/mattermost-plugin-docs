@@ -91,6 +91,46 @@ jobs:
       - name: ci/build
         uses: mattermost/actions/plugin-ci/build@0256d363493a1e6b9e361ea788c62a0a73bc00be
 
+  # End-to-end suite: boots a real Mattermost via Testcontainers, installs this plugin, and drives
+  # the space-permission scenarios through the real API with nothing mocked.
+  #
+  # It needs a server image carrying the paired core branch's space-permission changes. Core CI
+  # publishes one per commit as mattermostdevelopment/mattermost-team-edition:<7-char-sha>, so set
+  # the CORE_IMAGE repository variable to that tag (or to a release tag once those changes ship).
+  # While CORE_IMAGE is unset this job does not run: no available image could satisfy it, and a
+  # silent pass would be worse than an absent one.
+  e2e:
+    if: ${{ vars.CORE_IMAGE != '' && (github.repository_owner == 'mattermost' || github.event_name != 'schedule') }}
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      CORE_IMAGE: ${{ vars.CORE_IMAGE }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: ci/setup
+        uses: mattermost/actions/plugin-ci/setup@0256d363493a1e6b9e361ea788c62a0a73bc00be
+        with:
+          go-version-file: go.mod
+
+      # Reuses the bundle the build job already produced rather than rebuilding it here; the
+      # suite globs dist/ for it.
+      - name: ci/download-artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: dist
+          path: dist
+
+      - name: ci/e2e
+        run: go test -tags e2e -count=1 -v ./server/e2e/...
+
   delivery:
     if: ${{ github.repository_owner == 'mattermost' && github.event_name != 'schedule' && github.ref_name == 'master' }}
     runs-on: ubuntu-latest
