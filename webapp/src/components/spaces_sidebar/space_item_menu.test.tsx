@@ -21,8 +21,6 @@ function renderMenu(props: Partial<React.ComponentProps<typeof SpaceItemMenu>> =
     return renderWithContext(
         <SpaceItemMenu
             space={space}
-            favorite={false}
-            onToggleFavorite={jest.fn()}
             {...props}
         />,
         {state: {currentTeam: makeTeam('team1', 'myteam')}},
@@ -31,20 +29,10 @@ function renderMenu(props: Partial<React.ComponentProps<typeof SpaceItemMenu>> =
 
 async function openMenu() {
     fireEvent.click(screen.getByRole('button', {name: 'Space options for Docs'}));
-    await screen.findByText('Add to favorites');
+    await screen.findByText('Copy link');
 }
 
 describe('SpaceItemMenu', () => {
-    it('toggles favorite from the menu', async () => {
-        const onToggleFavorite = jest.fn();
-        renderMenu({onToggleFavorite});
-
-        await openMenu();
-        fireEvent.click(screen.getByText('Add to favorites'));
-
-        await waitFor(() => expect(onToggleFavorite).toHaveBeenCalledWith('docs'));
-    });
-
     it('copies the team-scoped space link', async () => {
         renderMenu();
 

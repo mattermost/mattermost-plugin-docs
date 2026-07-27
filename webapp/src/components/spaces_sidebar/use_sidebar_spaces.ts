@@ -40,8 +40,9 @@ export type SidebarSpacesModel = {
 };
 
 // Holds ordering/favorites in local state today; these move to user
-// preferences in a later phase.
-export function useSidebarSpaces(): SidebarSpacesModel {
+// preferences in a later phase. `dndEnabled` gates the drag-to-
+// reorder monitor until that persistence exists (see SpacesSidebar).
+export function useSidebarSpaces(dndEnabled: boolean): SidebarSpacesModel {
     const spaces = useSpaces();
     const [favoriteOrder, setFavoriteOrder] = useState<string[]>([]);
     const [spacesOrder, setSpacesOrder] = useState<string[]>(() => spaces.map((s) => s.id));
@@ -80,7 +81,7 @@ export function useSidebarSpaces(): SidebarSpacesModel {
         }
     };
 
-    useSpacesDnd({favoriteOrder, spacesOrder, onReorder: applyMove});
+    useSpacesDnd({favoriteOrder, spacesOrder, onReorder: applyMove, enabled: dndEnabled});
 
     return {
         spacesById,

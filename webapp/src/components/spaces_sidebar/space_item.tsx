@@ -17,14 +17,15 @@ type Props = {
     space: Space;
     category: DndCategory;
     active: boolean;
-    favorite: boolean;
+
+    // Gates drag-to-reorder until sidebar ordering persists (see SpacesSidebar).
+    dndEnabled: boolean;
     onSelect: (id: string) => void;
-    onToggleFavorite: (id: string) => void;
 };
 
-const SpaceItem = ({space, category, active, favorite, onSelect, onToggleFavorite}: Props) => {
+const SpaceItem = ({space, category, active, dndEnabled, onSelect}: Props) => {
     const [element, setElement] = useState<HTMLDivElement | null>(null);
-    const {dragging, closestEdge} = useSpaceDragDrop({spaceId: space.id, category, element});
+    const {dragging, closestEdge} = useSpaceDragDrop({spaceId: space.id, category, element, enabled: dndEnabled});
 
     const emoji = (
         <span
@@ -46,11 +47,7 @@ const SpaceItem = ({space, category, active, favorite, onSelect, onToggleFavorit
                 active={active}
                 title={space.title}
                 trailing={(
-                    <SpaceItemMenu
-                        space={space}
-                        favorite={favorite}
-                        onToggleFavorite={onToggleFavorite}
-                    />
+                    <SpaceItemMenu space={space}/>
                 )}
                 revealTrailingOnHover={true}
                 onClick={() => onSelect(space.id)}

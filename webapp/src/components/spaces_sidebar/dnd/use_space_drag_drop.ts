@@ -13,14 +13,15 @@ type Args = {
     spaceId: string;
     category: DndCategory;
     element: HTMLElement | null;
+    enabled: boolean;
 };
 
-export function useSpaceDragDrop({spaceId, category, element}: Args) {
+export function useSpaceDragDrop({spaceId, category, element, enabled}: Args) {
     const [dragging, setDragging] = useState(false);
     const [closestEdge, setClosestEdge] = useState<Edge | null>(null);
 
     useEffect(() => {
-        if (!element) {
+        if (!element || !enabled) {
             return undefined;
         }
 
@@ -43,7 +44,7 @@ export function useSpaceDragDrop({spaceId, category, element}: Args) {
                 onDrop: () => setClosestEdge(null),
             }),
         );
-    }, [spaceId, category, element]);
+    }, [spaceId, category, element, enabled]);
 
     return {dragging, closestEdge};
 }

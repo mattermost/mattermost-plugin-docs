@@ -9,8 +9,6 @@ import {copyToClipboard} from 'utils/clipboard';
 import DotsVerticalIcon from '@mattermost/compass-icons/components/dots-vertical';
 import ExitToAppIcon from '@mattermost/compass-icons/components/exit-to-app';
 import LinkVariantIcon from '@mattermost/compass-icons/components/link-variant';
-import StarIcon from '@mattermost/compass-icons/components/star';
-import StarOutlineIcon from '@mattermost/compass-icons/components/star-outline';
 
 import ConfirmModal from 'components/confirm_modal/confirm_modal';
 import Menu from 'components/menu/menu';
@@ -22,11 +20,9 @@ import styles from './space_item.module.scss';
 
 type Props = {
     space: Space;
-    favorite: boolean;
-    onToggleFavorite: (id: string) => void;
 };
 
-const SpaceItemMenu = ({space, favorite, onToggleFavorite}: Props) => {
+const SpaceItemMenu = ({space}: Props) => {
     const {formatMessage} = useIntl();
     const {paths} = useDocsNavigation();
 
@@ -35,22 +31,15 @@ const SpaceItemMenu = ({space, favorite, onToggleFavorite}: Props) => {
     const copyLink = () => copyToClipboard(`${window.location.origin}${paths.space(space.id)}`);
 
     const items: MenuItemSpec[] = [
-        {
-            id: 'favorite',
-            label: favorite ? (
-                <FormattedMessage
-                    id='docs.sidebar.space.unfavorite'
-                    defaultMessage='Remove from favorites'
-                />
-            ) : (
-                <FormattedMessage
-                    id='docs.sidebar.space.favorite'
-                    defaultMessage='Add to favorites'
-                />
-            ),
-            leadingIcon: favorite ? <StarIcon size={18}/> : <StarOutlineIcon size={18}/>,
-            onClick: () => onToggleFavorite(space.id),
-        },
+
+        // Favorite space is deferred until ordering/favorites persist to user
+        // preferences (spec §4, Phase B).
+        // {
+        //     id: 'favorite',
+        //     label: <FormattedMessage id='docs.sidebar.space.favorite' defaultMessage='Add to favorites'/>,
+        //     leadingIcon: <StarOutlineIcon size={18}/>,
+        //     onClick: () => onToggleFavorite(space.id),
+        // },
 
         // Mute space is deferred until the mute feature exists.
         // {

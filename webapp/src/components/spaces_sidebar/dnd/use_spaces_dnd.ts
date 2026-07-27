@@ -13,15 +13,17 @@ type Args = {
     favoriteOrder: string[];
     spacesOrder: string[];
     onReorder: (spaceId: string, from: DndCategory, to: DndCategory, index: number) => void;
+    enabled: boolean;
 };
 
-export function useSpacesDnd({favoriteOrder, spacesOrder, onReorder}: Args) {
+export function useSpacesDnd({favoriteOrder, spacesOrder, onReorder, enabled}: Args) {
     const favRef = useLatest(favoriteOrder);
     const spacesRef = useLatest(spacesOrder);
     const onReorderRef = useLatest(onReorder);
+    const enabledRef = useLatest(enabled);
 
     useEffect(() => monitorForElements({
-        canMonitor: ({source}) => source.data.type === SPACE_DRAG_TYPE,
+        canMonitor: ({source}) => enabledRef.current && source.data.type === SPACE_DRAG_TYPE,
         onDrop: ({source, location}) => {
             const target = location.current.dropTargets[0];
             if (!target) {
