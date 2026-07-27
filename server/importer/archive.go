@@ -141,9 +141,15 @@ func InspectArchive(r io.ReaderAt, n int64) (*ArchiveContents, error) {
 		}
 		normSeen[name] = struct{}{}
 
-		// Validate mode, encryption, and compression method for every file entry — including the
-		// data/ payloads we never open — so an unsafe entry is rejected uniformly rather than only
-		// for the two entries whose bytes are read.
+		// Reject symlinks for every entry, including directory-named ones: a symlink whose name ends
+		// in "/" (e.g. "data/") would otherwise skip the file checks below and be silently accepted.
+		if f.Mode()&fsModeSymlink != 0 {
+			return nil, archiveErr(ArchiveErrUnsafeEntry, "archive entry %q is a symlink", raw)
+		}
+		// Validate the remaining mode, encryption, and compression constraints for every file entry
+		// — including the data/ payloads we never open — so an unsafe entry is rejected uniformly
+		// rather than only for the two entries whose bytes are read. Directory entries are exempt:
+		// they are legitimately non-regular and are never opened.
 		isDir := strings.HasSuffix(name, "/")
 		if !isDir {
 			if modeErr := checkEntryMode(f); modeErr != nil {

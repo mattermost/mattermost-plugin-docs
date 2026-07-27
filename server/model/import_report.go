@@ -100,6 +100,11 @@ type ImportReportSummary struct {
 	GeneratedAt int64              `json:"generated_at"`
 	Fidelity    ImportFidelity     `json:"fidelity"`
 	Counts      ImportReportCounts `json:"counts"`
+	// Revision is the canonical preflight revision (a SHA-256 digest) the client must echo back in
+	// its confirmation request. It is populated only on the preflight summary; the final summary
+	// leaves it empty. Exposing it here lets a client build a valid confirmation without access to
+	// the internal job model.
+	Revision string `json:"revision,omitempty"`
 }
 
 // ImportReport is the full downloadable report. Results and Issues stream from persisted rows so
