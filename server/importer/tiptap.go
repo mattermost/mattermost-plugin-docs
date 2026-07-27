@@ -243,6 +243,9 @@ var (
 
 // normalizeSearchText collapses horizontal whitespace and excess blank lines, then trims.
 func normalizeSearchText(s string) string {
+	// Drop NUL bytes first: a TipTap text node may decode an escaped NUL to a literal NUL byte,
+	// which PostgreSQL cannot store in the SearchText TEXT column and would reject at staging insert.
+	s = stripNUL(s)
 	// Normalize CRLF/CR to LF first so newline collapsing is uniform.
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "\n")
