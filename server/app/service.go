@@ -118,6 +118,11 @@ func storeAppError(where string, err error) *mmmodel.AppError {
 		return mmmodel.NewAppError(where, "app.page.circular_reference.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 	case store.IsErrInvalidInput(err):
 		return invalidInputAppError(where, err)
+	case store.IsErrLockTimeout(err):
+		// Distinct from the default CAS/unique-constraint conflict below: this is a
+		// WithSpaceMembershipLock acquisition timeout (another mutation on the same space is
+		// still in flight), not a stale-baseline write.
+		return mmmodel.NewAppError(where, "app.space.lock_timeout.app_error", nil, "", http.StatusConflict).Wrap(err)
 	case store.IsErrConflict(err):
 		return mmmodel.NewAppError(where, "app.store.conflict.app_error", nil, "", http.StatusConflict).Wrap(err)
 	case store.IsErrLimitExceeded(err):
@@ -148,6 +153,9 @@ func invalidInputAppError(where string, err error) *mmmodel.AppError {
 			// that disappears between the pre-check and the store's locked check reads
 			// identically to one that never existed — the contract is not race-dependent.
 			return mmmodel.NewAppError(where, "app.page.invalid_parent.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+		}
+		if invErr.Reason == store.ReasonSubtreeNotOwned {
+			return mmmodel.NewAppError(where, "app.page.move_to_space.subtree_not_owned.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 		}
 		return mmmodel.NewAppError(where, invErr.Reason, nil, "", http.StatusBadRequest).Wrap(err)
 	}

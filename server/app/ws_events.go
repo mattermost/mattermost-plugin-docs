@@ -11,15 +11,17 @@ import (
 // can refresh the affected space list and page tree without a full reload. The platform prepends
 // "custom_<pluginid>_" to each name on the wire, so the names carry no redundant plugin prefix.
 //
-// Every event is scoped to the space's backing channel, matching the visibility boundary the REST
-// API enforces: reads are membership-gated (CheckSpaceMembership) and the team space list is
-// filtered to the caller's channel memberships, so a broader broadcast would leak space existence
-// and activity to users who cannot read the space. For the same reason a cross-space move
-// publishes a separate payload to each side — the source channel learns only the source space's
-// half (source space and old parent), the target channel only the target's half — rather than one
-// payload naming both spaces. A member removal is additionally sent to the
-// removed user directly, who has already left the channel when the channel-scoped broadcast fires
-// and would otherwise never learn of it. space_deleted is likewise delivered to each member
+// Every event is scoped to the space's backing channel. Reads are no longer purely
+// membership-gated (an open space also admits non-member reads via the team read_public_channel
+// fall-through, and the team space list includes open spaces the caller hasn't joined), but WS
+// delivery deliberately stays channel-scoped: a non-member reader of an open space receives no
+// live updates until a write auto-joins them. This is narrower than the read set — an accepted
+// UX consequence, not a leak, since the same caller can always re-fetch. For the same reason a
+// cross-space move publishes a separate payload to each side — the source channel learns only the
+// source space's half (source space and old parent), the target channel only the target's half —
+// rather than one payload naming both spaces. A member removal is additionally sent to the removed
+// user directly, who has already left the channel when the channel-scoped broadcast fires and
+// would otherwise never learn of it. space_deleted is likewise delivered to each member
 // directly, from a snapshot taken before the backing channel is archived — channel-scoped
 // delivery resolves recipients from live channels only, so a broadcast to the just-archived
 // channel would reach nobody. A space delete or restore cascades to every live page in
@@ -35,12 +37,13 @@ const (
 	wsEventPageDuplicated   = "page_duplicated"
 	wsEventPageMovedToSpace = "page_moved_to_space"
 
-	wsEventSpaceCreated       = "space_created"
-	wsEventSpaceUpdated       = "space_updated"
-	wsEventSpaceDeleted       = "space_deleted"
-	wsEventSpaceRestored      = "space_restored"
-	wsEventSpaceMemberAdded   = "space_member_added"
-	wsEventSpaceMemberRemoved = "space_member_removed"
+	wsEventSpaceCreated                   = "space_created"
+	wsEventSpaceUpdated                   = "space_updated"
+	wsEventSpaceDeleted                   = "space_deleted"
+	wsEventSpaceRestored                  = "space_restored"
+	wsEventSpaceMemberAdded               = "space_member_added"
+	wsEventSpaceMemberRemoved             = "space_member_removed"
+	wsEventSpaceMemberCapabilitiesUpdated = "space_member_capabilities_updated"
 )
 
 // publishToChannels publishes a WebSocket event broadcast to each non-empty, distinct channel ID.

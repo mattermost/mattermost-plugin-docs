@@ -6,6 +6,7 @@ package app
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"unicode/utf8"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -109,27 +110,88 @@ func (s *Service) hasOtherAuthorizedMember(space *model.Space, excludeUserID str
 
 // archiveOrphanChannel archives a backing channel when a later step in space creation fails,
 // to avoid an orphaned channel. reason describes the step that failed; cause is its error.
-func (s *Service) archiveOrphanChannel(channelID, reason string, cause error) {
+// Reports whether the channel was archived, which decides whether the same failure path may
+// exclude it from the custom scheme's reference count (see cleanupCustomScheme).
+func (s *Service) archiveOrphanChannel(channelID, reason string, cause error) bool {
 	if s.client == nil {
-		return
+		return false
 	}
 	if delErr := s.client.Channel.Delete(channelID); delErr != nil {
 		// The channel now exists with no space row pointing at it and nothing will retry this
 		// archive, so it needs an operator to clean it up: log at Error, not Warn.
 		s.log.Error("compensating channel archive failed; channel is orphaned and must be archived manually", "channel_id", channelID, "failure_reason", reason, "cause_err", cause, "delete_err", delErr)
+		return false
+	}
+	return true
+}
+
+// resolveSpaceScheme resolves the backing-channel scheme id for a space-default capability set:
+// a set matching one of the three seeded presets repoints to the shared preset scheme; any other
+// set creates a new space-private immutable custom scheme. Returns the scheme id and
+// whether a custom scheme was created (so the caller can retire it on a later create-step
+// failure).
+func (s *Service) resolveSpaceScheme(caps []string) (schemeID string, createdCustom bool, err error) {
+	// Normalize before the permission set is persisted: the validators are dedup-tolerant, so
+	// without this a request repeating one allowlisted token would write that repetition verbatim
+	// into the generated role's Permissions column.
+	caps = model.NormalizeCapabilitySet(caps)
+	if presetName, ok := model.SchemeNameForDefaultCapabilities(caps); ok {
+		id, getErr := s.store.GetSchemeIdByName(presetName)
+		if getErr != nil {
+			return "", false, getErr
+		}
+		return id, false, nil
+	}
+	userPerms := append([]string{model.CapabilityReadPage}, caps...)
+	adminPerms := mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions)
+	guestPerms := []string{model.CapabilityReadPage}
+	id, createErr := s.store.CreateSpaceCustomScheme(userPerms, adminPerms, guestPerms)
+	if createErr != nil {
+		return "", false, createErr
+	}
+	return id, true, nil
+}
+
+// cleanupCustomScheme best-effort retires schemeID when createdCustom is true and a later
+// create-step fails. abandonedChannelID, when non-empty, is the backing channel the same failure
+// path just archived: archiving keeps the channel's SchemeId, so it must be excluded from the
+// store's reference count or the retire would find the scheme still referenced and silently skip.
+// It must be left empty when the archive did not succeed — excluding a channel that is still live
+// would retire a scheme that channel still points at, leaving it with a dangling SchemeId.
+func (s *Service) cleanupCustomScheme(schemeID string, createdCustom bool, abandonedChannelID string) {
+	if !createdCustom {
+		return
+	}
+	if err := s.store.DeleteSpaceCustomSchemeIfUnreferenced(schemeID, abandonedChannelID); err != nil {
+		s.log.Warn("failed to retire unreferenced space custom scheme after a failed create", "scheme_id", schemeID, "err", err)
 	}
 }
 
+// abandonBackingChannel runs the compensating cleanup shared by every CreateSpace failure that
+// happens after the backing channel exists: archive the channel, then retire the custom scheme it
+// was created for. The scheme is only excluded from the reference count when the archive actually
+// succeeded, so a channel left live by a failed archive still pins its scheme.
+func (s *Service) abandonBackingChannel(channelID, reason string, cause error, schemeID string, createdCustom bool) {
+	archived := s.archiveOrphanChannel(channelID, reason, cause)
+	excluded := ""
+	if archived {
+		excluded = channelID
+	}
+	s.cleanupCustomScheme(schemeID, createdCustom, excluded)
+}
+
 // CreateSpace creates a ChannelTypeSpace ("S") backing channel via pluginapi, saves the
-// space row pointing at it, and adds the creator as a member. space.ChannelId must be empty —
-// it is set from the created channel. If the row save fails, the backing channel is archived
-// to avoid an orphan.
+// space row pointing at it, and adds the creator as a member with SchemeAdmin. space.ChannelId
+// must be empty — it is set from the created channel. defaultCapabilities nil defaults to the
+// contribute preset; viewAccess nil defaults to open. If any step after the backing channel's
+// creation fails, the backing channel is archived to avoid an orphan, and a newly created custom
+// scheme (a non-preset defaultCapabilities) is best-effort retired.
 //
 // The channel create and the row save are separate systems with no shared transaction: a crash
 // between them leaves a real channel with no space row and no persisted marker to key a retry
 // off, so that window is cleaned up only by the best-effort compensating archive below (or an
 // operator, if that also fails).
-func (s *Service) CreateSpace(space *model.Space, userID string) (*model.Space, *mmmodel.AppError) {
+func (s *Service) CreateSpace(space *model.Space, userID string, defaultCapabilities *[]string, viewAccess *string) (*model.Space, *mmmodel.AppError) {
 	if space == nil {
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.nil_input.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -169,10 +231,39 @@ func (s *Service) CreateSpace(space *model.Space, userID string) (*model.Space, 
 	if !active {
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.not_team_member.app_error", nil, "", http.StatusForbidden)
 	}
+	// Team membership alone does not authorize creating a space in it: the caller must also hold
+	// create_space on the team (or be sysadmin). Unlike the read/manage/delete gates, no space
+	// exists yet here, so there is nothing to existence-hide behind — a plain 403 is correct.
+	if !s.client.User.HasPermissionTo(userID, mmmodel.PermissionManageSystem) &&
+		!s.client.User.HasPermissionToTeam(userID, space.TeamId, mmmodel.PermissionCreateSpace) {
+		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.forbidden.app_error", nil, "", http.StatusForbidden)
+	}
 	// Sanitize before it's used as the channel Header below — Space.PreSave sanitizes it again on
 	// the store.CreateSpace path, but that happens after the channel is already created.
 	space.Description = mmmodel.SanitizeUnicode(space.Description)
 	space.CreatorId = userID
+
+	va := model.ViewAccessOpen
+	if viewAccess != nil {
+		va = *viewAccess
+	}
+	if va != model.ViewAccessOpen && va != model.ViewAccessPrivate {
+		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.invalid_view_access.app_error", nil, "", http.StatusBadRequest)
+	}
+	space.ViewAccess = va
+
+	caps, _ := model.DefaultCapabilitiesForSchemeName(mmmodel.SchemeNameSpaceContribute)
+	if defaultCapabilities != nil {
+		caps = *defaultCapabilities
+	}
+	if capErr := model.ValidateDefaultCapabilities(caps); capErr != nil {
+		return nil, capErr
+	}
+
+	schemeID, createdCustom, schemeErr := s.resolveSpaceScheme(caps)
+	if schemeErr != nil {
+		return nil, storeAppError("CreateSpace", schemeErr)
+	}
 
 	s.log.Debug("Creating space", "team_id", space.TeamId, "user_id", userID)
 
@@ -181,6 +272,7 @@ func (s *Service) CreateSpace(space *model.Space, userID string) (*model.Space, 
 		Type:      mmmodel.ChannelTypeSpace,
 		Name:      "space-" + mmmodel.NewId()[:20],
 		CreatorId: userID,
+		SchemeId:  &schemeID,
 	}
 	applySpaceFieldsToChannel(backingChannel, space)
 	if err := s.client.Channel.Create(backingChannel); err != nil {
@@ -188,7 +280,10 @@ func (s *Service) CreateSpace(space *model.Space, userID string) (*model.Space, 
 		// backingChannel before its post-create bookkeeping, so an error alongside a populated
 		// Id means the channel row already exists and must be archived, not leaked.
 		if backingChannel.Id != "" {
-			s.archiveOrphanChannel(backingChannel.Id, "channel create failed after creation", err)
+			s.abandonBackingChannel(backingChannel.Id, "channel create failed after creation", err, schemeID, createdCustom)
+		} else {
+			// No channel row exists, so nothing references the scheme.
+			s.cleanupCustomScheme(schemeID, createdCustom, "")
 		}
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.backing_channel_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
@@ -197,15 +292,29 @@ func (s *Service) CreateSpace(space *model.Space, userID string) (*model.Space, 
 		// A space whose creator is not a member of its backing channel is a dead-end once per-space
 		// membership gating lands (unreachable to everyone, creator included), so fail the create
 		// and archive the orphan channel rather than continuing.
-		s.archiveOrphanChannel(backingChannel.Id, "creator member-add failed", addErr)
+		s.abandonBackingChannel(backingChannel.Id, "creator member-add failed", addErr, schemeID, createdCustom)
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.add_member_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(addErr)
+	}
+
+	// The creator is added as SchemeAdmin — both the scheme's resolved generated role names, never
+	// literals: on a scheme-backed channel core rejects the literal channel_user/channel_admin
+	// tokens. The base user-role token is required, not optional (core resets all scheme flags and
+	// rejects a string that leaves SchemeUser unset).
+	schemeRoles, rolesErr := s.store.GetSchemeRolesForChannel(backingChannel.Id)
+	if rolesErr != nil {
+		s.abandonBackingChannel(backingChannel.Id, "scheme role lookup failed", rolesErr, schemeID, createdCustom)
+		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.scheme_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(rolesErr)
+	}
+	if _, roleErr := s.client.Channel.UpdateChannelMemberRoles(backingChannel.Id, userID, schemeRoles.UserRoleName+" "+schemeRoles.AdminRoleName); roleErr != nil {
+		s.abandonBackingChannel(backingChannel.Id, "creator admin role assignment failed", roleErr, schemeID, createdCustom)
+		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.admin_role_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(roleErr)
 	}
 
 	space.ChannelId = backingChannel.Id
 
 	saved, err := s.store.CreateSpace(space)
 	if err != nil {
-		s.archiveOrphanChannel(backingChannel.Id, "row save failed", err)
+		s.abandonBackingChannel(backingChannel.Id, "row save failed", err, schemeID, createdCustom)
 		return nil, storeAppError("CreateSpace", err)
 	}
 
@@ -238,191 +347,171 @@ func (s *Service) GetSpaceWithDeleted(spaceID string) (*model.Space, *mmmodel.Ap
 	return space, nil
 }
 
-// CheckSpaceMembership verifies that userID is a member of the space's backing channel — and,
-// when the space belongs to a team, still an active member of that team — and returns the
-// fetched space on success so callers can avoid a redundant read. The team check exists because
-// leaving a team does not remove a user from the team's space channels (core's team-leave sweep
-// covers only regular message channels), so channel membership alone would let a former team
-// member keep using known space and page IDs. When includeDeleted is true the space row is
-// fetched regardless of its DeleteAt state, which is required for operations that run against a
-// soft-deleted space (e.g. restore). Non-members, former team members, and non-existent spaces
-// all yield the same 403 to prevent callers from probing space existence via the error code. A
-// missing or malformed userID is rejected, never treated as a trusted caller; callers that
-// legitimately act without a user must read the space directly instead.
-func (s *Service) CheckSpaceMembership(spaceID, userID string, includeDeleted bool) (*model.Space, *mmmodel.AppError) {
-	if appErr := s.requireClient("CheckSpaceMembership", "space_id", spaceID, "user_id", userID); appErr != nil {
+// spaceDefaultCapabilities returns space's current default capability set in wire form
+// (read_page-free): preset recognition by the backing channel's scheme name, or — for a
+// space-private custom scheme — the generated user role's stored permission set projected onto
+// the capability vocabulary.
+func (s *Service) spaceDefaultCapabilities(space *model.Space) ([]string, error) {
+	roles, err := s.store.GetSchemeRolesForChannel(space.ChannelId)
+	if err != nil {
+		return nil, err
+	}
+	if caps, ok := model.DefaultCapabilitiesForSchemeName(roles.SchemeName); ok {
+		return caps, nil
+	}
+	perms, err := s.store.GetRolePermissionsByName(roles.UserRoleName)
+	if err != nil {
+		return nil, err
+	}
+	return model.DefaultCapabilitiesFromPermissions(perms), nil
+}
+
+// BuildSpaceWithAccess resolves the GET /spaces/{id} response wrapper: the space's default
+// capability set plus the caller's own truthful, current effective capabilities — never a
+// hypothetical post-join grant. A denied read yields the shared existence-hiding 403.
+func (s *Service) BuildSpaceWithAccess(space *model.Space, userID string) (*model.SpaceWithAccess, *mmmodel.AppError) {
+	if appErr := s.requireClient("BuildSpaceWithAccess", "space_id", space.Id, "user_id", userID); appErr != nil {
 		return nil, appErr
 	}
-	if !mmmodel.IsValidId(userID) {
-		return nil, mmmodel.NewAppError("CheckSpaceMembership", "app.space.access.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
+	// The read gate resolves first: a denied caller must get the existence-hiding 403 rather than
+	// whatever the default-capability lookup below would surface for a space it cannot see.
+	resolution, resErr := s.ResolveSpaceRead("BuildSpaceWithAccess", space, userID)
+	if resErr != nil {
+		return nil, resErr
 	}
-	var space *model.Space
-	var getErr *mmmodel.AppError
-	if includeDeleted {
-		space, getErr = s.GetSpaceWithDeleted(spaceID)
-	} else {
-		space, getErr = s.GetSpace(spaceID)
+	if resolution == ReadDenied {
+		return nil, existenceHidingForbidden("BuildSpaceWithAccess")
 	}
-	if getErr != nil {
-		if getErr.StatusCode == http.StatusNotFound {
-			return nil, mmmodel.NewAppError("CheckSpaceMembership", "app.space.access.forbidden.app_error", nil, "", http.StatusForbidden).Wrap(getErr)
-		}
-		return nil, getErr
-	}
-	if space.TeamId != "" {
-		active, teamErr := s.isActiveTeamMember(space.TeamId, userID)
-		if teamErr != nil {
-			return nil, mmmodel.NewAppError("CheckSpaceMembership", "app.space.access.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(teamErr)
-		}
-		if !active {
-			return nil, mmmodel.NewAppError("CheckSpaceMembership", "app.space.access.forbidden.app_error", nil, "", http.StatusForbidden)
-		}
-	}
-	if _, err := s.client.Channel.GetMember(space.ChannelId, userID); err != nil {
-		if errors.Is(err, pluginapi.ErrNotFound) {
-			return nil, mmmodel.NewAppError("CheckSpaceMembership", "app.space.access.forbidden.app_error", nil, "", http.StatusForbidden).Wrap(err)
-		}
-		return nil, mmmodel.NewAppError("CheckSpaceMembership", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
-	}
-	return space, nil
-}
-
-// ListSpaceMembers returns one page of space's members plus whether more members exist beyond
-// it. page/perPage are normalized like every other paginated method (page and perPage both
-// clamped). The pluginapi member listing is page-indexed rather than offset-based, so when the
-// requested page comes back full a one-row probe at the next page's first slot decides has-more.
-// space is the caller's already-fetched record (from its membership gate), so no re-read here.
-func (s *Service) ListSpaceMembers(space *model.Space, page, perPage int) ([]*model.SpaceMember, bool, *mmmodel.AppError) {
-	if space == nil {
-		return nil, false, mmmodel.NewAppError("ListSpaceMembers", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
-	}
-	if appErr := s.requireClient("ListSpaceMembers", "space_id", space.Id); appErr != nil {
-		return nil, false, appErr
-	}
-	page = ClampPage(page)
-	perPage = ClampPerPage(perPage)
-	channelMembers, err := s.client.Channel.ListMembers(space.ChannelId, page, perPage)
+	defaultCaps, err := s.spaceDefaultCapabilities(space)
 	if err != nil {
-		return nil, false, mmmodel.NewAppError("ListSpaceMembers", "app.space.list_members.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+		return nil, storeAppError("BuildSpaceWithAccess", err)
 	}
-	members := make([]*model.SpaceMember, 0, len(channelMembers))
-	for _, cm := range channelMembers {
-		members = append(members, &model.SpaceMember{UserId: cm.UserId})
-	}
-	hasMore := false
-	if len(channelMembers) == perPage {
-		// A page of size 1 holds exactly one element, so its page index equals that element's
-		// offset: requesting page (page+1)*perPage at size 1 fetches precisely the first member
-		// beyond the current window.
-		probe, probeErr := s.client.Channel.ListMembers(space.ChannelId, (page+1)*perPage, 1)
-		if probeErr != nil {
-			return nil, false, mmmodel.NewAppError("ListSpaceMembers", "app.space.list_members.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(probeErr)
+
+	var caps []string
+	switch resolution {
+	case ReadViaSysadmin:
+		caps = model.AdminEffectiveCapabilities()
+	case ReadViaMember:
+		member, memErr := s.client.Channel.GetMember(space.ChannelId, userID)
+		if memErr != nil {
+			return nil, mmmodel.NewAppError("BuildSpaceWithAccess", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memErr)
 		}
-		hasMore = len(probe) > 0
+		caps = model.CapabilitiesFromMember(member.ExplicitRoles, member.SchemeAdmin, member.SchemeGuest, defaultCaps).Effective
+	case ReadViaOpenFallthrough:
+		caps = []string{model.CapabilityReadPage}
+	default:
+		return nil, existenceHidingForbidden("BuildSpaceWithAccess")
 	}
-	return members, hasMore, nil
+
+	wrapper := &model.SpaceWithAccess{Space: *space, DefaultCapabilities: defaultCaps, Capabilities: caps}
+	wrapper.EnsureCapabilities()
+	return wrapper, nil
 }
 
-// AddSpaceMember adds a user to space's backing channel. Any current space member may manage
-// members (flat model; no per-space admin role yet). space is the caller's already-fetched
-// record (from its membership gate), so no re-read here.
-func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.SpaceMember, *mmmodel.AppError) {
+// SetSpaceDefaultCapabilities changes space's default capability set: a set matching a seeded
+// preset repoints the backing channel at the shared preset scheme; any other set creates a new
+// immutable space-private custom scheme and repoints, retiring the previous custom scheme once
+// unreferenced. The repoint goes through pluginapi Channel.Update (not a store-direct write) so
+// core's member-cache invalidation runs and the switch is authorization-visible immediately.
+func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, caps []string, actingUserID string) (*model.SpaceWithAccess, *mmmodel.AppError) {
 	if space == nil {
-		return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
+		return nil, mmmodel.NewAppError("SetSpaceDefaultCapabilities", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	if !mmmodel.IsValidId(userID) {
-		return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.member.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
-	}
-	if appErr := s.requireClient("AddSpaceMember", "space_id", space.Id, "user_id", userID); appErr != nil {
+	if appErr := model.ValidateDefaultCapabilities(caps); appErr != nil {
 		return nil, appErr
 	}
-	// Reject a target who is not an active member of the space's team before touching the
-	// backing channel. Core's channel-member add enforces the same integrity check but surfaces
-	// it as an opaque failure; checking here keeps the status code honest and guarantees every
-	// space member can pass the team half of the access gate — which the last-member guard in
-	// RemoveSpaceMember relies on when deciding who can still reach the space.
-	if space.TeamId != "" {
-		active, memberErr := s.isActiveTeamMember(space.TeamId, userID)
-		if memberErr != nil {
-			return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.member.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memberErr)
-		}
-		if !active {
-			return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.member.not_team_member.app_error", nil, "", http.StatusForbidden)
-		}
+	if appErr := s.requireClient("SetSpaceDefaultCapabilities", "space_id", space.Id); appErr != nil {
+		return nil, appErr
 	}
-	member, err := s.client.Channel.AddMember(space.ChannelId, userID)
-	if err != nil {
-		// A missing target user is the caller's mistake, not a server fault.
-		if errors.Is(err, pluginapi.ErrNotFound) {
-			return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(err)
-		}
-		return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.add_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
-	}
-	s.publishToChannels(wsEventSpaceMemberAdded, map[string]any{"space_id": space.Id, "user_id": member.UserId}, space.ChannelId)
-	return &model.SpaceMember{UserId: member.UserId}, nil
-}
 
-// RemoveSpaceMember removes a user from space's backing channel. The last member who can still
-// reach the space cannot be removed: membership is the only gate on every space and page route,
-// so a space with no reachable member — and every page in it — would be permanently unreachable
-// through the plugin API (there is no admin bypass, and adding a member back requires the caller
-// to already be one). Reachable means passing the full access gate, so for a team space a member
-// who has since left the team does not count — see hasOtherAuthorizedMember. space is the
-// caller's already-fetched record (from its membership gate), so no re-read here.
-func (s *Service) RemoveSpaceMember(space *model.Space, userID string) *mmmodel.AppError {
-	if space == nil {
-		return mmmodel.NewAppError("RemoveSpaceMember", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
-	}
-	if !mmmodel.IsValidId(userID) {
-		return mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
-	}
-	if appErr := s.requireClient("RemoveSpaceMember", "space_id", space.Id, "user_id", userID); appErr != nil {
-		return appErr
-	}
-	// The member-list read and the removal below are separate calls, so on their own two
-	// concurrent removals of a two-member space's remaining members could each pass the
-	// last-member guard and leave the space memberless — unreachable through the plugin API.
-	// The space-scoped advisory lock serializes the guard and the removal as one unit.
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
-		// Removing a non-member alongside a sole reachable member falls through the guard: the
-		// DeleteMember call below reports that failure.
-		hasOther, guardErr := s.hasOtherAuthorizedMember(space, userID)
-		if guardErr != nil {
-			return mmmodel.NewAppError("RemoveSpaceMember", "app.space.remove_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(guardErr)
+		channel, chanErr := s.client.Channel.GetChannelOfType(space.ChannelId, mmmodel.ChannelTypeSpace)
+		if chanErr != nil {
+			return mmmodel.NewAppError("SetSpaceDefaultCapabilities", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(chanErr)
 		}
-		if !hasOther {
-			return mmmodel.NewAppError("RemoveSpaceMember", "app.space.remove_member.last_member.app_error", nil, "", http.StatusConflict)
+		if channel == nil || channel.SchemeId == nil {
+			return mmmodel.NewAppError("SetSpaceDefaultCapabilities", "app.space.default_capabilities.channel_scheme_missing.app_error", nil, "", http.StatusInternalServerError)
 		}
-		if err := s.client.Channel.DeleteMember(space.ChannelId, userID); err != nil {
-			// A target user who isn't a member (or doesn't exist) is the caller's mistake,
-			// not a server fault.
-			if errors.Is(err, pluginapi.ErrNotFound) {
-				return mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(err)
+		currentSchemeID := *channel.SchemeId
+		// Read the superseded scheme's name before the repoint below rewrites which scheme the
+		// channel points at. A failure here only costs the retirement step, so it is carried as a
+		// value and handled after the repoint rather than failing the whole operation.
+		currentRoles, currentRolesErr := s.store.GetSchemeRolesForChannel(space.ChannelId)
+
+		// Compare against the live default before resolving a scheme. resolveSpaceScheme returns a
+		// pre-existing id only for the three presets — a non-preset set always creates a fresh
+		// scheme — so without this an unchanged custom set would create, repoint, and retire on
+		// every save, and the id comparison below could never catch it.
+		if currentRolesErr == nil {
+			if liveCaps, capsErr := s.spaceDefaultCapabilities(space); capsErr == nil &&
+				slices.Equal(liveCaps, model.NormalizeCapabilitySet(caps)) {
+				return nil
 			}
-			return mmmodel.NewAppError("RemoveSpaceMember", "app.space.remove_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+		}
+
+		targetSchemeID, createdCustom, schemeErr := s.resolveSpaceScheme(caps)
+		if schemeErr != nil {
+			return storeAppError("SetSpaceDefaultCapabilities", schemeErr)
+		}
+		if targetSchemeID == currentSchemeID {
+			// No-op: requested set already matches the live default.
+			return nil
+		}
+
+		channel.SchemeId = &targetSchemeID
+		if updErr := s.client.Channel.Update(channel); updErr != nil {
+			s.cleanupCustomScheme(targetSchemeID, createdCustom, "")
+			return mmmodel.NewAppError("SetSpaceDefaultCapabilities", "app.space.default_capabilities.repoint_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(updErr)
+		}
+
+		// Retire the superseded scheme, but only inside this lock (a concurrent repoint between an
+		// outside-the-lock read and the retire call could otherwise delete a scheme a racing
+		// SetSpaceDefaultCapabilities just repointed away from) and only when it was a
+		// space-private custom one — a routine preset-to-preset switch must neither call the
+		// retire path nor log a spurious failure Warn.
+		if currentRolesErr != nil {
+			s.log.Warn("failed to determine whether the superseded space scheme is a preset; skipping custom-scheme retirement", "scheme_id", currentSchemeID, "err", currentRolesErr)
+		} else if _, isPreset := model.DefaultCapabilitiesForSchemeName(currentRoles.SchemeName); !isPreset {
+			if delErr := s.store.DeleteSpaceCustomSchemeIfUnreferenced(currentSchemeID, ""); delErr != nil {
+				s.log.Warn("failed to retire unreferenced space custom scheme after a default-capabilities change", "scheme_id", currentSchemeID, "err", delErr)
+			}
 		}
 		return nil
 	})
 	if lockErr != nil {
 		var appErr *mmmodel.AppError
 		if errors.As(lockErr, &appErr) {
-			return appErr
+			return nil, appErr
 		}
-		// The store's own errors — notably the retryable ErrConflict a lock-acquisition timeout
-		// yields — keep their conventional status codes rather than collapsing to a 500.
-		return storeAppError("RemoveSpaceMember", lockErr)
+		return nil, storeAppError("SetSpaceDefaultCapabilities", lockErr)
 	}
-	payload := map[string]any{"space_id": space.Id, "user_id": userID}
-	s.publishToChannels(wsEventSpaceMemberRemoved, payload, space.ChannelId)
-	// The removed user has already left the backing channel, so the channel-scoped broadcast
-	// above never reaches them; send the event to their own connections directly.
-	s.publishToUser(wsEventSpaceMemberRemoved, payload, userID)
-	return nil
+
+	fresh, getErr := s.GetSpace(space.Id)
+	if getErr != nil {
+		// The scheme repoint already committed, so re-reporting this as a failure would misreport
+		// success as an error; project the response from the requested set and the pre-update
+		// space instead, still firing the WS event.
+		s.log.Warn("SetSpaceDefaultCapabilities: post-commit re-read failed; responding from the requested set", "space_id", space.Id, "err", getErr)
+		s.publishToChannels(wsEventSpaceUpdated, map[string]any{"space_id": space.Id}, space.ChannelId)
+		wrapper, buildErr := s.BuildSpaceWithAccess(space, actingUserID)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		wrapper.DefaultCapabilities = model.NormalizeCapabilitySet(caps)
+		return wrapper, nil
+	}
+	s.publishToChannels(wsEventSpaceUpdated, map[string]any{"space_id": fresh.Id}, fresh.ChannelId)
+	return s.BuildSpaceWithAccess(fresh, actingUserID)
 }
 
-// GetSpacesForTeam returns one page of a team's live spaces, plus whether more exist beyond
-// it. userID is verified to be a team member and the result is filtered to spaces whose
-// backing channel the caller belongs to, matching the membership gate on single-space reads.
+// ListSpaceMembers, AddSpaceMember, SetSpaceMemberCapabilities, and RemoveSpaceMember live in
+// space_members.go alongside the escalation and last-admin guards.
+
+// GetSpacesForTeam returns one page of a team's live spaces, plus whether more exist beyond it.
+// userID must be an active team member holding team read_space (the list-entry gate; every
+// team_user holds it by default). The result is the union of spaces the caller is a
+// backing-channel member of and open spaces the caller can reach via the same team
+// read_public_channel/compliance-mode conjunct as single-space read.
 func (s *Service) GetSpacesForTeam(teamID, userID string, page, perPage int) ([]*model.Space, bool, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(teamID) {
 		return nil, false, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.invalid_team_id.app_error", nil, "", http.StatusBadRequest)
@@ -441,7 +530,12 @@ func (s *Service) GetSpacesForTeam(teamID, userID string, page, perPage int) ([]
 	if !active {
 		return nil, false, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.not_team_member.app_error", nil, "", http.StatusForbidden)
 	}
-	spaces, err := s.store.GetSpacesForTeam(teamID, userID, offset, limit)
+	if !s.client.User.HasPermissionTo(userID, mmmodel.PermissionManageSystem) &&
+		!s.client.User.HasPermissionToTeam(userID, teamID, mmmodel.PermissionReadSpace) {
+		return nil, false, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.forbidden.app_error", nil, "", http.StatusForbidden)
+	}
+	callerHasOpenFallthrough := active && s.openTeamFallthrough(userID, teamID)
+	spaces, err := s.store.GetSpacesForTeam(teamID, userID, callerHasOpenFallthrough, offset, limit)
 	if err != nil {
 		return nil, false, storeAppError("GetSpacesForTeam", err)
 	}
@@ -464,6 +558,9 @@ func normalizeAndValidateSpacePatch(where string, patch *model.SpacePatch) *mmmo
 		}
 		patch.Title = &normalized
 	}
+	if patch.ViewAccess != nil && *patch.ViewAccess != model.ViewAccessOpen && *patch.ViewAccess != model.ViewAccessPrivate {
+		return mmmodel.NewAppError(where, "app.space.update.invalid_view_access.app_error", nil, "", http.StatusBadRequest)
+	}
 	description, icon := "", ""
 	if patch.Description != nil {
 		description = *patch.Description
@@ -482,7 +579,14 @@ func normalizeAndValidateSpacePatch(where string, patch *model.SpacePatch) *mmmo
 // so a forced update overwrites only the fields the patch supplies — concurrent changes to
 // other fields survive. space is the caller's already-fetched record (from its
 // membership gate); only its Id is used here.
-func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expectedUpdateAt *int64, force bool) (*model.Space, *mmmodel.AppError) {
+//
+// A patch that changes ViewAccess requires RequireSpaceAdminOrSysadmin against the live row and is
+// rejected when force=true. actingUserID is used only for that escalation check.
+//
+// Any patch on a space with a backing channel runs under the space's membership advisory lock (the
+// same lock auto-join and the last-admin invariant use), since it also drives the channel-metadata
+// sync below and both writers must serialize against the same lock.
+func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expectedUpdateAt *int64, force bool, actingUserID string) (*model.Space, *mmmodel.AppError) {
 	if space == nil {
 		return nil, mmmodel.NewAppError("UpdateSpace", "app.space.update.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -492,24 +596,85 @@ func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expec
 	if appErr := normalizeAndValidateSpacePatch("UpdateSpace", patch); appErr != nil {
 		return nil, appErr
 	}
+	if patch.ViewAccess != nil && force {
+		return nil, mmmodel.NewAppError("UpdateSpace", "app.space.update.view_access_force.app_error", nil, "", http.StatusBadRequest)
+	}
 
 	s.log.Debug("Updating space", "space_id", space.Id)
 
-	updated, err := s.store.UpdateSpace(space.Id, patch, mmmodel.SafeDereference(expectedUpdateAt), force)
-	if err != nil {
-		return nil, storeAppError("UpdateSpace", err)
-	}
-	if updated.ChannelId != "" && s.client != nil {
-		if chanErr := s.syncSpaceChannelMetadata(updated.Id); chanErr != nil {
-			// Deliberately not returned: the space row (the source of truth) committed, so failing
-			// the request would misreport a successful update, and retrying it would 409 on the
-			// now-stale baseline. The next successful UpdateSpace re-syncs the channel. Logged at
-			// Error so the resulting name/header divergence is visible to operators.
-			s.log.Error("UpdateSpace: failed to sync backing channel metadata; display name/header stale until the next update", "channel_id", updated.ChannelId, "space_id", updated.Id, "err", chanErr)
+	apply := func() (*model.Space, *mmmodel.AppError) {
+		var live *model.Space
+		if patch.ViewAccess != nil {
+			gotLive, liveErr := s.store.GetSpace(space.Id, false)
+			if liveErr != nil {
+				return nil, storeAppError("UpdateSpace", liveErr)
+			}
+			live = gotLive
+			if *patch.ViewAccess != live.ViewAccess {
+				if appErr := s.RequireSpaceAdminOrSysadmin("UpdateSpace", live, actingUserID); appErr != nil {
+					return nil, appErr
+				}
+			}
 		}
+		updated, err := s.store.UpdateSpace(space.Id, patch, mmmodel.SafeDereference(expectedUpdateAt), force)
+		if err != nil {
+			return nil, storeAppError("UpdateSpace", err)
+		}
+		// A private->private no-op (the patch re-asserts the current value) must not attach
+		// member_count: only a genuine open->private transition sheds no members but exposes an
+		// admin to a count they should act on. Compare against the live row's prior value, not
+		// just the patch value.
+		flippedToPrivate := patch.ViewAccess != nil && *patch.ViewAccess == model.ViewAccessPrivate &&
+			live != nil && live.ViewAccess == model.ViewAccessOpen
+		if updated.ChannelId != "" && s.client != nil {
+			if chanErr := s.syncSpaceChannelMetadata(updated.Id); chanErr != nil {
+				// Deliberately not returned: the space row (the source of truth) committed, so
+				// failing the request would misreport a successful update, and retrying it would
+				// 409 on the now-stale baseline. The next successful UpdateSpace re-syncs the
+				// channel. Logged at Error so the resulting name/header divergence is visible to
+				// operators.
+				s.log.Error("UpdateSpace: failed to sync backing channel metadata; display name/header stale until the next update", "channel_id", updated.ChannelId, "space_id", updated.Id, "err", chanErr)
+			}
+		}
+		payload := map[string]any{"space_id": updated.Id}
+		if flippedToPrivate {
+			// Privatizing does not shed members: every existing member (including anyone
+			// auto-joined earlier) stays. Surface the current count so the admin is prompted to
+			// prune via RemoveSpaceMember.
+			stats, statsErr := s.client.Channel.GetChannelStats(updated.ChannelId)
+			if statsErr != nil {
+				// The update itself committed, so this only affects the prompt: the event ships
+				// without member_count rather than failing a successful write.
+				s.log.Warn("UpdateSpace: member-count lookup failed; the view_access event omits member_count", "channel_id", updated.ChannelId, "space_id", updated.Id, "err", statsErr)
+			} else {
+				payload["member_count"] = stats.MemberCount
+				s.log.Debug("space view_access flipped to private", "space_id", updated.Id, "member_count", stats.MemberCount)
+			}
+		}
+		s.publishToChannels(wsEventSpaceUpdated, payload, updated.ChannelId)
+		return updated, nil
 	}
-	s.publishToChannels(wsEventSpaceUpdated, map[string]any{"space_id": updated.Id}, updated.ChannelId)
-	return updated, nil
+
+	if space.ChannelId == "" {
+		return apply()
+	}
+	var result *model.Space
+	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
+		r, appErr := apply()
+		if appErr != nil {
+			return appErr
+		}
+		result = r
+		return nil
+	})
+	if lockErr != nil {
+		var appErr *mmmodel.AppError
+		if errors.As(lockErr, &appErr) {
+			return nil, appErr
+		}
+		return nil, storeAppError("UpdateSpace", lockErr)
+	}
+	return result, nil
 }
 
 // syncSpaceChannelMetadata projects the space's current Title and Description onto its backing
