@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import type {CreateSpaceInput, Page, Space} from 'types/docs';
+import type {CreateSpaceInput, Page, Space, SpaceMember} from 'types/docs';
 
 // The seam between the store's thunks and the Docs server REST API. The
 // API-backed source implements this over the plugin's /api/v1 routes; the
@@ -28,7 +28,11 @@ export interface DocsDataSource {
     // server rejects removing the last authorized member (409).
     removeSpaceMember(spaceId: string, userId: string): Promise<void>;
 
-    // Pages belong to a space. No page-consuming UI exists yet, so this is
-    // wired for later; the server returns page summaries (no body).
+    // Members of a space (user ids only). Backs the member count and, later,
+    // member avatars.
+    listSpaceMembers(spaceId: string): Promise<SpaceMember[]>;
+
+    // Pages in a space. The server returns page summaries (no body); the source
+    // normalizes them to Page with an empty body for the store.
     listPages(spaceId: string): Promise<Page[]>;
 }

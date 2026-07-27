@@ -9,8 +9,8 @@ import {createSpaceFormSchema} from 'validation/space_schema';
 
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
-import {createSpace} from 'store/actions';
-import {getAllSpaces, getSpace, getSpacesForCurrentTeam} from 'store/selectors';
+import {createSpace, fetchPages, fetchSpaceMembers} from 'store/actions';
+import {getAllSpaces, getPagesForSpace, getSpace, getSpaceMemberIds, getSpacesForCurrentTeam} from 'store/selectors';
 
 import type {Space, SpaceSummary, SpaceVisibility} from 'types/docs';
 
@@ -41,6 +41,28 @@ export function useRecentSpaceSummaries(): SpaceSummary[] {
             return space ? [{space, lastViewedAt}] : [];
         });
     }, [userId, teamSpaces]);
+}
+
+export type SpaceStats = {
+    pageCount: number;
+    memberCount: number;
+};
+
+// Loads and returns a space's page and member counts. Fetches on mount into the
+// store, so the page tree and member avatars can reuse the same data later. The
+// view count has no server source yet, so it isn't included.
+export function useSpaceStats(spaceId: string): SpaceStats {
+    const dispatch = useAppDispatch();
+
+    useEffect(() => {
+        dispatch(fetchPages(spaceId));
+        dispatch(fetchSpaceMembers(spaceId));
+    }, [dispatch, spaceId]);
+
+    const pages = useAppSelector((state) => getPagesForSpace(state, spaceId));
+    const memberIds = useAppSelector((state) => getSpaceMemberIds(state, spaceId));
+
+    return {pageCount: pages.length, memberCount: memberIds.length};
 }
 
 // Records that the current user viewed a space, feeding the recently-viewed

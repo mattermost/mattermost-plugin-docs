@@ -16,15 +16,21 @@ type Stat = {
     label: string;
 };
 
-// Space front-door banner: icon + title, description, and a stats row. Counts
-// (pages/members/views) aren't wired to the server yet, so they render an
-// em dash until the member/page/view APIs feed them.
-const PageHero = ({space}: {space: Space}) => {
+type Props = {
+    space: Space;
+    pageCount: number;
+    memberCount: number;
+};
+
+// Space front-door banner: icon + title, description, and a stats row. Page and
+// member counts are wired to the server; views has no source yet, so it renders
+// an em dash.
+const PageHero = ({space, pageCount, memberCount}: Props) => {
     const {formatMessage} = useIntl();
 
     const stats: Stat[] = [
-        {key: 'pages', value: undefined, label: formatMessage({id: 'docs.space.stat.pages', defaultMessage: 'Pages'})},
-        {key: 'members', value: undefined, label: formatMessage({id: 'docs.space.stat.members', defaultMessage: 'Members'})},
+        {key: 'pages', value: pageCount, label: formatMessage({id: 'docs.space.stat.pages', defaultMessage: 'Pages'})},
+        {key: 'members', value: memberCount, label: formatMessage({id: 'docs.space.stat.members', defaultMessage: 'Members'})},
         {key: 'views', value: undefined, label: formatMessage({id: 'docs.space.stat.views', defaultMessage: 'Views'})},
     ];
 

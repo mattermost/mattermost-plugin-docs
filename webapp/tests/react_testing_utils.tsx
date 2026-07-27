@@ -22,6 +22,7 @@ const EMPTY_DOCS_STATE: DocsPluginState = {
     spacesInTeam: {},
     pages: {},
     pagesInSpace: {},
+    spaceMembers: {},
 };
 
 type TestTeam = {id: string; name: string; display_name?: string};

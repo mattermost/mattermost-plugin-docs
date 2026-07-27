@@ -7,6 +7,7 @@ export const SpaceTypes = {
     RECEIVED_SPACES: manifest.id + '_received_spaces',
     CREATED_SPACE: manifest.id + '_created_space',
     DELETED_SPACE: manifest.id + '_deleted_space',
+    RECEIVED_SPACE_MEMBERS: manifest.id + '_received_space_members',
 } as const;
 
 export const PageTypes = {

@@ -22,6 +22,7 @@ describe('getSpacesInTeam', () => {
             spacesInTeam: {t1: new Set(['a', 'b', 'missing'])},
             pages: {},
             pagesInSpace: {},
+            spaceMembers: {},
         });
 
         expect(getSpacesInTeam(state, 't1')).toEqual([spaceB, spaceA]);
@@ -39,6 +40,7 @@ describe('getPagesForSpace', () => {
             spacesInTeam: {},
             pages: {p1: page1, p2: page2},
             pagesInSpace: {'space-a': new Set(['p1']), 'space-b': new Set(['p2'])},
+            spaceMembers: {},
         });
 
         expect(getPagesForSpace(state, 'space-a')).toEqual([page1]);

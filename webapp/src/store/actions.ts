@@ -45,12 +45,30 @@ export function fetchAllSpaces(): DocsThunkAction<Promise<void>> {
     };
 }
 
-// Loads a space's pages. Wired for the page tree that lands later; no UI reads
-// store pages yet, so this isn't called on bootstrap.
+// Loads a space's pages into the store (backs the page count today, the page
+// tree later). Best-effort: a failure leaves the count at its current value.
 export function fetchPages(spaceId: string): DocsThunkAction<Promise<void>> {
     return async (dispatch) => {
-        const pages = await docsDataSource.listPages(spaceId);
-        dispatch({type: PageTypes.RECEIVED_PAGES, pages});
+        try {
+            const pages = await docsDataSource.listPages(spaceId);
+            dispatch({type: PageTypes.RECEIVED_PAGES, pages});
+        } catch (error) {
+            // eslint-disable-next-line no-console
+            console.error('Docs: failed to load pages', error);
+        }
+    };
+}
+
+// Loads a space's members (user ids) into the store, backing the member count.
+export function fetchSpaceMembers(spaceId: string): DocsThunkAction<Promise<void>> {
+    return async (dispatch) => {
+        try {
+            const members = await docsDataSource.listSpaceMembers(spaceId);
+            dispatch({type: SpaceTypes.RECEIVED_SPACE_MEMBERS, spaceId, userIds: members.map((m) => m.user_id)});
+        } catch (error) {
+            // eslint-disable-next-line no-console
+            console.error('Docs: failed to load space members', error);
+        }
     };
 }
 

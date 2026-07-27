@@ -17,6 +17,7 @@ const EMPTY_PLUGIN_STATE: DocsPluginState = {
     spacesInTeam: {},
     pages: {},
     pagesInSpace: {},
+    spaceMembers: {},
 };
 
 const EMPTY_SPACES: Space[] = [];
@@ -57,6 +58,11 @@ export const getSpacesInTeamIndex = (state: GlobalState): Record<string, Set<str
 export const getPagesById = (state: GlobalState): Record<string, Page> => pluginState(state).pages;
 
 export const getPagesInSpaceIndex = (state: GlobalState): Record<string, Set<string>> => pluginState(state).pagesInSpace;
+
+const EMPTY_MEMBER_IDS: string[] = [];
+
+export const getSpaceMemberIds = (state: GlobalState, spaceId: string): string[] =>
+    pluginState(state).spaceMembers[spaceId] ?? EMPTY_MEMBER_IDS;
 
 // Spaces for an explicit team, resolved through the byId map and sorted.
 // Mirrors core's getChannelsInTeam-style read: index Set → entities → order.

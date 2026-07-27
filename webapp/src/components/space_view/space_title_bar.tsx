@@ -17,9 +17,9 @@ import type {Space} from 'types/docs';
 
 import styles from './space_title_bar.module.scss';
 
-// The controls here (favorite, space menu, details, share) are visual scaffolding
-// — wired in later passes. Member count awaits the space-members API.
-const SpaceTitleBar = ({space}: {space: Space}) => {
+// The controls here (favorite, space menu, details, share) are visual
+// scaffolding — wired in later passes.
+const SpaceTitleBar = ({space, memberCount}: {space: Space; memberCount: number}) => {
     const {formatMessage} = useIntl();
 
     const favoriteLabel = formatMessage({id: 'docs.space.favorite', defaultMessage: 'Favorite this space'});
@@ -58,9 +58,7 @@ const SpaceTitleBar = ({space}: {space: Space}) => {
                 </button>
                 <span className={styles.members}>
                     <AccountMultipleOutlineIcon size={16}/>
-
-                    {/* eslint-disable-next-line formatjs/no-literal-string-in-jsx -- em dash placeholder until the members API is wired */}
-                    <span>{'—'}</span>
+                    <span>{memberCount}</span>
                 </span>
             </div>
 

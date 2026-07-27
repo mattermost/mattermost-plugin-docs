@@ -12,6 +12,7 @@ type ReceivedSpacesAction = {spaces: Space[]};
 type CreatedSpaceAction = {space: Space};
 type DeletedSpaceAction = {spaceId: string};
 type ReceivedPagesAction = {pages: Page[]};
+type ReceivedSpaceMembersAction = {spaceId: string; userIds: string[]};
 
 // SpaceTypes'/PageTypes' values aren't string-literal types (manifest.id is
 // loaded via JSON.parse), so `action.type` can't discriminate a union by
@@ -145,6 +146,28 @@ function pagesInSpace(state: Record<string, Set<string>> = {}, action: UnknownAc
     }
 }
 
-const reducer = combineReducers({spaces, spacesInTeam, pages, pagesInSpace});
+// Space member user ids, keyed by space id. Roles/capabilities are hidden by
+// the server, so this is just membership (count today, avatars later).
+function spaceMembers(state: Record<string, string[]> = {}, action: UnknownAction): Record<string, string[]> {
+    switch (action.type) {
+    case SpaceTypes.RECEIVED_SPACE_MEMBERS: {
+        const {spaceId, userIds} = action as unknown as ReceivedSpaceMembersAction;
+        return {...state, [spaceId]: userIds};
+    }
+    case SpaceTypes.DELETED_SPACE: {
+        const {spaceId} = action as unknown as DeletedSpaceAction;
+        if (!(spaceId in state)) {
+            return state;
+        }
+        const next = {...state};
+        delete next[spaceId];
+        return next;
+    }
+    default:
+        return state;
+    }
+}
+
+const reducer = combineReducers({spaces, spacesInTeam, pages, pagesInSpace, spaceMembers});
 
 export default reducer;
