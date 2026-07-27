@@ -4,7 +4,6 @@
 package app
 
 import (
-	"errors"
 	"net/http"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -74,20 +73,11 @@ func (s *Service) readResolutionFrom(sysadmin, active bool, space *model.Space, 
 // the error first — treating the resolution alone as authoritative would misreport an outage as
 // "not authorized".
 func (s *Service) ResolveSpaceRead(where string, space *model.Space, userID string) (ReadResolution, *mmmodel.AppError) {
-	if appErr := s.requireClient(where, "space_id", spaceIDOrEmpty(space), "user_id", userID); appErr != nil {
+	active, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
+	if appErr != nil {
 		return ReadDenied, appErr
 	}
-	if space == nil {
-		return ReadDenied, existenceHidingForbidden(where)
-	}
-	if s.client.User.HasPermissionTo(userID, mmmodel.PermissionManageSystem) {
-		return ReadViaSysadmin, nil
-	}
-	active, err := s.isActiveTeamMember(space.TeamId, userID)
-	if err != nil {
-		return ReadDenied, mmmodel.NewAppError(where, "app.space.access.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
-	}
-	return s.readResolutionFrom(false, active, space, userID), nil
+	return s.readResolutionFrom(sysadmin, active, space, userID), nil
 }
 
 // requireActiveMemberGate runs the four-gate preamble shared by RequireSpacePagePermission,
@@ -337,11 +327,7 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 		return nil
 	})
 	if lockErr != nil {
-		var appErr *mmmodel.AppError
-		if errors.As(lockErr, &appErr) {
-			return false, appErr
-		}
-		return false, storeAppError("AutoJoinIfDefaultGranted", lockErr)
+		return false, lockAppError("AutoJoinIfDefaultGranted", lockErr)
 	}
 	// Published after the lock is released: the membership lock holds a dedicated connection, so a
 	// slow publish inside it would push concurrent membership mutations into a lock timeout.

@@ -12,6 +12,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/pluginapi"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
+	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
 // GetSpaceMembers returns one page of space's members plus whether more members exist beyond
@@ -152,8 +153,10 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 	var appErr *mmmodel.AppError
 	var newRoles string
 	var newSchemeAdmin bool
+	var schemeRoles *store.SchemeRoles
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
-		schemeRoles, rolesErr := s.store.GetSchemeRolesForChannel(space.ChannelId)
+		var rolesErr error
+		schemeRoles, rolesErr = s.store.GetSchemeRolesForChannel(space.ChannelId)
 		if rolesErr != nil {
 			appErr = storeAppError("SetSpaceMemberCapabilities", rolesErr)
 			return appErr
@@ -211,7 +214,10 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 		return nil, storeAppError("SetSpaceMemberCapabilities", lockErr)
 	}
 
-	defaultCaps, defErr := s.spaceDefaultCapabilities(space)
+	// The scheme roles read under the lock still describe this channel: only
+	// SetSpaceDefaultCapabilities repoints a channel's scheme, and it serializes behind the same
+	// space-keyed lock, so the default capability set is projected from them rather than re-read.
+	defaultCaps, defErr := s.defaultCapabilitiesForRoles(schemeRoles)
 	if defErr != nil {
 		return nil, storeAppError("SetSpaceMemberCapabilities", defErr)
 	}

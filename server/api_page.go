@@ -9,6 +9,7 @@ import (
 	"github.com/gorilla/mux"
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
+	"github.com/mattermost/mattermost-plugin-docs/server/app"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
@@ -28,13 +29,12 @@ const maxPageStructBodyBytes = 4 * 1024 // 4 KiB
 // writes the error response and returns ok=false on failure. Callers pass the invalid-ID
 // rejection as a pre-built AppError with a string-literal ID so the i18n extraction tool can
 // discover the message key.
-func (p *Plugin) resolveTargetSpaceRead(w http.ResponseWriter, invalidIDErr *mmmodel.AppError, targetSpaceID, userID string) (*model.Space, bool) {
+func (p *Plugin) resolveTargetSpaceRead(w http.ResponseWriter, invalidIDErr *mmmodel.AppError, targetSpaceID, userID string) (*model.Space, app.ReadResolution, bool) {
 	if !mmmodel.IsValidId(targetSpaceID) {
 		p.writeAppError(w, invalidIDErr)
-		return nil, false
+		return nil, app.ReadDenied, false
 	}
-	space, _, ok := p.requireSpaceRead(w, targetSpaceID, userID)
-	return space, ok
+	return p.requireSpaceRead(w, targetSpaceID, userID)
 }
 
 // handleCreatePage handles POST /api/v1/spaces/{space_id}/pages.
@@ -205,7 +205,7 @@ func (p *Plugin) handleMovePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleDuplicatePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	sourceSpace, _, ok := p.requireSpaceRead(w, vars["space_id"], userID)
+	sourceSpace, sourceRead, ok := p.requireSpaceRead(w, vars["space_id"], userID)
 	if !ok {
 		return
 	}
@@ -218,17 +218,17 @@ func (p *Plugin) handleDuplicatePage(w http.ResponseWriter, r *http.Request) {
 	if !p.decodeJSONBody(w, r, maxPageStructBodyBytes, &req, "handleDuplicatePage", true) {
 		return
 	}
-	// A nil targetSpace means "duplicate into the source space"; the fetched records are passed
-	// through so the service never re-reads them.
-	targetSpace := sourceSpace
+	// An omitted or same-space target duplicates into the source space; the fetched records and the
+	// read each was admitted by are passed through so neither is resolved twice.
+	targetSpace, targetRead := sourceSpace, sourceRead
 	if req.TargetSpaceId != "" && req.TargetSpaceId != vars["space_id"] {
 		var targetOK bool
-		targetSpace, targetOK = p.resolveTargetSpaceRead(w, mmmodel.NewAppError("handleDuplicatePage", "api.page.duplicate.invalid_target_space_id.app_error", nil, "", http.StatusBadRequest), req.TargetSpaceId, userID)
+		targetSpace, targetRead, targetOK = p.resolveTargetSpaceRead(w, mmmodel.NewAppError("handleDuplicatePage", "api.page.duplicate.invalid_target_space_id.app_error", nil, "", http.StatusBadRequest), req.TargetSpaceId, userID)
 		if !targetOK {
 			return
 		}
 	}
-	if !p.gatePageWrite(w, targetSpace, userID, mmmodel.PermissionCreatePage) {
+	if !p.gatePageWriteFrom(w, targetSpace, userID, mmmodel.PermissionCreatePage, targetRead) {
 		return
 	}
 
@@ -285,10 +285,10 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 	}
 	// The fetched records are passed through so the service never re-reads them; a same-space
 	// move reuses the membership gate's record instead of resolving the same space twice.
-	targetSpace := sourceSpace
+	targetSpace, targetRead := sourceSpace, sourceRead
 	if req.TargetSpaceId != vars["space_id"] {
 		var targetOK bool
-		targetSpace, targetOK = p.resolveTargetSpaceRead(w, mmmodel.NewAppError("handleMovePageToSpace", "api.page.move_to_space.invalid_target_space_id.app_error", nil, "", http.StatusBadRequest), req.TargetSpaceId, userID)
+		targetSpace, targetRead, targetOK = p.resolveTargetSpaceRead(w, mmmodel.NewAppError("handleMovePageToSpace", "api.page.move_to_space.invalid_target_space_id.app_error", nil, "", http.StatusBadRequest), req.TargetSpaceId, userID)
 		if !targetOK {
 			return
 		}
@@ -299,15 +299,10 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 	// only the target side admits a non-member write. Resolved before the target gate below, which
 	// can join the caller to the target space: a caller denied here must not be left holding a
 	// membership the rejected request created.
-	ownOnly, allowed, permErr := p.service.ResolveSpacePageOwnOrAny(sourceSpace, userID,
+	ownOnly, ok := p.resolveOwnOrAnyOrDeny(w, "handleMovePageToSpace", sourceSpace, userID,
 		"api.page.move_to_space", mmmodel.PermissionDeletePage,
 		"api.page.move_to_space.own", mmmodel.PermissionDeleteOwnPage, true, sourceRead)
-	if permErr != nil {
-		p.writeAppError(w, permErr)
-		return
-	}
-	if !allowed {
-		p.writeAppError(w, mmmodel.NewAppError("handleMovePageToSpace", "app.space.access.forbidden.app_error", nil, "", http.StatusForbidden))
+	if !ok {
 		return
 	}
 	requiredOwnerID := ""
@@ -315,7 +310,7 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 		requiredOwnerID = userID
 	}
 
-	if !p.gatePageWrite(w, targetSpace, userID, mmmodel.PermissionCreatePage) {
+	if !p.gatePageWriteFrom(w, targetSpace, userID, mmmodel.PermissionCreatePage, targetRead) {
 		return
 	}
 

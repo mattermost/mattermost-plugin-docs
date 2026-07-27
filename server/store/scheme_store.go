@@ -23,6 +23,17 @@ const spaceCustomSchemeDisplayName = "Space Custom Scheme"
 // prove a scheme is one this store created before deleting it.
 const spaceCustomSchemeNamePrefix = "docs_space_custom_"
 
+// The generated roles' DisplayName prefixes, mirroring the values core's own scheme store writes
+// (its SchemeRoleDisplayNameChannel* constants) so a space-private scheme is indistinguishable
+// from a core-created one in the admin console. They are restated here rather than imported:
+// those constants live in server/v8, which this module pins as a test-harness-only dependency
+// contributing no runtime symbols.
+const (
+	schemeRoleDisplayNameChannelUser  = "Channel User Role for Scheme"
+	schemeRoleDisplayNameChannelAdmin = "Channel Admin Role for Scheme"
+	schemeRoleDisplayNameChannelGuest = "Channel Guest Role for Scheme"
+)
+
 // SchemeRoles is the generated channel-scheme role names governing one backing channel's scheme.
 // Space capability grants must reference these generated names, not the literal
 // channel_user/channel_admin roles: on a scheme-backed channel, core rejects the literal.
@@ -125,15 +136,15 @@ func (s *Store) CreateSpaceCustomScheme(userPermissions, adminPermissions, guest
 	schemeName := spaceCustomSchemeNamePrefix + mmmodel.NewId()
 	now := mmmodel.GetMillis()
 
-	userRoleName, roleErr := s.createSchemeRole(tx, schemeID, schemeName, "Channel User Role for Scheme", userPermissions, now)
+	userRoleName, roleErr := s.createSchemeRole(tx, schemeID, schemeName, schemeRoleDisplayNameChannelUser, userPermissions, now)
 	if roleErr != nil {
 		return "", roleErr
 	}
-	adminRoleName, roleErr := s.createSchemeRole(tx, schemeID, schemeName, "Channel Admin Role for Scheme", adminPermissions, now)
+	adminRoleName, roleErr := s.createSchemeRole(tx, schemeID, schemeName, schemeRoleDisplayNameChannelAdmin, adminPermissions, now)
 	if roleErr != nil {
 		return "", roleErr
 	}
-	guestRoleName, roleErr := s.createSchemeRole(tx, schemeID, schemeName, "Channel Guest Role for Scheme", guestPermissions, now)
+	guestRoleName, roleErr := s.createSchemeRole(tx, schemeID, schemeName, schemeRoleDisplayNameChannelGuest, guestPermissions, now)
 	if roleErr != nil {
 		return "", roleErr
 	}

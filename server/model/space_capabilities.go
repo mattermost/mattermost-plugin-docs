@@ -61,13 +61,15 @@ var capabilityAtomicRole = map[string]string{
 }
 
 // atomicRoleCapability is the reverse of capabilityAtomicRole, used to parse a stored
-// ExplicitRoles string back into the granted capability set.
-var atomicRoleCapability = map[string]string{
-	mmmodel.SpacePageCreatorRoleId:    CapabilityCreatePage,
-	mmmodel.SpacePageCommenterRoleId:  CapabilityCommentPage,
-	mmmodel.SpacePageEditorRoleId:     CapabilityEditPage,
-	mmmodel.SpacePageDeleterOwnRoleId: CapabilityDeleteOwnPage,
-}
+// ExplicitRoles string back into the granted capability set. Derived from capabilityAtomicRole so
+// the two cannot drift.
+var atomicRoleCapability = func() map[string]string {
+	m := make(map[string]string, len(capabilityAtomicRole))
+	for capability, roleName := range capabilityAtomicRole {
+		m[roleName] = capability
+	}
+	return m
+}()
 
 // stripReadPage projects a core permission slice onto its wire id strings with the implicit
 // read_page baseline removed, so a canonical core permission set can be single-sourced into the
@@ -178,28 +180,18 @@ func CapabilitiesFromMember(explicitRoles string, schemeAdmin, schemeGuest bool,
 	grantedList := NormalizeCapabilitySet(slices.Collect(maps.Keys(granted)))
 
 	effective := map[string]bool{CapabilityReadPage: true}
-	switch {
-	case schemeGuest:
-		for _, c := range grantedList {
-			effective[c] = true
-		}
-	case schemeAdmin:
-		for _, c := range spaceAdminEffectiveCapabilities {
-			effective[c] = true
+	if !schemeGuest {
+		if schemeAdmin {
+			for _, c := range spaceAdminEffectiveCapabilities {
+				effective[c] = true
+			}
 		}
 		for _, c := range defaultCaps {
 			effective[c] = true
 		}
-		for _, c := range grantedList {
-			effective[c] = true
-		}
-	default:
-		for _, c := range defaultCaps {
-			effective[c] = true
-		}
-		for _, c := range grantedList {
-			effective[c] = true
-		}
+	}
+	for _, c := range grantedList {
+		effective[c] = true
 	}
 
 	return MemberCapabilities{

@@ -142,14 +142,9 @@ func seedSpace(t *testing.T, s *store.Store, db *sql.DB, channelID string) *mode
 	return seedSpaceInTeam(t, s, db, channelID, mmmodel.NewId())
 }
 
-// seedSpaceInTeam mirrors testutil.MustCreateSpace's (channelID, teamID) parameter order. db
-// seeds a matching Channels stand-in row pointed at the contribute preset scheme, mirroring
-// production CreateSpace's default so scheme-resolving app/handler paths work in tests.
 func seedSpaceInTeam(t *testing.T, s *store.Store, db *sql.DB, channelID, teamID string) *model.Space {
 	t.Helper()
-	space := testutil.MustCreateSpace(t, s, channelID, teamID)
-	testutil.MustSeedChannelScheme(t, db, channelID, mmmodel.SchemeNameSpaceContribute)
-	return space
+	return testutil.MustCreateSpaceWithScheme(t, s, db, channelID, teamID)
 }
 
 func seedPage(t *testing.T, s *store.Store, spaceID, channelID, parentID string) *model.Page {

@@ -20,14 +20,9 @@ import (
 )
 
 // seedSpaceForTeam creates a space with a caller-chosen team id (mustCreateSpace randomizes it).
-// db seeds a matching Channels stand-in row pointed at the contribute preset scheme, mirroring
-// production CreateSpace's default so scheme-resolving app methods (spaceDefaultCapabilities,
-// GetSchemeRolesForChannel) work against the space's channel in tests.
 func seedSpaceForTeam(t *testing.T, s *store.Store, db *sql.DB, channelID, teamID string) *model.Space {
 	t.Helper()
-	space := testutil.MustCreateSpace(t, s, channelID, teamID)
-	testutil.MustSeedChannelScheme(t, db, channelID, mmmodel.SchemeNameSpaceContribute)
-	return space
+	return testutil.MustCreateSpaceWithScheme(t, s, db, channelID, teamID)
 }
 
 func pageIDs(pages []*model.PageSummary) map[string]bool {

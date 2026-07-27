@@ -209,6 +209,16 @@ func MustCreateSpace(t *testing.T, s *store.Store, channelID, teamID string) *mo
 	return space
 }
 
+// MustCreateSpaceWithScheme is MustCreateSpace plus a matching Channels stand-in row pointed at
+// the contribute preset scheme, mirroring production CreateSpace's default so scheme-resolving
+// paths (spaceDefaultCapabilities, GetSchemeRolesForChannel) work against the space's channel.
+func MustCreateSpaceWithScheme(t *testing.T, s *store.Store, db *sql.DB, channelID, teamID string) *model.Space {
+	t.Helper()
+	space := MustCreateSpace(t, s, channelID, teamID)
+	MustSeedChannelScheme(t, db, channelID, mmmodel.SchemeNameSpaceContribute)
+	return space
+}
+
 // MustCreatePage saves the standard page fixture (NewPage) through the store, failing the test
 // on error. The depth cap is bypassed (UncappedMaxDepth): some callers build chains deeper than
 // the app-layer cap to exercise store.MaxPageHierarchyDepth instead.

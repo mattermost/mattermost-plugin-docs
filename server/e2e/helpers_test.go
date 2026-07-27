@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -165,11 +166,9 @@ func editPageReq(baseEditAt int64, searchText string) map[string]any {
 // appErrorID extracts the AppError id from a plugin JSON error body, for asserting on the specific
 // error rather than just the status code.
 func appErrorID(body []byte) string {
-	var er struct {
-		Id string `json:"id"`
-	}
-	if err := json.Unmarshal(body, &er); err != nil {
+	var appErr *mmmodel.AppError
+	if !errors.As(mmmodel.AppErrorFromJSON(bytes.NewReader(body)), &appErr) {
 		return ""
 	}
-	return er.Id
+	return appErr.Id
 }

@@ -187,6 +187,12 @@ func (p *Plugin) gatePageWrite(w http.ResponseWriter, space *model.Space, userID
 	if !ok {
 		return false
 	}
+	return p.gatePageWriteFrom(w, space, userID, perm, resolution)
+}
+
+// gatePageWriteFrom is gatePageWrite for a caller that has already resolved the read gate for the
+// same space and user, so that resolution is not derived a second time.
+func (p *Plugin) gatePageWriteFrom(w http.ResponseWriter, space *model.Space, userID string, perm *mmmodel.Permission, resolution app.ReadResolution) bool {
 	if _, appErr := p.service.AutoJoinIfDefaultGranted(space, userID, resolution, perm, nil); appErr != nil {
 		p.writeAppError(w, appErr)
 		return false
@@ -207,16 +213,27 @@ func (p *Plugin) gateDeleteOwnOrAny(w http.ResponseWriter, space *model.Space, u
 		p.writeAppError(w, appErr)
 		return false
 	}
-	_, ok, permErr := p.service.ResolveSpacePageOwnOrAny(space, userID, "api.page.delete", mmmodel.PermissionDeletePage, "api.page.delete_own", mmmodel.PermissionDeleteOwnPage, ownerID == userID, resolution)
+	_, ok := p.resolveOwnOrAnyOrDeny(w, "gateDeleteOwnOrAny", space, userID,
+		"api.page.delete", mmmodel.PermissionDeletePage,
+		"api.page.delete_own", mmmodel.PermissionDeleteOwnPage, ownerID == userID, resolution)
+	return ok
+}
+
+// resolveOwnOrAnyOrDeny resolves a two-tier own/any permission pair against an already-resolved
+// read, mapping a denial to the shared existence-hiding 403 under where. It reports whether the
+// caller qualified only via ownPerm, which a caller that must push ownership enforcement further
+// down needs. Writes the error response and returns ok=false on failure.
+func (p *Plugin) resolveOwnOrAnyOrDeny(w http.ResponseWriter, where string, space *model.Space, userID, anyWhere string, anyPerm *mmmodel.Permission, ownWhere string, ownPerm *mmmodel.Permission, ownerMatches bool, resolution app.ReadResolution) (ownOnly, ok bool) {
+	ownOnly, allowed, permErr := p.service.ResolveSpacePageOwnOrAny(space, userID, anyWhere, anyPerm, ownWhere, ownPerm, ownerMatches, resolution)
 	if permErr != nil {
 		p.writeAppError(w, permErr)
-		return false
+		return false, false
 	}
-	if !ok {
-		p.writeAppError(w, mmmodel.NewAppError("gateDeleteOwnOrAny", "app.space.access.forbidden.app_error", nil, "", http.StatusForbidden))
-		return false
+	if !allowed {
+		p.writeAppError(w, mmmodel.NewAppError(where, "app.space.access.forbidden.app_error", nil, "", http.StatusForbidden))
+		return false, false
 	}
-	return true
+	return ownOnly, true
 }
 
 // resolveSpaceReadOrDeny resolves the read gate that precedes every page read and page-write gate,

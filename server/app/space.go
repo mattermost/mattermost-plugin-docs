@@ -499,11 +499,7 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, caps []string,
 		return nil
 	})
 	if lockErr != nil {
-		var appErr *mmmodel.AppError
-		if errors.As(lockErr, &appErr) {
-			return nil, appErr
-		}
-		return nil, storeAppError("SetSpaceDefaultCapabilities", lockErr)
+		return nil, lockAppError("SetSpaceDefaultCapabilities", lockErr)
 	}
 
 	fresh, getErr := s.GetSpace(space.Id)
@@ -688,11 +684,7 @@ func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expec
 		return nil
 	})
 	if lockErr != nil {
-		var appErr *mmmodel.AppError
-		if errors.As(lockErr, &appErr) {
-			return nil, appErr
-		}
-		return nil, storeAppError("UpdateSpace", lockErr)
+		return nil, lockAppError("UpdateSpace", lockErr)
 	}
 	return result, nil
 }
