@@ -84,6 +84,7 @@ func TestImportJob_IsValid(t *testing.T) {
 		"long space title":  func(j *ImportJob) { j.ConfirmedSpaceTitle = strings.Repeat("x", ImportSpaceTitleMaxRunes+1) },
 		"long source name":  func(j *ImportJob) { j.SelectedSourceDisplayName = strings.Repeat("x", ImportDisplayNameMaxRunes+1) },
 		"long error code":   func(j *ImportJob) { j.ErrorCode = strings.Repeat("x", ImportErrorCodeMaxRunes+1) },
+		"oversize confirm":  func(j *ImportJob) { j.Confirmation = make(ImportConfirmation, ImportConfirmationMaxBytes+1) },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -146,6 +147,49 @@ func TestImportIssueRecord_IsValid(t *testing.T) {
 				t.Errorf("expected rejection for %q", name)
 			}
 		})
+	}
+}
+
+func TestImportConfirmation_ValueAndScan(t *testing.T) {
+	// Empty confirmation persists as an empty JSON object (matches the column's NOT NULL DEFAULT).
+	empty := ImportConfirmation(nil)
+	v, err := empty.Value()
+	if err != nil {
+		t.Fatalf("empty Value: %v", err)
+	}
+	if v != "{}" {
+		t.Errorf("empty Value = %v, want {}", v)
+	}
+
+	// A payload larger than 1 MiB (which mmmodel.StringInterface's Value() would reject) must be
+	// accepted, since a valid confirmation with thousands of conflict descriptors exceeds 1 MiB.
+	oneAndHalfMiB := ImportConfirmation(`{"overwrite_conflicts":[` + strings.Repeat("0", 1_500_000) + `]}`)
+	if _, err := oneAndHalfMiB.Value(); err != nil {
+		t.Fatalf("1.5 MiB confirmation should persist, got %v", err)
+	}
+	// Confirm StringInterface would have rejected the same size, i.e. our new type is what unblocks it.
+	big := make(mmmodel.StringInterface)
+	big["blob"] = strings.Repeat("x", 1_500_000)
+	if _, siErr := big.Value(); siErr == nil {
+		t.Errorf("expected StringInterface to reject a >1 MiB payload (sanity check on the motivation)")
+	}
+
+	// Over the deliberate cap is rejected as a backstop.
+	over := ImportConfirmation(strings.Repeat("x", ImportConfirmationMaxBytes+1))
+	if _, err := over.Value(); err == nil {
+		t.Errorf("expected rejection above ImportConfirmationMaxBytes")
+	}
+
+	// Round-trips through Scan for both []byte and string sources.
+	var c ImportConfirmation
+	if err := c.Scan([]byte(`{"a":1}`)); err != nil || string(c) != `{"a":1}` {
+		t.Errorf("Scan([]byte) = %q, %v", string(c), err)
+	}
+	if err := c.Scan(`{"b":2}`); err != nil || string(c) != `{"b":2}` {
+		t.Errorf("Scan(string) = %q, %v", string(c), err)
+	}
+	if err := c.Scan(nil); err != nil || c != nil {
+		t.Errorf("Scan(nil) = %q, %v", string(c), err)
 	}
 }
 

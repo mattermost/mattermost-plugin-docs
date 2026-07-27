@@ -8,6 +8,8 @@
 // in isolation; the app/store layers orchestrate it.
 package importer
 
+import "strings"
+
 // ContractVersion is the only JSONL contract version this importer accepts.
 const ContractVersion = 2
 
@@ -142,4 +144,39 @@ func derefProps(p *map[string]any) map[string]any {
 		return nil
 	}
 	return *p
+}
+
+// stripNUL removes NUL (U+0000) bytes from s. PostgreSQL cannot store a NUL in a TEXT/VARCHAR value
+// and rejects the escaped-NUL code point inside a JSONB string, so any NUL in producer content
+// would fail the staging insert with an opaque DB error even though the bundle inspected cleanly.
+// Dropping it during inspection keeps an otherwise valid bundle importable — mirroring how
+// mmmodel.SanitizeUnicode silently drops other disallowed runes — and, because it runs before
+// hashing, keeps the source hash consistent with the value actually stored.
+func stripNUL(s string) string {
+	if !strings.ContainsRune(s, 0) {
+		return s
+	}
+	return strings.ReplaceAll(s, "\x00", "")
+}
+
+// stripNULFromValue recursively removes NUL bytes from every string in a decoded JSON value
+// (strings, array elements, and nested object values), so a NUL cannot survive inside a
+// JSONB-persisted source-props map. It mutates maps/slices in place and returns v for convenience.
+func stripNULFromValue(v any) any {
+	switch t := v.(type) {
+	case string:
+		return stripNUL(t)
+	case []any:
+		for i := range t {
+			t[i] = stripNULFromValue(t[i])
+		}
+		return t
+	case map[string]any:
+		for k, val := range t {
+			t[k] = stripNULFromValue(val)
+		}
+		return t
+	default:
+		return v
+	}
 }
