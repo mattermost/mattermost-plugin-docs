@@ -5,9 +5,13 @@ package importer
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"unicode/utf8"
+
+	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
@@ -114,6 +118,7 @@ const (
 	InspectErrSpaceKeyMissing      = "space_key_missing"
 	InspectErrCommentMissingPageID = "comment_missing_page_id"
 	InspectErrAttachmentPath       = "attachment_invalid_path"
+	InspectErrCountMismatch        = "manifest_count_mismatch"
 	InspectErrHash                 = "hash_failed"
 )
 
@@ -131,7 +136,6 @@ const (
 	IssueAttachmentChecksumNotVerified = "attachment_checksum_not_verified"
 	IssueSourceCreateAtInvalid         = "source_create_at_invalid"
 	IssueSourceUpdateAtInvalid         = "source_update_at_invalid"
-	IssueManifestCountMismatch         = "manifest_count_mismatch"
 	IssuePlaceholderInText             = "placeholder_in_text_not_rewritten"
 	// IssueAttachmentsNotImported flags a page that carries attachment records, none of which are
 	// imported in this release. This is the plan's partial-scope code (section 20.2), distinct from
@@ -314,7 +318,9 @@ func Inspect(contents *ArchiveContents, opts InspectOptions) (*InspectionResult,
 		return nil, err
 	}
 
-	reconcileCounts(manifest, res)
+	if err := reconcileCounts(manifest, res); err != nil {
+		return nil, err
+	}
 	summarizeRestricted(manifest, res)
 
 	return res, nil
@@ -327,9 +333,10 @@ func parseManifest(b []byte) (*Manifest, error) {
 	if err := dec.Decode(&m); err != nil {
 		return nil, inspectErr(InspectErrManifestInvalid, "manifest is not valid JSON: %v", err)
 	}
-	// Reject trailing data after the manifest object: a decoder stops at the first value, so without
-	// this a second concatenated object (or garbage) would pass silently.
-	if dec.More() {
+	// Reject trailing data after the manifest object. json.Decoder.More() is not a trailing-data
+	// check — it returns false before a closing "]"/"}" delimiter, so "{...}]" would pass. Decoding
+	// a second value and requiring io.EOF rejects any trailing token while tolerating whitespace.
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return nil, inspectErr(InspectErrManifestInvalid, "manifest has trailing data after the JSON object")
 	}
 	if m.Version != ManifestVersion {
@@ -526,7 +533,11 @@ func normalizePage(
 		return nil, inspectErr(InspectErrDuplicatePageID, "line %d: duplicate page external id %q", lineNo, externalID)
 	}
 
-	title := strings.TrimSpace(stringOrEmpty(page.Title))
+	// Normalize the title exactly as Page.PreSave does (SanitizeUnicode then trim). Import uses a
+	// dedicated store path that bypasses PreSave, so without this the stored title could carry
+	// unsafe Unicode controls, and — more subtly — the incoming source hash would be computed on a
+	// value that never matches the applied hash of the normalized title, causing spurious conflicts.
+	title := strings.TrimSpace(mmmodel.SanitizeUnicode(stringOrEmpty(page.Title)))
 	if title == "" {
 		return nil, inspectErr(InspectErrPageMissingTitle, "line %d: page %q is missing a title", lineNo, externalID)
 	}
@@ -718,21 +729,25 @@ func validateAttachmentPath(p, externalID string, lineNo int) error {
 	return nil
 }
 
-// reconcileCounts compares parsed counts against the manifest and warns on any mismatch.
-func reconcileCounts(manifest *Manifest, res *InspectionResult) {
-	check := func(name string, parsed, declared int) {
+// reconcileCounts rejects the bundle when a parsed entity count disagrees with the manifest. The
+// JSONL checksum is already verified, and the producer writes exactly one page/comment line per
+// counted entity (and one attachment count per emitted attachment), so for any well-formed bundle
+// the manifest counts equal the parsed counts exactly. A mismatch therefore signals a corrupt or
+// internally inconsistent producer bundle, which must be rejected rather than imported partially.
+func reconcileCounts(manifest *Manifest, res *InspectionResult) error {
+	check := func(name string, parsed, declared int) error {
 		if declared != parsed {
-			res.Issues = append(res.Issues, InspectionIssue{
-				Severity: SeverityWarning, Code: IssueManifestCountMismatch,
-				Message:     fmt.Sprintf("manifest declares %d %s but %d were parsed", declared, name, parsed),
-				Remediation: "The parsed counts are authoritative; the manifest may be stale.",
-				Details:     map[string]any{"entity": name, "declared": declared, "parsed": parsed},
-			})
+			return inspectErr(InspectErrCountMismatch, "manifest declares %d %s but %d were parsed", declared, name, parsed)
 		}
+		return nil
 	}
-	check("pages", len(res.Pages), manifest.Counts.Pages)
-	check("comments", res.CommentCount, manifest.Counts.Comments)
-	check("attachments", res.AttachmentCount, manifest.Counts.Attachments)
+	if err := check("pages", len(res.Pages), manifest.Counts.Pages); err != nil {
+		return err
+	}
+	if err := check("comments", res.CommentCount, manifest.Counts.Comments); err != nil {
+		return err
+	}
+	return check("attachments", res.AttachmentCount, manifest.Counts.Attachments)
 }
 
 // summarizeRestricted intersects the manifest restricted list with emitted (staged) page IDs.

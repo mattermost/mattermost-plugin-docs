@@ -6,7 +6,9 @@ package importer
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 
@@ -75,8 +77,11 @@ func CanonicalizeAndExtractSearchText(body string) (canonicalBody string, search
 	if decErr := dec.Decode(&root); decErr != nil {
 		return "", "", nil, tiptapErr(TipTapErrInvalidJSON, "content is not valid JSON: %v", decErr)
 	}
-	// Reject trailing data after the first JSON value.
-	if dec.More() {
+	// Reject trailing data after the first JSON value. json.Decoder.More() cannot be used here: it
+	// returns false before a closing "]"/"}" delimiter, so "{...}]" would slip through. Decoding a
+	// second value and requiring io.EOF rejects any trailing token while still tolerating trailing
+	// whitespace.
+	if decErr := dec.Decode(&struct{}{}); !errors.Is(decErr, io.EOF) {
 		return "", "", nil, tiptapErr(TipTapErrInvalidJSON, "content has trailing data after the root JSON value")
 	}
 

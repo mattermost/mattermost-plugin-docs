@@ -8,9 +8,12 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"io/fs"
 	"strconv"
 	"strings"
 	"testing"
+
+	mmmodel "github.com/mattermost/mattermost/server/public/model"
 )
 
 // nopWriteCloser adapts an io.Writer to io.WriteCloser for a passthrough zip compressor in tests.
@@ -262,15 +265,14 @@ func TestInspect_CountsAndAttachments(t *testing.T) {
 }
 
 func TestInspect_ManifestCountMismatch(t *testing.T) {
-	res, err := newBundle(
+	// A checksum-valid JSONL with one page but a manifest declaring five is a corrupt/inconsistent
+	// producer bundle and must be rejected, not merely warned about.
+	_, err := newBundle(
 		joinLines(versionLine(), spaceLine(), pageLine(t, "100", "", "H", docString("x")), resolveLine()),
 		baseManifest(5, 0, 0), // declares 5 pages, but only 1 parsed
 	).inspect(t, InspectOptions{})
-	if err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if !hasIssue(res, IssueManifestCountMismatch) {
-		t.Errorf("expected manifest_count_mismatch issue")
+	if got := inspectErrCode(err); got != InspectErrCountMismatch {
+		t.Fatalf("code = %q, want %q", got, InspectErrCountMismatch)
 	}
 }
 
@@ -358,7 +360,9 @@ func TestInspect_ManifestTrailingJSON(t *testing.T) {
 	b := validBundle(t)
 	// Force a manifest body with trailing data after the object. The builder marshals the manifest,
 	// so instead build the archive manually via a helper that appends trailing bytes.
-	raw := b.bytesZipWithManifestSuffix(t, " {}")
+	// A trailing "]" after the manifest object is the case json.Decoder.More() misses (it returns
+	// false before a closing delimiter); the io.EOF check must still reject it.
+	raw := b.bytesZipWithManifestSuffix(t, "]")
 	contents, err := InspectArchive(bytes.NewReader(raw), int64(len(raw)))
 	if err != nil {
 		t.Fatalf("archive inspect failed: %v", err)
@@ -435,6 +439,42 @@ func TestInspect_ManifestWarningsCapped(t *testing.T) {
 	}
 	if !sawSuppressionNote {
 		t.Errorf("expected an aggregate suppression issue when warnings exceed the cap")
+	}
+}
+
+func TestInspect_TitleSanitizedLikePreSave(t *testing.T) {
+	// U+202E (a BIDI control) is stripped by mmmodel.SanitizeUnicode, matching Page.PreSave. The
+	// staged title must be sanitized, and the incoming source hash computed on the sanitized value.
+	// Build the RIGHT-TO-LEFT OVERRIDE (U+202E) from its code point so no literal BIDI control sits
+	// in this source file (which would trip bidichk/gosec).
+	rlo := string(rune(0x202e))
+	rawTitle := "Hi" + rlo + "There"
+	page := `{"type":"page","page":{"space_import_source_id":"DOCS","user":"j","title":` +
+		mustQuote(rawTitle) + `,"content":` + mustQuote(docString("x")) + `,"props":{"import_source_id":"100"}}}`
+	jsonl := joinLines(versionLine(), spaceLine(), page, resolveLine())
+	res, err := newBundle(jsonl, baseManifest(1, 0, 0)).inspect(t, InspectOptions{})
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	want := mmmodel.SanitizeUnicode(rawTitle)
+	if res.Pages[0].Title != want {
+		t.Fatalf("staged title = %q, want sanitized %q", res.Pages[0].Title, want)
+	}
+	if strings.Contains(res.Pages[0].Title, rlo) {
+		t.Errorf("staged title still contains the stripped control rune")
+	}
+	// The hash must be built on the sanitized title, so it equals a recompute using that title.
+	wantHash, herr := HashSourceState(SourceStateHashInput{
+		Title:          want,
+		CanonicalBody:  res.Pages[0].CanonicalBody,
+		AuthorProposal: "j",
+		SourceProps:    map[string]any{},
+	})
+	if herr != nil {
+		t.Fatalf("hash: %v", herr)
+	}
+	if res.Pages[0].IncomingSourceHash != wantHash {
+		t.Errorf("incoming hash not based on sanitized title")
 	}
 }
 
@@ -590,6 +630,30 @@ func TestInspectArchive_DataEntryUnsupportedMethod(t *testing.T) {
 	_, err = InspectArchive(bytes.NewReader(raw), int64(len(raw)))
 	if got := inspectErrCode(err); got != ArchiveErrUnsupportedMethod {
 		t.Fatalf("code = %q, want %q", got, ArchiveErrUnsupportedMethod)
+	}
+}
+
+func TestInspectArchive_SymlinkDirEntryRejected(t *testing.T) {
+	// A symlink whose name ends in "/" must not slip past the file checks by looking like a
+	// directory.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, n := range []string{entryManifest, entryJSONL} {
+		w, _ := zw.Create(n)
+		_, _ = w.Write([]byte("x"))
+	}
+	hdr := &zip.FileHeader{Name: "data/", Method: zip.Store}
+	hdr.SetMode(fs.ModeSymlink | 0o777)
+	hw, err := zw.CreateHeader(hdr)
+	if err != nil {
+		t.Fatalf("create header: %v", err)
+	}
+	_, _ = hw.Write([]byte("/etc"))
+	_ = zw.Close()
+	raw := buf.Bytes()
+	_, err = InspectArchive(bytes.NewReader(raw), int64(len(raw)))
+	if got := inspectErrCode(err); got != ArchiveErrUnsafeEntry {
+		t.Fatalf("code = %q, want %q", got, ArchiveErrUnsafeEntry)
 	}
 }
 
