@@ -14,6 +14,10 @@ import (
 
 const maxSpaceBodyBytes = 1 << 20 // 1 MiB
 
+// maxCapabilitiesBodyBytes caps the capability-set request bodies, which carry only tokens from a
+// fixed five-value vocabulary — no content fields.
+const maxCapabilitiesBodyBytes = 4 * 1024 // 4 KiB
+
 // handleGetTeamSpaces handles GET /api/v1/teams/{team_id}/spaces.
 func (p *Plugin) handleGetTeamSpaces(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
@@ -34,9 +38,11 @@ func (p *Plugin) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 	teamID := mux.Vars(r)["team_id"]
 
 	var req struct {
-		Title       string `json:"title"`
-		Description string `json:"description,omitempty"`
-		Icon        string `json:"icon,omitempty"`
+		Title               string    `json:"title"`
+		Description         string    `json:"description,omitempty"`
+		Icon                string    `json:"icon,omitempty"`
+		DefaultCapabilities *[]string `json:"default_capabilities,omitempty"`
+		ViewAccess          *string   `json:"view_access,omitempty"`
 	}
 	if !p.decodeJSONBody(w, r, maxSpaceBodyBytes, &req, "handleCreateSpace", false) {
 		return
@@ -51,7 +57,7 @@ func (p *Plugin) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 		Description: req.Description,
 		Icon:        req.Icon,
 	}
-	created, appErr := p.service.CreateSpace(space, userID)
+	created, appErr := p.service.CreateSpace(space, userID, req.DefaultCapabilities, req.ViewAccess)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return
@@ -59,25 +65,35 @@ func (p *Plugin) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, created)
 }
 
-// handleGetSpace handles GET /api/v1/spaces/{space_id}.
+// handleGetSpace handles GET /api/v1/spaces/{space_id}, returning the SpaceWithAccess wrapper
+// carrying the space's default capability set and the caller's own effective capabilities.
 func (p *Plugin) handleGetSpace(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
-	space, ok := p.requireSpaceMembership(w, spaceID, userID, false)
+	// BuildSpaceWithAccess resolves the read gate itself and returns the same existence-hiding 403
+	// on a denial, so it is the gate here rather than a second resolution behind requireSpaceRead.
+	space, ok := p.fetchSpaceForGate(w, spaceID, false)
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, space)
+	wrapper, appErr := p.service.BuildSpaceWithAccess(space, userID)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, wrapper)
 }
 
 // handleUpdateSpace handles PATCH /api/v1/spaces/{space_id}. Only the supplied mutable fields
-// (title, description, icon, props) are applied onto the existing space; a supplied empty string
-// clears the field. The optimistic-lock baseline (expected_update_at) is required unless force
-// is set.
+// (title, description, icon, props, view_access) are applied onto the existing space; a supplied
+// empty string clears a string field. The optimistic-lock baseline (expected_update_at) is
+// required unless force is set. requireSpaceManageGate is the route floor; a ViewAccess change
+// that requires the stricter admin gate is enforced inside UpdateSpace itself, against the live
+// row, under the space's membership advisory lock.
 func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
-	space, ok := p.requireSpaceMembership(w, spaceID, userID, false)
+	space, ok := p.requireSpaceManageGate(w, spaceID, userID)
 	if !ok {
 		return
 	}
@@ -87,14 +103,15 @@ func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 		Description      *string                  `json:"description"`
 		Icon             *string                  `json:"icon"`
 		Props            *mmmodel.StringInterface `json:"props"`
+		ViewAccess       *string                  `json:"view_access"`
 		ExpectedUpdateAt *int64                   `json:"expected_update_at"`
 		Force            bool                     `json:"force"`
 	}
 	if !p.decodeJSONBody(w, r, maxSpaceBodyBytes, &req, "handleUpdateSpace", false) {
 		return
 	}
-	patch := &model.SpacePatch{Title: req.Title, Description: req.Description, Icon: req.Icon, Props: req.Props}
-	updated, appErr := p.service.UpdateSpace(space, patch, req.ExpectedUpdateAt, req.Force)
+	patch := &model.SpacePatch{Title: req.Title, Description: req.Description, Icon: req.Icon, Props: req.Props, ViewAccess: req.ViewAccess}
+	updated, appErr := p.service.UpdateSpace(space, patch, req.ExpectedUpdateAt, req.Force, userID)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return
@@ -106,7 +123,7 @@ func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
-	space, ok := p.requireSpaceMembership(w, spaceID, userID, false)
+	space, ok := p.requireSpaceDeleteGate(w, spaceID, userID, false)
 	if !ok {
 		return
 	}
@@ -122,7 +139,7 @@ func (p *Plugin) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleRestoreSpace(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
-	if _, ok := p.requireSpaceMembership(w, spaceID, userID, true); !ok {
+	if _, ok := p.requireSpaceDeleteGate(w, spaceID, userID, true); !ok {
 		return
 	}
 	restored, appErr := p.service.RestoreSpace(spaceID)
@@ -137,7 +154,7 @@ func (p *Plugin) handleRestoreSpace(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleGetSpacePages(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
-	space, ok := p.requireSpaceMembership(w, spaceID, userID, false)
+	space, ok := p.requireSpacePagePerm(w, spaceID, userID, mmmodel.PermissionReadPage)
 	if !ok {
 		return
 	}
@@ -154,7 +171,7 @@ func (p *Plugin) handleGetSpacePages(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleListSpaceMembers(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
-	space, ok := p.requireSpaceMembership(w, spaceID, userID, false)
+	space, ok := p.requireSpaceManageGate(w, spaceID, userID)
 	if !ok {
 		return
 	}
@@ -167,19 +184,27 @@ func (p *Plugin) handleListSpaceMembers(w http.ResponseWriter, r *http.Request) 
 	writePaginatedJSON(w, members, page, perPage, hasMore)
 }
 
-// handleAddSpaceMember handles POST /api/v1/spaces/{space_id}/members. Any current space member
-// may add another user to the space.
+// handleAddSpaceMember handles POST /api/v1/spaces/{space_id}/members. Adds the target at the
+// space default only; granted_capabilities/capabilities in the body are rejected (400) rather
+// than silently dropped, since a caller believing they restricted a new member's capabilities
+// would otherwise be misled.
 func (p *Plugin) handleAddSpaceMember(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
-	space, ok := p.requireSpaceMembership(w, spaceID, userID, false)
+	space, ok := p.requireSpaceManageGate(w, spaceID, userID)
 	if !ok {
 		return
 	}
 	var req struct {
-		UserID string `json:"user_id"`
+		UserID              string    `json:"user_id"`
+		GrantedCapabilities *[]string `json:"granted_capabilities"`
+		Capabilities        *[]string `json:"capabilities"`
 	}
 	if !p.decodeJSONBody(w, r, maxSpaceBodyBytes, &req, "handleAddSpaceMember", false) {
+		return
+	}
+	if req.GrantedCapabilities != nil || req.Capabilities != nil {
+		p.writeAppError(w, mmmodel.NewAppError("handleAddSpaceMember", "api.space.add_member.capabilities_not_allowed.app_error", nil, "", http.StatusBadRequest))
 		return
 	}
 	member, appErr := p.service.AddSpaceMember(space, req.UserID)
@@ -190,18 +215,72 @@ func (p *Plugin) handleAddSpaceMember(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, member)
 }
 
-// handleRemoveSpaceMember handles DELETE /api/v1/spaces/{space_id}/members/{user_id}. Any current
-// space member may remove another user from the space, except the last remaining member (409).
+// handleSetSpaceMemberCapabilities handles PATCH /api/v1/spaces/{space_id}/members/{user_id}/capabilities.
+func (p *Plugin) handleSetSpaceMemberCapabilities(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromRequest(r)
+	vars := mux.Vars(r)
+	spaceID := vars["space_id"]
+	targetUserID := vars["user_id"]
+	space, ok := p.requireSpaceManageGate(w, spaceID, userID)
+	if !ok {
+		return
+	}
+	var req struct {
+		GrantedCapabilities []string `json:"granted_capabilities"`
+	}
+	if !p.decodeJSONBody(w, r, maxCapabilitiesBodyBytes, &req, "handleSetSpaceMemberCapabilities", false) {
+		return
+	}
+	member, appErr := p.service.SetSpaceMemberCapabilities(space, targetUserID, req.GrantedCapabilities, userID)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, member)
+}
+
+// handleSetSpaceDefaultCapabilities handles PATCH /api/v1/spaces/{space_id}/default-capabilities.
+func (p *Plugin) handleSetSpaceDefaultCapabilities(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromRequest(r)
+	spaceID := mux.Vars(r)["space_id"]
+	space, ok := p.requireSpaceAdminGate(w, spaceID, userID)
+	if !ok {
+		return
+	}
+	var req struct {
+		DefaultCapabilities []string `json:"default_capabilities"`
+	}
+	if !p.decodeJSONBody(w, r, maxCapabilitiesBodyBytes, &req, "handleSetSpaceDefaultCapabilities", false) {
+		return
+	}
+	updated, appErr := p.service.SetSpaceDefaultCapabilities(space, req.DefaultCapabilities, userID)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// handleRemoveSpaceMember handles DELETE /api/v1/spaces/{space_id}/members/{user_id}. Self-removal
+// is gated on the read resolver alone (any member may leave); removing another user requires
+// requireSpaceManage, with the escalation/last-admin guards enforced inside the service.
 func (p *Plugin) handleRemoveSpaceMember(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	vars := mux.Vars(r)
 	spaceID := vars["space_id"]
 	targetUserID := vars["user_id"]
-	space, ok := p.requireSpaceMembership(w, spaceID, userID, false)
+
+	var space *model.Space
+	var ok bool
+	if targetUserID == userID {
+		space, _, ok = p.requireSpaceRead(w, spaceID, userID)
+	} else {
+		space, ok = p.requireSpaceManageGate(w, spaceID, userID)
+	}
 	if !ok {
 		return
 	}
-	if appErr := p.service.RemoveSpaceMember(space, targetUserID); appErr != nil {
+	if appErr := p.service.RemoveSpaceMember(space, targetUserID, userID); appErr != nil {
 		p.writeAppError(w, appErr)
 		return
 	}

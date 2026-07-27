@@ -5,9 +5,9 @@
 // router) over an isolated Postgres schema and drive handlers via httptest. CreateSpace needs a
 // pluginapi client, so that path uses a plugintest.API mock; the rest seed via the store directly.
 //
-// Every space- and page-scoped handler enforces backing-channel membership (CheckSpaceMembership),
-// returning 403 Forbidden for non-members. Per-page role ACLs (author vs. editor) are not yet
-// implemented and are deferred to a follow-up.
+// Every space- and page-scoped handler enforces the capability-based RBAC gates in
+// server/app/permissions.go, returning 403 Forbidden for a caller the read resolver denies.
+// Per-page role ACLs (author vs. editor) are not yet implemented and are deferred to a follow-up.
 package main
 
 import (
@@ -51,21 +51,27 @@ func openTestPlugin(t *testing.T, mockAPI *plugintest.API) *apiTestHarness {
 
 	var client *pluginapi.Client
 	if mockAPI == nil {
-		// Minimal stub: satisfies the EnableDocsRequired middleware and grants any user membership
-		// to any channel/team so space-scoped tests pass membership checks without a real server.
-		// Channel side-effects (archive/restore) are no-ops so store-only tests don't need to
-		// set up specific channel expectations.
 		mockAPI = newEnabledMockAPI()
-		mockAPI.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
-		mockAPI.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
-		mockAPI.On("DeleteChannel", mock.Anything).Return(nil).Maybe()
-		mockAPI.On("RestoreChannel", mock.Anything).Return(nil).Maybe()
-		mockAPI.On("GetChannelMembers", mock.Anything, mock.AnythingOfType("int"), mock.AnythingOfType("int")).Return(mmmodel.ChannelMembers{}, nil).Maybe()
-		mockAPI.On("GetChannelOfType", mock.Anything, mock.Anything).Return((*mmmodel.Channel)(nil), nil).Maybe()
 	}
+	// Minimal defaults: satisfy the EnableDocsRequired middleware and isActiveTeamMember/read
+	// checks so space-scoped tests pass membership checks without a real server. Channel
+	// side-effects (archive/restore) are no-ops so store-only tests don't need to set up specific
+	// channel expectations. .Maybe() and registered last, so any test-specific stub registered
+	// before openTestPlugin is called takes precedence.
+	mockAPI.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
+	mockAPI.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
+	mockAPI.On("DeleteChannel", mock.Anything).Return(nil).Maybe()
+	mockAPI.On("RestoreChannel", mock.Anything).Return(nil).Maybe()
+	mockAPI.On("GetChannelMembers", mock.Anything, mock.AnythingOfType("int"), mock.AnythingOfType("int")).Return(mmmodel.ChannelMembers{}, nil).Maybe()
+	mockAPI.On("GetChannelStats", mock.Anything).Return(&mmmodel.ChannelStats{}, nil).Maybe()
+	mockAPI.On("GetChannelOfType", mock.Anything, mock.Anything).Return((*mmmodel.Channel)(nil), nil).Maybe()
 	// writeAppError logs 500-class failures (message plus four key/value pairs) regardless of
 	// which mock a test supplies, so stub it universally.
 	mockAPI.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	testutil.StubDefaultSpacePermissions(mockAPI)
+	// CreateSpace assigns the creator SchemeAdmin via the scheme's resolved role-name string; no
+	// test asserts the exact roles argument, so a wildcard catch-all covers every create.
+	mockAPI.On("UpdateChannelMemberRoles", mock.Anything, mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
 	client = pluginapi.NewClient(mockAPI, nil)
 	t.Cleanup(func() { mockAPI.AssertExpectations(t) })
 
@@ -87,6 +93,32 @@ func newEnabledMockAPI() *plugintest.API {
 	return mockAPI
 }
 
+// grantSpaceManage, grantSpaceAdmin, and grantSpaceDelete register an elevated-permission
+// expectation for userID that MUST be added to mockAPI before it is passed to openTestPlugin:
+// openTestPlugin registers testutil.StubDefaultSpacePermissions' default-deny catch-alls for
+// manage_space/admin_space/delete_space, and mock.Mock matches expectations in registration
+// order, so a stub added after openTestPlugin runs would never be reached.
+func grantSpaceManage(mockAPI *plugintest.API, userID string) {
+	mockAPI.On("HasPermissionToTeam", userID, mock.Anything, mmmodel.PermissionManageSpace).Return(true)
+}
+
+func grantSpaceDelete(mockAPI *plugintest.API, userID string) {
+	mockAPI.On("HasPermissionToTeam", userID, mock.Anything, mmmodel.PermissionDeleteSpace).Return(true)
+}
+
+// grantSpaceAdmin registers a channel-level admin_space grant for userID on channelID — the
+// exposure-policy gate (RequireSpaceAdminOrSysadmin), stricter than grantSpaceManage's team
+// manage_space grant, which that gate deliberately does not accept.
+func grantSpaceAdmin(mockAPI *plugintest.API, channelID, userID string) {
+	mockAPI.On("HasPermissionToChannel", userID, channelID, mmmodel.PermissionAdminSpace).Return(true)
+}
+
+// grantSysadmin registers the system-wide manage_system override for userID, satisfying every
+// space gate unconditionally.
+func grantSysadmin(mockAPI *plugintest.API, userID string) {
+	mockAPI.On("HasPermissionTo", userID, mmmodel.PermissionManageSystem).Return(true)
+}
+
 // do issues a request through the plugin router. An empty userID omits the auth header.
 func (h *apiTestHarness) do(t *testing.T, method, path, userID string, body any) *httptest.ResponseRecorder {
 	t.Helper()
@@ -105,15 +137,19 @@ func (h *apiTestHarness) do(t *testing.T, method, path, userID string, body any)
 	return rec
 }
 
-func seedSpace(t *testing.T, s *store.Store, channelID string) *model.Space {
+func seedSpace(t *testing.T, s *store.Store, db *sql.DB, channelID string) *model.Space {
 	t.Helper()
-	return seedSpaceInTeam(t, s, channelID, mmmodel.NewId())
+	return seedSpaceInTeam(t, s, db, channelID, mmmodel.NewId())
 }
 
-// seedSpaceInTeam mirrors testutil.MustCreateSpace's (channelID, teamID) parameter order.
-func seedSpaceInTeam(t *testing.T, s *store.Store, channelID, teamID string) *model.Space {
+// seedSpaceInTeam mirrors testutil.MustCreateSpace's (channelID, teamID) parameter order. db
+// seeds a matching Channels stand-in row pointed at the contribute preset scheme, mirroring
+// production CreateSpace's default so scheme-resolving app/handler paths work in tests.
+func seedSpaceInTeam(t *testing.T, s *store.Store, db *sql.DB, channelID, teamID string) *model.Space {
 	t.Helper()
-	return testutil.MustCreateSpace(t, s, channelID, teamID)
+	space := testutil.MustCreateSpace(t, s, channelID, teamID)
+	testutil.MustSeedChannelScheme(t, db, channelID, mmmodel.SchemeNameSpaceContribute)
+	return space
 }
 
 func seedPage(t *testing.T, s *store.Store, spaceID, channelID, parentID string) *model.Page {
@@ -147,11 +183,15 @@ func TestHandler_CreateSpace(t *testing.T) {
 	mockAPI := newEnabledMockAPI()
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil)
+	backingChannelID := mmmodel.NewId()
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
-		Return(&mmmodel.Channel{Id: mmmodel.NewId(), Type: mmmodel.ChannelTypeSpace}, nil)
+		Return(&mmmodel.Channel{Id: backingChannelID, Type: mmmodel.ChannelTypeSpace}, nil)
 	mockAPI.On("AddChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.ChannelMember{}, nil)
+	mockAPI.On("UpdateChannelMemberRoles", backingChannelID, mock.Anything, mock.Anything).
+		Return(&mmmodel.ChannelMember{}, nil)
 	h := openTestPlugin(t, mockAPI)
+	testutil.MustSeedChannelScheme(t, h.db, backingChannelID, mmmodel.SchemeNameSpaceContribute)
 
 	teamID := mmmodel.NewId()
 	rec := h.do(t, http.MethodPost, "/api/v1/teams/"+teamID+"/spaces", mmmodel.NewId(), map[string]any{
@@ -172,13 +212,17 @@ func TestHandler_CreateSpace_IgnoresServerOwnedFields(t *testing.T) {
 	mockAPI := newEnabledMockAPI()
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil)
+	backingChannelID := mmmodel.NewId()
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
-		Return(&mmmodel.Channel{Id: mmmodel.NewId(), Type: mmmodel.ChannelTypeSpace}, nil)
+		Return(&mmmodel.Channel{Id: backingChannelID, Type: mmmodel.ChannelTypeSpace}, nil)
 	mockAPI.On("AddChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.ChannelMember{}, nil)
+	mockAPI.On("UpdateChannelMemberRoles", backingChannelID, mock.Anything, mock.Anything).
 		Return(&mmmodel.ChannelMember{}, nil)
 	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.ChannelMember{}, nil)
 	h := openTestPlugin(t, mockAPI)
+	testutil.MustSeedChannelScheme(t, h.db, backingChannelID, mmmodel.SchemeNameSpaceContribute)
 
 	forgedID := mmmodel.NewId()
 	teamID := mmmodel.NewId()
@@ -208,7 +252,7 @@ func TestHandler_SpaceAndPageRoundTrip(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 
 	t.Run("get space", func(t *testing.T) {
 		rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id, user, nil)
@@ -238,14 +282,17 @@ func TestHandler_SpaceAndPageRoundTrip(t *testing.T) {
 
 	t.Run("get page in wrong space is 404", func(t *testing.T) {
 		page := seedPage(t, h.store, space.Id, channelID, "")
-		otherSpace := seedSpace(t, h.store, mmmodel.NewId())
+		otherSpace := seedSpace(t, h.store, h.db, mmmodel.NewId())
 		rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+otherSpace.Id+"/pages/"+page.Id, user, nil)
 		require.Equal(t, http.StatusNotFound, rec.Code)
 	})
 
 	t.Run("move then delete page", func(t *testing.T) {
 		parent := seedPage(t, h.store, space.Id, channelID, "")
-		page := seedPage(t, h.store, space.Id, channelID, "")
+		// Owned by the acting user: a contribute-default member holds only delete_own_page, not
+		// delete_page (any) — deleting a page owned by someone else is a different, admin-gated
+		// route, exercised separately.
+		page := testutil.MustCreatePage(t, h.store, space.Id, channelID, user, "")
 
 		rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id+"/move", user, map[string]any{
 			"parent_id":          parent.Id,
@@ -264,12 +311,16 @@ func TestHandler_SpaceAndPageRoundTrip(t *testing.T) {
 	})
 }
 
-// TestHandler_UpdateSpace patches a space's mutable fields.
+// TestHandler_UpdateSpace patches a space's mutable fields. Updating a space is manage-gated
+// : the acting user needs an elevated grant, not bare membership.
 func TestHandler_UpdateSpace(t *testing.T) {
-	h := openTestPlugin(t, nil)
-	space := seedSpace(t, h.store, mmmodel.NewId())
+	mockAPI := newEnabledMockAPI()
+	adminID := mmmodel.NewId()
+	grantSpaceManage(mockAPI, adminID)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
 
-	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, mmmodel.NewId(), map[string]any{
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, adminID, map[string]any{
 		"title":              "Renamed",
 		"description":        "New description",
 		"expected_update_at": space.UpdateAt,
@@ -281,19 +332,35 @@ func TestHandler_UpdateSpace(t *testing.T) {
 	require.Equal(t, "New description", updated.Description)
 
 	// A stale baseline now conflicts (the optimistic lock is client-supplied).
-	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, mmmodel.NewId(), map[string]any{
+	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, adminID, map[string]any{
 		"title":              "Stale",
 		"expected_update_at": space.UpdateAt,
 	})
 	require.Equal(t, http.StatusConflict, rec.Code)
 }
 
-// TestHandler_DeleteSpace deletes a space; a follow-up read returns 403 (CheckSpaceMembership
-// masks deleted-space existence to prevent probing via the status code).
-func TestHandler_DeleteSpace(t *testing.T) {
+// TestHandler_UpdateSpace_NonManageMemberForbidden verifies an ordinary contribute-default member
+// (no manage_space/admin_space grant) cannot update a space's mutable fields.
+func TestHandler_UpdateSpace_NonManageMemberForbidden(t *testing.T) {
 	h := openTestPlugin(t, nil)
+	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, mmmodel.NewId(), map[string]any{
+		"title":              "Renamed",
+		"expected_update_at": space.UpdateAt,
+	})
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// TestHandler_DeleteSpace deletes a space; a follow-up read returns 403 (the gate masks
+// deleted-space existence to prevent probing via the status code). Delete/restore requires team
+// delete_space or channel admin_space.
+func TestHandler_DeleteSpace(t *testing.T) {
+	mockAPI := newEnabledMockAPI()
 	user := mmmodel.NewId()
-	space := seedSpace(t, h.store, mmmodel.NewId())
+	grantSpaceDelete(mockAPI, user)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id, user, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -305,9 +372,11 @@ func TestHandler_DeleteSpace(t *testing.T) {
 // TestHandler_RestoreSpace deletes then restores a space; a second restore of an already-live
 // space is rejected as a 409 (conflict — the space is already live).
 func TestHandler_RestoreSpace(t *testing.T) {
-	h := openTestPlugin(t, nil)
+	mockAPI := newEnabledMockAPI()
 	user := mmmodel.NewId()
-	space := seedSpace(t, h.store, mmmodel.NewId())
+	grantSpaceDelete(mockAPI, user)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id, user, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -332,7 +401,7 @@ func TestHandler_RestoreSpace(t *testing.T) {
 func TestHandler_GetSpacePages(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	seedPage(t, h.store, space.Id, channelID, "")
 	seedPage(t, h.store, space.Id, channelID, "")
 
@@ -352,7 +421,7 @@ func TestHandler_PageCollectionsReturnMetadataOnly(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	userID := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 
 	parentInput := testutil.NewPage(space.Id, channelID, userID, "")
 	parentInput.Title = "Parent"
@@ -407,23 +476,27 @@ func TestHandler_PageCollectionsReturnMetadataOnly(t *testing.T) {
 	require.Contains(t, detail, "props")
 }
 
-// TestHandler_ListSpaceMembers lists a space's members through the backing channel.
+// TestHandler_ListSpaceMembers lists a space's members through the backing channel. The members
+// list is manage-gated — deliberately stricter than MM channels, since the projection
+// carries the per-member capability matrix.
 func TestHandler_ListSpaceMembers(t *testing.T) {
 	channelID := mmmodel.NewId()
 	memberUserID := mmmodel.NewId()
+	adminID := mmmodel.NewId()
 
 	mockAPI := newEnabledMockAPI()
+	grantSpaceManage(mockAPI, adminID)
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil)
 	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
-		Return(&mmmodel.ChannelMember{}, nil)
+		Return(&mmmodel.ChannelMember{}, nil).Maybe()
 	mockAPI.On("GetChannelMembers", channelID, mock.AnythingOfType("int"), mock.AnythingOfType("int")).
 		Return(mmmodel.ChannelMembers{{ChannelId: channelID, UserId: memberUserID}}, nil)
 	h := openTestPlugin(t, mockAPI)
 
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 
-	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/members", mmmodel.NewId(), nil)
+	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/members", adminID, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	var resp paginatedResponse[*model.SpaceMember]
@@ -440,12 +513,14 @@ func TestHandler_ListSpaceMembers_HasMore(t *testing.T) {
 	channelID := mmmodel.NewId()
 	firstMember := mmmodel.NewId()
 	secondMember := mmmodel.NewId()
+	adminID := mmmodel.NewId()
 
 	mockAPI := newEnabledMockAPI()
+	grantSpaceManage(mockAPI, adminID)
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil)
 	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
-		Return(&mmmodel.ChannelMember{}, nil)
+		Return(&mmmodel.ChannelMember{}, nil).Maybe()
 	// Page 0 at size 1 comes back full, so the handler probes the next page's first slot
 	// (page-indexed API: index (page+1)*perPage at size 1).
 	mockAPI.On("GetChannelMembers", channelID, 0, 1).
@@ -454,9 +529,9 @@ func TestHandler_ListSpaceMembers_HasMore(t *testing.T) {
 		Return(mmmodel.ChannelMembers{{ChannelId: channelID, UserId: secondMember}}, nil)
 	h := openTestPlugin(t, mockAPI)
 
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 
-	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/members?per_page=1", mmmodel.NewId(), nil)
+	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/members?per_page=1", adminID, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	var resp paginatedResponse[*model.SpaceMember]
@@ -466,23 +541,26 @@ func TestHandler_ListSpaceMembers_HasMore(t *testing.T) {
 	require.True(t, resp.HasMore)
 }
 
-// TestHandler_AddSpaceMember adds a member to a space; any current space member may do so.
+// TestHandler_AddSpaceMember adds a member to a space; the caller needs requireSpaceManage — no
+// longer any current space member.
 func TestHandler_AddSpaceMember(t *testing.T) {
 	channelID := mmmodel.NewId()
 	targetUserID := mmmodel.NewId()
+	adminID := mmmodel.NewId()
 
 	mockAPI := newEnabledMockAPI()
+	grantSpaceManage(mockAPI, adminID)
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil)
 	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
-		Return(&mmmodel.ChannelMember{}, nil)
+		Return(&mmmodel.ChannelMember{}, nil).Maybe()
 	mockAPI.On("AddChannelMember", channelID, targetUserID).
 		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: targetUserID}, nil)
 	h := openTestPlugin(t, mockAPI)
 
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 
-	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/members", mmmodel.NewId(), map[string]any{
+	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/members", adminID, map[string]any{
 		"user_id": targetUserID,
 	})
 	require.Equal(t, http.StatusCreated, rec.Code)
@@ -493,12 +571,31 @@ func TestHandler_AddSpaceMember(t *testing.T) {
 	mockAPI.AssertCalled(t, "AddChannelMember", channelID, targetUserID)
 }
 
-// TestHandler_RemoveSpaceMember removes a member from a space.
-func TestHandler_RemoveSpaceMember(t *testing.T) {
+// TestHandler_AddSpaceMember_NonManageMemberForbidden verifies an ordinary member without a
+// manage grant cannot add another member.
+func TestHandler_AddSpaceMember_NonManageMemberForbidden(t *testing.T) {
 	channelID := mmmodel.NewId()
 	targetUserID := mmmodel.NewId()
 
+	h := openTestPlugin(t, nil)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/members", mmmodel.NewId(), map[string]any{
+		"user_id": targetUserID,
+	})
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// TestHandler_RemoveSpaceMember removes a member from a space; removing a non-self target
+// requires requireSpaceManage — self-removal stays membership-gated, covered by
+// TestHandler_RemoveSpaceMember_Self.
+func TestHandler_RemoveSpaceMember(t *testing.T) {
+	channelID := mmmodel.NewId()
+	targetUserID := mmmodel.NewId()
+	adminID := mmmodel.NewId()
+
 	mockAPI := newEnabledMockAPI()
+	grantSpaceManage(mockAPI, adminID)
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil)
 	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
@@ -510,11 +607,47 @@ func TestHandler_RemoveSpaceMember(t *testing.T) {
 	mockAPI.On("DeleteChannelMember", channelID, targetUserID).Return(nil)
 	h := openTestPlugin(t, mockAPI)
 
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 
-	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID, mmmodel.NewId(), nil)
+	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID, adminID, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 	mockAPI.AssertCalled(t, "DeleteChannelMember", channelID, targetUserID)
+}
+
+// TestHandler_RemoveSpaceMember_NonManageMemberForbidden verifies an ordinary member without a
+// manage grant cannot remove another member.
+func TestHandler_RemoveSpaceMember_NonManageMemberForbidden(t *testing.T) {
+	channelID := mmmodel.NewId()
+	targetUserID := mmmodel.NewId()
+
+	h := openTestPlugin(t, nil)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID, mmmodel.NewId(), nil)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// TestHandler_RemoveSpaceMember_Self verifies self-removal stays membership-gated: any member may
+// leave the space they belong to, no manage grant required.
+func TestHandler_RemoveSpaceMember_Self(t *testing.T) {
+	channelID := mmmodel.NewId()
+	selfID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.ChannelMember{}, nil)
+	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).
+		Return(mmmodel.ChannelMembers{{ChannelId: channelID, UserId: selfID}, {ChannelId: channelID, UserId: mmmodel.NewId()}}, nil)
+	mockAPI.On("DeleteChannelMember", channelID, selfID).Return(nil)
+	h := openTestPlugin(t, mockAPI)
+
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/members/"+selfID, selfID, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	mockAPI.AssertCalled(t, "DeleteChannelMember", channelID, selfID)
 }
 
 // TestHandler_GetTeamSpaces lists the spaces on a team visible to the caller.
@@ -527,7 +660,7 @@ func TestHandler_GetTeamSpaces(t *testing.T) {
 	mockAPI.On("GetTeamMember", teamID, caller).Return(&mmmodel.TeamMember{}, nil)
 	h := openTestPlugin(t, mockAPI)
 
-	seedSpaceInTeam(t, h.store, channelID, teamID)
+	seedSpaceInTeam(t, h.store, h.db, channelID, teamID)
 	testutil.MustAddChannelMember(t, h.db, channelID, caller)
 
 	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
@@ -542,7 +675,7 @@ func TestHandler_UpdatePage(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	// Body and search text must be patched together (search text is the body's plain-text
@@ -572,7 +705,7 @@ func TestHandler_UpdatePage_BaselineRequired(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, map[string]any{
@@ -599,7 +732,7 @@ func TestHandler_UpdatePage_Props(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	body := map[string]any{
@@ -619,8 +752,10 @@ func TestHandler_RestorePage(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
-	page := seedPage(t, h.store, space.Id, channelID, "")
+	space := seedSpace(t, h.store, h.db, channelID)
+	// Owned by the acting user: a contribute-default member holds only delete_own_page, not
+	// delete_page (any).
+	page := testutil.MustCreatePage(t, h.store, space.Id, channelID, user, "")
 
 	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -641,7 +776,7 @@ func TestHandler_GetPageChildren(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	parent := seedPage(t, h.store, space.Id, channelID, "")
 	childA := seedPage(t, h.store, space.Id, channelID, parent.Id)
 	childB := seedPage(t, h.store, space.Id, channelID, parent.Id)
@@ -663,8 +798,8 @@ func TestHandler_GetPageChildren_WrongSpaceIs404(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
-	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
+	space := seedSpace(t, h.store, h.db, channelID)
+	otherSpace := seedSpace(t, h.store, h.db, mmmodel.NewId())
 	parent := seedPage(t, h.store, space.Id, channelID, "")
 	seedPage(t, h.store, space.Id, channelID, parent.Id)
 
@@ -677,10 +812,12 @@ func TestHandler_MovePageToSpace(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, channelA)
-	page := seedPage(t, h.store, spaceA.Id, channelA, "")
+	spaceA := seedSpace(t, h.store, h.db, channelA)
+	// Owned by the acting user: move-to-space's source-side own-path requires ownership of the
+	// entire moved subtree, and a contribute-default member holds only delete_own_page.
+	page := testutil.MustCreatePage(t, h.store, spaceA.Id, channelA, user, "")
 
-	spaceB, err := h.store.CreateSpace(&model.Space{ChannelId: mmmodel.NewId(), TeamId: spaceA.TeamId, CreatorId: user, Title: "B"})
+	spaceB, err := h.store.CreateSpace(&model.Space{ChannelId: mmmodel.NewId(), TeamId: spaceA.TeamId, CreatorId: user, Title: "B", ViewAccess: model.ViewAccessOpen})
 	require.NoError(t, err)
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/move-to-space", user, map[string]any{
@@ -699,7 +836,7 @@ func TestHandler_MovePageToSpace_MissingTargetSpaceId(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, channelA)
+	spaceA := seedSpace(t, h.store, h.db, channelA)
 	page := seedPage(t, h.store, spaceA.Id, channelA, "")
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/move-to-space", user, map[string]any{
@@ -717,7 +854,7 @@ func TestHandler_MovePageToSpace_InvalidTargetSpaceId(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, channelA)
+	spaceA := seedSpace(t, h.store, h.db, channelA)
 	page := seedPage(t, h.store, spaceA.Id, channelA, "")
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/move-to-space", user, map[string]any{
@@ -736,11 +873,11 @@ func TestHandler_MovePageToSpace_CrossTeamRejected(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, channelA)
+	spaceA := seedSpace(t, h.store, h.db, channelA)
 	page := seedPage(t, h.store, spaceA.Id, channelA, "")
 
 	// A second space in a different team (seedSpace randomizes the team id per call).
-	spaceB := seedSpace(t, h.store, mmmodel.NewId())
+	spaceB := seedSpace(t, h.store, h.db, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/move-to-space", user, map[string]any{
 		"target_space_id":    spaceB.Id,
@@ -759,11 +896,13 @@ func TestHandler_MovePageToSpace_DepthExceeded(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, channelA)
-	page := seedPage(t, h.store, spaceA.Id, channelA, "")
+	spaceA := seedSpace(t, h.store, h.db, channelA)
+	// Owned by the acting user: move-to-space's source-side own-path requires ownership of the
+	// entire moved subtree, and a contribute-default member holds only delete_own_page.
+	page := testutil.MustCreatePage(t, h.store, spaceA.Id, channelA, user, "")
 
 	channelB := mmmodel.NewId()
-	spaceB, err := h.store.CreateSpace(&model.Space{ChannelId: channelB, TeamId: spaceA.TeamId, CreatorId: user, Title: "B"})
+	spaceB, err := h.store.CreateSpace(&model.Space{ChannelId: channelB, TeamId: spaceA.TeamId, CreatorId: user, Title: "B", ViewAccess: model.ViewAccessOpen})
 	require.NoError(t, err)
 
 	parentID := ""
@@ -789,7 +928,7 @@ func TestHandler_MovePageToSpace_RejectsCycle(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, channelA)
+	spaceA := seedSpace(t, h.store, h.db, channelA)
 	root := seedPage(t, h.store, spaceA.Id, channelA, "")
 	child := seedPage(t, h.store, spaceA.Id, channelA, root.Id)
 
@@ -810,11 +949,11 @@ func TestHandler_MovePageToSpace_ParentInWrongSpace(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, channelA)
+	spaceA := seedSpace(t, h.store, h.db, channelA)
 	page := seedPage(t, h.store, spaceA.Id, channelA, "")
 	parentInA := seedPage(t, h.store, spaceA.Id, channelA, "")
 
-	spaceB, err := h.store.CreateSpace(&model.Space{ChannelId: mmmodel.NewId(), TeamId: spaceA.TeamId, CreatorId: user, Title: "B"})
+	spaceB, err := h.store.CreateSpace(&model.Space{ChannelId: mmmodel.NewId(), TeamId: spaceA.TeamId, CreatorId: user, Title: "B", ViewAccess: model.ViewAccessOpen})
 	require.NoError(t, err)
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/move-to-space", user, map[string]any{
@@ -834,7 +973,7 @@ func TestHandler_MovePage_MaxDepthExceeded(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 
 	parentID := ""
 	for range app.MaxPageDepth {
@@ -859,7 +998,7 @@ func TestHandler_MovePage_CircularReference(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 
 	t.Run("self as parent", func(t *testing.T) {
 		page := seedPage(t, h.store, space.Id, channelID, "")
@@ -894,11 +1033,11 @@ func TestHandler_MovePage_ParentInDifferentSpace(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, channelA)
+	spaceA := seedSpace(t, h.store, h.db, channelA)
 	page := seedPage(t, h.store, spaceA.Id, channelA, "")
 
 	channelB := mmmodel.NewId()
-	spaceB := seedSpace(t, h.store, channelB)
+	spaceB := seedSpace(t, h.store, h.db, channelB)
 	parentInB := seedPage(t, h.store, spaceB.Id, channelB, "")
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/move", user, map[string]any{
@@ -916,7 +1055,7 @@ func TestHandler_DuplicatePage(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id+"/duplicate", user, nil)
@@ -931,7 +1070,7 @@ func TestHandler_DuplicatePage_WithChildren(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	parent := seedPage(t, h.store, space.Id, channelID, "")
 	seedPage(t, h.store, space.Id, channelID, parent.Id)
 
@@ -949,10 +1088,10 @@ func TestHandler_DuplicatePage_CrossSpace(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, channelA)
+	spaceA := seedSpace(t, h.store, h.db, channelA)
 	page := seedPage(t, h.store, spaceA.Id, channelA, "")
 
-	spaceB, err := h.store.CreateSpace(&model.Space{ChannelId: mmmodel.NewId(), TeamId: spaceA.TeamId, CreatorId: user, Title: "B"})
+	spaceB, err := h.store.CreateSpace(&model.Space{ChannelId: mmmodel.NewId(), TeamId: spaceA.TeamId, CreatorId: user, Title: "B", ViewAccess: model.ViewAccessOpen})
 	require.NoError(t, err)
 
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/duplicate", user, map[string]any{
@@ -970,7 +1109,7 @@ func TestHandler_DuplicatePage_InvalidTargetSpaceId(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, channelA)
+	spaceA := seedSpace(t, h.store, h.db, channelA)
 	page := seedPage(t, h.store, spaceA.Id, channelA, "")
 
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/duplicate", user, map[string]any{
@@ -987,7 +1126,7 @@ func TestHandler_DuplicatePage_WithParent(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	parent := seedPage(t, h.store, space.Id, channelID, "")
 	page := seedPage(t, h.store, space.Id, channelID, "")
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id+"/duplicate", user, map[string]any{
@@ -1004,9 +1143,9 @@ func TestHandler_DuplicatePage_WrongSpaceIs404(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
-	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
+	otherSpace := seedSpace(t, h.store, h.db, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+otherSpace.Id+"/pages/"+page.Id+"/duplicate", user, nil)
 	require.Equal(t, http.StatusNotFound, rec.Code)
@@ -1017,9 +1156,9 @@ func TestHandler_UpdatePage_WrongSpaceIs404(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
-	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
+	otherSpace := seedSpace(t, h.store, h.db, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+otherSpace.Id+"/pages/"+page.Id, user, map[string]any{
 		"title":        "New Title",
@@ -1033,9 +1172,9 @@ func TestHandler_DeletePage_WrongSpaceIs404(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
-	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
+	otherSpace := seedSpace(t, h.store, h.db, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+otherSpace.Id+"/pages/"+page.Id, user, nil)
 	require.Equal(t, http.StatusNotFound, rec.Code)
@@ -1046,9 +1185,9 @@ func TestHandler_RestorePage_WrongSpaceIs404(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
-	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
+	otherSpace := seedSpace(t, h.store, h.db, mmmodel.NewId())
 
 	// Soft-delete the page so restore has something to act on.
 	_, delErr := h.store.DeletePage(page.Id, space.Id, user)
@@ -1059,22 +1198,29 @@ func TestHandler_RestorePage_WrongSpaceIs404(t *testing.T) {
 }
 
 // TestHandler_SpaceMembershipRequired verifies that all space- and page-scoped handlers
-// reject callers who are not members of the space's backing channel with 403 Forbidden.
+// reject callers who are not members of a private space's backing channel with 403 Forbidden.
+// Private, not the default open fixture: an open space deliberately admits non-member reads
+// and auto-joins non-member default-granted writes, so this membership-required
+// assertion only holds on a private space.
 func TestHandler_SpaceMembershipRequired(t *testing.T) {
 	mockAPI := newEnabledMockAPI()
-	h := openTestPlugin(t, mockAPI)
-
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
-	page := seedPage(t, h.store, space.Id, channelID, "")
 	stranger := mmmodel.NewId()
 
-	// The stranger passes the team gate (an active member row) so the channel-membership
-	// rejection below is what each route exercises.
+	// The stranger passes the team gate (an active member row) so the lack of the read_page
+	// channel grant below is what each route exercises. Registered before openTestPlugin: mock
+	// matching is by registration order, so a stub added after openTestPlugin would be shadowed
+	// by StubDefaultSpacePermissions' permissive read_page-for-anyone catch-all.
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), stranger).
 		Return(&mmmodel.TeamMember{}, nil)
-	mockAPI.On("GetChannelMember", channelID, stranger).
-		Return(nil, &mmmodel.AppError{StatusCode: http.StatusNotFound})
+	mockAPI.On("HasPermissionToChannel", stranger, channelID, mmmodel.PermissionReadPage).
+		Return(false)
+
+	h := openTestPlugin(t, mockAPI)
+
+	space, err := h.store.CreateSpace(&model.Space{ChannelId: channelID, TeamId: mmmodel.NewId(), CreatorId: mmmodel.NewId(), Title: "Private Space", ViewAccess: model.ViewAccessPrivate})
+	require.NoError(t, err)
+	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	cases := []struct {
 		method string
@@ -1104,8 +1250,11 @@ func TestHandler_SpaceMembershipRequired(t *testing.T) {
 	}
 }
 
-// TestHandler_TeamSpacesPrivacy verifies that GET /teams/{team_id}/spaces filters out spaces
-// whose backing channel the caller does not belong to.
+// TestHandler_TeamSpacesPrivacy verifies that GET /teams/{team_id}/spaces filters out private
+// spaces whose backing channel the caller does not belong to. An open space the caller doesn't
+// belong to is deliberately still listed (the list-for-team predicate's open-space branch —
+// members' spaces union open spaces the caller can read), so the hidden fixture here must be
+// private, not merely non-member, for the exclusion to hold.
 func TestHandler_TeamSpacesPrivacy(t *testing.T) {
 	mockAPI := newEnabledMockAPI()
 	h := openTestPlugin(t, mockAPI)
@@ -1113,8 +1262,9 @@ func TestHandler_TeamSpacesPrivacy(t *testing.T) {
 	teamID := mmmodel.NewId()
 	visibleChannelID := mmmodel.NewId()
 	hiddenChannelID := mmmodel.NewId()
-	visible := seedSpaceInTeam(t, h.store, visibleChannelID, teamID)
-	_ = seedSpaceInTeam(t, h.store, hiddenChannelID, teamID)
+	visible := seedSpaceInTeam(t, h.store, h.db, visibleChannelID, teamID)
+	_, err := h.store.CreateSpace(&model.Space{ChannelId: hiddenChannelID, TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "Hidden", ViewAccess: model.ViewAccessPrivate})
+	require.NoError(t, err)
 	caller := mmmodel.NewId()
 
 	mockAPI.On("GetTeamMember", teamID, caller).
@@ -1143,9 +1293,13 @@ func TestHandler_TeamSpacesHiddenPageBoundary(t *testing.T) {
 	hidden2ChannelID := mmmodel.NewId()
 	caller := mmmodel.NewId()
 
-	visible := seedSpaceInTeam(t, h.store, visibleChannelID, teamID)
-	_ = seedSpaceInTeam(t, h.store, hidden1ChannelID, teamID)
-	_ = seedSpaceInTeam(t, h.store, hidden2ChannelID, teamID)
+	visible := seedSpaceInTeam(t, h.store, h.db, visibleChannelID, teamID)
+	// Private, not merely non-member: an open space the caller can't reach as a member is still
+	// listed via the list-for-team predicate's open-space branch.
+	_, err := h.store.CreateSpace(&model.Space{ChannelId: hidden1ChannelID, TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "Hidden 1", ViewAccess: model.ViewAccessPrivate})
+	require.NoError(t, err)
+	_, err = h.store.CreateSpace(&model.Space{ChannelId: hidden2ChannelID, TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "Hidden 2", ViewAccess: model.ViewAccessPrivate})
+	require.NoError(t, err)
 
 	mockAPI.On("GetTeamMember", teamID, caller).
 		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: caller}, nil)
@@ -1174,7 +1328,7 @@ func TestHandler_TeamSpacesPagination(t *testing.T) {
 	caller := mmmodel.NewId()
 	for range 3 {
 		channelID := mmmodel.NewId()
-		_ = seedSpaceInTeam(t, h.store, channelID, teamID)
+		_ = seedSpaceInTeam(t, h.store, h.db, channelID, teamID)
 		testutil.MustAddChannelMember(t, h.db, channelID, caller)
 	}
 
@@ -1194,14 +1348,16 @@ func TestHandler_TeamSpacesPagination(t *testing.T) {
 // denied with 403 (the team-membership gate on the listing route).
 func TestHandler_TeamSpacesNotTeamMember(t *testing.T) {
 	mockAPI := newEnabledMockAPI()
-	h := openTestPlugin(t, mockAPI)
-
 	teamID := mmmodel.NewId()
-	_ = seedSpaceInTeam(t, h.store, mmmodel.NewId(), teamID)
 	caller := mmmodel.NewId()
 
+	// Registered before openTestPlugin: mock matching is by registration order, so a stub added
+	// after openTestPlugin would be shadowed by its permissive default GetTeamMember catch-all.
 	mockAPI.On("GetTeamMember", teamID, caller).
 		Return(nil, &mmmodel.AppError{StatusCode: http.StatusNotFound})
+
+	h := openTestPlugin(t, mockAPI)
+	_ = seedSpaceInTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
 
 	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
 	require.Equal(t, http.StatusForbidden, rec.Code)
@@ -1211,14 +1367,16 @@ func TestHandler_TeamSpacesNotTeamMember(t *testing.T) {
 // team-membership lookup propagates as 500.
 func TestHandler_TeamSpacesTeamLookupError(t *testing.T) {
 	mockAPI := newEnabledMockAPI()
-	h := openTestPlugin(t, mockAPI)
-
 	teamID := mmmodel.NewId()
-	_ = seedSpaceInTeam(t, h.store, mmmodel.NewId(), teamID)
 	caller := mmmodel.NewId()
 
+	// Registered before openTestPlugin: mock matching is by registration order, so a stub added
+	// after openTestPlugin would be shadowed by its permissive default GetTeamMember catch-all.
 	mockAPI.On("GetTeamMember", teamID, caller).
 		Return(nil, &mmmodel.AppError{StatusCode: http.StatusInternalServerError})
+
+	h := openTestPlugin(t, mockAPI)
+	_ = seedSpaceInTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
 
 	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
@@ -1227,7 +1385,7 @@ func TestHandler_TeamSpacesTeamLookupError(t *testing.T) {
 // TestHandler_InvalidJSON returns 400 on a malformed request body.
 func TestHandler_InvalidJSON(t *testing.T) {
 	h := openTestPlugin(t, nil)
-	space := seedSpace(t, h.store, mmmodel.NewId())
+	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages", bytes.NewReader([]byte("{not json")))
 	req.Header.Set("Mattermost-User-ID", mmmodel.NewId())
@@ -1243,7 +1401,7 @@ func TestHandler_RequestTooLarge(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	// A well-formed JSON document whose "content" field alone exceeds maxPageBodyBytes, so the
@@ -1301,7 +1459,7 @@ func TestHandler_MovePage_InvalidParentID(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	bad := "not-a-valid-id"
@@ -1321,7 +1479,7 @@ func TestHandler_CreatePage_InvalidParentID(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 
 	bad := "not-a-valid-id"
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages", user, map[string]any{
@@ -1340,7 +1498,7 @@ func TestHandler_DuplicatePage_InvalidParentID(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	bad := "not-a-valid-id"
@@ -1359,10 +1517,10 @@ func TestHandler_MovePageToSpace_InvalidParentID(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, channelA)
+	spaceA := seedSpace(t, h.store, h.db, channelA)
 	page := seedPage(t, h.store, spaceA.Id, channelA, "")
 
-	spaceB, err := h.store.CreateSpace(&model.Space{ChannelId: mmmodel.NewId(), TeamId: spaceA.TeamId, CreatorId: user, Title: "B"})
+	spaceB, err := h.store.CreateSpace(&model.Space{ChannelId: mmmodel.NewId(), TeamId: spaceA.TeamId, CreatorId: user, Title: "B", ViewAccess: model.ViewAccessOpen})
 	require.NoError(t, err)
 
 	bad := "not-a-valid-id"
@@ -1382,7 +1540,7 @@ func TestHandler_GetSpace(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 
 	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id, user, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -1399,7 +1557,7 @@ func TestHandler_GetPage(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, nil)
@@ -1418,7 +1576,7 @@ func TestHandler_CreatePage(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages", user, map[string]any{
 		"title": "Brand New Page",
@@ -1444,8 +1602,10 @@ func TestHandler_DeletePage(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
-	page := seedPage(t, h.store, space.Id, channelID, "")
+	space := seedSpace(t, h.store, h.db, channelID)
+	// Owned by the acting user: a contribute-default member holds only delete_own_page, not
+	// delete_page (any).
+	page := testutil.MustCreatePage(t, h.store, space.Id, channelID, user, "")
 
 	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -1460,7 +1620,7 @@ func TestHandler_GetSpacePagesHasMoreBoundary(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	for range 3 {
 		seedPage(t, h.store, space.Id, channelID, "")
 	}
@@ -1486,7 +1646,7 @@ func TestHandler_GetPageChildrenHasMoreBoundary(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	parent := seedPage(t, h.store, space.Id, channelID, "")
 	for range 3 {
 		seedPage(t, h.store, space.Id, channelID, parent.Id)
@@ -1519,11 +1679,11 @@ func TestHandler_CreatePage_PublishesCreatedEvent(t *testing.T) {
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil)
 	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
-		Return(&mmmodel.ChannelMember{}, nil)
+		Return(&mmmodel.ChannelMember{}, nil).Maybe()
 	mockAPI.On("PublishWebSocketEvent", "page_created", mock.Anything, mock.Anything).Return().Once()
 	h := openTestPlugin(t, mockAPI)
 
-	space := seedSpace(t, h.store, channelID)
+	space := seedSpace(t, h.store, h.db, channelID)
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages", mmmodel.NewId(), map[string]any{
 		"title": "Evented Page",
 	})
@@ -1534,4 +1694,707 @@ func TestHandler_CreatePage_PublishesCreatedEvent(t *testing.T) {
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_created",
 		map[string]any{"page_id": created.Id, "space_id": space.Id, "parent_id": created.ParentId},
 		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
+}
+
+// TestHandler_CreateSpace_RequiresCreateSpacePermission verifies that team membership alone does
+// not authorize creating a space in it: a caller without team create_space (and not sysadmin) is
+// rejected before any backing-channel side effect. TestHandler_CreateSpace (default-granted via
+// StubDefaultSpacePermissions) covers the allowed path.
+func TestHandler_CreateSpace_RequiresCreateSpacePermission(t *testing.T) {
+	teamID := mmmodel.NewId()
+	callerID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	mockAPI.On("GetTeamMember", teamID, callerID).Return(&mmmodel.TeamMember{}, nil)
+	// Registered before openTestPlugin so it takes precedence over StubDefaultSpacePermissions'
+	// permissive create_space catch-all (mock.Mock matches in registration order).
+	mockAPI.On("HasPermissionToTeam", callerID, teamID, mmmodel.PermissionCreateSpace).Return(false)
+	h := openTestPlugin(t, mockAPI)
+
+	rec := h.do(t, http.MethodPost, "/api/v1/teams/"+teamID+"/spaces", callerID, map[string]any{
+		"title": "Nope",
+	})
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	mockAPI.AssertNotCalled(t, "CreateChannel")
+}
+
+// TestHandler_AddSpaceMember_GuestProjectsReadOnly verifies a guest added to a space is projected
+// through the same reverse-role logic as ListSpaceMembers/SetSpaceMemberCapabilities: is_guest
+// true and capabilities read_page-only, never the space default.
+func TestHandler_AddSpaceMember_GuestProjectsReadOnly(t *testing.T) {
+	channelID := mmmodel.NewId()
+	targetUserID := mmmodel.NewId()
+	adminID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	grantSpaceManage(mockAPI, adminID)
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.ChannelMember{}, nil).Maybe()
+	mockAPI.On("AddChannelMember", channelID, targetUserID).
+		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: targetUserID, SchemeGuest: true}, nil)
+	h := openTestPlugin(t, mockAPI)
+
+	// The contribute-preset default (seeded by seedSpace) must not leak into a guest's projection.
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/members", adminID, map[string]any{
+		"user_id": targetUserID,
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var member model.SpaceMember
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &member))
+	require.Equal(t, targetUserID, member.UserId)
+	require.True(t, member.IsGuest)
+	require.False(t, member.IsAdmin)
+	require.Equal(t, []string{model.CapabilityReadPage}, member.Capabilities)
+	require.Empty(t, member.GrantedCapabilities)
+}
+
+// TestHandler_RemoveSpaceMember_NonSelfMissingTargetIsNotFound verifies that a manage-gated
+// caller removing a non-member target always gets the plain 404 — even on a private space, where
+// self-removal would get the existence-hiding 403 instead. A manage-gated caller has already
+// proven manage authority over the space, so there is nothing left to existence-hide behind.
+func TestHandler_RemoveSpaceMember_NonSelfMissingTargetIsNotFound(t *testing.T) {
+	channelID := mmmodel.NewId()
+	targetUserID := mmmodel.NewId()
+	adminID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	grantSpaceManage(mockAPI, adminID)
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("GetChannelMember", channelID, targetUserID).
+		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: http.StatusNotFound})
+	h := openTestPlugin(t, mockAPI)
+
+	space, err := h.store.CreateSpace(&model.Space{ChannelId: channelID, TeamId: mmmodel.NewId(), CreatorId: mmmodel.NewId(), Title: "Private Space", ViewAccess: model.ViewAccessPrivate})
+	require.NoError(t, err)
+	testutil.MustSeedChannelScheme(t, h.db, channelID, mmmodel.SchemeNameSpaceContribute)
+
+	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID, adminID, nil)
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// TestHandler_SetSpaceMemberCapabilities_Forbidden verifies a plain member without a manage grant
+// cannot change another member's capabilities.
+func TestHandler_SetSpaceMemberCapabilities_Forbidden(t *testing.T) {
+	channelID := mmmodel.NewId()
+	targetUserID := mmmodel.NewId()
+
+	h := openTestPlugin(t, nil)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", mmmodel.NewId(), map[string]any{
+		"granted_capabilities": []string{"create_page"},
+	})
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// TestHandler_SetSpaceMemberCapabilities_GuestTargetRejected verifies a guest target is rejected
+// with 400: guests stay read-only via the scheme's guest role and are never grant-assignable.
+func TestHandler_SetSpaceMemberCapabilities_GuestTargetRejected(t *testing.T) {
+	channelID := mmmodel.NewId()
+	targetUserID := mmmodel.NewId()
+	adminID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	grantSpaceManage(mockAPI, adminID)
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("GetChannelMember", channelID, targetUserID).
+		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: targetUserID, SchemeGuest: true}, nil)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
+		"granted_capabilities": []string{"create_page"},
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	var appErr mmmodel.AppError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+	require.Equal(t, "app.space.member.guest_not_assignable.app_error", appErr.Id)
+}
+
+// TestHandler_SetSpaceMemberCapabilities_InvalidCapability verifies the granted-capability
+// vocabulary is enforced: read_page (the non-grantable baseline) and an unknown token are both
+// rejected with 400, before any target lookup.
+func TestHandler_SetSpaceMemberCapabilities_InvalidCapability(t *testing.T) {
+	channelID := mmmodel.NewId()
+	targetUserID := mmmodel.NewId()
+	adminID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	grantSpaceManage(mockAPI, adminID)
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	cases := []struct {
+		name string
+		caps []string
+	}{
+		{"read_page is not grantable", []string{"read_page"}},
+		{"unknown token is rejected", []string{"not_a_real_capability"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
+				"granted_capabilities": tc.caps,
+			})
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+		})
+	}
+}
+
+// TestHandler_SetSpaceMemberCapabilities_Grant covers the happy path: a manage-granted caller
+// grants create_page to a plain member on a read-only-default space, and the response reflects
+// both the granted set and the resulting effective capabilities (read_page plus the new grant).
+func TestHandler_SetSpaceMemberCapabilities_Grant(t *testing.T) {
+	channelID := mmmodel.NewId()
+	teamID := mmmodel.NewId()
+	targetUserID := mmmodel.NewId()
+	adminID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	grantSpaceManage(mockAPI, adminID)
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	// A plain (non-admin, non-guest) target whose ExplicitRoles reflects the granted atomic role,
+	// standing in for the post-UpdateChannelMemberRoles state: the mock does not track writes, so
+	// the projection is pinned by the specific role token the requested capability set maps to.
+	mockAPI.On("GetChannelMember", channelID, targetUserID).
+		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: targetUserID, ExplicitRoles: mmmodel.SpacePageCreatorRoleId}, nil)
+	h := openTestPlugin(t, mockAPI)
+
+	space, err := h.store.CreateSpace(&model.Space{ChannelId: channelID, TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "RO Space", ViewAccess: model.ViewAccessOpen})
+	require.NoError(t, err)
+	testutil.MustSeedChannelScheme(t, h.db, channelID, mmmodel.SchemeNameSpaceReadOnly)
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
+		"granted_capabilities": []string{"create_page"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var member model.SpaceMember
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &member))
+	require.Equal(t, []string{"create_page"}, member.GrantedCapabilities)
+	require.ElementsMatch(t, []string{"read_page", "create_page"}, member.Capabilities)
+	require.False(t, member.IsAdmin)
+}
+
+// TestHandler_SetSpaceMemberCapabilities_OmissionRevokesAdminForbidden verifies that a manage-only
+// caller (no channel admin_space grant) cannot demote a current SchemeAdmin target by omitting
+// admin_space from the requested set: the escalation guard fires on the current-holder side, not
+// only when admin_space is newly requested.
+func TestHandler_SetSpaceMemberCapabilities_OmissionRevokesAdminForbidden(t *testing.T) {
+	channelID := mmmodel.NewId()
+	targetUserID := mmmodel.NewId()
+	adminID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	grantSpaceManage(mockAPI, adminID)
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("GetChannelMember", channelID, targetUserID).
+		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: targetUserID, SchemeAdmin: true}, nil)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
+		"granted_capabilities": []string{},
+	})
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// TestHandler_SetSpaceMemberCapabilities_SelfTargetForbidden verifies a manage-only caller (no
+// channel admin_space grant) cannot change their own capabilities: self-targeting always requires
+// the stricter admin gate, regardless of what is requested.
+func TestHandler_SetSpaceMemberCapabilities_SelfTargetForbidden(t *testing.T) {
+	channelID := mmmodel.NewId()
+	callerID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	grantSpaceManage(mockAPI, callerID)
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+callerID+"/capabilities", callerID, map[string]any{
+		"granted_capabilities": []string{"create_page"},
+	})
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// TestHandler_SetSpaceMemberCapabilities_LastAdminConflict verifies removing admin_space from the
+// space's sole authorized admin is rejected with 409, even for an admin-capable caller.
+func TestHandler_SetSpaceMemberCapabilities_LastAdminConflict(t *testing.T) {
+	channelID := mmmodel.NewId()
+	targetUserID := mmmodel.NewId()
+	adminID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	grantSpaceAdmin(mockAPI, channelID, adminID)
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("GetChannelMember", channelID, targetUserID).
+		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: targetUserID, SchemeAdmin: true}, nil)
+	// The last-admin guard scans the member list: only the sole target holds SchemeAdmin.
+	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).
+		Return(mmmodel.ChannelMembers{{ChannelId: channelID, UserId: targetUserID, SchemeAdmin: true}}, nil)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
+		"granted_capabilities": []string{},
+	})
+	require.Equal(t, http.StatusConflict, rec.Code)
+	var appErr mmmodel.AppError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+	require.Equal(t, "app.space.member.last_admin.app_error", appErr.Id)
+}
+
+// TestHandler_SetSpaceMemberCapabilities_EmptyDoesNotDemoteBelowDefault verifies the additive-only
+// contract: granting the empty set to a plain member on a contribute-default space clears their
+// per-member grant but never demotes their effective capabilities below the space default.
+func TestHandler_SetSpaceMemberCapabilities_EmptyDoesNotDemoteBelowDefault(t *testing.T) {
+	channelID := mmmodel.NewId()
+	targetUserID := mmmodel.NewId()
+	adminID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	grantSpaceManage(mockAPI, adminID)
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
+		"granted_capabilities": []string{},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var member model.SpaceMember
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &member))
+	require.Empty(t, member.GrantedCapabilities)
+	require.ElementsMatch(t,
+		[]string{model.CapabilityReadPage, model.CapabilityCommentPage, model.CapabilityCreatePage, model.CapabilityEditPage, model.CapabilityDeleteOwnPage},
+		member.Capabilities)
+}
+
+// TestHandler_SetSpaceMemberCapabilities_PublishesEvent pins space_member_capabilities_updated:
+// space/user payload, delivered both to the target user directly and to the backing channel.
+func TestHandler_SetSpaceMemberCapabilities_PublishesEvent(t *testing.T) {
+	channelID := mmmodel.NewId()
+	targetUserID := mmmodel.NewId()
+	adminID := mmmodel.NewId()
+
+	// Built by hand instead of via newEnabledMockAPI: its wildcard PublishWebSocketEvent stub
+	// would swallow the pinned expectation below.
+	mockAPI := &plugintest.API{}
+	mockAPI.On("GetConfig").Return(&mmmodel.Config{FeatureFlags: &mmmodel.FeatureFlags{EnableDocs: true}}).Maybe()
+	grantSpaceManage(mockAPI, adminID)
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.ChannelMember{}, nil).Maybe()
+	mockAPI.On("PublishWebSocketEvent", "space_member_capabilities_updated", mock.Anything, mock.Anything).Return()
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
+		"granted_capabilities": []string{"create_page"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	payload := map[string]any{"space_id": space.Id, "user_id": targetUserID}
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_capabilities_updated",
+		payload, &mmmodel.WebsocketBroadcast{UserId: targetUserID})
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_capabilities_updated",
+		payload, &mmmodel.WebsocketBroadcast{ChannelId: channelID})
+}
+
+// stubSpaceSchemeRepoint wires GetChannelOfType/UpdateChannel so a SetSpaceDefaultCapabilities
+// repoint against channelID is observable: the shared *model.Channel returned by GetChannelOfType
+// is mutated in place by UpdateChannel's SchemeId argument, and that same value is written into
+// the isolated test DB's Channels stand-in row, keeping subsequent store-side scheme resolution
+// (GetSchemeRolesForChannel, spaceDefaultCapabilities — which read the DB row directly, not the
+// mocked channel) consistent with the mocked channel across repeated calls in the same test.
+// Must be registered before openTestPlugin (GetChannelOfType's default catch-all would otherwise
+// shadow it — the same registration-order rule as grantSpaceManage/grantSpaceAdmin); hp is
+// assigned by the caller once openTestPlugin returns, and the returned *model.Channel lets the
+// caller seed a specific starting scheme id once the harness (and its seeded preset scheme ids)
+// exists.
+func stubSpaceSchemeRepoint(t *testing.T, mockAPI *plugintest.API, hp **apiTestHarness, channelID string) *mmmodel.Channel {
+	t.Helper()
+	channel := &mmmodel.Channel{Id: channelID, SchemeId: mmmodel.NewPointer(mmmodel.NewId())}
+	mockAPI.On("GetChannelOfType", channelID, mmmodel.ChannelTypeSpace).Return(channel, nil)
+	// pluginapi's Channel.Update does `*channel = *updatedChannel` after this call, so the mock
+	// must return the same shared object (already mutated to the new SchemeId by the caller before
+	// Update runs) — returning a fresh, empty Channel would wipe the shared object's SchemeId back
+	// to nil on the very next GetChannelOfType read. Not every code path calls Update (a no-op
+	// resubmit never does), so this stub is Maybe().
+	mockAPI.On("UpdateChannel", mock.AnythingOfType("*model.Channel")).
+		Run(func(args mock.Arguments) {
+			updated, ok := args.Get(0).(*mmmodel.Channel)
+			require.True(t, ok)
+			require.NotNil(t, updated.SchemeId)
+			_, dbErr := (*hp).db.Exec(`UPDATE Channels SET SchemeId = $1 WHERE Id = $2`, *updated.SchemeId, channelID)
+			require.NoError(t, dbErr)
+		}).
+		Return(channel, nil).Maybe()
+	return channel
+}
+
+// TestHandler_SetSpaceDefaultCapabilities_Forbidden verifies a manage-only caller (team
+// manage_space, no channel admin_space) cannot change a space's default capability set: the
+// exposure-policy gate is stricter than ordinary manage.
+func TestHandler_SetSpaceDefaultCapabilities_Forbidden(t *testing.T) {
+	mockAPI := newEnabledMockAPI()
+	userID := mmmodel.NewId()
+	// A manage-only grant, never exercised by this gate: RequireSpaceAdminOrSysadmin has no
+	// team-manage_space branch, so this stub is optional, not asserted.
+	mockAPI.On("HasPermissionToTeam", userID, mock.Anything, mmmodel.PermissionManageSpace).Return(true).Maybe()
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
+		"default_capabilities": []string{"create_page"},
+	})
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// TestHandler_SetSpaceDefaultCapabilities_Allowed covers the two callers admitted by the
+// exposure-policy gate: a channel admin_space grant, and the system manage_system override.
+func TestHandler_SetSpaceDefaultCapabilities_Allowed(t *testing.T) {
+	t.Run("channel admin_space grant", func(t *testing.T) {
+		channelID := mmmodel.NewId()
+		userID := mmmodel.NewId()
+
+		var h *apiTestHarness
+		mockAPI := newEnabledMockAPI()
+		grantSpaceAdmin(mockAPI, channelID, userID)
+		stubSpaceSchemeRepoint(t, mockAPI, &h, channelID)
+		h = openTestPlugin(t, mockAPI)
+		space := seedSpace(t, h.store, h.db, channelID)
+
+		rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
+			"default_capabilities": []string{"comment_page"},
+		})
+		require.Equal(t, http.StatusOK, rec.Code)
+	})
+
+	t.Run("sysadmin override", func(t *testing.T) {
+		channelID := mmmodel.NewId()
+		userID := mmmodel.NewId()
+
+		var h *apiTestHarness
+		mockAPI := newEnabledMockAPI()
+		grantSysadmin(mockAPI, userID)
+		stubSpaceSchemeRepoint(t, mockAPI, &h, channelID)
+		h = openTestPlugin(t, mockAPI)
+		space := seedSpace(t, h.store, h.db, channelID)
+
+		rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
+			"default_capabilities": []string{"comment_page"},
+		})
+		require.Equal(t, http.StatusOK, rec.Code)
+	})
+}
+
+// TestHandler_SetSpaceDefaultCapabilities_InvalidCapability verifies the default-capability
+// vocabulary is enforced: read_page (implicit baseline), admin_space (member-grant-only, never a
+// space default), and an unknown token are all rejected with 400.
+func TestHandler_SetSpaceDefaultCapabilities_InvalidCapability(t *testing.T) {
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	grantSpaceAdmin(mockAPI, channelID, userID)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	cases := []struct {
+		name string
+		caps []string
+	}{
+		{"read_page is implicit, not settable", []string{"read_page"}},
+		{"admin_space is member-grant-only", []string{"admin_space"}},
+		{"unknown token is rejected", []string{"not_a_real_capability"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
+				"default_capabilities": tc.caps,
+			})
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+		})
+	}
+}
+
+// TestHandler_SetSpaceDefaultCapabilities_CreatesCustomScheme verifies a non-preset default
+// capability set repoints the backing channel at a newly created space-private custom scheme
+// (named with the docs_space_custom_ prefix), and the response echoes exactly the requested set.
+func TestHandler_SetSpaceDefaultCapabilities_CreatesCustomScheme(t *testing.T) {
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+
+	var h *apiTestHarness
+	mockAPI := newEnabledMockAPI()
+	grantSpaceAdmin(mockAPI, channelID, userID)
+	stubSpaceSchemeRepoint(t, mockAPI, &h, channelID)
+	h = openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
+		"default_capabilities": []string{"create_page"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var updated model.SpaceWithAccess
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updated))
+	require.Equal(t, []string{"create_page"}, updated.DefaultCapabilities)
+
+	var schemeName string
+	require.NoError(t, h.db.QueryRow(
+		`SELECT s.Name FROM Channels c JOIN Schemes s ON s.Id = c.SchemeId WHERE c.Id = $1`, channelID,
+	).Scan(&schemeName))
+	require.NotEmpty(t, schemeName)
+	require.False(t, mmmodel.IsSpaceSchemeName(schemeName), "expected a space-custom scheme, not a seeded preset, got %q", schemeName)
+}
+
+// TestHandler_SetSpaceDefaultCapabilities_SwitchBackToPresetRetiresCustomScheme verifies that
+// switching a space back to a preset default capability set repoints the channel at the shared
+// preset scheme and retires the previously created custom scheme (and its roles) with no orphans
+// left behind.
+func TestHandler_SetSpaceDefaultCapabilities_SwitchBackToPresetRetiresCustomScheme(t *testing.T) {
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+
+	var h *apiTestHarness
+	mockAPI := newEnabledMockAPI()
+	grantSpaceAdmin(mockAPI, channelID, userID)
+	stubSpaceSchemeRepoint(t, mockAPI, &h, channelID)
+	h = openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
+		"default_capabilities": []string{"create_page"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var customSchemeID string
+	require.NoError(t, h.db.QueryRow(`SELECT SchemeId FROM Channels WHERE Id = $1`, channelID).Scan(&customSchemeID))
+
+	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
+		"default_capabilities": []string{"comment_page", "create_page", "edit_page", "delete_own_page"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var contributeID string
+	require.NoError(t, h.db.QueryRow(`SELECT Id FROM Schemes WHERE Name = $1`, mmmodel.SchemeNameSpaceContribute).Scan(&contributeID))
+
+	var liveSchemeID string
+	require.NoError(t, h.db.QueryRow(`SELECT SchemeId FROM Channels WHERE Id = $1`, channelID).Scan(&liveSchemeID))
+	require.Equal(t, contributeID, liveSchemeID)
+
+	var schemeCount, roleCount int
+	require.NoError(t, h.db.QueryRow(`SELECT COUNT(*) FROM Schemes WHERE Id = $1`, customSchemeID).Scan(&schemeCount))
+	require.Zero(t, schemeCount, "the retired custom scheme must be gone")
+	require.NoError(t, h.db.QueryRow(`SELECT COUNT(*) FROM Roles WHERE SchemeId = $1`, customSchemeID).Scan(&roleCount))
+	require.Zero(t, roleCount, "the retired custom scheme's roles must be gone")
+}
+
+// TestHandler_SetSpaceDefaultCapabilities_ResubmitCurrentSetIsNoOp verifies that resubmitting the
+// space's current default capability set (deduplicated and reordered) is a no-op: the backing
+// channel's SchemeId does not change.
+func TestHandler_SetSpaceDefaultCapabilities_ResubmitCurrentSetIsNoOp(t *testing.T) {
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+
+	var h *apiTestHarness
+	mockAPI := newEnabledMockAPI()
+	grantSpaceAdmin(mockAPI, channelID, userID)
+	channel := stubSpaceSchemeRepoint(t, mockAPI, &h, channelID)
+	h = openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	// seedSpace already points the channel at the real contribute preset scheme (in the test DB);
+	// point the mocked channel at that same real id so the requested set — which normalizes to the
+	// same preset — resolves to a target matching the current scheme.
+	var contributeID string
+	require.NoError(t, h.db.QueryRow(`SELECT Id FROM Schemes WHERE Name = $1`, mmmodel.SchemeNameSpaceContribute).Scan(&contributeID))
+	channel.SchemeId = mmmodel.NewPointer(contributeID)
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
+		"default_capabilities": []string{"edit_page", "comment_page", "comment_page", "create_page", "delete_own_page"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	mockAPI.AssertNotCalled(t, "UpdateChannel", mock.Anything)
+
+	var afterSchemeID string
+	require.NoError(t, h.db.QueryRow(`SELECT SchemeId FROM Channels WHERE Id = $1`, channelID).Scan(&afterSchemeID))
+	require.Equal(t, contributeID, afterSchemeID, "resubmitting the current set must not repoint the channel")
+}
+
+// TestHandler_UpdateSpace_ViewAccessRequiresAdmin verifies that a manage-only caller (no channel
+// admin_space grant) cannot change ViewAccess, and that a rejected ViewAccess change fails the
+// whole request — the title in the same patch is not applied either.
+func TestHandler_UpdateSpace_ViewAccessRequiresAdmin(t *testing.T) {
+	mockAPI := newEnabledMockAPI()
+	userID := mmmodel.NewId()
+	grantSpaceManage(mockAPI, userID)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	require.Equal(t, model.ViewAccessOpen, space.ViewAccess)
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, userID, map[string]any{
+		"view_access":        "private",
+		"title":              "x",
+		"expected_update_at": space.UpdateAt,
+	})
+	require.Equal(t, http.StatusForbidden, rec.Code)
+
+	rec = h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id, userID, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got model.Space
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, "Test Space", got.Title, "the whole request must fail together; title must not be applied")
+	require.Equal(t, model.ViewAccessOpen, got.ViewAccess)
+}
+
+// TestHandler_UpdateSpace_ViewAccessForceRejected verifies force=true is rejected on a ViewAccess
+// change: the exposure-policy escalation check must always run, never last-write-wins.
+func TestHandler_UpdateSpace_ViewAccessForceRejected(t *testing.T) {
+	mockAPI := newEnabledMockAPI()
+	userID := mmmodel.NewId()
+	grantSpaceManage(mockAPI, userID)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, userID, map[string]any{
+		"view_access": "open",
+		"force":       true,
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	var appErr mmmodel.AppError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+	require.Equal(t, "app.space.update.view_access_force.app_error", appErr.Id)
+}
+
+// TestHandler_UpdateSpace_ViewAccessAdminSucceedsMemberRetained verifies an admin-capable caller
+// can flip a space from open to private, and that an existing member can still read the space
+// afterwards (privatizing does not shed members).
+func TestHandler_UpdateSpace_ViewAccessAdminSucceedsMemberRetained(t *testing.T) {
+	channelID := mmmodel.NewId()
+	adminID := mmmodel.NewId()
+	memberID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	grantSpaceAdmin(mockAPI, channelID, adminID)
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("AddChannelMember", channelID, memberID).
+		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: memberID}, nil)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/members", adminID, map[string]any{"user_id": memberID})
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, adminID, map[string]any{
+		"view_access":        "private",
+		"expected_update_at": space.UpdateAt,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var updated model.Space
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updated))
+	require.Equal(t, model.ViewAccessPrivate, updated.ViewAccess)
+
+	rec = h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id, memberID, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandler_UpdateSpace_ViewAccessInvalidValue verifies an admin-capable caller supplying a
+// nonsensical view_access value is rejected with 400.
+func TestHandler_UpdateSpace_ViewAccessInvalidValue(t *testing.T) {
+	channelID := mmmodel.NewId()
+	adminID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	grantSpaceAdmin(mockAPI, channelID, adminID)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, adminID, map[string]any{
+		"view_access":        "bogus",
+		"expected_update_at": space.UpdateAt,
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandler_OpenSpaceReadFallthrough_VisibleWithReadPublicChannel verifies a non-member of an
+// open space with team read_public_channel sees it both in the team space listing and via the
+// single-space read, the latter carrying only the read_page capability (never a hypothetical
+// post-join grant).
+func TestHandler_OpenSpaceReadFallthrough_VisibleWithReadPublicChannel(t *testing.T) {
+	teamID := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	caller := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	// Registered before openTestPlugin: mock matching is by registration order, so this specific
+	// stub (simulating "not a member") takes precedence over StubDefaultSpacePermissions'
+	// permissive read_page-for-anyone catch-all.
+	mockAPI.On("HasPermissionToChannel", caller, channelID, mmmodel.PermissionReadPage).Return(false)
+	mockAPI.On("GetTeamMember", teamID, caller).Return(&mmmodel.TeamMember{}, nil)
+	h := openTestPlugin(t, mockAPI)
+
+	space := seedSpaceInTeam(t, h.store, h.db, channelID, teamID)
+	require.Equal(t, model.ViewAccessOpen, space.ViewAccess)
+
+	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var list paginatedResponse[*model.Space]
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &list))
+	require.Len(t, list.Items, 1)
+	require.Equal(t, space.Id, list.Items[0].Id)
+
+	rec = h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id, caller, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var wrapper model.SpaceWithAccess
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &wrapper))
+	require.Equal(t, []string{model.CapabilityReadPage}, wrapper.Capabilities)
+}
+
+// TestHandler_OpenSpaceReadFallthrough_HiddenWithoutReadPublicChannel verifies the complementary
+// case: the same non-member caller, but without team read_public_channel, sees the open space
+// neither in the team listing nor via the single-space read (403).
+func TestHandler_OpenSpaceReadFallthrough_HiddenWithoutReadPublicChannel(t *testing.T) {
+	teamID := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	caller := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	// Registered before openTestPlugin: same registration-order rule as above.
+	mockAPI.On("HasPermissionToChannel", caller, channelID, mmmodel.PermissionReadPage).Return(false)
+	mockAPI.On("HasPermissionToTeam", caller, teamID, mmmodel.PermissionReadPublicChannel).Return(false)
+	mockAPI.On("GetTeamMember", teamID, caller).Return(&mmmodel.TeamMember{}, nil)
+	h := openTestPlugin(t, mockAPI)
+
+	space := seedSpaceInTeam(t, h.store, h.db, channelID, teamID)
+
+	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var list paginatedResponse[*model.Space]
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &list))
+	require.Empty(t, list.Items)
+
+	rec = h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id, caller, nil)
+	require.Equal(t, http.StatusForbidden, rec.Code)
 }

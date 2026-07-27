@@ -22,25 +22,30 @@ const maxPageBodyBytes = 8 << 20 // 8 MiB
 // IDs, booleans, and timestamps — no content fields.
 const maxPageStructBodyBytes = 4 * 1024 // 4 KiB
 
-// resolveTargetSpace validates a target_space_id carried in the request body and checks the
-// caller's membership. Unlike the {space_id} in the URL path — which every handler checks up front
-// via requireSpaceMembership — a body-supplied ID only surfaces after decoding, so it is checked
-// inline here. It writes the error response and returns ok=false on failure. Callers pass the
-// invalid-ID rejection as a pre-built AppError with a string-literal ID so the i18n extraction
-// tool can discover the message key.
-func (p *Plugin) resolveTargetSpace(w http.ResponseWriter, invalidIDErr *mmmodel.AppError, targetSpaceID, userID string) (*model.Space, bool) {
+// resolveTargetSpaceRead validates a target_space_id carried in the request body and resolves the
+// caller's read access to it. Unlike the {space_id} in the URL path — which every handler checks
+// up front — a body-supplied ID only surfaces after decoding, so it is checked inline here. It
+// writes the error response and returns ok=false on failure. Callers pass the invalid-ID
+// rejection as a pre-built AppError with a string-literal ID so the i18n extraction tool can
+// discover the message key.
+func (p *Plugin) resolveTargetSpaceRead(w http.ResponseWriter, invalidIDErr *mmmodel.AppError, targetSpaceID, userID string) (*model.Space, bool) {
 	if !mmmodel.IsValidId(targetSpaceID) {
 		p.writeAppError(w, invalidIDErr)
 		return nil, false
 	}
-	return p.requireSpaceMembership(w, targetSpaceID, userID, false)
+	space, _, ok := p.requireSpaceRead(w, targetSpaceID, userID)
+	return space, ok
 }
 
 // handleCreatePage handles POST /api/v1/spaces/{space_id}/pages.
 func (p *Plugin) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
+	space, ok := p.fetchSpaceForGate(w, vars["space_id"], false)
+	if !ok {
+		return
+	}
+	if !p.gatePageWrite(w, space, userID, mmmodel.PermissionCreatePage, nil) {
 		return
 	}
 
@@ -65,7 +70,7 @@ func (p *Plugin) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleGetPage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
+	if _, ok := p.requireSpacePagePerm(w, vars["space_id"], userID, mmmodel.PermissionReadPage); !ok {
 		return
 	}
 	page, appErr := p.service.GetPageInSpace("handleGetPage", vars["page_id"], vars["space_id"], false)
@@ -81,7 +86,11 @@ func (p *Plugin) handleGetPage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
+	space, ok := p.fetchSpaceForGate(w, vars["space_id"], false)
+	if !ok {
+		return
+	}
+	if !p.gatePageWrite(w, space, userID, mmmodel.PermissionEditPage, nil) {
 		return
 	}
 
@@ -106,11 +115,21 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated)
 }
 
-// handleDeletePage handles DELETE /api/v1/spaces/{space_id}/pages/{page_id}.
+// handleDeletePage handles DELETE /api/v1/spaces/{space_id}/pages/{page_id}. Own/any: delete_page
+// (any), or delete_own_page when the caller owns the page.
 func (p *Plugin) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
+	space, _, ok := p.requireSpaceRead(w, vars["space_id"], userID)
+	if !ok {
+		return
+	}
+	page, appErr := p.service.GetPageInSpace("handleDeletePage", vars["page_id"], vars["space_id"], false)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
+	}
+	if !p.gateDeleteOwnOrAny(w, space, userID, page.UserId) {
 		return
 	}
 	if appErr := p.service.DeletePage(vars["page_id"], vars["space_id"], userID); appErr != nil {
@@ -120,11 +139,21 @@ func (p *Plugin) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 	writeStatusOK(w)
 }
 
-// handleRestorePage handles PATCH /api/v1/spaces/{space_id}/pages/{page_id}/restore.
+// handleRestorePage handles PATCH /api/v1/spaces/{space_id}/pages/{page_id}/restore. The page is
+// soft-deleted at gate time, so the owner comparison resolves it via the include-deleted getter.
 func (p *Plugin) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
+	space, _, ok := p.requireSpaceRead(w, vars["space_id"], userID)
+	if !ok {
+		return
+	}
+	page, appErr := p.service.GetPageInSpace("handleRestorePage", vars["page_id"], vars["space_id"], true)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
+	}
+	if !p.gateDeleteOwnOrAny(w, space, userID, page.UserId) {
 		return
 	}
 	restored, appErr := p.service.RestorePage(vars["page_id"], vars["space_id"], userID)
@@ -139,11 +168,15 @@ func (p *Plugin) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 // (parent_id nil leaves the parent unchanged; "" moves to the space root) and positions it at
 // sibling_index within the destination sibling group (clamped to the group's bounds rather than
 // rejected if out of range). The optimistic-lock baseline (expected_update_at) is required unless
-// force is set.
+// force is set. Gated on edit_page.
 func (p *Plugin) handleMovePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
+	space, ok := p.fetchSpaceForGate(w, vars["space_id"], false)
+	if !ok {
+		return
+	}
+	if !p.gatePageWrite(w, space, userID, mmmodel.PermissionEditPage, nil) {
 		return
 	}
 
@@ -167,11 +200,12 @@ func (p *Plugin) handleMovePage(w http.ResponseWriter, r *http.Request) {
 // handleDuplicatePage handles POST /api/v1/spaces/{space_id}/pages/{page_id}/duplicate. An empty (or
 // all-default) body duplicates the page in place: same space, same parent, single page.
 // include_children copies the whole subtree; target_space_id/parent_id redirect the copy
-// elsewhere.
+// elsewhere. Gated on source read_page plus target create_page (target defaults to the source
+// space, so an in-place duplicate is still create-gated).
 func (p *Plugin) handleDuplicatePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	sourceSpace, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false)
+	sourceSpace, _, ok := p.requireSpaceRead(w, vars["space_id"], userID)
 	if !ok {
 		return
 	}
@@ -186,11 +220,16 @@ func (p *Plugin) handleDuplicatePage(w http.ResponseWriter, r *http.Request) {
 	}
 	// A nil targetSpace means "duplicate into the source space"; the fetched records are passed
 	// through so the service never re-reads them.
-	var targetSpace *model.Space
+	targetSpace := sourceSpace
 	if req.TargetSpaceId != "" && req.TargetSpaceId != vars["space_id"] {
-		if targetSpace, ok = p.resolveTargetSpace(w, mmmodel.NewAppError("handleDuplicatePage", "api.page.duplicate.invalid_target_space_id.app_error", nil, "", http.StatusBadRequest), req.TargetSpaceId, userID); !ok {
+		var targetOK bool
+		targetSpace, targetOK = p.resolveTargetSpaceRead(w, mmmodel.NewAppError("handleDuplicatePage", "api.page.duplicate.invalid_target_space_id.app_error", nil, "", http.StatusBadRequest), req.TargetSpaceId, userID)
+		if !targetOK {
 			return
 		}
+	}
+	if !p.gatePageWrite(w, targetSpace, userID, mmmodel.PermissionCreatePage, nil) {
+		return
 	}
 
 	duplicated, appErr := p.service.DuplicatePage(vars["page_id"], sourceSpace, userID, req.IncludeChildren, targetSpace, req.ParentId)
@@ -206,7 +245,7 @@ func (p *Plugin) handleDuplicatePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleGetPageChildren(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
+	if _, ok := p.requireSpacePagePerm(w, vars["space_id"], userID, mmmodel.PermissionReadPage); !ok {
 		return
 	}
 	page, perPage := pageParam(r), perPageParam(r)
@@ -221,11 +260,12 @@ func (p *Plugin) handleGetPageChildren(w http.ResponseWriter, r *http.Request) {
 // handleMovePageToSpace handles PATCH /api/v1/spaces/{space_id}/pages/{page_id}/move-to-space,
 // moving the page and its subtree to target_space_id (parent_id optional; "" = target root).
 // The optimistic-lock baseline (expected_update_at, the moved root's last-seen UpdateAt) is
-// required unless force is set.
+// required unless force is set. Gated on source read_page, a remove-class delete permission over
+// the moved subtree, and target create_page.
 func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	sourceSpace, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false)
+	sourceSpace, sourceRead, ok := p.requireSpaceRead(w, vars["space_id"], userID)
 	if !ok {
 		return
 	}
@@ -247,12 +287,38 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 	// move reuses the membership gate's record instead of resolving the same space twice.
 	targetSpace := sourceSpace
 	if req.TargetSpaceId != vars["space_id"] {
-		if targetSpace, ok = p.resolveTargetSpace(w, mmmodel.NewAppError("handleMovePageToSpace", "api.page.move_to_space.invalid_target_space_id.app_error", nil, "", http.StatusBadRequest), req.TargetSpaceId, userID); !ok {
+		var targetOK bool
+		targetSpace, targetOK = p.resolveTargetSpaceRead(w, mmmodel.NewAppError("handleMovePageToSpace", "api.page.move_to_space.invalid_target_space_id.app_error", nil, "", http.StatusBadRequest), req.TargetSpaceId, userID)
+		if !targetOK {
 			return
 		}
 	}
+	// Source-side remove-class gate: delete_page (any) if held, else delete_own_page (the store
+	// enforces subtree-wide ownership in-transaction via requiredOwnerID). No source auto-join —
+	// only the target side admits a non-member write. Resolved before the target gate below, which
+	// can join the caller to the target space: a caller denied here must not be left holding a
+	// membership the rejected request created.
+	ownOnly, allowed, permErr := p.resolveOwnOrAny(sourceSpace, userID,
+		"api.page.move_to_space", mmmodel.PermissionDeletePage,
+		"api.page.move_to_space.own", mmmodel.PermissionDeleteOwnPage, true, sourceRead)
+	if permErr != nil {
+		p.writeAppError(w, permErr)
+		return
+	}
+	if !allowed {
+		p.writeAppError(w, mmmodel.NewAppError("handleMovePageToSpace", "app.space.access.forbidden.app_error", nil, "", http.StatusForbidden))
+		return
+	}
+	requiredOwnerID := ""
+	if ownOnly {
+		requiredOwnerID = userID
+	}
 
-	moved, appErr := p.service.MovePageToSpace(vars["page_id"], sourceSpace, targetSpace, req.ParentId, req.ExpectedUpdateAt, req.Force, userID)
+	if !p.gatePageWrite(w, targetSpace, userID, mmmodel.PermissionCreatePage, nil) {
+		return
+	}
+
+	moved, appErr := p.service.MovePageToSpace(vars["page_id"], sourceSpace, targetSpace, req.ParentId, req.ExpectedUpdateAt, req.Force, userID, requiredOwnerID)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return
