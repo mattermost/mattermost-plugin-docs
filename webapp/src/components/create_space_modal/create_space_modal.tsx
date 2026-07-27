@@ -14,7 +14,6 @@ import type {SelectorOption} from 'components/form-controls/public_private_selec
 import PublicPrivateSelector from 'components/form-controls/public_private_selector';
 import TextArea from 'components/form-controls/text_area';
 import TextInput from 'components/form-controls/text_input';
-import UrlInput from 'components/form-controls/url_input';
 import GenericModal from 'components/generic_modal/generic_modal';
 
 import type {Space, SpaceVisibility} from 'types/docs';
@@ -32,7 +31,7 @@ const DEFAULT_SPACE_EMOJI = '📄';
 const CreateSpaceModal = ({onClose, onCreated}: Props) => {
     const {formatMessage} = useIntl();
 
-    const {form, slugSchema, baseUrl, changeName, changeSlug, submit, urlInputRef} = useCreateSpace({
+    const {form, changeName, submit} = useCreateSpace({
         onCreated: (space) => {
             onCreated?.(space);
             onClose();
@@ -103,23 +102,6 @@ const CreateSpaceModal = ({onClose, onCreated}: Props) => {
                                 maxLength={SPACE_NAME_MAX_LENGTH}
                                 autoFocus={true}
                                 onEnter={submit}
-                            />
-                        )}
-                    </form.Field>
-                    <form.Field
-                        name='slug'
-                        validators={{onBlurAsync: slugSchema}}
-                    >
-                        {(field) => (
-                            <UrlInput
-                                ref={urlInputRef}
-                                id='docs-create-space-url'
-                                ariaLabel={formatMessage({id: 'docs.createSpace.urlAriaLabel', defaultMessage: 'Space URL'})}
-                                baseUrl={baseUrl}
-                                value={field.state.value}
-                                onChange={changeSlug}
-                                onBlur={field.handleBlur}
-                                error={firstSpaceValidationError(field.state.meta.errors, formatMessage)}
                             />
                         )}
                     </form.Field>

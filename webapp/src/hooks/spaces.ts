@@ -4,17 +4,13 @@
 import {useForm} from '@tanstack/react-form';
 import {getSpaceViews, recordSpaceView} from 'data/recent_spaces';
 import {useAppDispatch, useAppSelector} from 'hooks/redux';
-import {useTeamContext} from 'hooks/team';
-import {useCallback, useEffect, useMemo, useRef} from 'react';
-import {DOCS_KEYWORD} from 'routing/paths';
-import {createSpaceFormSchema, slugify} from 'validation/space_schema';
+import {useCallback, useEffect, useMemo} from 'react';
+import {createSpaceFormSchema} from 'validation/space_schema';
 
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
 import {createSpace} from 'store/actions';
 import {getAllSpaces, getSpace, getSpacesForCurrentTeam} from 'store/selectors';
-
-import type {UrlInputHandle} from 'components/form-controls/url_input';
 
 import type {Space, SpaceSummary, SpaceVisibility} from 'types/docs';
 
@@ -60,14 +56,12 @@ export function useRecordSpaceView(spaceId?: string): void {
 
 type CreateSpaceValues = {
     name: string;
-    slug: string;
     visibility: SpaceVisibility;
     description: string;
 };
 
 const INITIAL_VALUES: CreateSpaceValues = {
     name: '',
-    slug: '',
     visibility: 'public',
     description: '',
 };
@@ -77,21 +71,11 @@ type CreateSpaceOptions = {
 };
 
 // Owns the create-space form via TanStack Form. The Zod schema drives validation
-// through TanStack's validators (its issues distribute to fields by path). The
-// slug is a client-only vanity field for now — the server assigns an opaque id
-// and has no slug concept, so there's no uniqueness check; only format is
-// validated (the slug's on-blur schema).
+// through TanStack's validators (its issues distribute to fields by path).
 export function useCreateSpace({onCreated}: CreateSpaceOptions = {}) {
-    const {name: teamName} = useTeamContext();
     const dispatch = useAppDispatch();
 
     const formSchema = useMemo(() => createSpaceFormSchema(), []);
-    const slugSchema = useMemo(() => formSchema.shape.slug, [formSchema]);
-
-    // Stop deriving the slug from the name once the user edits the slug directly.
-    const slugEdited = useRef(false);
-
-    const urlInputRef = useRef<UrlInputHandle>(null);
 
     const form = useForm({
         defaultValues: INITIAL_VALUES,
@@ -99,7 +83,6 @@ export function useCreateSpace({onCreated}: CreateSpaceOptions = {}) {
         onSubmit: async ({value}) => {
             const space = await dispatch(createSpace({
                 title: value.name.trim(),
-                slug: value.slug.trim(),
                 visibility: value.visibility,
                 description: value.description.trim() || undefined,
             }));
@@ -109,26 +92,9 @@ export function useCreateSpace({onCreated}: CreateSpaceOptions = {}) {
 
     const changeName = useCallback((name: string) => {
         form.setFieldValue('name', name);
-        if (!slugEdited.current) {
-            form.setFieldValue('slug', slugify(name));
-        }
     }, [form]);
 
-    const changeSlug = useCallback((slug: string) => {
-        slugEdited.current = true;
-        form.setFieldValue('slug', slug);
-    }, [form]);
+    const submit = useCallback(() => form.handleSubmit(), [form]);
 
-    // Submits, then surfaces a rejected slug (e.g. a bad format) by focusing the
-    // URL input — otherwise the error lands on the field's read-only preview.
-    const submit = useCallback(async () => {
-        await form.handleSubmit();
-        if ((form.getFieldMeta('slug')?.errors.length ?? 0) > 0) {
-            urlInputRef.current?.focus();
-        }
-    }, [form]);
-
-    const baseUrl = useMemo(() => `${window.location.origin}/${teamName}/${DOCS_KEYWORD}`, [teamName]);
-
-    return {form, slugSchema, baseUrl, changeName, changeSlug, submit, urlInputRef};
+    return {form, changeName, submit};
 }

@@ -19,7 +19,7 @@ function typeName(value: string) {
 
 describe('CreateSpaceModal', () => {
     // Stub the API create so the form path doesn't hit the network; the server
-    // assigns the opaque id, so the returned space's id is unrelated to the slug.
+    // assigns the opaque id.
     beforeEach(() => {
         jest.spyOn(docsDataSource, 'createSpace').mockImplementation(
             async (_teamId, input) => makeSpace('new-space-id', input.title.trim(), 'team1'),

@@ -10,29 +10,19 @@ import {z} from 'zod';
 // state so TanStack distributes each issue to its field by path.
 
 export const SPACE_NAME_MAX_LENGTH = 64;
-export const SPACE_SLUG_MAX_LENGTH = 64;
 export const SPACE_DESCRIPTION_MAX_LENGTH = 1024;
-
-// Lowercase alphanumerics and single dashes, not leading/trailing — the same
-// shape Mattermost uses for channel URL names.
-const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 // Stable ids for each validation failure; the UI maps these to messages.
 export const SpaceValidationError = {
     NameRequired: 'name.required',
     NameTooLong: 'name.tooLong',
-    UrlRequired: 'url.required',
-    UrlTooLong: 'url.tooLong',
-    UrlInvalid: 'url.invalid',
     DescriptionTooLong: 'description.tooLong',
 } as const;
 
 export type SpaceValidationError = typeof SpaceValidationError[keyof typeof SpaceValidationError];
 
-// One schema for the whole form. The slug is a client-only vanity field (the
-// server assigns an opaque id and has no slug concept), so it's only format-
-// validated — no uniqueness check. Consumers that validate the slug on its own
-// (the URL field, on blur) derive it with `createSpaceFormSchema().shape.slug`.
+// One schema for the whole form. Field keys match the form state so TanStack
+// distributes each issue to its field by path.
 export function createSpaceFormSchema() {
     return z.object({
         name: z.
@@ -40,12 +30,6 @@ export function createSpaceFormSchema() {
             trim().
             min(1, {error: SpaceValidationError.NameRequired}).
             max(SPACE_NAME_MAX_LENGTH, {error: SpaceValidationError.NameTooLong}),
-        slug: z.
-            string().
-            trim().
-            min(1, {error: SpaceValidationError.UrlRequired, abort: true}).
-            max(SPACE_SLUG_MAX_LENGTH, {error: SpaceValidationError.UrlTooLong, abort: true}).
-            regex(SLUG_PATTERN, {error: SpaceValidationError.UrlInvalid, abort: true}),
         visibility: z.enum(['public', 'private']),
 
         // Required string (may be empty) to match the always-present form field;
@@ -58,11 +42,3 @@ export function createSpaceFormSchema() {
 }
 
 export type SpaceFormValues = z.infer<ReturnType<typeof createSpaceFormSchema>>;
-
-export function slugify(value: string): string {
-    return value.
-        toLowerCase().
-        trim().
-        replace(/[^a-z0-9]+/g, '-').
-        replace(/^-+|-+$/g, '');
-}

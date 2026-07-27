@@ -19,9 +19,9 @@ export interface DocsDataSource {
     getSpace(spaceId: string): Promise<Space | undefined>;
 
     // Creates a space in the team and returns it (with its server-assigned id
-    // and team_id). Only server-supported fields are sent; client-only fields
-    // (slug, visibility) are dropped by the API source until the server models
-    // them (see PR #10's view_access).
+    // and team_id). Only server-supported fields are sent; the client-only
+    // visibility is dropped by the API source until the server models it (see
+    // PR #10's view_access).
     createSpace(teamId: string, input: CreateSpaceInput): Promise<Space>;
 
     // Removes a member from a space. Leaving a space is removing yourself; the

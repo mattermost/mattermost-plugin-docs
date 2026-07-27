@@ -3,16 +3,13 @@
 
 import {defineMessages} from 'react-intl';
 import type {IntlShape} from 'react-intl';
-import {SPACE_DESCRIPTION_MAX_LENGTH, SPACE_NAME_MAX_LENGTH, SPACE_SLUG_MAX_LENGTH, SpaceValidationError} from 'validation/space_schema';
+import {SPACE_DESCRIPTION_MAX_LENGTH, SPACE_NAME_MAX_LENGTH, SpaceValidationError} from 'validation/space_schema';
 
 type FormatMessage = IntlShape['formatMessage'];
 
 const messages = defineMessages({
     nameRequired: {id: 'docs.createSpace.error.name.required', defaultMessage: 'Please enter a name for the space'},
     nameTooLong: {id: 'docs.createSpace.error.name.tooLong', defaultMessage: 'Name must be {max} characters or fewer'},
-    urlRequired: {id: 'docs.createSpace.error.url.required', defaultMessage: 'Please enter a URL for the space'},
-    urlTooLong: {id: 'docs.createSpace.error.url.tooLong', defaultMessage: 'URL must be {max} characters or fewer'},
-    urlInvalid: {id: 'docs.createSpace.error.url.invalid', defaultMessage: 'Use lowercase letters, numbers, and dashes, with no spaces'},
     descriptionTooLong: {id: 'docs.createSpace.error.description.tooLong', defaultMessage: 'Description must be {max} characters or fewer'},
 });
 
@@ -25,12 +22,6 @@ export function resolveSpaceValidationError(id: string, formatMessage: FormatMes
         return formatMessage(messages.nameRequired);
     case SpaceValidationError.NameTooLong:
         return formatMessage(messages.nameTooLong, {max: SPACE_NAME_MAX_LENGTH});
-    case SpaceValidationError.UrlRequired:
-        return formatMessage(messages.urlRequired);
-    case SpaceValidationError.UrlTooLong:
-        return formatMessage(messages.urlTooLong, {max: SPACE_SLUG_MAX_LENGTH});
-    case SpaceValidationError.UrlInvalid:
-        return formatMessage(messages.urlInvalid);
     case SpaceValidationError.DescriptionTooLong:
         return formatMessage(messages.descriptionTooLong, {max: SPACE_DESCRIPTION_MAX_LENGTH});
     default:

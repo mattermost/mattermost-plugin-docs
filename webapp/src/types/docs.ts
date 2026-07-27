@@ -26,12 +26,10 @@ export type Space = {
 };
 
 // The fields the create-space form collects. The data source turns this into a
-// Space (assigning the opaque id, etc.).
+// Space (assigning the opaque id, etc.). visibility is client-only for now (maps
+// to the server's view_access later).
 export type CreateSpaceInput = {
     title: string;
-
-    // Vanity URL segment, derived from the title but independently editable.
-    slug: string;
     visibility: SpaceVisibility;
     description?: string;
     icon?: string;
