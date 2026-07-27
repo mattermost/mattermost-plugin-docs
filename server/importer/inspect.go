@@ -533,11 +533,12 @@ func normalizePage(
 		return nil, inspectErr(InspectErrDuplicatePageID, "line %d: duplicate page external id %q", lineNo, externalID)
 	}
 
-	// Normalize the title exactly as Page.PreSave does (SanitizeUnicode then trim). Import uses a
-	// dedicated store path that bypasses PreSave, so without this the stored title could carry
-	// unsafe Unicode controls, and — more subtly — the incoming source hash would be computed on a
-	// value that never matches the applied hash of the normalized title, causing spurious conflicts.
-	title := strings.TrimSpace(mmmodel.SanitizeUnicode(stringOrEmpty(page.Title)))
+	// Normalize the title exactly as Page.PreSave does (SanitizeUnicode then trim), plus stripNUL
+	// (SanitizeUnicode does not drop NUL, which PostgreSQL cannot store). Import uses a dedicated
+	// store path that bypasses PreSave, so without this the stored title could carry unsafe Unicode
+	// controls or a NUL, and — more subtly — the incoming source hash would be computed on a value
+	// that never matches the applied hash of the normalized title, causing spurious conflicts.
+	title := strings.TrimSpace(stripNUL(mmmodel.SanitizeUnicode(stringOrEmpty(page.Title))))
 	if title == "" {
 		return nil, inspectErr(InspectErrPageMissingTitle, "line %d: page %q is missing a title", lineNo, externalID)
 	}
@@ -585,14 +586,19 @@ func normalizePage(
 		})
 	}
 
-	sourceProps := allowlistSourceProps(props)
+	// Strip NUL from every persisted free-text field (SanitizeUnicode does not remove it) so a NUL
+	// in producer content cannot break the TEXT/JSONB staging insert. This runs before hashing so
+	// the incoming hash matches the value actually stored.
+	sourceProps, _ := stripNULFromValue(allowlistSourceProps(props)).(map[string]any)
+	authorAccountID := stripNUL(propString(props, PropConfluenceAuthorAccountID))
+	userProposal := stripNUL(stringOrEmpty(page.User))
 
 	incomingHash, hErr := HashSourceState(SourceStateHashInput{
 		Title:            title,
 		CanonicalBody:    canonicalBody,
 		ParentExternalID: parentID,
-		AuthorAccountID:  propString(props, PropConfluenceAuthorAccountID),
-		AuthorProposal:   stringOrEmpty(page.User),
+		AuthorAccountID:  authorAccountID,
+		AuthorProposal:   userProposal,
 		SourceCreateAt:   sourceCreateAt,
 		SourceUpdateAt:   int64OrZero(page.UpdateAt),
 		SourceProps:      sourceProps,
@@ -644,8 +650,8 @@ func normalizePage(
 		Title:                 title,
 		CanonicalBody:         canonicalBody,
 		SearchText:            searchText,
-		SourceUserProposal:    stringOrEmpty(page.User),
-		SourceAuthorAccountID: propString(props, PropConfluenceAuthorAccountID),
+		SourceUserProposal:    userProposal,
+		SourceAuthorAccountID: authorAccountID,
 		SourceCreateAt:        sourceCreateAt,
 		SourceUpdateAt:        int64OrZero(page.UpdateAt),
 		SourceProps:           sourceProps,

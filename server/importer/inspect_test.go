@@ -6,6 +6,7 @@ package importer
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -475,6 +476,64 @@ func TestInspect_TitleSanitizedLikePreSave(t *testing.T) {
 	}
 	if res.Pages[0].IncomingSourceHash != wantHash {
 		t.Errorf("incoming hash not based on sanitized title")
+	}
+}
+
+func TestInspect_StripsNULFromPersistedFields(t *testing.T) {
+	// A NUL (U+0000) in the title, TipTap text, and an import_labels prop must be stripped during
+	// inspection so the staging insert into TEXT/JSONB columns cannot fail on an unstorable byte.
+	// The producer emits NUL as a JSON \u escape, which json.Unmarshal decodes to a real NUL byte —
+	// build the line via json.Marshal so the escaping is exactly what a real bundle carries.
+	nul := string(rune(0))
+	docJSON := `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":` +
+		mustQuote("hel"+nul+"lo") + `}]}]}`
+	pageObj := map[string]any{
+		"type": "page",
+		"page": map[string]any{
+			"space_import_source_id": "DOCS",
+			"user":                   "j" + nul + "doe",
+			"title":                  "Ti" + nul + "tle",
+			"content":                docJSON,
+			"props": map[string]any{
+				"import_source_id":             "100",
+				"confluence_author_account_id": "aa" + nul + "id",
+				"import_labels":                []any{"la" + nul + "bel"},
+			},
+		},
+	}
+	pageBytes, err := json.Marshal(pageObj)
+	if err != nil {
+		t.Fatalf("marshal page: %v", err)
+	}
+	jsonl := joinLines(versionLine(), spaceLine(), string(pageBytes), resolveLine())
+	res, err := newBundle(jsonl, baseManifest(1, 0, 0)).inspect(t, InspectOptions{})
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	p := res.Pages[0]
+	fields := map[string]string{
+		"title":         p.Title,
+		"search_text":   p.SearchText,
+		"user_proposal": p.SourceUserProposal,
+		"author_id":     p.SourceAuthorAccountID,
+	}
+	for name, v := range fields {
+		if strings.ContainsRune(v, 0) {
+			t.Errorf("%s still contains a NUL: %q", name, v)
+		}
+	}
+	if labels, ok := p.SourceProps["import_labels"].([]any); ok {
+		for _, l := range labels {
+			if s, _ := l.(string); strings.ContainsRune(s, 0) {
+				t.Errorf("import_labels entry still contains a NUL: %q", s)
+			}
+		}
+	} else {
+		t.Errorf("expected import_labels in source props, got %+v", p.SourceProps)
+	}
+	// Sanity: the surrounding characters survived (only the NUL was removed).
+	if p.Title != "Title" || p.SourceUserProposal != "jdoe" {
+		t.Errorf("stripping removed more than the NUL: title=%q user=%q", p.Title, p.SourceUserProposal)
 	}
 }
 

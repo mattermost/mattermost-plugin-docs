@@ -4,6 +4,9 @@
 package model
 
 import (
+	"database/sql/driver"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"unicode/utf8"
@@ -151,6 +154,62 @@ const (
 	ImportIssueCodeMaxRunes   = 64
 )
 
+// ImportConfirmationMaxBytes bounds the persisted confirmation JSON (see ImportConfirmation). It is
+// set well above the realistic worst case: the confirmation carries one overwrite descriptor per
+// approved conflict, each ~350 bytes (three 64-char baseline hashes + external id + timestamp), so
+// a reimport approving the plan's ceiling of 5,000 conflicting pages produces ~1.75 MiB. 4 MiB
+// leaves ample headroom while still bounding an abusive payload.
+const ImportConfirmationMaxBytes = 4 * 1024 * 1024
+
+// ImportConfirmation is the persisted confirmation payload (plan §17), stored in the
+// DOCS_ImportJob.Confirmation JSONB column as raw JSON.
+//
+// It deliberately is NOT mmmodel.StringInterface. That type's database Value() rejects any
+// marshaled JSON larger than its internal maxPropSizeBytes (1 MiB), but a *valid* confirmation can
+// legitimately exceed 1 MiB: with up to 5,000 individually approved conflict overwrite descriptors
+// (~350 bytes each) the payload approaches ~1.75 MiB, so StringInterface would make a legitimate
+// confirmation impossible to persist (ErrMaxPropSizeExceeded at insert). ImportConfirmation instead
+// stores the raw JSON bytes verbatim and enforces its own, deliberately higher bound
+// (ImportConfirmationMaxBytes). The bundle summaries keep using StringInterface because they hold
+// fixed-shape count structures that never approach 1 MiB; only the confirmation grows with input.
+//
+// The Phase-4 confirm HTTP handler must cap its request body to ImportConfirmationMaxBytes so an
+// over-limit confirmation is rejected as a 413 at the edge rather than failing opaquely at insert;
+// the Value() bound below is the last-line backstop, not the primary gate.
+type ImportConfirmation json.RawMessage
+
+// Value implements driver.Valuer for the JSONB column. An empty confirmation persists as "{}" so
+// the column's NOT NULL DEFAULT '{}' invariant holds, and an over-limit payload is rejected here as
+// a backstop. The raw bytes are returned as a string, which lib/pq sends to a jsonb column.
+func (c ImportConfirmation) Value() (driver.Value, error) {
+	if len(c) == 0 {
+		return "{}", nil
+	}
+	if len(c) > ImportConfirmationMaxBytes {
+		return nil, fmt.Errorf("import confirmation of %d bytes exceeds the %d byte limit", len(c), ImportConfirmationMaxBytes)
+	}
+	return string(c), nil
+}
+
+// Scan implements sql.Scanner, reading the JSONB column back as raw JSON bytes (lib/pq yields
+// []byte for jsonb; a string form is also accepted defensively). The bytes are copied so the
+// value does not alias a driver-owned buffer.
+func (c *ImportConfirmation) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		*c = nil
+	case []byte:
+		b := make([]byte, len(v))
+		copy(b, v)
+		*c = b
+	case string:
+		*c = ImportConfirmation(v)
+	default:
+		return fmt.Errorf("unsupported Scan type %T for ImportConfirmation", src)
+	}
+	return nil
+}
+
 // hexSHA256 matches exactly 64 lowercase hexadecimal characters. Every non-empty SHA-256 column is
 // validated against this at the model/application boundary so a malformed or CHAR-padded value
 // never enters a comparison.
@@ -207,7 +266,7 @@ type ImportJob struct {
 	BundleSummary     mmmodel.StringInterface `json:"bundle_summary"`
 	PreflightSummary  mmmodel.StringInterface `json:"preflight_summary"`
 	PreflightRevision string                  `json:"preflight_revision,omitempty"`
-	Confirmation      mmmodel.StringInterface `json:"-"`
+	Confirmation      ImportConfirmation      `json:"-"`
 	FinalSummary      mmmodel.StringInterface `json:"final_summary"`
 
 	ErrorCode         string `json:"error_code,omitempty"`
@@ -430,6 +489,9 @@ func (j *ImportJob) IsValid() *mmmodel.AppError {
 	}
 	if utf8.RuneCountInString(j.ErrorCode) > ImportErrorCodeMaxRunes {
 		return mmmodel.NewAppError(where, "model.import_job.is_valid.error_code_length.app_error", map[string]any{"MaxLength": ImportErrorCodeMaxRunes}, "id="+j.Id, http.StatusBadRequest)
+	}
+	if len(j.Confirmation) > ImportConfirmationMaxBytes {
+		return mmmodel.NewAppError(where, "model.import_job.is_valid.confirmation_too_large.app_error", map[string]any{"MaxBytes": ImportConfirmationMaxBytes}, "id="+j.Id, http.StatusBadRequest)
 	}
 	if j.CreateAt == 0 || j.UpdateAt == 0 || j.RetainUntil == 0 {
 		return mmmodel.NewAppError(where, "model.import_job.is_valid.timestamps.app_error", nil, "id="+j.Id, http.StatusBadRequest)
