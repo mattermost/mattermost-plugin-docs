@@ -1,0 +1,36 @@
+.modal {
+    width: 640px;
+    max-width: calc(100vw - 48px);
+}
+
+.header {
+    border-bottom: none;
+    padding-bottom: 12px;
+}
+
+.body {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 28px;
+    min-height: 0;
+
+    // Vertical padding so the first field's floated label (which overhangs the
+    // field's top border) isn't clipped by the scroll container's overflow.
+    padding: 12px 32px;
+    overflow-y: auto;
+}
+
+.group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.note {
+    margin: 0;
+    color: rgba(var(--center-channel-color-rgb), 0.75);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 12px;
+    line-height: 16px;
+}

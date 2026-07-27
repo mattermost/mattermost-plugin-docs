@@ -1,0 +1,91 @@
+.positioner {
+    z-index: var(--z-index-menu);
+}
+
+.popover {
+    min-width: 220px;
+    max-width: 320px;
+    margin: 0;
+    padding: 8px 0;
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.16);
+    border-radius: 4px;
+    background: var(--center-channel-bg);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    list-style: none;
+
+    &:focus {
+        outline: none;
+    }
+}
+
+.divider {
+    display: block;
+    height: 1px;
+    margin: 8px 0;
+    background: rgba(var(--center-channel-color-rgb), 0.12);
+}
+
+.item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 20px;
+    border: none;
+    background: transparent;
+    color: rgba(var(--center-channel-color-rgb), 1);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 14px;
+    line-height: 20px;
+    text-align: left;
+    cursor: pointer;
+    user-select: none;
+
+    // Base UI highlights the focused item (keyboard or pointer) via this attr.
+    &:hover,
+    &[data-highlighted] {
+        background: rgba(var(--center-channel-color-rgb), 0.08);
+        outline: none;
+    }
+}
+
+.destructive {
+    color: var(--error-text);
+}
+
+.link {
+    color: var(--link-color);
+}
+
+.itemIcon {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+}
+
+.destructive .itemIcon {
+    color: var(--error-text);
+}
+
+.link .itemIcon {
+    color: var(--link-color);
+}
+
+.itemText {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.itemLabel {
+    min-width: 0;
+}
+
+.itemSecondary {
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+    font-size: 12px;
+    line-height: 16px;
+}

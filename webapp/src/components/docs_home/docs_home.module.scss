@@ -1,0 +1,301 @@
+.root {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--center-channel-bg);
+}
+
+.header {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 16px;
+    align-items: center;
+    padding: 12px 20px;
+    border-bottom: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
+}
+
+.headerTitle {
+    flex: 1 1 auto;
+    margin: 0;
+    color: var(--center-channel-color);
+    font-family: 'Metropolis', sans-serif;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 24px;
+}
+
+.cta {
+    display: inline-flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.hero {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+    width: 100%;
+    background: rgba(var(--button-bg-rgb), 0.04);
+}
+
+.heroText {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    gap: 20px;
+    justify-content: center;
+    min-width: 0;
+    padding: 40px 48px 48px;
+}
+
+.heroCopy {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.heroTitle {
+    margin: 0;
+    color: var(--center-channel-color);
+    font-family: 'Metropolis', sans-serif;
+    font-size: 40px;
+    font-weight: 600;
+    line-height: 48px;
+    letter-spacing: -0.8px;
+}
+
+.heroBody {
+    margin: 0;
+    max-width: 540px;
+    color: var(--center-channel-color);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 14px;
+    line-height: 20px;
+}
+
+.heroActions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.heroArt {
+    display: flex;
+    flex: 1 1 0;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    padding-right: 48px;
+    color: rgba(var(--center-channel-color-rgb), 0.16);
+}
+
+.greetingText {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    gap: 8px;
+    justify-content: center;
+    min-width: 0;
+    padding: 40px 48px;
+}
+
+.greetingTitle {
+    margin: 0;
+    color: var(--center-channel-color);
+    font-family: 'Metropolis', sans-serif;
+    font-size: 32px;
+    font-weight: 600;
+    line-height: 40px;
+    letter-spacing: -0.4px;
+}
+
+.greetingSubtitle {
+    margin: 0;
+    color: rgba(var(--center-channel-color-rgb), 0.75);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 14px;
+    line-height: 20px;
+}
+
+.section {
+    padding: 24px;
+}
+
+.sectionHeader {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.sectionTitle {
+    flex: 1 1 auto;
+    margin: 0;
+    color: var(--center-channel-color);
+    font-family: 'Metropolis', sans-serif;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 24px;
+}
+
+.sectionAction {
+    flex-shrink: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--button-bg);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 20px;
+    cursor: pointer;
+
+    &:hover {
+        text-decoration: underline;
+    }
+}
+
+.spaceGrid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.spaceCard {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    padding: 16px;
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.08);
+    border-radius: 8px;
+    background: var(--center-channel-bg);
+    box-shadow: 0 2px 1.5px rgba(0, 0, 0, 0.08);
+    text-align: left;
+    cursor: pointer;
+
+    &:hover {
+        border-color: rgba(var(--center-channel-color-rgb), 0.24);
+    }
+}
+
+.spaceCardEmoji {
+    flex-shrink: 0;
+    font-size: 20px;
+    line-height: 1;
+}
+
+.spaceCardText {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.spaceCardName {
+    overflow: hidden;
+    color: var(--center-channel-color);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 20px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.spaceCardMeta {
+    overflow: hidden;
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 12px;
+    line-height: 16px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cards {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+    padding: 24px;
+}
+
+.card {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 12px;
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.08);
+    border-radius: 8px;
+    background: var(--center-channel-bg);
+    box-shadow: 0 2px 1.5px rgba(0, 0, 0, 0.08);
+}
+
+.cardIcon {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: rgba(var(--center-channel-color-rgb), 0.08);
+    color: rgba(var(--center-channel-color-rgb), 0.75);
+}
+
+.cardText {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    padding-right: 8px;
+}
+
+.cardHeading {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.cardTitle {
+    margin: 0;
+    color: var(--center-channel-color);
+    font-family: 'Metropolis', sans-serif;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 24px;
+}
+
+.cardBody {
+    margin: 0;
+    color: var(--center-channel-color);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 14px;
+    line-height: 20px;
+}
+
+.cardLink {
+    align-self: flex-start;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--button-bg);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 20px;
+    cursor: pointer;
+
+    &:hover {
+        text-decoration: underline;
+    }
+}
