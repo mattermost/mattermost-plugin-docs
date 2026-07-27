@@ -1,0 +1,27 @@
+.root {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    min-width: 0;
+    height: 100%;
+    background: var(--center-channel-bg);
+}
+
+.scroll {
+    flex: 1 1 0;
+    overflow-y: auto;
+}
+
+.content {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    padding: 20px 24px;
+}
+
+.body {
+    padding: 8px 4px 40px;
+    color: rgba(var(--center-channel-color-rgb), 0.56);
+    font-size: 14px;
+    line-height: 20px;
+}
