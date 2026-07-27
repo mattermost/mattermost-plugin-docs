@@ -17,7 +17,7 @@ import styles from './docs_root.module.scss';
 const DocsRoot = () => {
     useBootstrapDocs();
 
-    const {spaceId, pageId, isDraft} = useDocsNavigation();
+    const {spaceId, pageId} = useDocsNavigation();
 
     useRecordSpaceView(spaceId);
 
@@ -47,7 +47,6 @@ const DocsRoot = () => {
                 <DocsMainContent
                     spaceId={spaceId}
                     pageId={pageId}
-                    isDraft={isDraft}
                     onCreateSpace={openCreateSpace}
                     onBrowseSpaces={openSwitcher}
                 />
