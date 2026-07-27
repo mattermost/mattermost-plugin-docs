@@ -28,7 +28,7 @@ func TestServiceUpdatePage_PublishesUpdatedEvent(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
 	title := "Renamed"
@@ -48,7 +48,7 @@ func TestServiceDeletePage_PublishesDeletedEvent(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
 	require.Nil(t, h.svc.DeletePage(page.Id, space.Id, userID))
@@ -66,7 +66,7 @@ func TestServiceDeletePage_FailurePublishesNothing(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
 	appErr := h.svc.DeletePage(page.Id, mmmodel.NewId(), userID)
@@ -84,7 +84,7 @@ func TestServiceRestorePage_PublishesRestoredEvent(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 	require.Nil(t, h.svc.DeletePage(page.Id, space.Id, userID))
 
@@ -104,7 +104,7 @@ func TestServiceDuplicatePage_PublishesDuplicatedEvent(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
 	copyRoot, appErr := h.svc.DuplicatePage(page.Id, space, userID, false, nil, nil)
@@ -128,12 +128,12 @@ func TestServiceMovePageToSpace_PublishesEventToBothChannels(t *testing.T) {
 	teamID := mmmodel.NewId()
 	userID := mmmodel.NewId()
 	chA := mmmodel.NewId()
-	spaceA := seedSpaceForTeam(t, h.store, chA, teamID)
+	spaceA := seedSpaceForTeam(t, h.store, h.db, chA, teamID)
 	chB := mmmodel.NewId()
-	spaceB := seedSpaceForTeam(t, h.store, chB, teamID)
+	spaceB := seedSpaceForTeam(t, h.store, h.db, chB, teamID)
 	page := mustCreatePage(t, h.store, spaceA.Id, chA, userID, "")
 
-	moved, appErr := h.svc.MovePageToSpace(page.Id, spaceA, spaceB, nil, new(page.UpdateAt), false, userID)
+	moved, appErr := h.svc.MovePageToSpace(page.Id, spaceA, spaceB, nil, new(page.UpdateAt), false, userID, "")
 	require.Nil(t, appErr)
 
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_moved_to_space",
@@ -163,10 +163,10 @@ func TestServiceMovePageToSpace_NoOpPublishesNothing(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
-	same, appErr := h.svc.MovePageToSpace(page.Id, space, space, nil, new(page.UpdateAt), false, userID)
+	same, appErr := h.svc.MovePageToSpace(page.Id, space, space, nil, new(page.UpdateAt), false, userID, "")
 	require.Nil(t, appErr)
 	require.Equal(t, page.Id, same.Id)
 
@@ -193,13 +193,13 @@ func TestServiceUpdateSpace_PublishesUpdatedEvent(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
 
-	space := mustCreateSpace(t, h.store, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
 	// The post-update channel-metadata sync looks the backing channel up; a nil channel makes it
 	// a no-op without needing channel-update expectations.
 	mockAPI.On("GetChannelOfType", mock.Anything, mock.Anything).Return((*mmmodel.Channel)(nil), nil)
 
 	title := "Renamed Space"
-	updated, appErr := h.svc.UpdateSpace(space, &model.SpacePatch{Title: &title}, new(space.UpdateAt), false)
+	updated, appErr := h.svc.UpdateSpace(space, &model.SpacePatch{Title: &title}, new(space.UpdateAt), false, "")
 	require.Nil(t, appErr)
 
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_updated",
@@ -217,7 +217,7 @@ func TestServiceDeleteSpace_PublishesDeletedEvent(t *testing.T) {
 	h := openTestServiceWithAPI(t, mockAPI)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	memberA := mmmodel.NewId()
 	memberB := mmmodel.NewId()
 	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).
@@ -248,7 +248,7 @@ func TestServiceDeleteSpace_SnapshotFailureFallsBackToChannelBroadcast(t *testin
 	h := openTestServiceWithAPI(t, mockAPI)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).
 		Return(nil, &mmmodel.AppError{Message: "boom", StatusCode: 500})
 	mockAPI.On("DeleteChannel", channelID).Return(nil)
@@ -283,7 +283,7 @@ func TestServiceRestoreSpace_PublishesRestoredEvent(t *testing.T) {
 	h := openTestServiceWithAPI(t, mockAPI)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).Return(mmmodel.ChannelMembers{}, nil)
 	mockAPI.On("DeleteChannel", channelID).Return(nil)
 	mockAPI.On("RestoreChannel", channelID).Return(nil)
@@ -326,6 +326,7 @@ func TestServiceRemoveSpaceMember_PublishesMemberRemovedEvent(t *testing.T) {
 	space, creatorID := createSpaceForMemberTests(t, h, mockAPI)
 
 	targetID := mmmodel.NewId()
+	mockAPI.On("GetChannelMember", space.ChannelId, targetID).Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: targetID}, nil)
 	mockAPI.On("GetChannelMembers", space.ChannelId, 0, app.PerPageMaximum).
 		Return(mmmodel.ChannelMembers{
 			{ChannelId: space.ChannelId, UserId: creatorID},
@@ -333,7 +334,7 @@ func TestServiceRemoveSpaceMember_PublishesMemberRemovedEvent(t *testing.T) {
 		}, nil)
 	mockAPI.On("DeleteChannelMember", space.ChannelId, targetID).Return(nil)
 
-	require.Nil(t, h.svc.RemoveSpaceMember(space, targetID))
+	require.Nil(t, h.svc.RemoveSpaceMember(space, targetID, ""))
 
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_removed",
 		map[string]any{"space_id": space.Id, "user_id": targetID},

@@ -35,7 +35,7 @@ func buildPageChain(t *testing.T, s *store.Store, spaceID, channelID, userID str
 func TestServiceMovePage_Reparent(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 
 	parent := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
@@ -55,7 +55,7 @@ func TestServiceMovePage_Reparent(t *testing.T) {
 func TestServiceMovePage_SameParentNoOp(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 
 	parent := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
@@ -73,7 +73,7 @@ func TestServiceMovePage_SameParentNoOp(t *testing.T) {
 func TestServiceMovePage_ToRootLevel(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 
 	parent := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
@@ -122,11 +122,11 @@ func TestServiceMovePage_ErrorPaths(t *testing.T) {
 		userID := mmmodel.NewId()
 
 		channelA := mmmodel.NewId()
-		spaceA := mustCreateSpace(t, h.store, channelA)
+		spaceA := mustCreateSpace(t, h.store, h.db, channelA)
 		page := mustCreatePage(t, h.store, spaceA.Id, channelA, userID, "")
 
 		channelB := mmmodel.NewId()
-		spaceB := mustCreateSpace(t, h.store, channelB)
+		spaceB := mustCreateSpace(t, h.store, h.db, channelB)
 		parentInB := mustCreatePage(t, h.store, spaceB.Id, channelB, userID, "")
 
 		newParent := parentInB.Id
@@ -139,7 +139,7 @@ func TestServiceMovePage_ErrorPaths(t *testing.T) {
 	t.Run("non-existent parent", func(t *testing.T) {
 		h := openTestService(t)
 		channelID := mmmodel.NewId()
-		space := mustCreateSpace(t, h.store, channelID)
+		space := mustCreateSpace(t, h.store, h.db, channelID)
 		page := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 		ghost := mmmodel.NewId()
@@ -152,7 +152,7 @@ func TestServiceMovePage_ErrorPaths(t *testing.T) {
 	t.Run("self as parent is a circular reference", func(t *testing.T) {
 		h := openTestService(t)
 		channelID := mmmodel.NewId()
-		space := mustCreateSpace(t, h.store, channelID)
+		space := mustCreateSpace(t, h.store, h.db, channelID)
 		page := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 		self := page.Id
@@ -165,7 +165,7 @@ func TestServiceMovePage_ErrorPaths(t *testing.T) {
 	t.Run("moving under own descendant is a circular reference", func(t *testing.T) {
 		h := openTestService(t)
 		channelID := mmmodel.NewId()
-		space := mustCreateSpace(t, h.store, channelID)
+		space := mustCreateSpace(t, h.store, h.db, channelID)
 		userID := mmmodel.NewId()
 		root := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 		child := mustCreatePage(t, h.store, space.Id, channelID, userID, root.Id)
@@ -181,7 +181,7 @@ func TestServiceMovePage_ErrorPaths(t *testing.T) {
 	t.Run("new depth would exceed MaxPageDepth", func(t *testing.T) {
 		h := openTestService(t)
 		channelID := mmmodel.NewId()
-		space := mustCreateSpace(t, h.store, channelID)
+		space := mustCreateSpace(t, h.store, h.db, channelID)
 		userID := mmmodel.NewId()
 
 		// A chain of MaxPageDepth pages: the deepest has MaxPageDepth-1 ancestors, so a leaf
@@ -200,7 +200,7 @@ func TestServiceMovePage_ErrorPaths(t *testing.T) {
 	t.Run("subtree would push past MaxPageDepth", func(t *testing.T) {
 		h := openTestService(t)
 		channelID := mmmodel.NewId()
-		space := mustCreateSpace(t, h.store, channelID)
+		space := mustCreateSpace(t, h.store, h.db, channelID)
 		userID := mmmodel.NewId()
 
 		// Anchor at depth MaxPageDepth-1 (MaxPageDepth-2 ancestors): a moved page lands at
@@ -226,7 +226,7 @@ func TestServiceMovePage_ErrorPaths(t *testing.T) {
 func TestServiceMovePage_StaleBaselineConflicts(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 
 	parent := mustCreatePage(t, h.store, space.Id, channelID, userID, "")

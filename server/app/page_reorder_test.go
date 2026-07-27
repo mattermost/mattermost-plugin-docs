@@ -30,7 +30,7 @@ func childOrder(t *testing.T, h *testHarness, parentID, spaceID string) []string
 func TestServiceMovePage_PositionalReorder(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 
 	parent := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
@@ -68,7 +68,7 @@ func TestServiceMovePage_PositionalReorder(t *testing.T) {
 func TestServiceMovePage_ReparentAtIndex(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 
 	source := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
