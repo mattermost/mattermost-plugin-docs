@@ -8,8 +8,8 @@ export type SpaceVisibility = 'public' | 'private';
 
 // Field names and shapes mirror the server model (server/model/space.go) —
 // snake_case JSON per @mattermost/types convention. The server model has no
-// `visibility`; it stays a client-only field until channel privacy / props
-// represent it.
+// `visibility` yet; it stays a client-only field and maps to the server's
+// `view_access` (open/private) once that lands (PR #10 / MM-69269).
 export type Space = {
     id: string;
     team_id: string;
@@ -56,10 +56,14 @@ export type Page = {
 
 export type SpaceSummary = {
     space: Space;
-    pageCount: number;
+
+    // Omitted until the server provides a count (listing pages per space just to
+    // count them isn't worth it for MVP).
+    pageCount?: number;
 
     // Epoch ms of the viewer's last visit; the client formats it into a
-    // "Viewed 12m ago"-style label at render (server-provided later).
+    // "Viewed 12m ago"-style label at render. Client-tracked today (see
+    // data/recent_spaces), server-provided later.
     lastViewedAt?: number;
 };
 

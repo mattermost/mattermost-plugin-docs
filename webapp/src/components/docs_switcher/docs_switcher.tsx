@@ -4,6 +4,7 @@
 import classNames from 'classnames';
 import {useDocsSearch, useRecentDocs} from 'hooks/docs';
 import {useDocsNavigation} from 'hooks/navigation';
+import {useAppDispatch} from 'hooks/redux';
 import {useAllSpaces} from 'hooks/spaces';
 import {useTeamNamesById} from 'hooks/team';
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
@@ -11,6 +12,8 @@ import {useIntl} from 'react-intl';
 
 import MagnifyIcon from '@mattermost/compass-icons/components/magnify';
 import TextBoxOutlineIcon from '@mattermost/compass-icons/components/text-box-outline';
+
+import {fetchAllSpaces} from 'store/actions';
 
 import GenericModal from 'components/generic_modal/generic_modal';
 
@@ -33,8 +36,15 @@ const optionId = (index: number) => `docs-switcher-option-${index}`;
 
 const DocsSwitcher = ({onClose}: Props) => {
     const {formatMessage} = useIntl();
+    const dispatch = useAppDispatch();
     const {navigate, navigateInTeam} = useDocsNavigation();
     const [query, setQuery] = useState('');
+
+    // The sidebar only loads the current team; the switcher is cross-team, so
+    // pull every team's spaces when it opens.
+    useEffect(() => {
+        dispatch(fetchAllSpaces());
+    }, [dispatch]);
     const [activeIndex, setActiveIndex] = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);
     const trimmed = query.trim().toLowerCase();

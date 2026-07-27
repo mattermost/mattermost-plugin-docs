@@ -2,13 +2,16 @@
 // See LICENSE.txt for license information.
 
 import {useDocsNavigation} from 'hooks/navigation';
-import React, {useState} from 'react';
+import {useAppDispatch} from 'hooks/redux';
+import React, {useCallback, useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {copyToClipboard} from 'utils/clipboard';
 
 import DotsVerticalIcon from '@mattermost/compass-icons/components/dots-vertical';
 import ExitToAppIcon from '@mattermost/compass-icons/components/exit-to-app';
 import LinkVariantIcon from '@mattermost/compass-icons/components/link-variant';
+
+import {leaveSpace} from 'store/actions';
 
 import ConfirmModal from 'components/confirm_modal/confirm_modal';
 import Menu from 'components/menu/menu';
@@ -24,11 +27,28 @@ type Props = {
 
 const SpaceItemMenu = ({space}: Props) => {
     const {formatMessage} = useIntl();
-    const {paths} = useDocsNavigation();
+    const dispatch = useAppDispatch();
+    const {paths, spaceId, goHome} = useDocsNavigation();
 
     const [confirmLeaveOpen, setConfirmLeaveOpen] = useState(false);
 
     const copyLink = () => copyToClipboard(`${window.location.origin}${paths.space(space.id)}`);
+
+    // Leaving removes the current user's membership. Navigate home only if we
+    // just left the space being viewed, and only after the server confirms
+    // (a last-authorized-member removal is rejected with 409).
+    const confirmLeave = useCallback(async () => {
+        try {
+            await dispatch(leaveSpace(space.id));
+            if (spaceId === space.id) {
+                goHome();
+            }
+        } catch (error) {
+            // eslint-disable-next-line no-console
+            console.error('Docs: failed to leave space', error);
+        }
+        setConfirmLeaveOpen(false);
+    }, [dispatch, space.id, spaceId, goHome]);
 
     const items: MenuItemSpec[] = [
 
@@ -116,7 +136,7 @@ const SpaceItemMenu = ({space}: Props) => {
                         />
                     )}
                     isConfirmDestructive={true}
-                    onConfirm={() => setConfirmLeaveOpen(false)}
+                    onConfirm={confirmLeave}
                     onCancel={() => setConfirmLeaveOpen(false)}
                 >
                     <FormattedMessage

@@ -1,7 +1,6 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {recentPageIds, recentSpaceIds, recentSpaceSummaries} from 'data/fixtures';
 import manifest from 'manifest';
 import {createSelector} from 'reselect';
 
@@ -9,7 +8,7 @@ import type {GlobalState} from '@mattermost/types/store';
 
 import {getCurrentTeamId} from 'mattermost-redux/selectors/entities/teams';
 
-import type {Page, Space, SpaceSummary} from 'types/docs';
+import type {Page, Space} from 'types/docs';
 
 import type {DocsPluginState} from './types';
 
@@ -85,45 +84,12 @@ const getAllPages = createSelector(
 
 export const getSpace = (state: GlobalState, id: string): Space | undefined => getSpacesById(state)[id];
 
-// A slug doubles as a space id in the mock (see data/mock_data_source.ts), so
-// checking the store's id map is equivalent to checking slug uniqueness.
-export const isSlugAvailable = (state: GlobalState, slug: string): boolean => !getSpacesById(state)[slug];
-
-const EMPTY_SET: Set<string> = new Set();
-
-const getCurrentTeamSpaceIds = createSelector(
-    [getSpacesInTeamIndex, getCurrentTeamId],
-    (index, teamId) => index[teamId] ?? EMPTY_SET,
-);
-
-// "Recent" bookkeeping is design-time fixture data until a real recently-viewed
-// concept (and API) exists; the ids resolve against the reactive store so the
-// result still reflects any local creates/deletes. Cross-team (backs the
-// switcher); the team-scoped Home listing is getRecentSpaceSummaries below.
-export const getRecentSpaces = createSelector(
-    [getSpacesById],
-    (byId) => compact(recentSpaceIds.map((id) => byId[id])),
-);
-
-export const getRecentSpaceSummaries = createSelector(
-    [getSpacesById, getCurrentTeamSpaceIds],
-    (byId, teamSpaceIds): SpaceSummary[] => recentSpaceSummaries.flatMap(({spaceId, pageCount, lastViewedAt}) => {
-        const space = byId[spaceId];
-        return space && teamSpaceIds.has(space.id) ? [{space, pageCount, lastViewedAt}] : [];
-    }),
-);
-
 export const getPagesForSpace = createSelector(
     [getPagesById, getPagesInSpaceIndex, (_state: GlobalState, spaceId: string) => spaceId],
     (byId, index, spaceId) => resolvePages(index[spaceId], byId),
 );
 
 export const getPage = (state: GlobalState, id: string): Page | undefined => getPagesById(state)[id];
-
-export const getRecentPages = createSelector(
-    [getPagesById],
-    (byId) => compact(recentPageIds.map((id) => byId[id])),
-);
 
 export type DocsSearchResults = {
     spaces: Space[];

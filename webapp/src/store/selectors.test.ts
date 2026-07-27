@@ -5,7 +5,7 @@ import manifest from 'manifest';
 
 import type {GlobalState} from '@mattermost/types/store';
 
-import {getPagesForSpace, getSpacesInTeam, isSlugAvailable} from './selectors';
+import {getPagesForSpace, getSpacesInTeam} from './selectors';
 import {makePage, makeSpace} from './test_fixtures';
 import type {DocsPluginState} from './types';
 
@@ -26,20 +26,6 @@ describe('getSpacesInTeam', () => {
 
         expect(getSpacesInTeam(state, 't1')).toEqual([spaceB, spaceA]);
         expect(getSpacesInTeam(state, 't2')).toEqual([]);
-    });
-});
-
-describe('isSlugAvailable', () => {
-    it('is false when a space already claims the slug', () => {
-        const state = makeState({
-            spaces: {taken: makeSpace('taken', 'Taken')},
-            spacesInTeam: {},
-            pages: {},
-            pagesInSpace: {},
-        });
-
-        expect(isSlugAvailable(state, 'taken')).toBe(false);
-        expect(isSlugAvailable(state, 'free')).toBe(true);
     });
 });
 

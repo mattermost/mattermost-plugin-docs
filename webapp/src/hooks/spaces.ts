@@ -2,14 +2,17 @@
 // See LICENSE.txt for license information.
 
 import {useForm} from '@tanstack/react-form';
-import {useAppDispatch, useAppSelector, useAppStore} from 'hooks/redux';
+import {getSpaceViews, recordSpaceView} from 'data/recent_spaces';
+import {useAppDispatch, useAppSelector} from 'hooks/redux';
 import {useTeamContext} from 'hooks/team';
-import {useCallback, useMemo, useRef} from 'react';
+import {useCallback, useEffect, useMemo, useRef} from 'react';
 import {DOCS_KEYWORD} from 'routing/paths';
 import {createSpaceFormSchema, slugify} from 'validation/space_schema';
 
+import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
+
 import {createSpace} from 'store/actions';
-import {getAllSpaces, getRecentSpaceSummaries, getSpace, getSpacesForCurrentTeam, isSlugAvailable} from 'store/selectors';
+import {getAllSpaces, getSpace, getSpacesForCurrentTeam} from 'store/selectors';
 
 import type {UrlInputHandle} from 'components/form-controls/url_input';
 
@@ -28,8 +31,31 @@ export function useSpace(id?: string): Space | undefined {
     return useAppSelector((state) => (id ? getSpace(state, id) : undefined));
 }
 
+// Recently-viewed spaces in the current team (Home). Recency is client-side
+// today (see data/recent_spaces); resolved against the loaded team spaces so a
+// left/deleted space drops out. pageCount is omitted until the server provides
+// one.
 export function useRecentSpaceSummaries(): SpaceSummary[] {
-    return useAppSelector(getRecentSpaceSummaries);
+    const userId = useAppSelector(getCurrentUserId);
+    const teamSpaces = useAppSelector(getSpacesForCurrentTeam);
+    return useMemo(() => {
+        const byId = new Map(teamSpaces.map((space) => [space.id, space]));
+        return getSpaceViews(userId).flatMap(({spaceId, lastViewedAt}) => {
+            const space = byId.get(spaceId);
+            return space ? [{space, lastViewedAt}] : [];
+        });
+    }, [userId, teamSpaces]);
+}
+
+// Records that the current user viewed a space, feeding the recently-viewed
+// list. No-op until both ids are known.
+export function useRecordSpaceView(spaceId?: string): void {
+    const userId = useAppSelector(getCurrentUserId);
+    useEffect(() => {
+        if (userId && spaceId) {
+            recordSpaceView(userId, spaceId, Date.now());
+        }
+    }, [userId, spaceId]);
 }
 
 type CreateSpaceValues = {
@@ -50,19 +76,16 @@ type CreateSpaceOptions = {
     onCreated?: (space: Space) => void;
 };
 
-// Owns the create-space form via TanStack Form. The existing Zod schemas drive
-// validation through TanStack's validators — the whole-form schema on submit
-// (its issues distribute to fields by path) and the slug's async format +
-// uniqueness schema on blur. The uniqueness check reads current store state
-// (a Zod refine isn't a React hook, so it reads the store snapshot rather than
-// subscribing) so a space created earlier in the same session is accounted for.
+// Owns the create-space form via TanStack Form. The Zod schema drives validation
+// through TanStack's validators (its issues distribute to fields by path). The
+// slug is a client-only vanity field for now — the server assigns an opaque id
+// and has no slug concept, so there's no uniqueness check; only format is
+// validated (the slug's on-blur schema).
 export function useCreateSpace({onCreated}: CreateSpaceOptions = {}) {
     const {name: teamName} = useTeamContext();
     const dispatch = useAppDispatch();
-    const store = useAppStore();
 
-    const checkSlugAvailable = useCallback((slug: string) => isSlugAvailable(store.getState(), slug), [store]);
-    const formSchema = useMemo(() => createSpaceFormSchema(checkSlugAvailable), [checkSlugAvailable]);
+    const formSchema = useMemo(() => createSpaceFormSchema(), []);
     const slugSchema = useMemo(() => formSchema.shape.slug, [formSchema]);
 
     // Stop deriving the slug from the name once the user edits the slug directly.
@@ -74,12 +97,12 @@ export function useCreateSpace({onCreated}: CreateSpaceOptions = {}) {
         defaultValues: INITIAL_VALUES,
         validators: {onSubmitAsync: formSchema},
         onSubmit: async ({value}) => {
-            const space = await Promise.resolve(dispatch(createSpace({
+            const space = await dispatch(createSpace({
                 title: value.name.trim(),
                 slug: value.slug.trim(),
                 visibility: value.visibility,
                 description: value.description.trim() || undefined,
-            })));
+            }));
             onCreated?.(space);
         },
     });
@@ -96,7 +119,7 @@ export function useCreateSpace({onCreated}: CreateSpaceOptions = {}) {
         form.setFieldValue('slug', slug);
     }, [form]);
 
-    // Submits, then surfaces a rejected slug (e.g. a taken URL) by focusing the
+    // Submits, then surfaces a rejected slug (e.g. a bad format) by focusing the
     // URL input — otherwise the error lands on the field's read-only preview.
     const submit = useCallback(async () => {
         await form.handleSubmit();

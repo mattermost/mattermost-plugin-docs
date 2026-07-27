@@ -3,6 +3,7 @@
 
 import {useBootstrapDocs} from 'hooks/bootstrap';
 import {useDocsNavigation} from 'hooks/navigation';
+import {useRecordSpaceView} from 'hooks/spaces';
 import React, {useCallback, useState} from 'react';
 import {useHotkeys} from 'react-hotkeys-hook';
 
@@ -17,6 +18,8 @@ const DocsRoot = () => {
     useBootstrapDocs();
 
     const {spaceId, pageId, isDraft} = useDocsNavigation();
+
+    useRecordSpaceView(spaceId);
 
     const [switcherOpen, setSwitcherOpen] = useState(false);
     const openSwitcher = useCallback(() => setSwitcherOpen(true), []);

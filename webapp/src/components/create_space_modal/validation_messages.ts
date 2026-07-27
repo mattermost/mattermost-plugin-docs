@@ -13,7 +13,6 @@ const messages = defineMessages({
     urlRequired: {id: 'docs.createSpace.error.url.required', defaultMessage: 'Please enter a URL for the space'},
     urlTooLong: {id: 'docs.createSpace.error.url.tooLong', defaultMessage: 'URL must be {max} characters or fewer'},
     urlInvalid: {id: 'docs.createSpace.error.url.invalid', defaultMessage: 'Use lowercase letters, numbers, and dashes, with no spaces'},
-    urlTaken: {id: 'docs.createSpace.error.url.taken', defaultMessage: 'That URL is already taken'},
     descriptionTooLong: {id: 'docs.createSpace.error.description.tooLong', defaultMessage: 'Description must be {max} characters or fewer'},
 });
 
@@ -32,8 +31,6 @@ export function resolveSpaceValidationError(id: string, formatMessage: FormatMes
         return formatMessage(messages.urlTooLong, {max: SPACE_SLUG_MAX_LENGTH});
     case SpaceValidationError.UrlInvalid:
         return formatMessage(messages.urlInvalid);
-    case SpaceValidationError.UrlTaken:
-        return formatMessage(messages.urlTaken);
     case SpaceValidationError.DescriptionTooLong:
         return formatMessage(messages.descriptionTooLong, {max: SPACE_DESCRIPTION_MAX_LENGTH});
     default:

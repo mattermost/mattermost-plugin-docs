@@ -4,60 +4,73 @@
 import {docsDataSource} from 'data';
 
 import {getCurrentTeamId, getMyTeams} from 'mattermost-redux/selectors/entities/teams';
+import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
 import type {CreateSpaceInput, Space} from 'types/docs';
 import type {DocsThunkAction} from 'types/store';
 
 import {PageTypes, SpaceTypes} from './action_types';
 
-// Stable per-id hash so a space always lands in the same team across refetches
-// (a plain random would make spaces hop teams on every fetch).
-const hashString = (value: string): number => {
-    let hash = 0;
-    for (let i = 0; i < value.length; i++) {
-        hash = ((hash * 31) + value.charCodeAt(i)) | 0;
-    }
-    return Math.abs(hash);
-};
-
-// The mock fixtures aren't team-aware. Spread them across the user's teams
-// (deterministically by space id) so team-scoped reads visibly differ per team;
-// falls back to the current team when membership isn't loaded. The real API will
-// return spaces already scoped to their team, at which point this goes away.
-export function fetchSpaces(): DocsThunkAction<void> {
-    return (dispatch, getState) => {
-        const state = getState();
-        const teamIds = getMyTeams(state).map((team) => team.id);
-        const fallbackTeamId = getCurrentTeamId(state);
-        const spaces = docsDataSource.listSpaces().map((space) => ({
-            ...space,
-            team_id: teamIds.length ? teamIds[hashString(space.id) % teamIds.length] : fallbackTeamId,
-        }));
-        dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces});
+// Spaces the caller belongs to in the current team (the server scopes the list
+// by backing-channel membership). A failed load leaves the store empty rather
+// than crashing the product on mount.
+export function fetchSpaces(): DocsThunkAction<Promise<void>> {
+    return async (dispatch, getState) => {
+        const teamId = getCurrentTeamId(getState());
+        if (!teamId) {
+            return;
+        }
+        try {
+            const spaces = await docsDataSource.listSpaces(teamId);
+            dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces});
+        } catch (error) {
+            // eslint-disable-next-line no-console
+            console.error('Docs: failed to load spaces', error);
+        }
     };
 }
 
-// Bootstraps pages for one space, or for every known space when called with no
-// argument — there's no bulk "list all pages" on the data source yet.
-export function fetchPages(spaceId?: string): DocsThunkAction<void> {
-    return (dispatch) => {
-        const spaceIds = spaceId ? [spaceId] : docsDataSource.listSpaces().map((space) => space.id);
-        const pages = spaceIds.flatMap((id) => docsDataSource.listPages(id));
+// Cross-team load for the switcher: fan out over the user's teams. The server
+// has no all-teams endpoint, so this is N team-scoped calls run in parallel.
+export function fetchAllSpaces(): DocsThunkAction<Promise<void>> {
+    return async (dispatch, getState) => {
+        const teams = getMyTeams(getState());
+        try {
+            const perTeam = await Promise.all(teams.map((team) => docsDataSource.listSpaces(team.id)));
+            dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: perTeam.flat()});
+        } catch (error) {
+            // eslint-disable-next-line no-console
+            console.error('Docs: failed to load spaces across teams', error);
+        }
+    };
+}
+
+// Loads a space's pages. Wired for the page tree that lands later; no UI reads
+// store pages yet, so this isn't called on bootstrap.
+export function fetchPages(spaceId: string): DocsThunkAction<Promise<void>> {
+    return async (dispatch) => {
+        const pages = await docsDataSource.listPages(spaceId);
         dispatch({type: PageTypes.RECEIVED_PAGES, pages});
     };
 }
 
-export function createSpace(input: CreateSpaceInput): DocsThunkAction<Space> {
-    return (dispatch, getState) => {
+// Creates a space in the current team and returns the server-assigned entity
+// (rejects on failure so the form can surface it).
+export function createSpace(input: CreateSpaceInput): DocsThunkAction<Promise<Space>> {
+    return async (dispatch, getState) => {
         const teamId = getCurrentTeamId(getState());
-        const space = {...docsDataSource.createSpace(input), team_id: teamId};
+        const space = await docsDataSource.createSpace(teamId, input);
         dispatch({type: SpaceTypes.CREATED_SPACE, space});
         return space;
     };
 }
 
-export function leaveSpace(spaceId: string): DocsThunkAction<void> {
-    return (dispatch) => {
+// Leaving a space is removing yourself from its membership. The server rejects
+// removing the last authorized member (409); the caller surfaces that.
+export function leaveSpace(spaceId: string): DocsThunkAction<Promise<void>> {
+    return async (dispatch, getState) => {
+        const userId = getCurrentUserId(getState());
+        await docsDataSource.removeSpaceMember(spaceId, userId);
         dispatch({type: SpaceTypes.DELETED_SPACE, spaceId});
     };
 }

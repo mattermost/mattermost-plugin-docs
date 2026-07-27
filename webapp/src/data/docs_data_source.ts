@@ -3,24 +3,32 @@
 
 import type {CreateSpaceInput, Page, Space} from 'types/docs';
 
-// The seam between the store's thunks and where Docs data actually comes from.
-// The mock source implements this today; an API-backed source (over the
-// Mattermost client + plugin REST) replaces it once the server contract
-// exists. Methods are synchronous for the mock source and will become
-// Promise-based with the real source.
+// The seam between the store's thunks and the Docs server REST API. The
+// API-backed source implements this over the plugin's /api/v1 routes; the
+// interface stays transport-agnostic so tests can substitute a fake.
+//
+// All methods are async: they map to network calls. Ids are the platform's
+// opaque 26-char ids (no slugs) and space reads/lists are team-scoped, matching
+// the server contract.
 export interface DocsDataSource {
-    listSpaces(): Space[];
-    getSpace(id: string): Space | undefined;
 
-    // Pages belong to a space, so listing them is always scoped to one.
-    listPages(spaceId: string): Page[];
+    // Spaces the caller is a member of in the given team (the server filters by
+    // backing-channel membership).
+    listSpaces(teamId: string): Promise<Space[]>;
 
-    // Creates a space and returns it. Synchronous for the mock source; becomes
-    // Promise-based (and may reject) once a real backend exists, which is why
-    // the createSpace thunk treats submission as async.
-    createSpace(input: CreateSpaceInput): Space;
+    getSpace(spaceId: string): Promise<Space | undefined>;
 
-    // Whether a custom slug is free to use. The mock source checks its
-    // in-memory spaces; the real source checks the server.
-    isSlugAvailable(slug: string): boolean;
+    // Creates a space in the team and returns it (with its server-assigned id
+    // and team_id). Only server-supported fields are sent; client-only fields
+    // (slug, visibility) are dropped by the API source until the server models
+    // them (see PR #10's view_access).
+    createSpace(teamId: string, input: CreateSpaceInput): Promise<Space>;
+
+    // Removes a member from a space. Leaving a space is removing yourself; the
+    // server rejects removing the last authorized member (409).
+    removeSpaceMember(spaceId: string, userId: string): Promise<void>;
+
+    // Pages belong to a space. No page-consuming UI exists yet, so this is
+    // wired for later; the server returns page summaries (no body).
+    listPages(spaceId: string): Promise<Page[]>;
 }

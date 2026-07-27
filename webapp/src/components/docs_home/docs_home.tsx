@@ -156,7 +156,7 @@ const SpaceCard = ({summary, onOpen}: {summary: SpaceSummary; onOpen: (id: strin
     const {formatMessage} = useIntl();
     const {space, pageCount, lastViewedAt} = summary;
 
-    const pages = formatMessage(
+    const pages = pageCount === undefined ? null : formatMessage(
         {id: 'docs.home.space.pageCount', defaultMessage: '{count, plural, one {# page} other {# pages}}'},
         {count: pageCount},
     );
@@ -192,8 +192,10 @@ const SpaceCard = ({summary, onOpen}: {summary: SpaceSummary; onOpen: (id: strin
                         <>
                             {pages}
 
-                            {/* eslint-disable-next-line formatjs/no-literal-string-in-jsx -- decorative separator between metadata segments */}
-                            {' · '}
+                            {pages ? (
+                                // eslint-disable-next-line formatjs/no-literal-string-in-jsx -- decorative separator between metadata segments
+                                <>{' · '}</>
+                            ) : null}
                             <FormattedMessage
                                 id='docs.home.space.viewed'
                                 defaultMessage='Viewed {relative}'
