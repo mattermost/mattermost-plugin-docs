@@ -25,9 +25,8 @@ import (
 // Every space- and page-scoped handler additionally gates on the capability-based RBAC model:
 // requireSpaceRead/requireSpacePagePerm for reads, gatePageWrite/gateDeleteOwnOrAny for page
 // writes (with the open-space auto-join pre-step), requireSpaceManageGate for membership
-// management and general space-field updates (where a patch touching ViewAccess is additionally
-// admin-gated inside UpdateSpace, against the live row), and requireSpaceAdminGate/
-// requireSpaceDeleteGate for the space-wide exposure-policy and delete/restore operations. See
+// management and general space-field updates, and requireSpaceAdminGate/requireSpaceDeleteGate
+// for the space-wide exposure-policy and delete/restore operations. See
 // server/app/permissions.go for the gate implementations.
 func (p *Plugin) initRouter() *mux.Router {
 	router := mux.NewRouter()
@@ -181,14 +180,13 @@ func (p *Plugin) requireSpaceDeleteGate(w http.ResponseWriter, spaceID, userID s
 // gatePageWrite resolves the read gate first — a caller cannot be granted write authority over a
 // space it cannot read — then runs the auto-join pre-step when that read was admitted only via the
 // non-member open-space fall-through, then re-resolves perm as a (possibly just-joined) member.
-// ownerCheck, when non-nil, additionally must hold before a join happens (used for
-// delete_own_page). Writes the error response and returns false on any denial.
-func (p *Plugin) gatePageWrite(w http.ResponseWriter, space *model.Space, userID string, perm *mmmodel.Permission, ownerCheck func() (bool, error)) bool {
+// Writes the error response and returns false on any denial.
+func (p *Plugin) gatePageWrite(w http.ResponseWriter, space *model.Space, userID string, perm *mmmodel.Permission) bool {
 	resolution, ok := p.resolveSpaceReadOrDeny(w, "gatePageWrite", space, userID)
 	if !ok {
 		return false
 	}
-	if _, appErr := p.service.AutoJoinIfDefaultGranted(space, userID, resolution, perm, ownerCheck); appErr != nil {
+	if _, appErr := p.service.AutoJoinIfDefaultGranted(space, userID, resolution, perm, nil); appErr != nil {
 		p.writeAppError(w, appErr)
 		return false
 	}
@@ -201,17 +199,14 @@ func (p *Plugin) gatePageWrite(w http.ResponseWriter, space *model.Space, userID
 
 // gateDeleteOwnOrAny gates a delete-class page operation: delete_page (any), or delete_own_page
 // when ownerID == userID. The auto-join pre-step runs against delete_own_page, gated on
-// ownership, since only that path can admit a non-member write.
-func (p *Plugin) gateDeleteOwnOrAny(w http.ResponseWriter, space *model.Space, userID, ownerID string) bool {
-	resolution, ok := p.resolveSpaceReadOrDeny(w, "gateDeleteOwnOrAny", space, userID)
-	if !ok {
-		return false
-	}
+// ownership, since only that path can admit a non-member write. resolution is the read gate the
+// caller has already resolved for the same space and user, so it is not re-derived here.
+func (p *Plugin) gateDeleteOwnOrAny(w http.ResponseWriter, space *model.Space, userID, ownerID string, resolution app.ReadResolution) bool {
 	if _, appErr := p.service.AutoJoinIfDefaultGranted(space, userID, resolution, mmmodel.PermissionDeleteOwnPage, func() (bool, error) { return ownerID == userID, nil }); appErr != nil {
 		p.writeAppError(w, appErr)
 		return false
 	}
-	_, ok, permErr := p.resolveOwnOrAny(space, userID, "api.page.delete", mmmodel.PermissionDeletePage, "api.page.delete_own", mmmodel.PermissionDeleteOwnPage, ownerID == userID, resolution)
+	_, ok, permErr := p.service.ResolveSpacePageOwnOrAny(space, userID, "api.page.delete", mmmodel.PermissionDeletePage, "api.page.delete_own", mmmodel.PermissionDeleteOwnPage, ownerID == userID, resolution)
 	if permErr != nil {
 		p.writeAppError(w, permErr)
 		return false
@@ -237,34 +232,6 @@ func (p *Plugin) resolveSpaceReadOrDeny(w http.ResponseWriter, where string, spa
 		return app.ReadDenied, false
 	}
 	return resolution, true
-}
-
-// resolveOwnOrAny evaluates a two-tier own/any permission pair: anyPerm if held, else ownPerm
-// when ownerMatches. Reports whether the caller qualified only via ownPerm (ownOnly), so a caller
-// that must push ownership enforcement further down — MovePageToSpace's subtree-wide check — can
-// tell the two tiers apart. ok=false with a nil appErr means neither tier admitted the caller; the
-// caller writes its own denial so the operation label stays its own. A non-nil appErr is a genuine
-// backend failure from the check itself, which the caller must surface as-is rather than reporting
-// as a denial.
-func (p *Plugin) resolveOwnOrAny(space *model.Space, userID, anyWhere string, anyPerm *mmmodel.Permission, ownWhere string, ownPerm *mmmodel.Permission, ownerMatches bool, admittedVia app.ReadResolution) (ownOnly, ok bool, appErr *mmmodel.AppError) {
-	anyErr := p.service.RequireSpacePagePermissionFrom(anyWhere, space, userID, anyPerm, admittedVia)
-	if anyErr == nil {
-		return false, true, nil
-	}
-	if anyErr.StatusCode != http.StatusForbidden {
-		return false, false, anyErr
-	}
-	if !ownerMatches {
-		return false, false, nil
-	}
-	ownErr := p.service.RequireSpacePagePermissionFrom(ownWhere, space, userID, ownPerm, admittedVia)
-	if ownErr == nil {
-		return true, true, nil
-	}
-	if ownErr.StatusCode != http.StatusForbidden {
-		return false, false, ownErr
-	}
-	return false, false, nil
 }
 
 // EnableDocsRequired is a middleware that rejects all API requests with 501 Not Implemented when

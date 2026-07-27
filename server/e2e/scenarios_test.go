@@ -20,11 +20,11 @@ import (
 	pluginmodel "github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-// TestScenarios ports the seven canonical Confluence space-permission scenarios plus the named
-// parity gaps (MM-69269) from scripts/smoke-scenarios.sh to run against a real Mattermost server
-// (built from the paired core branch) with the plugin installed, via Testcontainers. See
-// scripts/smoke-scenarios.sh for the authoritative behavioral spec this ports; the two suites are
-// intentionally kept in lockstep, not merged.
+// TestScenarios runs the seven canonical Confluence space-permission scenarios plus the named
+// parity gaps against a real Mattermost server (built from the paired core branch) with the
+// plugin installed, via Testcontainers. scripts/smoke-scenarios.sh is the authoritative
+// behavioral spec and runs the same scenarios as a bash suite; the two are kept in lockstep, not
+// merged.
 func TestScenarios(t *testing.T) {
 	env := getEnv(t)
 	ctx := context.Background()

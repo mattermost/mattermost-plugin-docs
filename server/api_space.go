@@ -14,8 +14,8 @@ import (
 
 const maxSpaceBodyBytes = 1 << 20 // 1 MiB
 
-// maxCapabilitiesBodyBytes caps the capability-set request bodies, which carry only tokens from a
-// fixed five-value vocabulary — no content fields.
+// maxCapabilitiesBodyBytes caps the capability-set request bodies, which carry only capability
+// tokens from a small fixed vocabulary — no content fields.
 const maxCapabilitiesBodyBytes = 4 * 1024 // 4 KiB
 
 // handleGetTeamSpaces handles GET /api/v1/teams/{team_id}/spaces.
@@ -88,8 +88,7 @@ func (p *Plugin) handleGetSpace(w http.ResponseWriter, r *http.Request) {
 // (title, description, icon, props, view_access) are applied onto the existing space; a supplied
 // empty string clears a string field. The optimistic-lock baseline (expected_update_at) is
 // required unless force is set. requireSpaceManageGate is the route floor; a ViewAccess change
-// that requires the stricter admin gate is enforced inside UpdateSpace itself, against the live
-// row, under the space's membership advisory lock.
+// requires the stricter admin gate, enforced inside UpdateSpace against the live row.
 func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]

@@ -15,7 +15,7 @@ import (
 // The capability vocabulary is the core page-permission id strings themselves, so the API speaks
 // the same tokens core enforces — no invented level names. Consumed only as symbols (never a
 // re-declared permission list), keeping the plugin single-sourced against core (see the drift
-// defence discussion on the round-trip tests below).
+// defence discussion on the round-trip tests in space_capabilities_test.go).
 var (
 	// CapabilityReadPage is the baseline capability, always present in an effective set, and never
 	// independently grantable (see ValidateGrantedCapabilities/ValidateDefaultCapabilities).
@@ -92,43 +92,38 @@ var presetCapabilitySets = map[string][]string{
 	mmmodel.SchemeNameSpaceReadOnly:   stripReadPage(mmmodel.SpaceDefaultReadOnlyPermissions),
 }
 
-// ValidateGrantedCapabilities validates a per-member granted-capability request: each token must
-// be one of the grantable member capabilities. read_page is rejected as the non-grantable
-// baseline and delete_page as admin-only; an unknown token is rejected. Dedup-tolerant.
-func ValidateGrantedCapabilities(caps []string) *mmmodel.AppError {
+// validateCapabilities validates caps against allowed, rejecting read_page as the non-grantable
+// baseline and delete_page as admin-only, plus admin_space when rejectAdmin is set. An unknown
+// token is rejected. Dedup-tolerant. where attributes the rejection to the calling validator.
+func validateCapabilities(where string, caps []string, allowed map[string]bool, rejectAdmin bool) *mmmodel.AppError {
 	for _, c := range caps {
 		if c == CapabilityReadPage {
-			return mmmodel.NewAppError("ValidateGrantedCapabilities", "model.space_capabilities.read_page_not_grantable.app_error", nil, "", http.StatusBadRequest)
+			return mmmodel.NewAppError(where, "model.space_capabilities.read_page_not_grantable.app_error", nil, "", http.StatusBadRequest)
 		}
 		if c == CapabilityDeletePage {
-			return mmmodel.NewAppError("ValidateGrantedCapabilities", "model.space_capabilities.delete_page_not_grantable.app_error", nil, "", http.StatusBadRequest)
+			return mmmodel.NewAppError(where, "model.space_capabilities.delete_page_not_grantable.app_error", nil, "", http.StatusBadRequest)
 		}
-		if !grantableMemberCapabilities[c] {
-			return mmmodel.NewAppError("ValidateGrantedCapabilities", "model.space_capabilities.unknown_capability.app_error", map[string]any{"Capability": c}, "", http.StatusBadRequest)
+		if rejectAdmin && c == CapabilityAdminSpace {
+			return mmmodel.NewAppError(where, "model.space_capabilities.admin_not_a_default.app_error", nil, "", http.StatusBadRequest)
+		}
+		if !allowed[c] {
+			return mmmodel.NewAppError(where, "model.space_capabilities.unknown_capability.app_error", map[string]any{"Capability": c}, "", http.StatusBadRequest)
 		}
 	}
 	return nil
+}
+
+// ValidateGrantedCapabilities validates a per-member granted-capability request: each token must
+// be one of the grantable member capabilities.
+func ValidateGrantedCapabilities(caps []string) *mmmodel.AppError {
+	return validateCapabilities("ValidateGrantedCapabilities", caps, grantableMemberCapabilities, false)
 }
 
 // ValidateDefaultCapabilities validates a space-default capability set: same rule as
 // ValidateGrantedCapabilities, plus admin_space is also rejected — a space default is never
 // admin-granting.
 func ValidateDefaultCapabilities(caps []string) *mmmodel.AppError {
-	for _, c := range caps {
-		if c == CapabilityReadPage {
-			return mmmodel.NewAppError("ValidateDefaultCapabilities", "model.space_capabilities.read_page_not_grantable.app_error", nil, "", http.StatusBadRequest)
-		}
-		if c == CapabilityDeletePage {
-			return mmmodel.NewAppError("ValidateDefaultCapabilities", "model.space_capabilities.delete_page_not_grantable.app_error", nil, "", http.StatusBadRequest)
-		}
-		if c == CapabilityAdminSpace {
-			return mmmodel.NewAppError("ValidateDefaultCapabilities", "model.space_capabilities.admin_not_a_default.app_error", nil, "", http.StatusBadRequest)
-		}
-		if !grantableDefaultCapabilities[c] {
-			return mmmodel.NewAppError("ValidateDefaultCapabilities", "model.space_capabilities.unknown_capability.app_error", map[string]any{"Capability": c}, "", http.StatusBadRequest)
-		}
-	}
-	return nil
+	return validateCapabilities("ValidateDefaultCapabilities", caps, grantableDefaultCapabilities, true)
 }
 
 // RolesForCapabilities maps the requested non-admin capabilities to their atomic role names for

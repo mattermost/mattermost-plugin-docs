@@ -138,8 +138,8 @@ func spaceHasMember(t *testing.T, ctx context.Context, admin actor, spaceID, use
 	return false
 }
 
-// deleteSpace deletes spaceID via the space admin actor. Registered via t.Cleanup by every
-// scenario that creates a space.
+// deleteSpace deletes spaceID via the space admin actor. Called at the end of TestScenarios via a
+// shared t.Cleanup over every space id the scenarios accumulated in spacesToClean.
 func deleteSpace(t *testing.T, ctx context.Context, admin actor, spaceID string) {
 	t.Helper()
 	status, body, err := doPluginRequest(ctx, admin.client, http.MethodDelete, "/spaces/"+spaceID, nil, nil)

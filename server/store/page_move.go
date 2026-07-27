@@ -248,10 +248,9 @@ func (s *Store) reindexSiblingGroup(tx *sqlx.Tx, channelID, parentID, movedPageI
 // operations between the caller's pre-checks and this call. Cross-owner resources
 // (page-comment Posts, FileInfo) are not re-homed here.
 // requiredOwnerID, when non-empty, requires every live page in the moved subtree to be owned by
-// that user, failing the move with ErrInvalidInput otherwise; empty skips the check. Checked here,
-// against the transaction's own locked subtree read, to close the TOCTOU window a pre-scan would
-// leave against a concurrent reparent grafting another user's page into the subtree between check
-// and move.
+// that user, failing the move with ErrInvalidInput otherwise; empty skips the check. Checked
+// against the transaction's own locked subtree read, alongside the other re-validations above, so
+// a concurrent reparent cannot graft another user's page into the subtree undetected.
 func (s *Store) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID string, parentPageID *string, expectedUpdateAt int64, force bool, maxDepth int, requiredOwnerID string) (_ *model.Page, priorParentID string, err error) {
 	if pageID == "" {
 		return nil, "", &ErrInvalidInput{Entity: "Page", Field: "Id", Value: pageID}

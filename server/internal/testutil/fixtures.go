@@ -49,8 +49,9 @@ func OpenTestStore(t *testing.T) (*store.Store, *sql.DB) {
 	// channel's core Channels/Schemes/Roles rows (GetSchemeRolesForChannel, GetSchemeIdByName,
 	// GetRolePermissionsByName) — core tables owned by the paired core branch's migration in
 	// production, absent from this plugin-only isolated schema. Stand them in with just the
-	// columns the plugin store queries, and seed the three preset schemes (what the core seeding migration,
-	// mirrored here) so scheme-resolving app methods work against test-created spaces.
+	// columns the plugin store queries, and seed the three preset schemes the core seeding
+	// migration creates in production, so scheme-resolving app methods work against test-created
+	// spaces.
 	mustCreateSchemeStandInTables(t, db)
 	mustSeedSpaceSchemes(t, db)
 

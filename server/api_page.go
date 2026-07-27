@@ -45,7 +45,7 @@ func (p *Plugin) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !p.gatePageWrite(w, space, userID, mmmodel.PermissionCreatePage, nil) {
+	if !p.gatePageWrite(w, space, userID, mmmodel.PermissionCreatePage) {
 		return
 	}
 
@@ -90,7 +90,7 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !p.gatePageWrite(w, space, userID, mmmodel.PermissionEditPage, nil) {
+	if !p.gatePageWrite(w, space, userID, mmmodel.PermissionEditPage) {
 		return
 	}
 
@@ -120,7 +120,7 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	space, _, ok := p.requireSpaceRead(w, vars["space_id"], userID)
+	space, read, ok := p.requireSpaceRead(w, vars["space_id"], userID)
 	if !ok {
 		return
 	}
@@ -129,7 +129,7 @@ func (p *Plugin) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
-	if !p.gateDeleteOwnOrAny(w, space, userID, page.UserId) {
+	if !p.gateDeleteOwnOrAny(w, space, userID, page.UserId, read) {
 		return
 	}
 	if appErr := p.service.DeletePage(vars["page_id"], vars["space_id"], userID); appErr != nil {
@@ -144,7 +144,7 @@ func (p *Plugin) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	space, _, ok := p.requireSpaceRead(w, vars["space_id"], userID)
+	space, read, ok := p.requireSpaceRead(w, vars["space_id"], userID)
 	if !ok {
 		return
 	}
@@ -153,7 +153,7 @@ func (p *Plugin) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
-	if !p.gateDeleteOwnOrAny(w, space, userID, page.UserId) {
+	if !p.gateDeleteOwnOrAny(w, space, userID, page.UserId, read) {
 		return
 	}
 	restored, appErr := p.service.RestorePage(vars["page_id"], vars["space_id"], userID)
@@ -176,7 +176,7 @@ func (p *Plugin) handleMovePage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !p.gatePageWrite(w, space, userID, mmmodel.PermissionEditPage, nil) {
+	if !p.gatePageWrite(w, space, userID, mmmodel.PermissionEditPage) {
 		return
 	}
 
@@ -228,7 +228,7 @@ func (p *Plugin) handleDuplicatePage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if !p.gatePageWrite(w, targetSpace, userID, mmmodel.PermissionCreatePage, nil) {
+	if !p.gatePageWrite(w, targetSpace, userID, mmmodel.PermissionCreatePage) {
 		return
 	}
 
@@ -293,12 +293,13 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Source-side remove-class gate: delete_page (any) if held, else delete_own_page (the store
-	// enforces subtree-wide ownership in-transaction via requiredOwnerID). No source auto-join —
+	// Source-side remove-class gate: delete_page (any) if held, else delete_own_page, which
+	// requires the caller own every page in the moved subtree (passed down as requiredOwnerID).
+	// No source auto-join —
 	// only the target side admits a non-member write. Resolved before the target gate below, which
 	// can join the caller to the target space: a caller denied here must not be left holding a
 	// membership the rejected request created.
-	ownOnly, allowed, permErr := p.resolveOwnOrAny(sourceSpace, userID,
+	ownOnly, allowed, permErr := p.service.ResolveSpacePageOwnOrAny(sourceSpace, userID,
 		"api.page.move_to_space", mmmodel.PermissionDeletePage,
 		"api.page.move_to_space.own", mmmodel.PermissionDeleteOwnPage, true, sourceRead)
 	if permErr != nil {
@@ -314,7 +315,7 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 		requiredOwnerID = userID
 	}
 
-	if !p.gatePageWrite(w, targetSpace, userID, mmmodel.PermissionCreatePage, nil) {
+	if !p.gatePageWrite(w, targetSpace, userID, mmmodel.PermissionCreatePage) {
 		return
 	}
 

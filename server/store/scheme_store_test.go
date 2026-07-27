@@ -85,10 +85,8 @@ func TestDeleteSpaceCustomSchemeIfUnreferenced(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		// Space creation archives its backing channel when a later step fails, and an archived
-		// channel keeps its SchemeId — the reference count is deliberately DeleteAt-blind, so the
-		// row stands in for the archived channel. Without the exclusion that abandoned channel
-		// counts as a live reference and the scheme is orphaned forever.
+		// Stands in for a channel abandoned by a failed space-creation step (see
+		// DeleteSpaceCustomSchemeIfUnreferenced's excludeChannelID doc).
 		channelID := mmmodel.NewId()
 		_, err = db.Exec(`INSERT INTO Channels (Id, SchemeId) VALUES ($1, $2)`, channelID, schemeID)
 		require.NoError(t, err)

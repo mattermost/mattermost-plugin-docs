@@ -80,15 +80,16 @@ func (s *Service) forEachChannelMember(channelID string, visit func(cm *mmmodel.
 	}
 }
 
-// hasOtherAuthorizedMember reports whether space has at least one backing-channel member other
-// than excludeUserID who can still reach the space — for a team space, one who is still an
-// active member of the team. Former team members keep their channel-member rows after leaving
-// the team, so counting raw rows would let the last reachable member be removed and leave the
-// space stranded behind members who all fail the team half of the access gate.
-func (s *Service) hasOtherAuthorizedMember(space *model.Space, excludeUserID string) (bool, error) {
+// hasOtherAuthorizedMemberMatching reports whether space has at least one backing-channel member
+// other than excludeUserID that satisfies matches and can still reach the space — for a team
+// space, one who is still an active member of the team. Former team members keep their
+// channel-member rows after leaving the team, so counting raw rows would let the last reachable
+// member be removed and leave the space stranded behind members who all fail the team half of the
+// access gate. Iteration stops at the first match.
+func (s *Service) hasOtherAuthorizedMemberMatching(space *model.Space, excludeUserID string, matches func(cm *mmmodel.ChannelMember) bool) (bool, error) {
 	found := false
 	err := s.forEachChannelMember(space.ChannelId, func(cm *mmmodel.ChannelMember) (bool, error) {
-		if cm.UserId == excludeUserID {
+		if cm.UserId == excludeUserID || !matches(cm) {
 			return false, nil
 		}
 		if space.TeamId == "" {
@@ -99,13 +100,22 @@ func (s *Service) hasOtherAuthorizedMember(space *model.Space, excludeUserID str
 		if activeErr != nil {
 			return false, activeErr
 		}
-		found = active
-		return found, nil
+		if active {
+			found = true
+			return true, nil
+		}
+		return false, nil
 	})
 	if err != nil {
 		return false, err
 	}
 	return found, nil
+}
+
+// hasOtherAuthorizedMember reports whether any backing-channel member other than excludeUserID can
+// still reach the space.
+func (s *Service) hasOtherAuthorizedMember(space *model.Space, excludeUserID string) (bool, error) {
+	return s.hasOtherAuthorizedMemberMatching(space, excludeUserID, func(*mmmodel.ChannelMember) bool { return true })
 }
 
 // archiveOrphanChannel archives a backing channel when a later step in space creation fails,
@@ -356,6 +366,12 @@ func (s *Service) spaceDefaultCapabilities(space *model.Space) ([]string, error)
 	if err != nil {
 		return nil, err
 	}
+	return s.defaultCapabilitiesForRoles(roles)
+}
+
+// defaultCapabilitiesForRoles is spaceDefaultCapabilities for a caller that already holds the
+// backing channel's scheme roles.
+func (s *Service) defaultCapabilitiesForRoles(roles *store.SchemeRoles) ([]string, error) {
 	if caps, ok := model.DefaultCapabilitiesForSchemeName(roles.SchemeName); ok {
 		return caps, nil
 	}
@@ -415,7 +431,8 @@ func (s *Service) BuildSpaceWithAccess(space *model.Space, userID string) (*mode
 // preset repoints the backing channel at the shared preset scheme; any other set creates a new
 // immutable space-private custom scheme and repoints, retiring the previous custom scheme once
 // unreferenced. The repoint goes through pluginapi Channel.Update (not a store-direct write) so
-// core's member-cache invalidation runs and the switch is authorization-visible immediately.
+// core's member-cache invalidation runs and the new scheme takes effect on the next permission
+// check, rather than when the cache expires.
 func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, caps []string, actingUserID string) (*model.SpaceWithAccess, *mmmodel.AppError) {
 	if space == nil {
 		return nil, mmmodel.NewAppError("SetSpaceDefaultCapabilities", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -446,7 +463,7 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, caps []string,
 		// scheme — so without this an unchanged custom set would create, repoint, and retire on
 		// every save, and the id comparison below could never catch it.
 		if currentRolesErr == nil {
-			if liveCaps, capsErr := s.spaceDefaultCapabilities(space); capsErr == nil &&
+			if liveCaps, capsErr := s.defaultCapabilitiesForRoles(currentRoles); capsErr == nil &&
 				slices.Equal(liveCaps, model.NormalizeCapabilitySet(caps)) {
 				return nil
 			}
@@ -587,8 +604,8 @@ func normalizeAndValidateSpacePatch(where string, patch *model.SpacePatch) *mmmo
 // rejected when force=true. actingUserID is used only for that escalation check.
 //
 // Any patch on a space with a backing channel runs under the space's membership advisory lock (the
-// same lock auto-join and the last-admin invariant use), since it also drives the channel-metadata
-// sync below and both writers must serialize against the same lock.
+// same lock AutoJoinIfDefaultGranted and the last-admin/last-member guards use), because it also
+// drives the channel-metadata sync below, which must not race a concurrent membership change.
 func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expectedUpdateAt *int64, force bool, actingUserID string) (*model.Space, *mmmodel.AppError) {
 	if space == nil {
 		return nil, mmmodel.NewAppError("UpdateSpace", "app.space.update.invalid_id.app_error", nil, "", http.StatusBadRequest)

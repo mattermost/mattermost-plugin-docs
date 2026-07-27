@@ -69,9 +69,10 @@ func (s *Service) readResolutionFrom(sysadmin, active bool, space *model.Space, 
 
 // ResolveSpaceRead resolves the read gate for space against userID, reporting how the read was
 // admitted so callers can gate auto-join to the fall-through case only. where identifies the
-// calling operation for the 500 an isActiveTeamMember lookup failure surfaces as — a genuine
-// backend failure must never collapse into ReadDenied, which would misreport an outage as "not
-// authorized".
+// calling operation for the 500 an isActiveTeamMember lookup failure surfaces as. On that
+// failure the returned resolution is ReadDenied but the error is non-nil, so callers must check
+// the error first — treating the resolution alone as authoritative would misreport an outage as
+// "not authorized".
 func (s *Service) ResolveSpaceRead(where string, space *model.Space, userID string) (ReadResolution, *mmmodel.AppError) {
 	if appErr := s.requireClient(where, "space_id", spaceIDOrEmpty(space), "user_id", userID); appErr != nil {
 		return ReadDenied, appErr
@@ -89,8 +90,10 @@ func (s *Service) ResolveSpaceRead(where string, space *model.Space, userID stri
 	return s.readResolutionFrom(false, active, space, userID), nil
 }
 
-// requireActiveMemberGate runs the four-gate preamble shared by every space-scoped Require*
-// helper: client wiring, existence-hiding on a nil space, the sysadmin override, and
+// requireActiveMemberGate runs the four-gate preamble shared by RequireSpacePagePermission,
+// requireChannelAdminOrTeamPerm, and RequireSpaceAdminOrSysadmin (RequireSpacePagePermissionFrom
+// skips it, reusing a ReadResolution its caller already resolved): client wiring,
+// existence-hiding on a nil space, the sysadmin override, and
 // active-team-membership resolution with its 500 on a genuine lookup failure. A non-nil appErr
 // must be returned by the caller immediately. Otherwise, when sysadmin is true the caller may
 // return nil immediately; when it is false the caller continues with active to evaluate its own
@@ -125,6 +128,14 @@ func (s *Service) RequireSpacePagePermission(where string, space *model.Space, u
 	if sysadmin {
 		return nil
 	}
+	return s.evaluatePagePermission(where, space, userID, perm, active)
+}
+
+// evaluatePagePermission grants perm to an active member holding it on the backing channel, or —
+// for a read permission on an open space only — to an active team member via the non-member
+// fall-through. Any other case yields the shared existence-hiding 403. active is the caller's
+// already-resolved team-membership status.
+func (s *Service) evaluatePagePermission(where string, space *model.Space, userID string, perm *mmmodel.Permission, active bool) *mmmodel.AppError {
 	if active && s.client.User.HasPermissionToChannel(userID, space.ChannelId, perm) {
 		return nil
 	}
@@ -157,14 +168,35 @@ func (s *Service) RequireSpacePagePermissionFrom(where string, space *model.Spac
 	if space == nil {
 		return existenceHidingForbidden(where)
 	}
-	if s.client.User.HasPermissionToChannel(userID, space.ChannelId, perm) {
-		return nil
+	return s.evaluatePagePermission(where, space, userID, perm, true)
+}
+
+// ResolveSpacePageOwnOrAny evaluates a two-tier own/any permission pair: anyPerm if held, else
+// ownPerm when ownerMatches. Reports whether the caller qualified only via ownPerm (ownOnly), so
+// a caller that must push ownership enforcement further down — MovePageToSpace's subtree-wide
+// check — can tell the two tiers apart. admitted=false with a nil appErr means neither tier
+// admitted the caller; the caller writes its own denial so the operation label stays its own. A
+// non-nil appErr is a genuine backend failure from the check itself, which the caller must
+// surface as-is rather than reporting as a denial.
+func (s *Service) ResolveSpacePageOwnOrAny(space *model.Space, userID, anyWhere string, anyPerm *mmmodel.Permission, ownWhere string, ownPerm *mmmodel.Permission, ownerMatches bool, admittedVia ReadResolution) (ownOnly, admitted bool, appErr *mmmodel.AppError) {
+	anyErr := s.RequireSpacePagePermissionFrom(anyWhere, space, userID, anyPerm, admittedVia)
+	if anyErr == nil {
+		return false, true, nil
 	}
-	if perm.Id == mmmodel.PermissionReadPage.Id && space.ViewAccess == model.ViewAccessOpen &&
-		s.openTeamFallthrough(userID, space.TeamId) {
-		return nil
+	if anyErr.StatusCode != http.StatusForbidden {
+		return false, false, anyErr
 	}
-	return existenceHidingForbidden(where)
+	if !ownerMatches {
+		return false, false, nil
+	}
+	ownErr := s.RequireSpacePagePermissionFrom(ownWhere, space, userID, ownPerm, admittedVia)
+	if ownErr == nil {
+		return true, true, nil
+	}
+	if ownErr.StatusCode != http.StatusForbidden {
+		return false, false, ownErr
+	}
+	return false, false, nil
 }
 
 // requireChannelAdminOrTeamPerm gates an elevated space operation: sysadmin, channel admin_space
@@ -245,8 +277,9 @@ func spaceIDOrEmpty(space *model.Space) string {
 
 // AutoJoinIfDefaultGranted is the auto-join pre-step: when a non-member's write was admitted only via
 // the open-space read fall-through (admittedVia == ReadViaOpenFallthrough) and the space's
-// current default capability set grants perm to a plain member, it silently joins userID to the
-// backing channel (idempotent) so the subsequent write-gate re-check passes as a member. The
+// current default capability set grants perm to a plain member, it joins userID to the backing
+// channel (idempotent, and published as a membership-added event) so the subsequent write-gate
+// re-check passes as a member. The
 // open-read admission is re-validated before joining: a concurrent open->private flip between the
 // admitting read and this pre-step aborts the join.
 // ownerCheck, when non-nil, must additionally hold (used for delete_own_page, where the caller

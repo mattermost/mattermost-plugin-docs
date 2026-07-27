@@ -311,8 +311,8 @@ func TestHandler_SpaceAndPageRoundTrip(t *testing.T) {
 	})
 }
 
-// TestHandler_UpdateSpace patches a space's mutable fields. Updating a space is manage-gated
-// : the acting user needs an elevated grant, not bare membership.
+// TestHandler_UpdateSpace patches a space's mutable fields. Updating a space is manage-gated: the
+// acting user needs an elevated grant, not bare membership.
 func TestHandler_UpdateSpace(t *testing.T) {
 	mockAPI := newEnabledMockAPI()
 	adminID := mmmodel.NewId()
@@ -541,8 +541,8 @@ func TestHandler_ListSpaceMembers_HasMore(t *testing.T) {
 	require.True(t, resp.HasMore)
 }
 
-// TestHandler_AddSpaceMember adds a member to a space; the caller needs requireSpaceManage — no
-// longer any current space member.
+// TestHandler_AddSpaceMember adds a member to a space; the caller needs requireSpaceManage
+// authority.
 func TestHandler_AddSpaceMember(t *testing.T) {
 	channelID := mmmodel.NewId()
 	targetUserID := mmmodel.NewId()
@@ -2026,8 +2026,9 @@ func TestHandler_SetSpaceMemberCapabilities_PublishesEvent(t *testing.T) {
 // the isolated test DB's Channels stand-in row, keeping subsequent store-side scheme resolution
 // (GetSchemeRolesForChannel, spaceDefaultCapabilities — which read the DB row directly, not the
 // mocked channel) consistent with the mocked channel across repeated calls in the same test.
+//
 // Must be registered before openTestPlugin (GetChannelOfType's default catch-all would otherwise
-// shadow it — the same registration-order rule as grantSpaceManage/grantSpaceAdmin); hp is
+// shadow it — the same registration-order rule as grantSpaceManage/grantSpaceAdmin). hp is
 // assigned by the caller once openTestPlugin returns, and the returned *model.Channel lets the
 // caller seed a specific starting scheme id once the harness (and its seeded preset scheme ids)
 // exists.

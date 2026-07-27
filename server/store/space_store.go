@@ -366,9 +366,8 @@ const (
 // membership mutations for one space across processes. Guards that span multiple non-database
 // calls — read the member list, then mutate it — are atomic with respect to each other only
 // under this lock. The lock is session-scoped on a dedicated pooled connection with no open
-// transaction of its own. fn may perform store work of its own — reads, and its own transactions
-// (e.g. the ViewAccess live-row compare and UpdateSpace's write, or the auto-join pre-step's
-// reads) — so each in-flight caller holds two pooled connections for the critical section: this
+// transaction of its own. fn may perform store work of its own — reads and its own transactions
+// — so each in-flight caller holds two pooled connections for the critical section: this
 // lock's session connection plus any connection fn's own transaction acquires. Any transaction fn
 // opens must therefore bound its connection acquisition (see beginTxBounded), or a saturated pool
 // can leave every lock holder waiting on a connection no other holder will release. fn must also

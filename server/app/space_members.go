@@ -113,31 +113,11 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 }
 
 // hasOtherAuthorizedAdmin reports whether space's backing channel still has a SchemeAdmin member
-// who is an active team member once excludeUserID is disregarded — the last-admin invariant's
-// authorized-admin predicate (mirroring hasOtherAuthorizedMember's team-active discipline and its
-// stop-at-the-first-hit walk). excludeUserID, when non-empty, is skipped, so the answer describes
-// what would remain after that user is demoted or removed.
+// who can reach the space once excludeUserID is disregarded — the last-admin invariant's
+// admin-side counterpart to hasOtherAuthorizedMember. excludeUserID, when non-empty, is skipped, so
+// the answer describes what would remain after that user is demoted or removed.
 func (s *Service) hasOtherAuthorizedAdmin(space *model.Space, excludeUserID string) (bool, error) {
-	found := false
-	err := s.forEachChannelMember(space.ChannelId, func(cm *mmmodel.ChannelMember) (bool, error) {
-		if !cm.SchemeAdmin || cm.UserId == excludeUserID {
-			return false, nil
-		}
-		if space.TeamId == "" {
-			found = true
-			return true, nil
-		}
-		active, activeErr := s.isActiveTeamMember(space.TeamId, cm.UserId)
-		if activeErr != nil {
-			return false, activeErr
-		}
-		if active {
-			found = true
-			return true, nil
-		}
-		return false, nil
-	})
-	return found, err
+	return s.hasOtherAuthorizedMemberMatching(space, excludeUserID, func(cm *mmmodel.ChannelMember) bool { return cm.SchemeAdmin })
 }
 
 // SetSpaceMemberCapabilities replaces targetUserID's per-member granted capability set. Callers

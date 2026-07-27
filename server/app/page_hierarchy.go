@@ -164,9 +164,11 @@ func (s *Service) reparentWithinSpace(where, pageID, spaceID string, newParentID
 // gates), so no re-read happens here. userID is the acting user, recorded in logs only — a
 // move does not change the page's LastModifiedBy. requiredOwnerID, when non-empty, requires
 // every live page in the moved subtree to be owned by it — the gate resolves this to userID on
-// the delete_own_page-only path and "" on the delete_page (any) path; a mismatch fails the move
-// in-transaction. A same-space request requires only the reparented root to be owned, since no
-// other page leaves the space. Per-page restrictions and redirects are not handled yet.
+// the delete_own_page-only path and "" on the delete_page (any) path. store.MovePageToSpace
+// re-checks this against the exact subtree it moves, so the whole move is rejected if any page
+// has a different owner. A same-space request
+// requires only the reparented root to be owned, since no other page leaves the space.
+// Per-page restrictions and redirects are not handled yet.
 func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model.Space, parentPageID *string, expectedUpdateAt *int64, force bool, userID, requiredOwnerID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -215,9 +217,12 @@ func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model
 	// requestedParent is passed explicitly because nil means "target root" here but "leave
 	// unchanged" to MovePage.
 	if sourceSpace.Id == targetSpace.Id {
-		// The subtree keeps its space, so only the reparented root is affected — an own-only caller
-		// must own it. A page's UserId never changes after creation, so reading it before the store's
-		// locked reparent carries no check-then-act window.
+		// The subtree keeps its space, so the reparented root is the only page that moves: when
+		// requiredOwnerID is set, it is the only page whose owner has to match. store.MovePage has
+		// no ownership parameter, so the check runs here rather than inside the store transaction.
+		// Reading the owner outside that transaction is still safe: a page's UserId is set at
+		// creation and never updated, so no concurrent write can change the answer between this
+		// read and the move.
 		if requiredOwnerID != "" {
 			page, pageErr := s.GetPageInSpace("MovePageToSpace", pageID, sourceSpace.Id, false)
 			if pageErr != nil {

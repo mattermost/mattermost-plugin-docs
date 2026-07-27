@@ -111,9 +111,8 @@ func (s *Store) GetRolePermissionsByName(roleName string) ([]string, error) {
 
 // CreateSpaceCustomScheme creates one immutable space-private channel scheme with three generated
 // roles carrying exactly the given permission sets (user/admin/guest), and returns the new
-// scheme's id. Used when a space's default capability set (or the canonical admin/guest
-// permission sets) doesn't match one of the three seeded presets. The scheme is unreferenced by
-// any channel until the caller repoints the space's backing channel at it.
+// scheme's id. The scheme is unreferenced by any channel until the caller repoints the space's
+// backing channel at it.
 func (s *Store) CreateSpaceCustomScheme(userPermissions, adminPermissions, guestPermissions []string) (_ string, err error) {
 	tx, cancel, err := s.beginTxBounded()
 	if err != nil {

@@ -11,7 +11,7 @@ import (
 // can refresh the affected space list and page tree without a full reload. The platform prepends
 // "custom_<pluginid>_" to each name on the wire, so the names carry no redundant plugin prefix.
 //
-// Every event is scoped to the space's backing channel. Reads are no longer purely
+// Every event is scoped to the space's backing channel. Reads are not purely
 // membership-gated (an open space also admits non-member reads via the team read_public_channel
 // fall-through, and the team space list includes open spaces the caller hasn't joined), but WS
 // delivery deliberately stays channel-scoped: a non-member reader of an open space receives no

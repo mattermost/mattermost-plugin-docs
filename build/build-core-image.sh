@@ -14,7 +14,7 @@
 # Usage:
 #   ./build/build-core-image.sh
 #   CORE_IMAGE=my-tag:dev ./build/build-core-image.sh
-#   ./build/build-core-image.sh --skip-build   # reuse the existing binary at $MM_SERVER_REPO/bin/mattermost
+#   ./build/build-core-image.sh --skip-build   # reuse the existing binaries at $MM_SERVER_REPO/bin/{mattermost,mmctl}-e2e-linux-<arch>
 #
 # Requires:
 #   - Docker running locally.
