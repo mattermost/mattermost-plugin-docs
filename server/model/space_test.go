@@ -15,10 +15,11 @@ import (
 
 func validSpace() *model.Space {
 	s := &model.Space{
-		ChannelId: mmmodel.NewId(),
-		TeamId:    mmmodel.NewId(),
-		CreatorId: mmmodel.NewId(),
-		Title:     "Title",
+		ChannelId:  mmmodel.NewId(),
+		TeamId:     mmmodel.NewId(),
+		CreatorId:  mmmodel.NewId(),
+		Title:      "Title",
+		ViewAccess: model.ViewAccessOpen,
 	}
 	s.PreSave()
 	return s
