@@ -78,6 +78,7 @@ func TestImportJob_IsValid(t *testing.T) {
 		"bad source mode":   func(j *ImportJob) { j.SourceSelectionMode = "maybe" },
 		"bad state":         func(j *ImportJob) { j.State = "limbo" },
 		"bad bundle sha":    func(j *ImportJob) { j.BundleSha256 = "nothex" },
+		"empty bundle sha":  func(j *ImportJob) { j.BundleSha256 = "" },
 		"bad preflight rev": func(j *ImportJob) { j.PreflightRevision = "short" },
 		"zero timestamps":   func(j *ImportJob) { j.CreateAt = 0 },
 		"long space title":  func(j *ImportJob) { j.ConfirmedSpaceTitle = strings.Repeat("x", ImportSpaceTitleMaxRunes+1) },

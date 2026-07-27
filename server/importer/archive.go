@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"path"
 	"strings"
 )
 
@@ -124,33 +125,39 @@ func InspectArchive(r io.ReaderAt, n int64) (*ArchiveContents, error) {
 		}
 		rawSeen[raw] = struct{}{}
 
-		name := raw // only "/" separators are permitted, verified above
-
-		if unsafeErr := checkUnsafeName(name); unsafeErr != nil {
+		// Reject traversal/absolute/drive names on the raw form first, so path.Clean below cannot
+		// mask a ".." segment by collapsing it before it is detected.
+		if unsafeErr := checkUnsafeName(raw); unsafeErr != nil {
 			return nil, unsafeErr
 		}
+
+		// Genuinely normalize before duplicate detection: collapse "." and repeated "/" segments so
+		// e.g. "data//x" and "data/x" are recognized as the same entry. Only "/" separators are
+		// present (backslashes are rejected above). The trailing slash is preserved so a directory
+		// entry stays distinct from a same-named file.
+		name := normalizeEntryName(raw)
 		if _, dup := normSeen[name]; dup {
 			return nil, archiveErr(ArchiveErrDuplicateEntry, "archive contains duplicate normalized entry %q", name)
 		}
 		normSeen[name] = struct{}{}
 
+		// Validate mode, encryption, and compression method for every file entry — including the
+		// data/ payloads we never open — so an unsafe entry is rejected uniformly rather than only
+		// for the two entries whose bytes are read.
 		isDir := strings.HasSuffix(name, "/")
 		if !isDir {
 			if modeErr := checkEntryMode(f); modeErr != nil {
 				return nil, modeErr
 			}
+			if methodErr := checkSupportedMethod(f); methodErr != nil {
+				return nil, methodErr
+			}
 		}
 
 		switch {
 		case name == entryJSONL:
-			if methodErr := checkSupportedMethod(f); methodErr != nil {
-				return nil, methodErr
-			}
 			jsonlFile = f
 		case name == entryManifest:
-			if methodErr := checkSupportedMethod(f); methodErr != nil {
-				return nil, methodErr
-			}
 			manifestFile = f
 		case name == entryDataDir || strings.HasPrefix(name, entryDataDir):
 			// data/ files are permitted but never opened.
@@ -191,6 +198,19 @@ func InspectArchive(r io.ReaderAt, n int64) (*ArchiveContents, error) {
 		JSONLSha256:   hex.EncodeToString(sum[:]),
 		HasDataDir:    hasDataDir,
 	}, nil
+}
+
+// normalizeEntryName canonicalizes a "/"-separated ZIP entry name for duplicate detection by
+// collapsing "." and repeated-slash segments via path.Clean, preserving a trailing slash so a
+// directory entry does not alias a same-named file. It must be called only after checkUnsafeName
+// has rejected ".." segments, since path.Clean would otherwise resolve them away.
+func normalizeEntryName(name string) string {
+	isDir := strings.HasSuffix(name, "/")
+	cleaned := path.Clean(name)
+	if isDir && cleaned != "/" && cleaned != "." {
+		cleaned += "/"
+	}
+	return cleaned
 }
 
 // checkUnsafeName rejects path traversal and platform-specific unsafe names on a "/"-separated

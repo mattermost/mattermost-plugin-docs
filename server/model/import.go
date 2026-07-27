@@ -12,7 +12,7 @@ import (
 )
 
 // ImportJobState is a persisted import-job lifecycle state. The values here must exactly match the
-// chk_docs_importjob_state CHECK constraint in migration 000005.
+// chk_docs_importjob_state CHECK constraint in migration 000006.
 type ImportJobState string
 
 const (
@@ -412,7 +412,9 @@ func (j *ImportJob) IsValid() *mmmodel.AppError {
 	if !j.State.IsValid() {
 		return mmmodel.NewAppError(where, "model.import_job.is_valid.state.app_error", nil, "id="+j.Id, http.StatusBadRequest)
 	}
-	if j.BundleSha256 != "" && !hexSHA256.MatchString(j.BundleSha256) {
+	// BundleSha256 is always computed during upload inspection, so a persisted job must carry a
+	// valid 64-hex digest; an empty value is a bug, not a valid pre-inspection state.
+	if !hexSHA256.MatchString(j.BundleSha256) {
 		return mmmodel.NewAppError(where, "model.import_job.is_valid.bundle_sha.app_error", nil, "id="+j.Id, http.StatusBadRequest)
 	}
 	if !IsValidImportHash(j.PreflightRevision) {
