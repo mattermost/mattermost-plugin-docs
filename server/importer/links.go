@@ -3,7 +3,10 @@
 
 package importer
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // Confluence link placeholder names the mmetl producer emits inside TipTap link mark hrefs and
 // image src attributes. The producer wraps them in double braces, e.g. "{{CONF_PAGE_ID:101}}"
@@ -49,19 +52,30 @@ var placeholderKinds = map[string]LinkKind{
 	PlaceholderAttachment: LinkKindAttachment,
 }
 
+// placeholderTarget matches a placeholder's target argument: any run of escaped braces ("\{" or
+// "\}") or characters that are neither brace. The producer escapes literal braces in the target
+// (escapeForPlaceholder: "{"->"\{", "}"->"\}"), so a naive "[^}]*" would stop at the first escaped
+// "}" and fail to match a title/filename containing braces. RE2 has no lookbehind, so the "stop at
+// the first unescaped }}" rule is expressed through this alternation instead.
+const placeholderTarget = `((?:\\[{}]|[^{}])*)`
+
 // linkPlaceholderRe matches a producer link/attachment placeholder of the form
-// "{{CONF_PAGE_ID:target}}", capturing the placeholder name and its target argument. The producer
-// URL-escapes the target, so it never itself contains "}".
-var linkPlaceholderRe = regexp.MustCompile(`\{\{(CONF_PAGE_ID|CONF_PAGE_TITLE|CONF_FILE|CONF_ATTACHMENT):([^}]*)\}\}`)
+// "{{CONF_PAGE_ID:target}}", capturing the placeholder name and its (still-escaped) target.
+var linkPlaceholderRe = regexp.MustCompile(`\{\{(CONF_PAGE_ID|CONF_PAGE_TITLE|CONF_FILE|CONF_ATTACHMENT):` + placeholderTarget + `\}\}`)
 
 // anyPlaceholderRe matches any Confluence placeholder token (including e.g. CONF_USER) so a
 // placeholder left in ordinary text can be flagged even when it is not one of the link kinds.
-var anyPlaceholderRe = regexp.MustCompile(`\{\{CONF_[A-Z_]+:[^}]*\}\}`)
+var anyPlaceholderRe = regexp.MustCompile(`\{\{CONF_[A-Z_]+:` + placeholderTarget + `\}\}`)
+
+// placeholderUnescaper reverses escapeForPlaceholder, turning the producer's "\{"/"\}" back into
+// literal braces in a discovered target.
+var placeholderUnescaper = strings.NewReplacer(`\{`, `{`, `\}`, `}`)
 
 // classifyPlaceholder inspects an approved attribute value (a link href or image src) and returns a
 // DiscoveredLink when it contains a recognized "{{CONF_...:target}}" placeholder, plus ok=true. The
 // producer sets the whole attribute to the placeholder, but this tolerates surrounding text by
-// matching the first placeholder anywhere in the value.
+// matching the first placeholder anywhere in the value. The captured target is unescaped back to
+// its literal form.
 func classifyPlaceholder(value string, inImageSrc bool) (DiscoveredLink, bool) {
 	m := linkPlaceholderRe.FindStringSubmatch(value)
 	if m == nil {
@@ -70,7 +84,7 @@ func classifyPlaceholder(value string, inImageSrc bool) (DiscoveredLink, bool) {
 	return DiscoveredLink{
 		Kind:       placeholderKinds[m[1]],
 		Raw:        value,
-		Target:     m[2],
+		Target:     placeholderUnescaper.Replace(m[2]),
 		InImageSrc: inImageSrc,
 	}, true
 }

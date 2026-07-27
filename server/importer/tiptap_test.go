@@ -17,6 +17,20 @@ func TestCanonicalize_RejectsNonDoc(t *testing.T) {
 	}
 }
 
+func TestCanonicalize_RejectsTrailingDelimiter(t *testing.T) {
+	// json.Decoder.More() returns false before a closing "]"/"}", so these must be caught by the
+	// decode-second-value/io.EOF check rather than More().
+	for _, body := range []string{`{"type":"doc","content":[]}]`, `{"type":"doc","content":[]}}`, `{"type":"doc"}{}`} {
+		if _, _, _, err := CanonicalizeAndExtractSearchText(body); err == nil {
+			t.Errorf("expected trailing-data rejection for %q", body)
+		}
+	}
+	// Trailing whitespace remains acceptable.
+	if _, _, _, err := CanonicalizeAndExtractSearchText(`{"type":"doc","content":[]}` + "  \n"); err != nil {
+		t.Errorf("trailing whitespace should be accepted: %v", err)
+	}
+}
+
 func TestCanonicalize_PreservesUnknownTypes(t *testing.T) {
 	body := `{"type":"doc","content":[{"type":"customWidget","attrs":{"foo":"bar"},"content":[{"type":"text","text":"hi"}]}]}`
 	canon, search, _, err := CanonicalizeAndExtractSearchText(body)
@@ -176,6 +190,44 @@ func TestLinkDiscovery_OnlyApprovedAttrs(t *testing.T) {
 	}
 	if inText == 0 {
 		t.Errorf("expected an in-text placeholder to be flagged separately")
+	}
+}
+
+func TestLinkDiscovery_EscapedBracesInTarget(t *testing.T) {
+	// The producer escapes literal braces in a placeholder target ("{"->"\{", "}"->"\}"). A title
+	// containing braces must still be discovered, and its target unescaped back to literal form.
+	doc := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "paragraph",
+				"content": []any{
+					map[string]any{
+						"type": "text",
+						"text": "linky",
+						"marks": []any{map[string]any{"type": "link", "attrs": map[string]any{
+							"href": `{{CONF_PAGE_TITLE:A\{B\}C}}`,
+						}}},
+					},
+				},
+			},
+		},
+	}
+	_, _, links, err := CanonicalizeAndExtractSearchText(marshal(doc))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	var found *DiscoveredLink
+	for i := range links {
+		if links[i].Kind == LinkKindPageTitle {
+			found = &links[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected a page-title placeholder to be discovered; got %+v", links)
+	}
+	if found.Target != "A{B}C" {
+		t.Errorf("target = %q, want unescaped %q", found.Target, "A{B}C")
 	}
 }
 
