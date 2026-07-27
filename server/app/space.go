@@ -370,6 +370,9 @@ func (s *Service) spaceDefaultCapabilities(space *model.Space) ([]string, error)
 // capability set plus the caller's own truthful, current effective capabilities — never a
 // hypothetical post-join grant. A denied read yields the shared existence-hiding 403.
 func (s *Service) BuildSpaceWithAccess(space *model.Space, userID string) (*model.SpaceWithAccess, *mmmodel.AppError) {
+	if space == nil {
+		return nil, mmmodel.NewAppError("BuildSpaceWithAccess", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
+	}
 	if appErr := s.requireClient("BuildSpaceWithAccess", "space_id", space.Id, "user_id", userID); appErr != nil {
 		return nil, appErr
 	}

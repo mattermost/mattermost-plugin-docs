@@ -12,9 +12,9 @@
 #   4. Builds the image and tags it $CORE_IMAGE (default mm-docs-rbac-core:dev).
 #
 # Usage:
-#   ./scripts/build-core-image.sh
-#   CORE_IMAGE=my-tag:dev ./scripts/build-core-image.sh
-#   ./scripts/build-core-image.sh --skip-build   # reuse the existing binary at $MM_SERVER_REPO/bin/mattermost
+#   ./build/build-core-image.sh
+#   CORE_IMAGE=my-tag:dev ./build/build-core-image.sh
+#   ./build/build-core-image.sh --skip-build   # reuse the existing binary at $MM_SERVER_REPO/bin/mattermost
 #
 # Requires:
 #   - Docker running locally.

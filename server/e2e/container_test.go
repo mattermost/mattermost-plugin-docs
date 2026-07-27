@@ -103,15 +103,24 @@ func startEnv() (*testEnv, error) {
 		return nil, fmt.Errorf("failed to start Mattermost container: %w", err)
 	}
 
+	// Teardown runs on its own context: the likeliest failure below is ctx's own deadline expiring,
+	// and Terminate cannot clean up on an already-expired context — leaving a Mattermost+Postgres
+	// pair running on the CI agent or dev machine.
+	terminate := func() {
+		termCtx, termCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer termCancel()
+		_ = container.Terminate(termCtx)
+	}
+
 	baseURL, err := container.URL(ctx)
 	if err != nil {
-		_ = container.Terminate(ctx)
+		terminate()
 		return nil, fmt.Errorf("failed to resolve container URL: %w", err)
 	}
 
 	adminClient, err := container.GetAdminClient(ctx)
 	if err != nil {
-		_ = container.Terminate(ctx)
+		terminate()
 		return nil, fmt.Errorf("failed to get admin client: %w", err)
 	}
 
@@ -122,7 +131,7 @@ func startEnv() (*testEnv, error) {
 	// fails with app.space.create.admin_role_failed.app_error wrapping
 	// app.schemes.is_phase_2_migration_completed.not_completed.app_error.
 	if err := waitForPhase2Migration(ctx, adminClient); err != nil {
-		_ = container.Terminate(ctx)
+		terminate()
 		return nil, err
 	}
 
@@ -140,13 +149,19 @@ func waitForPhase2Migration(ctx context.Context, adminClient *mmmodel.Client4) e
 			return nil
 		}
 		lastErr = err
-		time.Sleep(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for advanced-permissions phase-2 migration: %w (last error: %v)", ctx.Err(), lastErr)
+		case <-time.After(2 * time.Second):
+		}
 	}
 	return fmt.Errorf("advanced-permissions phase-2 migration did not complete within 2 minutes: %w", lastErr)
 }
 
 // resolveBundlePath globs dist/ (relative to this package's directory) for the built plugin
-// bundle, failing with a clear pointer to `make dist` when it is absent.
+// bundle, failing with a clear pointer to `make dist` when it is absent. Several bundles can sit
+// there (a version bump, or a stale host-only bundle from `make server`), so the newest by
+// modification time wins — the same one `make test-e2e` inspects before deciding to rebuild.
 func resolveBundlePath() (string, error) {
 	matches, err := filepath.Glob("../../dist/" + pluginID + "-*.tar.gz")
 	if err != nil {
@@ -155,7 +170,20 @@ func resolveBundlePath() (string, error) {
 	if len(matches) == 0 {
 		return "", fmt.Errorf("no plugin bundle found at dist/%s-*.tar.gz — run `make dist` first", pluginID)
 	}
-	return matches[len(matches)-1], nil
+	newest, newestMod := "", time.Time{}
+	for _, match := range matches {
+		info, statErr := os.Stat(match)
+		if statErr != nil {
+			continue
+		}
+		if newest == "" || info.ModTime().After(newestMod) {
+			newest, newestMod = match, info.ModTime()
+		}
+	}
+	if newest == "" {
+		return "", fmt.Errorf("no readable plugin bundle at dist/%s-*.tar.gz", pluginID)
+	}
+	return newest, nil
 }
 
 // checkImageExists fails clearly (naming the build script) rather than letting Testcontainers

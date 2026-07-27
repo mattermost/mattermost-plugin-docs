@@ -165,7 +165,8 @@ func (s *Service) reparentWithinSpace(where, pageID, spaceID string, newParentID
 // move does not change the page's LastModifiedBy. requiredOwnerID, when non-empty, requires
 // every live page in the moved subtree to be owned by it — the gate resolves this to userID on
 // the delete_own_page-only path and "" on the delete_page (any) path; a mismatch fails the move
-// in-transaction. Per-page restrictions and redirects are not handled yet.
+// in-transaction. A same-space request requires only the reparented root to be owned, since no
+// other page leaves the space. Per-page restrictions and redirects are not handled yet.
 func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model.Space, parentPageID *string, expectedUpdateAt *int64, force bool, userID, requiredOwnerID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -214,6 +215,18 @@ func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model
 	// requestedParent is passed explicitly because nil means "target root" here but "leave
 	// unchanged" to MovePage.
 	if sourceSpace.Id == targetSpace.Id {
+		// The subtree keeps its space, so only the reparented root is affected — an own-only caller
+		// must own it. A page's UserId never changes after creation, so reading it before the store's
+		// locked reparent carries no check-then-act window.
+		if requiredOwnerID != "" {
+			page, pageErr := s.GetPageInSpace("MovePageToSpace", pageID, sourceSpace.Id, false)
+			if pageErr != nil {
+				return nil, pageErr
+			}
+			if page.UserId != requiredOwnerID {
+				return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.subtree_not_owned.app_error", nil, "", http.StatusBadRequest)
+			}
+		}
 		if requestedParent != "" && requestedParent != curParentID {
 			if destErr := s.validateDestinationParent("MovePageToSpace", pageID, requestedParent, sourceSpace.Id); destErr != nil {
 				return nil, destErr

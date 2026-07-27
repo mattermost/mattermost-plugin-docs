@@ -260,6 +260,7 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 	}
 
 	joined := false
+	var joinedUserID, joinedChannelID string
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
 		fresh, getErr := s.store.GetSpace(space.Id, false)
 		if getErr != nil {
@@ -299,7 +300,7 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 			return addErr
 		}
 		joined = true
-		s.publishToChannels(wsEventSpaceMemberAdded, map[string]any{"space_id": fresh.Id, "user_id": member.UserId}, fresh.ChannelId)
+		joinedUserID, joinedChannelID = member.UserId, fresh.ChannelId
 		return nil
 	})
 	if lockErr != nil {
@@ -308,6 +309,11 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 			return false, appErr
 		}
 		return false, storeAppError("AutoJoinIfDefaultGranted", lockErr)
+	}
+	// Published after the lock is released: the membership lock holds a dedicated connection, so a
+	// slow publish inside it would push concurrent membership mutations into a lock timeout.
+	if joined {
+		s.publishToChannels(wsEventSpaceMemberAdded, map[string]any{"space_id": space.Id, "user_id": joinedUserID}, joinedChannelID)
 	}
 	return joined, nil
 }

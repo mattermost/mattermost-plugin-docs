@@ -101,14 +101,16 @@ func (s *Store) GetSpacesForTeam(teamID, userID string, callerHasOpenFallthrough
 		return nil, err
 	}
 
-	memberExists := sq.Expr("EXISTS (SELECT 1 FROM ChannelMembers cm WHERE cm.ChannelId = sp.ChannelId AND cm.UserId = ?)", userID)
-	openFallthrough := sq.And{sq.Eq{"sp.ViewAccess": model.ViewAccessOpen}, sq.Expr("?", callerHasOpenFallthrough)}
+	visible := sq.Or{sq.Expr("EXISTS (SELECT 1 FROM ChannelMembers cm WHERE cm.ChannelId = sp.ChannelId AND cm.UserId = ?)", userID)}
+	if callerHasOpenFallthrough {
+		visible = append(visible, sq.Eq{"sp.ViewAccess": model.ViewAccessOpen})
+	}
 
 	builder := s.getQueryBuilder().
 		Select(columnsWithAlias("sp", spaceSelectColumns)...).
 		From("DOCS_Space sp").
 		Where(sq.Eq{"sp.TeamId": teamID, "sp.DeleteAt": 0}).
-		Where(sq.Or{memberExists, openFallthrough}).
+		Where(visible).
 		OrderBy("sp.SortOrder ASC", "sp.CreateAt DESC", "sp.Id ASC")
 	builder = applyLimitOffset(builder, offset, limit)
 

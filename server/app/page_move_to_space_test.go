@@ -362,6 +362,36 @@ func TestServiceMovePageToSpace_SameSpaceReparent(t *testing.T) {
 	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "page_moved_to_space", mock.Anything, mock.Anything)
 }
 
+// TestServiceMovePageToSpace_SameSpaceRequiredOwnerID verifies the own-scoped gate holds on the
+// same-space path too: a caller resolved to delete_own_page can reparent a page it owns, but not
+// one owned by someone else — the branch delegates to the in-space move, which carries no
+// ownership check of its own.
+func TestServiceMovePageToSpace_SameSpaceRequiredOwnerID(t *testing.T) {
+	h := openTestService(t)
+	teamID := mmmodel.NewId()
+	owner := mmmodel.NewId()
+	ch := mmmodel.NewId()
+	space := seedSpaceForTeam(t, h.store, h.db, ch, teamID)
+
+	newParent := mustCreatePage(t, h.store, space.Id, ch, owner, "")
+	parentID := newParent.Id
+
+	foreign := mustCreatePage(t, h.store, space.Id, ch, mmmodel.NewId(), "")
+	_, appErr := h.svc.MovePageToSpace(foreign.Id, space, space, &parentID, new(foreign.UpdateAt), false, owner, owner)
+	require.NotNil(t, appErr)
+	require.Equal(t, 400, appErr.StatusCode)
+	require.Equal(t, "app.page.move_to_space.subtree_not_owned.app_error", appErr.Id)
+
+	stillRoot, getErr := h.svc.GetPage(foreign.Id)
+	require.Nil(t, getErr)
+	require.Empty(t, stillRoot.ParentId)
+
+	own := mustCreatePage(t, h.store, space.Id, ch, owner, "")
+	moved, appErr := h.svc.MovePageToSpace(own.Id, space, space, &parentID, new(own.UpdateAt), false, owner, owner)
+	require.Nil(t, appErr)
+	require.Equal(t, newParent.Id, moved.ParentId)
+}
+
 // TestServiceMovePageToSpace_NoOpRejectsStaleSource verifies a stale sourceSpaceID is rejected as
 // not-found even when the requested target space and parent already match the page's current
 // location: after a concurrent move landed the page in targetSpaceID, a caller still addressing

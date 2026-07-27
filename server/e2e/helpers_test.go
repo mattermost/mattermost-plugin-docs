@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -63,7 +64,9 @@ func doPluginRequest(ctx context.Context, client *mmmodel.Client4, method, path 
 		return resp.StatusCode, nil, err
 	}
 	if out != nil && len(respBody) > 0 {
-		_ = json.Unmarshal(respBody, out)
+		if err := json.Unmarshal(respBody, out); err != nil {
+			return resp.StatusCode, respBody, fmt.Errorf("failed to decode response body %q: %w", respBody, err)
+		}
 	}
 	return resp.StatusCode, respBody, nil
 }

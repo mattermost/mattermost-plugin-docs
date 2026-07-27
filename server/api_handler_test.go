@@ -929,7 +929,9 @@ func TestHandler_MovePageToSpace_RejectsCycle(t *testing.T) {
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
 	spaceA := seedSpace(t, h.store, h.db, channelA)
-	root := seedPage(t, h.store, spaceA.Id, channelA, "")
+	// Owned by the acting user: a contribute-default member holds only delete_own_page, so the
+	// same-space move requires ownership of the reparented page before the cycle check is reached.
+	root := testutil.MustCreatePage(t, h.store, spaceA.Id, channelA, user, "")
 	child := seedPage(t, h.store, spaceA.Id, channelA, root.Id)
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+root.Id+"/move-to-space", user, map[string]any{
