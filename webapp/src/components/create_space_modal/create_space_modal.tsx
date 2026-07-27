@@ -4,6 +4,7 @@
 import {useCreateSpace} from 'hooks/spaces';
 import React from 'react';
 import {useIntl} from 'react-intl';
+import {SpaceIcon} from 'utils/space_icon';
 import {SPACE_DESCRIPTION_MAX_LENGTH, SPACE_NAME_MAX_LENGTH} from 'validation/space_schema';
 
 import GlobeIcon from '@mattermost/compass-icons/components/globe';
@@ -25,8 +26,6 @@ type Props = {
     onClose: () => void;
     onCreated?: (space: Space) => void;
 };
-
-const DEFAULT_SPACE_EMOJI = '📄';
 
 const CreateSpaceModal = ({onClose, onCreated}: Props) => {
     const {formatMessage} = useIntl();
@@ -97,7 +96,7 @@ const CreateSpaceModal = ({onClose, onCreated}: Props) => {
                                 label={formatMessage({id: 'docs.createSpace.nameLabel', defaultMessage: 'Space name'})}
                                 value={field.state.value}
                                 onChange={changeName}
-                                leading={<span aria-hidden='true'>{DEFAULT_SPACE_EMOJI}</span>}
+                                leading={<span aria-hidden='true'><SpaceIcon size={20}/></span>}
                                 error={firstSpaceValidationError(field.state.meta.errors, formatMessage)}
                                 maxLength={SPACE_NAME_MAX_LENGTH}
                                 autoFocus={true}

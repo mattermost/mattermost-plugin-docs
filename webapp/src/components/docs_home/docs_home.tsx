@@ -6,6 +6,7 @@ import {useRecentSpaceSummaries} from 'hooks/spaces';
 import {useCurrentUser} from 'hooks/user';
 import React from 'react';
 import {FormattedMessage, defineMessages, useIntl} from 'react-intl';
+import {SpaceIcon} from 'utils/space_icon';
 import {Timestamp} from 'webapp_globals';
 import type {TimestampUnit} from 'webapp_globals';
 
@@ -183,7 +184,10 @@ const SpaceCard = ({summary, onOpen}: {summary: SpaceSummary; onOpen: (id: strin
                 className={styles.spaceCardEmoji}
                 aria-hidden='true'
             >
-                {space.icon}
+                <SpaceIcon
+                    space={space}
+                    size={20}
+                />
             </span>
             <span className={styles.spaceCardText}>
                 <span className={styles.spaceCardName}>{space.title}</span>

@@ -9,6 +9,7 @@ import {useAllSpaces} from 'hooks/spaces';
 import {useTeamNamesById} from 'hooks/team';
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useIntl} from 'react-intl';
+import {SpaceIcon} from 'utils/space_icon';
 
 import MagnifyIcon from '@mattermost/compass-icons/components/magnify';
 import TextBoxOutlineIcon from '@mattermost/compass-icons/components/text-box-outline';
@@ -75,16 +76,20 @@ const DocsSwitcher = ({onClose}: Props) => {
             }];
         }
 
+        const recentSpaceIds = new Set(recent.spaces.map((space) => space.id));
+
         return [
             {
                 id: 'recent',
-                title: formatMessage({id: 'docs.switcher.group.recent', defaultMessage: 'Recent docs'}),
+                title: formatMessage({id: 'docs.switcher.group.recent', defaultMessage: 'Recent'}),
                 entries: [...recent.spaces.map(spaceEntry), ...recent.pages.map(pageEntry)],
             },
             {
                 id: 'spaces',
                 title: formatMessage({id: 'docs.switcher.group.spaces', defaultMessage: 'Your spaces'}),
-                entries: allSpaces.map(spaceEntry),
+
+                // Don't repeat a space already surfaced under Recent above.
+                entries: allSpaces.filter((space) => !recentSpaceIds.has(space.id)).map(spaceEntry),
             },
         ];
     }, [hasQuery, results, recent, allSpaces, formatMessage]);
@@ -163,7 +168,12 @@ const DocsSwitcher = ({onClose}: Props) => {
         >
             {entry.kind === 'space' ? (
                 <>
-                    <span className={classNames(styles.itemIcon, styles.itemIconEmoji)}>{entry.space.icon}</span>
+                    <span className={classNames(styles.itemIcon, styles.itemIconEmoji)}>
+                        <SpaceIcon
+                            space={entry.space}
+                            size={16}
+                        />
+                    </span>
                     <span className={styles.itemLabel}>{entry.space.title}</span>
                 </>
             ) : (

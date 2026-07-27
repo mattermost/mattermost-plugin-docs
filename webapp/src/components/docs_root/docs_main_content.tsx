@@ -4,6 +4,7 @@
 import {useSpace} from 'hooks/spaces';
 import React from 'react';
 import {FormattedMessage} from 'react-intl';
+import {SpaceIcon} from 'utils/space_icon';
 
 import DocsHome from 'components/docs_home/docs_home';
 import PageEditor from 'components/page_editor/page_editor';
@@ -48,7 +49,15 @@ const DocsMainContent = ({spaceId, pageId, isDraft, onCreateSpace, onBrowseSpace
             <div className={styles.empty}>
                 <h2 className={styles.title}>
                     {/* eslint-disable-next-line formatjs/no-literal-string-in-jsx -- decorative emoji, not translatable */}
-                    <span aria-hidden={true}>{space.icon ? `${space.icon} ` : null}</span>
+                    <span
+                        aria-hidden={true}
+                        style={{marginInlineEnd: '0.25em'}}
+                    >
+                        <SpaceIcon
+                            space={space}
+                            size={20}
+                        />
+                    </span>
                     {space.title}
                 </h2>
                 <p className={styles.subtitle}>

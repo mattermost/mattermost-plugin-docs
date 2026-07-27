@@ -4,6 +4,7 @@
 import {DropIndicator} from '@atlaskit/pragmatic-drag-and-drop-react-drop-indicator/box';
 import classNames from 'classnames';
 import React, {useState} from 'react';
+import {SpaceIcon} from 'utils/space_icon';
 
 import type {Space} from 'types/docs';
 
@@ -32,7 +33,10 @@ const SpaceItem = ({space, category, active, dndEnabled, onSelect}: Props) => {
             className={styles.emoji}
             aria-hidden={true}
         >
-            {space.icon}
+            <SpaceIcon
+                space={space}
+                size={16}
+            />
         </span>
     );
 
