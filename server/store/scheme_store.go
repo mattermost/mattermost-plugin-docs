@@ -65,9 +65,9 @@ func (s *Store) GetSchemeRolesForChannel(channelID string) (*SchemeRoles, error)
 	return &roles, nil
 }
 
-// GetSchemeIdByName returns the id of the scheme with the given name, or ErrNotFound if none
+// GetSchemeIDByName returns the id of the scheme with the given name, or ErrNotFound if none
 // exists.
-func (s *Store) GetSchemeIdByName(name string) (string, error) {
+func (s *Store) GetSchemeIDByName(name string) (string, error) {
 	if name == "" {
 		return "", &ErrInvalidInput{Entity: "Scheme", Field: "name", Value: name}
 	}

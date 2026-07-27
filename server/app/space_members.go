@@ -14,28 +14,28 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-// ListSpaceMembers returns one page of space's members plus whether more members exist beyond
+// GetSpaceMembers returns one page of space's members plus whether more members exist beyond
 // it, each projected to their effective/granted capabilities. page/perPage are normalized
 // like every other paginated method (page and perPage both clamped). The pluginapi member
 // listing is page-indexed rather than offset-based, so when the requested page comes back full a
 // one-row probe at the next page's first slot decides has-more. space is the caller's
 // already-fetched record (from its manage gate), so no re-read here.
-func (s *Service) ListSpaceMembers(space *model.Space, page, perPage int) ([]*model.SpaceMember, bool, *mmmodel.AppError) {
+func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int) ([]*model.SpaceMember, bool, *mmmodel.AppError) {
 	if space == nil {
-		return nil, false, mmmodel.NewAppError("ListSpaceMembers", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
+		return nil, false, mmmodel.NewAppError("GetSpaceMembers", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	if appErr := s.requireClient("ListSpaceMembers", "space_id", space.Id); appErr != nil {
+	if appErr := s.requireClient("GetSpaceMembers", "space_id", space.Id); appErr != nil {
 		return nil, false, appErr
 	}
 	defaultCaps, err := s.spaceDefaultCapabilities(space)
 	if err != nil {
-		return nil, false, storeAppError("ListSpaceMembers", err)
+		return nil, false, storeAppError("GetSpaceMembers", err)
 	}
 	page = ClampPage(page)
 	perPage = ClampPerPage(perPage)
 	channelMembers, err := s.client.Channel.ListMembers(space.ChannelId, page, perPage)
 	if err != nil {
-		return nil, false, mmmodel.NewAppError("ListSpaceMembers", "app.space.list_members.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+		return nil, false, mmmodel.NewAppError("GetSpaceMembers", "app.space.list_members.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
 	members := make([]*model.SpaceMember, 0, len(channelMembers))
 	for _, cm := range channelMembers {
@@ -48,7 +48,7 @@ func (s *Service) ListSpaceMembers(space *model.Space, page, perPage int) ([]*mo
 		// beyond the current window.
 		probe, probeErr := s.client.Channel.ListMembers(space.ChannelId, (page+1)*perPage, 1)
 		if probeErr != nil {
-			return nil, false, mmmodel.NewAppError("ListSpaceMembers", "app.space.list_members.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(probeErr)
+			return nil, false, mmmodel.NewAppError("GetSpaceMembers", "app.space.list_members.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(probeErr)
 		}
 		hasMore = len(probe) > 0
 	}

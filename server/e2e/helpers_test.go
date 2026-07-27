@@ -110,7 +110,7 @@ func addSpaceMember(t *testing.T, ctx context.Context, admin actor, spaceID, use
 	require.Equal(t, http.StatusCreated, status, "add member %s to space %s: %s", userID, spaceID, body)
 }
 
-// spaceMembersResponse is the paginated member-list shape handleListSpaceMembers writes (see
+// spaceMembersResponse is the paginated member-list shape handleGetSpaceMembers writes (see
 // paginatedResponse in server/api.go) — redeclared here since that type is unexported.
 type spaceMembersResponse struct {
 	Items []*spaceMemberJSON `json:"items"`

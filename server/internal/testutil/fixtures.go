@@ -46,7 +46,7 @@ func OpenTestStore(t *testing.T) (*store.Store, *sql.DB) {
 	require.NoError(t, err, "create ChannelMembers stand-in")
 
 	// The RBAC capability model resolves a space's default capability set through its backing
-	// channel's core Channels/Schemes/Roles rows (GetSchemeRolesForChannel, GetSchemeIdByName,
+	// channel's core Channels/Schemes/Roles rows (GetSchemeRolesForChannel, GetSchemeIDByName,
 	// GetRolePermissionsByName) — core tables owned by the paired core branch's migration in
 	// production, absent from this plugin-only isolated schema. Stand them in with just the
 	// columns the plugin store queries, and seed the three preset schemes the core seeding

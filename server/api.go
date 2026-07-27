@@ -24,9 +24,10 @@ import (
 // Authorization: every route requires an authenticated user via MattermostAuthorizationRequired.
 // Every space- and page-scoped handler additionally gates on the capability-based RBAC model:
 // requireSpaceRead/requireSpacePagePerm for reads, gatePageWrite/gateDeleteOwnOrAny for page
-// writes (with the open-space auto-join pre-step), requireSpaceManageGate for membership
-// management and general space-field updates, and requireSpaceAdminGate/requireSpaceDeleteGate
-// for the space-wide exposure-policy and delete/restore operations. See
+// writes (with the open-space auto-join pre-step), requireSpaceManage for membership management
+// and general space-field updates, and requireSpaceAdmin/requireSpaceDelete for the space-wide
+// exposure-policy and delete/restore operations. A require* helper resolves the space by id and
+// then gates it; a gate* helper gates a space the caller already holds. See
 // server/app/permissions.go for the gate implementations.
 func (p *Plugin) initRouter() *mux.Router {
 	router := mux.NewRouter()
@@ -45,7 +46,7 @@ func (p *Plugin) initRouter() *mux.Router {
 	api.HandleFunc("/spaces/{space_id}/restore", p.handleRestoreSpace).Methods(http.MethodPatch)
 
 	// Space membership.
-	api.HandleFunc("/spaces/{space_id}/members", p.handleListSpaceMembers).Methods(http.MethodGet)
+	api.HandleFunc("/spaces/{space_id}/members", p.handleGetSpaceMembers).Methods(http.MethodGet)
 	api.HandleFunc("/spaces/{space_id}/members", p.handleAddSpaceMember).Methods(http.MethodPost)
 	api.HandleFunc("/spaces/{space_id}/members/{user_id}", p.handleRemoveSpaceMember).Methods(http.MethodDelete)
 	api.HandleFunc("/spaces/{space_id}/members/{user_id}/capabilities", p.handleSetSpaceMemberCapabilities).Methods(http.MethodPatch)
@@ -151,27 +152,27 @@ func (p *Plugin) requireSpacePagePerm(w http.ResponseWriter, spaceID, userID str
 	})
 }
 
-// requireSpaceManageGate gates a route on requireSpaceManage: sysadmin, channel admin_space, or
+// requireSpaceManage gates a route on Service.RequireSpaceManage: sysadmin, channel admin_space, or
 // (once the read resolver has already admitted the caller) team manage_space.
-func (p *Plugin) requireSpaceManageGate(w http.ResponseWriter, spaceID, userID string) (*model.Space, bool) {
+func (p *Plugin) requireSpaceManage(w http.ResponseWriter, spaceID, userID string) (*model.Space, bool) {
 	return p.requireSpaceGate(w, spaceID, false, func(space *model.Space) *mmmodel.AppError {
 		return p.service.RequireSpaceManage("api.space.manage", space, userID)
 	})
 }
 
-// requireSpaceAdminGate gates a route on requireSpaceAdminOrSysadmin — the space-wide
+// requireSpaceAdmin gates a route on Service.RequireSpaceAdminOrSysadmin — the space-wide
 // exposure-policy knobs (ViewAccess, default capabilities).
-func (p *Plugin) requireSpaceAdminGate(w http.ResponseWriter, spaceID, userID string) (*model.Space, bool) {
+func (p *Plugin) requireSpaceAdmin(w http.ResponseWriter, spaceID, userID string) (*model.Space, bool) {
 	return p.requireSpaceGate(w, spaceID, false, func(space *model.Space) *mmmodel.AppError {
 		return p.service.RequireSpaceAdminOrSysadmin("api.space.admin", space, userID)
 	})
 }
 
-// requireSpaceDeleteGate gates space delete/restore: sysadmin, channel admin_space, or (once the
+// requireSpaceDelete gates space delete/restore: sysadmin, channel admin_space, or (once the
 // read resolver has already admitted the caller) team delete_space. includeDeleted must be true
 // for restore, where the space is soft-deleted at lookup time; the read resolver and the delete
 // gate then evaluate against that soft-deleted record.
-func (p *Plugin) requireSpaceDeleteGate(w http.ResponseWriter, spaceID, userID string, includeDeleted bool) (*model.Space, bool) {
+func (p *Plugin) requireSpaceDelete(w http.ResponseWriter, spaceID, userID string, includeDeleted bool) (*model.Space, bool) {
 	return p.requireSpaceGate(w, spaceID, includeDeleted, func(space *model.Space) *mmmodel.AppError {
 		return p.service.RequireSpaceDeleteAuthority("api.space.delete", space, userID)
 	})

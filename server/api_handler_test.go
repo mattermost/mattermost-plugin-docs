@@ -476,10 +476,10 @@ func TestHandler_PageCollectionsReturnMetadataOnly(t *testing.T) {
 	require.Contains(t, detail, "props")
 }
 
-// TestHandler_ListSpaceMembers lists a space's members through the backing channel. The members
+// TestHandler_GetSpaceMembers lists a space's members through the backing channel. The members
 // list is manage-gated — deliberately stricter than MM channels, since the projection
 // carries the per-member capability matrix.
-func TestHandler_ListSpaceMembers(t *testing.T) {
+func TestHandler_GetSpaceMembers(t *testing.T) {
 	channelID := mmmodel.NewId()
 	memberUserID := mmmodel.NewId()
 	adminID := mmmodel.NewId()
@@ -506,10 +506,10 @@ func TestHandler_ListSpaceMembers(t *testing.T) {
 	require.False(t, resp.HasMore)
 }
 
-// TestHandler_ListSpaceMembers_HasMore verifies the probe row: when the requested page comes back
+// TestHandler_GetSpaceMembers_HasMore verifies the probe row: when the requested page comes back
 // full and another member exists on the next page, has_more is true and the page is trimmed to
 // per_page entries.
-func TestHandler_ListSpaceMembers_HasMore(t *testing.T) {
+func TestHandler_GetSpaceMembers_HasMore(t *testing.T) {
 	channelID := mmmodel.NewId()
 	firstMember := mmmodel.NewId()
 	secondMember := mmmodel.NewId()
@@ -1721,7 +1721,7 @@ func TestHandler_CreateSpace_RequiresCreateSpacePermission(t *testing.T) {
 }
 
 // TestHandler_AddSpaceMember_GuestProjectsReadOnly verifies a guest added to a space is projected
-// through the same reverse-role logic as ListSpaceMembers/SetSpaceMemberCapabilities: is_guest
+// through the same reverse-role logic as GetSpaceMembers/SetSpaceMemberCapabilities: is_guest
 // true and capabilities read_page-only, never the space default.
 func TestHandler_AddSpaceMember_GuestProjectsReadOnly(t *testing.T) {
 	channelID := mmmodel.NewId()

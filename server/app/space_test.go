@@ -734,9 +734,9 @@ func createSpaceForMemberTests(t *testing.T, h *testHarness, mockAPI *plugintest
 	return space, creatorID
 }
 
-// TestServiceListSpaceMembers_ListFails verifies that a failed member listing on the backing
+// TestServiceGetSpaceMembers_ListFails verifies that a failed member listing on the backing
 // channel propagates as a 500 with the list_members error key.
-func TestServiceListSpaceMembers_ListFails(t *testing.T) {
+func TestServiceGetSpaceMembers_ListFails(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
 	space, _ := createSpaceForMemberTests(t, h, mockAPI)
@@ -744,7 +744,7 @@ func TestServiceListSpaceMembers_ListFails(t *testing.T) {
 	mockAPI.On("GetChannelMembers", space.ChannelId, 0, 60).
 		Return(nil, &mmmodel.AppError{Id: "app.channel.get_members.app_error", StatusCode: http.StatusInternalServerError})
 
-	_, _, appErr := h.svc.ListSpaceMembers(space, 0, 60)
+	_, _, appErr := h.svc.GetSpaceMembers(space, 0, 60)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
 	require.Equal(t, "app.space.list_members.failed.app_error", appErr.Id)

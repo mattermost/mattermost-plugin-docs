@@ -87,12 +87,12 @@ func (p *Plugin) handleGetSpace(w http.ResponseWriter, r *http.Request) {
 // handleUpdateSpace handles PATCH /api/v1/spaces/{space_id}. Only the supplied mutable fields
 // (title, description, icon, props, view_access) are applied onto the existing space; a supplied
 // empty string clears a string field. The optimistic-lock baseline (expected_update_at) is
-// required unless force is set. requireSpaceManageGate is the route floor; a ViewAccess change
+// required unless force is set. requireSpaceManage is the route floor; a ViewAccess change
 // requires the stricter admin gate, enforced inside UpdateSpace against the live row.
 func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
-	space, ok := p.requireSpaceManageGate(w, spaceID, userID)
+	space, ok := p.requireSpaceManage(w, spaceID, userID)
 	if !ok {
 		return
 	}
@@ -122,7 +122,7 @@ func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
-	space, ok := p.requireSpaceDeleteGate(w, spaceID, userID, false)
+	space, ok := p.requireSpaceDelete(w, spaceID, userID, false)
 	if !ok {
 		return
 	}
@@ -138,7 +138,7 @@ func (p *Plugin) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleRestoreSpace(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
-	if _, ok := p.requireSpaceDeleteGate(w, spaceID, userID, true); !ok {
+	if _, ok := p.requireSpaceDelete(w, spaceID, userID, true); !ok {
 		return
 	}
 	restored, appErr := p.service.RestoreSpace(spaceID)
@@ -166,16 +166,16 @@ func (p *Plugin) handleGetSpacePages(w http.ResponseWriter, r *http.Request) {
 	writePaginatedJSON(w, pages, page, perPage, hasMore)
 }
 
-// handleListSpaceMembers handles GET /api/v1/spaces/{space_id}/members.
-func (p *Plugin) handleListSpaceMembers(w http.ResponseWriter, r *http.Request) {
+// handleGetSpaceMembers handles GET /api/v1/spaces/{space_id}/members.
+func (p *Plugin) handleGetSpaceMembers(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
-	space, ok := p.requireSpaceManageGate(w, spaceID, userID)
+	space, ok := p.requireSpaceManage(w, spaceID, userID)
 	if !ok {
 		return
 	}
 	page, perPage := pageParam(r), perPageParam(r)
-	members, hasMore, appErr := p.service.ListSpaceMembers(space, page, perPage)
+	members, hasMore, appErr := p.service.GetSpaceMembers(space, page, perPage)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return
@@ -190,7 +190,7 @@ func (p *Plugin) handleListSpaceMembers(w http.ResponseWriter, r *http.Request) 
 func (p *Plugin) handleAddSpaceMember(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
-	space, ok := p.requireSpaceManageGate(w, spaceID, userID)
+	space, ok := p.requireSpaceManage(w, spaceID, userID)
 	if !ok {
 		return
 	}
@@ -220,7 +220,7 @@ func (p *Plugin) handleSetSpaceMemberCapabilities(w http.ResponseWriter, r *http
 	vars := mux.Vars(r)
 	spaceID := vars["space_id"]
 	targetUserID := vars["user_id"]
-	space, ok := p.requireSpaceManageGate(w, spaceID, userID)
+	space, ok := p.requireSpaceManage(w, spaceID, userID)
 	if !ok {
 		return
 	}
@@ -242,7 +242,7 @@ func (p *Plugin) handleSetSpaceMemberCapabilities(w http.ResponseWriter, r *http
 func (p *Plugin) handleSetSpaceDefaultCapabilities(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
-	space, ok := p.requireSpaceAdminGate(w, spaceID, userID)
+	space, ok := p.requireSpaceAdmin(w, spaceID, userID)
 	if !ok {
 		return
 	}
@@ -274,7 +274,7 @@ func (p *Plugin) handleRemoveSpaceMember(w http.ResponseWriter, r *http.Request)
 	if targetUserID == userID {
 		space, _, ok = p.requireSpaceRead(w, spaceID, userID)
 	} else {
-		space, ok = p.requireSpaceManageGate(w, spaceID, userID)
+		space, ok = p.requireSpaceManage(w, spaceID, userID)
 	}
 	if !ok {
 		return

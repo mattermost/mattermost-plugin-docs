@@ -146,7 +146,7 @@ func (s *Service) resolveSpaceScheme(caps []string) (schemeID string, createdCus
 	// into the generated role's Permissions column.
 	caps = model.NormalizeCapabilitySet(caps)
 	if presetName, ok := model.SchemeNameForDefaultCapabilities(caps); ok {
-		id, getErr := s.store.GetSchemeIdByName(presetName)
+		id, getErr := s.store.GetSchemeIDByName(presetName)
 		if getErr != nil {
 			return "", false, getErr
 		}
@@ -524,7 +524,7 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, caps []string,
 	return s.BuildSpaceWithAccess(fresh, actingUserID)
 }
 
-// ListSpaceMembers, AddSpaceMember, SetSpaceMemberCapabilities, and RemoveSpaceMember live in
+// GetSpaceMembers, AddSpaceMember, SetSpaceMemberCapabilities, and RemoveSpaceMember live in
 // space_members.go alongside the escalation and last-admin guards.
 
 // GetSpacesForTeam returns one page of a team's live spaces, plus whether more exist beyond it.
