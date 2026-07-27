@@ -168,6 +168,22 @@ func (s *Store) finalizeTransaction(tx *sqlx.Tx, perr *error) {
 	}
 }
 
+// beginTxBounded starts a transaction whose connection acquisition is bounded by
+// defaultQueryTimeout, and must be used by any transaction that can run while its caller already
+// holds WithSpaceMembershipLock's dedicated connection. Such a caller needs a second pooled
+// connection while holding one, so an unbounded acquisition can wait forever on a saturated pool
+// while itself holding a connection that pool needs in order to drain. The returned cancel must be
+// deferred by the caller: it bounds acquisition, and releasing it ends the transaction's context.
+func (s *Store) beginTxBounded() (*sqlx.Tx, context.CancelFunc, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return tx, cancel, nil
+}
+
 // get executes a query and scans one row into dest.
 func (s *Store) get(e sqlx.ExtContext, dest any, query string, args ...any) error {
 	query = e.Rebind(query)
@@ -311,6 +327,7 @@ const (
 	ReasonMaxDepthExceeded        = "max_depth_exceeded"
 	ReasonSubtreeMaxDepthExceeded = "subtree_max_depth_exceeded"
 	ReasonParentNotLive           = "parent_not_live"
+	ReasonSubtreeNotOwned         = "subtree_not_owned"
 )
 
 func (e *ErrInvalidInput) Error() string {
@@ -326,6 +343,11 @@ func IsErrInvalidInput(err error) bool {
 // ErrConflict is returned when a unique constraint is violated or a CAS check fails.
 type ErrConflict struct {
 	Resource string
+	// Reason optionally distinguishes a structurally different conflict — currently only
+	// ReasonLockTimeout, for a WithSpaceMembershipLock acquisition timeout — from the default
+	// unique-constraint/CAS-mismatch conflict, so a caller can map it to its own status/error key
+	// instead of the shared 409 conflict mapping.
+	Reason string
 }
 
 func (e *ErrConflict) Error() string {
@@ -336,6 +358,17 @@ func (e *ErrConflict) Error() string {
 func IsErrConflict(err error) bool {
 	var e *ErrConflict
 	return errors.As(err, &e)
+}
+
+// ReasonLockTimeout marks an ErrConflict raised by a WithSpaceMembershipLock acquisition timeout,
+// distinct from the default CAS/unique-constraint conflict.
+const ReasonLockTimeout = "lock_timeout"
+
+// IsErrLockTimeout reports whether err is an ErrConflict raised by a space-membership advisory
+// lock acquisition timeout.
+func IsErrLockTimeout(err error) bool {
+	var e *ErrConflict
+	return errors.As(err, &e) && e.Reason == ReasonLockTimeout
 }
 
 // ErrLimitExceeded is returned when a result set exceeds a hard size limit.
