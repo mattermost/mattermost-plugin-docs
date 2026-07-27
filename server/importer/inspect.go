@@ -111,6 +111,7 @@ const (
 	InspectErrDepthExceeded        = "page_depth_exceeded"
 	InspectErrTipTap               = "page_content_invalid"
 	InspectErrSpaceKeyMismatch     = "space_key_mismatch"
+	InspectErrSpaceKeyMissing      = "space_key_missing"
 	InspectErrCommentMissingPageID = "comment_missing_page_id"
 	InspectErrAttachmentPath       = "attachment_invalid_path"
 	InspectErrHash                 = "hash_failed"
@@ -132,7 +133,11 @@ const (
 	IssueSourceUpdateAtInvalid         = "source_update_at_invalid"
 	IssueManifestCountMismatch         = "manifest_count_mismatch"
 	IssuePlaceholderInText             = "placeholder_in_text_not_rewritten"
-	IssueAttachmentNotImported         = "attachment_placeholder_not_imported"
+	// IssueAttachmentsNotImported flags a page that carries attachment records, none of which are
+	// imported in this release. This is the plan's partial-scope code (section 20.2), distinct from
+	// the attachment_placeholder_not_imported link code used when a CONF_ATTACHMENT placeholder is
+	// discovered in a link (section 13).
+	IssueAttachmentsNotImported = "attachments_not_imported"
 )
 
 // InspectionIssue is one non-fatal finding recorded during inspection.
@@ -201,6 +206,27 @@ type InspectOptions struct {
 	// RequestedTeamName, when non-empty, is compared against the advisory bundle team values to
 	// emit a single aggregate bundle_team_mismatch warning. The value is never used to route.
 	RequestedTeamName string
+	// Now is the caller's current time in epoch milliseconds, used only to judge whether a source
+	// timestamp is implausibly in the future. Passing it (rather than reading the wall clock) keeps
+	// this package pure and deterministic in tests. When zero, a fixed year-2100 ceiling is used.
+	Now int64
+}
+
+// futureTimestampAllowance is how far past Now a source timestamp may sit before it is judged
+// implausibly in the future — clock skew between the source and this server should be well under a
+// day.
+const futureTimestampAllowance = int64(24 * 60 * 60 * 1000)
+
+// year2100Millis is the fallback future ceiling used when InspectOptions.Now is not supplied.
+const year2100Millis = int64(4102444800000)
+
+// futureCeiling returns the largest source timestamp treated as plausible: now plus a skew
+// allowance when now is supplied, otherwise the fixed year-2100 ceiling.
+func (o InspectOptions) futureCeiling() int64 {
+	if o.Now > 0 {
+		return o.Now + futureTimestampAllowance
+	}
+	return year2100Millis
 }
 
 // parsing states for the JSONL sequence.
@@ -235,6 +261,13 @@ func Inspect(contents *ArchiveContents, opts InspectOptions) (*InspectionResult,
 	// A producer that reported its own errors yields a failed upload.
 	if len(manifest.Errors) > 0 {
 		return nil, inspectErr(InspectErrManifestHasErrors, "manifest reports %d producer error(s): %s", len(manifest.Errors), manifest.Errors[0])
+	}
+
+	// A source space key is mandatory: it becomes the ImportSource's ExternalSpaceKey, which
+	// ImportSource.IsValid requires. The producer omits it only when neither an organization id nor
+	// a space key is known — a bundle we cannot map, so reject it here rather than fail later.
+	if manifest.Source.SpaceKey == "" {
+		return nil, inspectErr(InspectErrSpaceKeyMissing, "manifest source is missing a space key")
 	}
 
 	res := &InspectionResult{
@@ -294,10 +327,36 @@ func parseManifest(b []byte) (*Manifest, error) {
 	if err := dec.Decode(&m); err != nil {
 		return nil, inspectErr(InspectErrManifestInvalid, "manifest is not valid JSON: %v", err)
 	}
+	// Reject trailing data after the manifest object: a decoder stops at the first value, so without
+	// this a second concatenated object (or garbage) would pass silently.
+	if dec.More() {
+		return nil, inspectErr(InspectErrManifestInvalid, "manifest has trailing data after the JSON object")
+	}
 	if m.Version != ManifestVersion {
 		return nil, inspectErr(InspectErrManifestVersion, "manifest version %q is unsupported; require %q", m.Version, ManifestVersion)
 	}
 	return &m, nil
+}
+
+// lineHasForeignPayload reports whether the line carries a payload field that does not belong to
+// its declared type. The version line owns both the version and source fields; every other type
+// owns exactly its matching payload. A line declaring one type but carrying another type's payload
+// (e.g. {"type":"page","page":{...},"space":{...}}) is rejected so a malformed or smuggled payload
+// cannot ride along unnoticed.
+func lineHasForeignPayload(l *Line, declaredType string) bool {
+	present := map[string]bool{
+		LineTypeVersion:                  l.Version != nil || l.Source != nil,
+		LineTypeSpace:                    l.Space != nil,
+		LineTypePage:                     l.Page != nil,
+		LineTypePageComment:              l.PageComment != nil,
+		LineTypeResolveSpacePlaceholders: l.ResolveSpacePlaceholders != nil,
+	}
+	for typ, set := range present {
+		if typ != declaredType && set {
+			return true
+		}
+	}
+	return false
 }
 
 // parseJSONL runs the strict v2 line sequence state machine, normalizing pages into res.
@@ -312,6 +371,9 @@ func parseJSONL(b []byte, manifest *Manifest, opts InspectOptions, res *Inspecti
 	parentOf := make(map[string]string)
 	siblingCounter := make(map[string]int) // parent external ID ("" for roots) -> next sibling ordinal
 	teamValues := make(map[string]struct{})
+	// The manifest's advisory target team is also compared against the requested team, alongside the
+	// per-line team values, so a mismatch declared only in the manifest is still surfaced.
+	collectTeam(teamValues, manifest.Target.Team)
 
 	pageOrdinal := 0
 
@@ -326,6 +388,9 @@ func parseJSONL(b []byte, manifest *Manifest, opts InspectOptions, res *Inspecti
 		var line Line
 		if err := json.Unmarshal([]byte(raw), &line); err != nil {
 			return inspectErr(InspectErrLineInvalid, "import.jsonl line %d is invalid JSON: %v", i+1, err)
+		}
+		if lineHasForeignPayload(&line, line.Type) {
+			return inspectErr(InspectErrPayloadMismatch, "import.jsonl line %d declares type %q but carries another type's payload", i+1, line.Type)
 		}
 
 		switch line.Type {
@@ -366,7 +431,7 @@ func parseJSONL(b []byte, manifest *Manifest, opts InspectOptions, res *Inspecti
 			if len(res.Pages) >= MaxPages {
 				return inspectErr(InspectErrTooManyPages, "bundle has more than %d pages", MaxPages)
 			}
-			sp, err := normalizePage(line.Page, manifest, i+1, pageOrdinal, seenPageIDs, parentOf, siblingCounter, teamValues, res)
+			sp, err := normalizePage(line.Page, manifest, i+1, pageOrdinal, seenPageIDs, parentOf, siblingCounter, teamValues, opts.futureCeiling(), res)
 			if err != nil {
 				return err
 			}
@@ -448,7 +513,7 @@ func handleSpaceLine(space *SpaceData, manifest *Manifest, teamValues map[string
 func normalizePage(
 	page *PageData, manifest *Manifest, lineNo, ordinal int,
 	seenPageIDs map[string]struct{}, parentOf map[string]string,
-	siblingCounter map[string]int, teamValues map[string]struct{}, res *InspectionResult,
+	siblingCounter map[string]int, teamValues map[string]struct{}, futureCeiling int64, res *InspectionResult,
 ) (*StagedPage, error) {
 	collectTeam(teamValues, stringOrEmpty(page.Team))
 
@@ -491,7 +556,7 @@ func normalizePage(
 
 	// Timestamp validation (does not discard the page).
 	sourceCreateAt := int64OrZero(page.CreateAt)
-	if !plausibleTimestamp(sourceCreateAt) {
+	if !plausibleTimestamp(sourceCreateAt, futureCeiling) {
 		res.Issues = append(res.Issues, InspectionIssue{
 			Severity: SeverityWarning, Code: IssueSourceCreateAtInvalid, ExternalID: externalID, Title: title,
 			Message:     "source create timestamp is missing, non-positive, or implausibly in the future",
@@ -500,7 +565,7 @@ func normalizePage(
 		})
 	}
 	// update_at issue is emitted only when supplied but unusable.
-	if page.UpdateAt != nil && !plausibleTimestamp(*page.UpdateAt) {
+	if page.UpdateAt != nil && !plausibleTimestamp(*page.UpdateAt, futureCeiling) {
 		res.Issues = append(res.Issues, InspectionIssue{
 			Severity: SeverityWarning, Code: IssueSourceUpdateAtInvalid, ExternalID: externalID, Title: title,
 			Message:     "source update timestamp was supplied but is not usable",
@@ -536,7 +601,7 @@ func normalizePage(
 		}
 		if len(*page.Attachments) > 0 {
 			res.Issues = append(res.Issues, InspectionIssue{
-				Severity: SeverityInfo, Code: IssueAttachmentNotImported, ExternalID: externalID, Title: title,
+				Severity: SeverityInfo, Code: IssueAttachmentsNotImported, ExternalID: externalID, Title: title,
 				Message:     fmt.Sprintf("%d attachment(s) counted but not imported in this release", len(*page.Attachments)),
 				Remediation: "Attachment import is a future release; bytes are neither extracted nor stored.",
 			})
@@ -722,14 +787,9 @@ func emitTeamMismatch(teams map[string]struct{}, opts InspectOptions, res *Inspe
 	}
 }
 
-// plausibleTimestamp reports whether ms is a positive epoch-millis value not implausibly far in the
-// future (more than ~2 days ahead of a fixed sanity ceiling is rejected). It uses no wall clock so
-// the pure function stays deterministic: any positive value up to year ~2100 is accepted.
-func plausibleTimestamp(ms int64) bool {
-	if ms <= 0 {
-		return false
-	}
-	// Year 2100 in epoch millis; a source date beyond this is treated as implausible.
-	const year2100Millis = int64(4102444800000)
-	return ms <= year2100Millis
+// plausibleTimestamp reports whether ms is a positive epoch-millis value at or below futureCeiling
+// (now + a skew allowance, or the year-2100 fallback). A non-positive or too-far-future value is
+// implausible.
+func plausibleTimestamp(ms, futureCeiling int64) bool {
+	return ms > 0 && ms <= futureCeiling
 }

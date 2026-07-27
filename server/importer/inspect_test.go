@@ -7,9 +7,17 @@ import (
 	"archive/zip"
 	"bytes"
 	"errors"
+	"io"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+// nopWriteCloser adapts an io.Writer to io.WriteCloser for a passthrough zip compressor in tests.
+type nopWriteCloser struct{ w io.Writer }
+
+func (n nopWriteCloser) Write(p []byte) (int, error) { return n.w.Write(p) }
+func (n nopWriteCloser) Close() error                { return nil }
 
 // inspectErrCode returns the stable code of an *InspectError or *ArchiveError, or "" otherwise.
 func inspectErrCode(err error) string {
@@ -248,8 +256,8 @@ func TestInspect_CountsAndAttachments(t *testing.T) {
 	if res.AttachmentCount != 2 {
 		t.Errorf("attachments = %d, want 2", res.AttachmentCount)
 	}
-	if !hasIssue(res, IssueAttachmentNotImported) {
-		t.Errorf("expected attachment_placeholder_not_imported issue")
+	if !hasIssue(res, IssueAttachmentsNotImported) {
+		t.Errorf("expected attachments_not_imported issue")
 	}
 }
 
@@ -304,6 +312,76 @@ func TestInspect_TeamMatchNoIssue(t *testing.T) {
 	}
 	if hasIssue(res, IssueBundleTeamMismatch) {
 		t.Errorf("did not expect bundle_team_mismatch issue")
+	}
+}
+
+func TestInspect_TeamMismatchFromManifestTargetOnly(t *testing.T) {
+	// Build a bundle whose per-line team values all match the requested team, but whose manifest
+	// target team differs. The mismatch must still be surfaced from the manifest metadata.
+	jsonl := joinLines(
+		`{"type":"version","version":2,"source":{"space_key":"DOCS"}}`,
+		`{"type":"space","space":{"team":"requested","title":"Docs","props":{"import_source_id":"DOCS"}}}`,
+		`{"type":"resolve_space_placeholders","resolve_space_placeholders":{"team":"requested","space_import_source_id":"DOCS"}}`,
+	)
+	b := newBundle(jsonl, baseManifest(0, 0, 0))
+	b.manifest.Target.Team = "manifest-team"
+	res, err := b.inspect(t, InspectOptions{RequestedTeamName: "requested"})
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if !hasIssue(res, IssueBundleTeamMismatch) {
+		t.Errorf("expected bundle_team_mismatch from manifest target team")
+	}
+}
+
+func TestInspect_MissingSourceSpaceKey(t *testing.T) {
+	b := validBundle(t)
+	b.manifest.Source.SpaceKey = ""
+	_, err := b.inspect(t, InspectOptions{})
+	if got := inspectErrCode(err); got != InspectErrSpaceKeyMissing {
+		t.Fatalf("code = %q, want %q", got, InspectErrSpaceKeyMissing)
+	}
+}
+
+func TestInspect_MultiPayloadLineRejected(t *testing.T) {
+	// A line declaring type "page" but also carrying a "space" payload must be rejected.
+	badLine := `{"type":"page","page":{"space_import_source_id":"DOCS","user":"j","title":"H","content":` +
+		mustQuote(docString("x")) + `,"props":{"import_source_id":"100"}},"space":{"team":"myteam"}}`
+	jsonl := joinLines(versionLine(), spaceLine(), badLine, resolveLine())
+	_, err := newBundle(jsonl, baseManifest(1, 0, 0)).inspect(t, InspectOptions{})
+	if got := inspectErrCode(err); got != InspectErrPayloadMismatch {
+		t.Fatalf("code = %q, want %q", got, InspectErrPayloadMismatch)
+	}
+}
+
+func TestInspect_ManifestTrailingJSON(t *testing.T) {
+	b := validBundle(t)
+	// Force a manifest body with trailing data after the object. The builder marshals the manifest,
+	// so instead build the archive manually via a helper that appends trailing bytes.
+	raw := b.bytesZipWithManifestSuffix(t, " {}")
+	contents, err := InspectArchive(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatalf("archive inspect failed: %v", err)
+	}
+	_, err = Inspect(contents, InspectOptions{})
+	if got := inspectErrCode(err); got != InspectErrManifestInvalid {
+		t.Fatalf("code = %q, want %q", got, InspectErrManifestInvalid)
+	}
+}
+
+func TestInspect_FutureTimestampWithNow(t *testing.T) {
+	// A create_at far beyond Now+allowance is implausible and must be flagged.
+	now := int64(1704106800000)
+	future := now + futureTimestampAllowance + 1_000_000
+	page := `{"type":"page","page":{"space_import_source_id":"DOCS","user":"j","title":"H","content":` +
+		mustQuote(docString("x")) + `,"create_at":` + strconv.FormatInt(future, 10) + `,"props":{"import_source_id":"100"}}}`
+	jsonl := joinLines(versionLine(), spaceLine(), page, resolveLine())
+	res, err := newBundle(jsonl, baseManifest(1, 0, 0)).inspect(t, InspectOptions{Now: now})
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if !hasIssue(res, IssueSourceCreateAtInvalid) {
+		t.Errorf("expected source_create_at_invalid for a future timestamp beyond now+allowance")
 	}
 }
 
@@ -469,6 +547,49 @@ func TestInspectArchive_Traversal(t *testing.T) {
 				t.Fatalf("code = %q, want unsafe/bad-name for entry %q", code, entry)
 			}
 		})
+	}
+}
+
+func TestInspectArchive_DuplicateNormalizedEntry(t *testing.T) {
+	// "data//x" and "data/x" normalize to the same path and must be rejected as a duplicate.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, n := range []string{entryManifest, entryJSONL, "data/x", "data//x"} {
+		w, _ := zw.Create(n)
+		_, _ = w.Write([]byte("x"))
+	}
+	_ = zw.Close()
+	raw := buf.Bytes()
+	_, err := InspectArchive(bytes.NewReader(raw), int64(len(raw)))
+	if got := inspectErrCode(err); got != ArchiveErrDuplicateEntry {
+		t.Fatalf("code = %q, want %q", got, ArchiveErrDuplicateEntry)
+	}
+}
+
+func TestInspectArchive_DataEntryUnsupportedMethod(t *testing.T) {
+	// A data/ entry using an unsupported compression method is rejected even though its bytes are
+	// never read.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, n := range []string{entryManifest, entryJSONL} {
+		w, _ := zw.Create(n)
+		_, _ = w.Write([]byte("x"))
+	}
+	// Method 99 is neither Store nor Deflate. Register a passthrough compressor so the writer emits
+	// a central-directory entry advertising method 99; the reader rejects it before opening bytes.
+	zw.RegisterCompressor(99, func(w io.Writer) (io.WriteCloser, error) {
+		return nopWriteCloser{w}, nil
+	})
+	hw, err := zw.CreateHeader(&zip.FileHeader{Name: "data/blob.bin", Method: 99})
+	if err != nil {
+		t.Fatalf("create header: %v", err)
+	}
+	_, _ = hw.Write([]byte("x"))
+	_ = zw.Close()
+	raw := buf.Bytes()
+	_, err = InspectArchive(bytes.NewReader(raw), int64(len(raw)))
+	if got := inspectErrCode(err); got != ArchiveErrUnsupportedMethod {
+		t.Fatalf("code = %q, want %q", got, ArchiveErrUnsupportedMethod)
 	}
 }
 

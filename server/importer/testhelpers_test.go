@@ -72,6 +72,37 @@ func (b *bundleBuilder) bytesZip(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+// bytesZipWithManifestSuffix builds the archive like bytesZip but appends suffix to the manifest
+// entry's bytes after its JSON object, for exercising trailing-data rejection.
+func (b *bundleBuilder) bytesZipWithManifestSuffix(t *testing.T, suffix string) []byte {
+	t.Helper()
+	m := b.manifest
+	if !b.skipChecksum && m.Checksums.JSONLSha256 == "" {
+		m.Checksums.JSONLSha256 = b.jsonlSha()
+	}
+	manifestBytes, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	writeEntry := func(name, body string) {
+		w, cerr := zw.Create(name)
+		if cerr != nil {
+			t.Fatalf("zip create %q: %v", name, cerr)
+		}
+		if _, werr := w.Write([]byte(body)); werr != nil {
+			t.Fatalf("zip write %q: %v", name, werr)
+		}
+	}
+	writeEntry(entryManifest, string(manifestBytes)+suffix)
+	writeEntry(entryJSONL, b.jsonl)
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
 // inspectBundle runs InspectArchive + Inspect over the builder's bytes.
 func (b *bundleBuilder) inspect(t *testing.T, opts InspectOptions) (*InspectionResult, error) {
 	t.Helper()
