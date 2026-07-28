@@ -161,9 +161,9 @@ func (s *Service) reparentWithinSpace(where, pageID, spaceID string, newParentID
 // store.MovePageToSpace and surface through storeAppError's shared message keys.
 // A nil expectedUpdateAt without force is rejected: the mutation must supply a baseline.
 // sourceSpace and targetSpace are the caller's already-fetched records (from its membership
-// gates), so no re-read happens here. userID is the acting user, recorded in logs only — a
-// move does not change the page's LastModifiedBy. Per-page restrictions and redirects are not
-// handled yet.
+// gates), so no re-read happens here. userID is the acting user and must be a valid ID: the store
+// scopes the target-space draft quota to the drafts it owns. It does not change the page's
+// LastModifiedBy. Per-page restrictions and redirects are not handled yet.
 func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model.Space, parentPageID *string, expectedUpdateAt *int64, force bool, userID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.invalid_id.app_error", nil, "", http.StatusBadRequest)

@@ -561,6 +561,18 @@ func TestHandler_UpdatePage(t *testing.T) {
 	// The first update bumped EditAt, so the same baseline is now stale.
 	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, body)
 	require.Equal(t, http.StatusConflict, rec.Code)
+
+	// Every 409 carries the same shape, so a client parses it without branching on the route. This
+	// one populates current_page, letting the caller re-baseline without a follow-up read.
+	var conflict struct {
+		Error       *mmmodel.AppError `json:"error"`
+		CurrentPage *model.Page       `json:"current_page"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &conflict))
+	require.NotNil(t, conflict.Error)
+	require.Empty(t, conflict.Error.DetailedError, "the conflict body must not carry internal error detail")
+	require.NotNil(t, conflict.CurrentPage, "the update conflict must carry the current server page")
+	require.Greater(t, conflict.CurrentPage.EditAt, page.EditAt, "current page must carry the advanced baseline")
 }
 
 // TestHandler_UpdatePage_BaselineRequired verifies a PATCH that omits base_edit_at without force

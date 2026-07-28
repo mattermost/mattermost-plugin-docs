@@ -165,8 +165,8 @@ func (p *Plugin) handleCreateSpaceDraft(w http.ResponseWriter, r *http.Request) 
 }
 
 // handlePublishPageDraft handles POST /api/v1/spaces/{space_id}/pages/{page_id}/draft/publish
-// It publishes the calling user's draft, atomically writing the page row and deleting the draft in
-// one transaction.
+// It publishes the calling user's draft as a page, creating it on first publish and updating it
+// otherwise.
 //
 // The optimistic-lock baseline for an edit-publish is not a field on this request: it travels with
 // the draft, stored in its write-once BaseEditAt column (sent as the top-level base_edit_at field on
@@ -197,8 +197,6 @@ func (p *Plugin) handlePublishPageDraft(w http.ResponseWriter, r *http.Request) 
 
 	page, wasCreated, appErr := p.service.PublishPageDraft(userID, spaceID, pageID, req.Force)
 	if appErr != nil {
-		// An edit conflict returns the current server page alongside the error so the client can
-		// diff and re-baseline without a follow-up read; every other error carries no page.
 		if page != nil {
 			p.writeConflictWithPage(w, appErr, page)
 			return

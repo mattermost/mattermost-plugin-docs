@@ -288,6 +288,7 @@ func TestHandler_PublishConflict409(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &conflict))
 	require.NotNil(t, conflict.Error, "conflict body must include the error")
+	require.Empty(t, conflict.Error.DetailedError, "the conflict body must not carry internal error detail")
 	require.NotNil(t, conflict.CurrentPage, "conflict body must include the current server page")
 	require.Equal(t, "Edit by B", conflict.CurrentPage.Title, "current page must reflect the winning edit")
 	require.Greater(t, conflict.CurrentPage.EditAt, editAt, "current page must carry the advanced baseline")

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"maps"
 	"net/http"
-	"unicode/utf8"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
@@ -23,12 +22,9 @@ import (
 // not imply the page is published — a draft may exist first. The space must exist and be live. The
 // caller owns the draft: draft.UserId is always sourced from the request, never the request body.
 //
-// An autosave may omit fields the editor didn't change; omitted fields are preserved, so concurrent
-// heartbeats cannot clobber each other's changes.
-// parentID encodes the write intent for ParentId: nil preserves the stored value, a pointer to ""
-// clears to root, and a pointer to a valid ID sets the parent.
-// props encodes the write intent for Props: nil preserves the stored map, a non-nil pointer replaces
-// it wholesale (an empty map clears all keys); its serialized size is validated here.
+// An autosave may omit fields the editor didn't change, and an omitted field keeps its stored
+// value. parentID, fileIDs, and props signal omission with a nil pointer; the draft struct's own
+// fields signal it by being empty.
 func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs *mmmodel.StringArray, props *mmmodel.StringInterface, channelID string) (*model.Draft, *mmmodel.AppError) {
 	if draft == nil {
 		return nil, mmmodel.NewAppError("UpdatePageDraft", "app.page_draft.update.nil_draft.app_error", nil, "", http.StatusBadRequest)
@@ -63,30 +59,6 @@ func (s *Service) UpdatePageDraft(draft *model.Draft, parentID *string, fileIDs 
 			return nil, contentErr
 		}
 		draft.Body = normalizedBody
-	}
-
-	// Validate the written Props size here: props is passed to the store separately (pointer intent),
-	// so it is not the draft.Props field IsValid checks — without this the PagePropsMaxBytes bound
-	// would be silently bypassed on the write path. Mirrors the fileIDs size guard below.
-	if props != nil {
-		if propsErr := model.ValidatePropsSize("UpdatePageDraft", "page_id="+draft.PageId, *props, model.PagePropsMaxBytes); propsErr != nil {
-			return nil, propsErr
-		}
-	}
-
-	// Validate fileIDs size here because fileIDs is passed to the store separately and is not placed
-	// into draft.FileIds before IsValid runs — the store's UpsertDraft merges it in SQL.
-	if fileIDs != nil && len(*fileIDs) > 0 {
-		if utf8.RuneCountInString(mmmodel.ArrayToJSON([]string(*fileIDs))) > model.DraftFileIdsMaxRunes {
-			return nil, mmmodel.NewAppError("UpdatePageDraft", "model.draft.is_valid.file_ids.app_error", nil, "", http.StatusBadRequest)
-		}
-		for _, fileID := range *fileIDs {
-			// Reject "" too: an empty slice clears the list, but an empty entry is malformed and
-			// would otherwise be merged verbatim into FileIds.
-			if !mmmodel.IsValidId(fileID) {
-				return nil, mmmodel.NewAppError("UpdatePageDraft", "app.page_draft.update.invalid_file_id.app_error", nil, "", http.StatusBadRequest)
-			}
-		}
 	}
 
 	// AutosaveDraft enforces the autosave-path guards itself (see its godoc), so no separate
@@ -285,8 +257,9 @@ func (s *Service) DeletePageDraft(userID, spaceID, pageID, channelID string) *mm
 	return nil
 }
 
-// GetPageDraftsForSpace returns a page of the calling user's unpublished drafts for a space, newest
-// first. Draft bodies are omitted from the listing.
+// GetPageDraftsForSpace lists the user's unpublished drafts in a space, most-recently-updated
+// first, one pagination page at a time; the second return reports whether further pages exist.
+// Draft bodies are omitted from the listing.
 func (s *Service) GetPageDraftsForSpace(userID, spaceID string, page, perPage int) ([]*model.DraftSummary, bool, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(userID) {
 		return nil, false, mmmodel.NewAppError("GetPageDraftsForSpace", "app.page_draft.list.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
@@ -309,8 +282,8 @@ func (s *Service) GetPageDraftsForSpace(userID, spaceID string, page, perPage in
 // page on first publish or updating it if it already exists. pageID is the id reserved when editing
 // began (see CreateSpaceDraft) and is stable across the draft → publish lifecycle, so its presence
 // does not imply a published page yet: whether this is a create or an edit is re-derived from the
-// database (no client trust). The draft is validated, and the page write + draft delete are
-// committed in a single store transaction.
+// database (no client trust). The draft is validated, and the page write and the draft's removal
+// either both take effect or neither does.
 // Returns (page, wasCreated, appErr):
 //   - wasCreated=true → a new page was inserted by this call (handler should return 201)
 //   - wasCreated=false → an existing page was updated, or a concurrent create was adopted (return 200)
@@ -362,9 +335,9 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 	}
 
 	// 4/5/6. Validate & normalise the draft, build the store write (new-page insert vs edit patch;
-	// see helpers), and commit page + draft-delete in one transaction. draft.UpdateAt is passed
-	// through so a concurrent autosave rolls this publish back as a conflict rather than shipping
-	// older content — see store.deletePublishedDraftTx.
+	// see helpers), and hand it to the store. draft.UpdateAt is passed through so a concurrent
+	// autosave rolls this publish back as a conflict rather than shipping older content — see
+	// store.deletePublishedDraftTx.
 	var page *model.Page
 	var storeErr error
 	if isNewPage {
@@ -387,51 +360,7 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 		page, storeErr = s.store.PublishPageEditDraft(pageID, spaceID, patch, draft.BaseEditAt, force, userID, draft.UpdateAt)
 	}
 	if storeErr != nil {
-		switch {
-		// The draft moved under this publish: the caller's own editor autosaved after this call read it,
-		// so the whole write was rolled back rather than committing the older content. Distinct from the
-		// conflicts below — the client republishes to ship the newer draft, it does not re-baseline.
-		case store.ConflictReason(storeErr) == store.ReasonConcurrentAutosave:
-			return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.draft_changed.app_error",
-				nil, "", http.StatusConflict).Wrap(storeErr)
-
-		// Someone else edited the page since the baseline was captured. The draft's baseline is
-		// write-once (see store.UpsertDraft), so the client cannot re-baseline the existing draft:
-		// it recovers by publishing with force, or by discarding the draft and reopening the edit
-		// session against the current page. Return the current server page alongside the conflict so
-		// the client can diff and choose in one round-trip rather than a follow-up GET.
-		// The pre-lock `existing` snapshot is stale by definition here, so re-read the live page.
-		case store.ConflictReason(storeErr) == store.ReasonConcurrentEdit:
-			editConflictErr := mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.edit_conflict.app_error",
-				nil, "", http.StatusConflict).Wrap(storeErr)
-			current, getErr := s.GetPageInSpace("PublishPageDraft", pageID, spaceID, false)
-			if getErr != nil {
-				// A concurrent delete or cross-space move can make the page unreadable here; fall
-				// back to a bare conflict and let the client GET the page itself.
-				s.log.Warn("failed to re-read page for edit-conflict body",
-					"page_id", pageID, "user_id", userID, "err", getErr)
-				return nil, false, editConflictErr
-			}
-			return current, false, editConflictErr
-
-		case store.IsErrConflict(storeErr):
-			// PK collision on the new-page path: a concurrent publish won this page id. Adopt the
-			// winner and return 200 without broadcasting; a winner that is not this caller's to read
-			// falls through to a plain conflict (see adoptPublishRaceWinner).
-			if isNewPage {
-				if raced, adopted := s.adoptPublishRaceWinner(userID, pageID, spaceID, draft.UpdateAt); adopted {
-					return raced, false, nil
-				}
-			}
-			return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.conflict.app_error",
-				nil, "", http.StatusConflict).Wrap(storeErr)
-		case store.IsErrNotFound(storeErr):
-			// A concurrent delete removed the page or its parent between the pre-checks and the lock.
-			return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.page_deleted.app_error",
-				nil, "", http.StatusConflict).Wrap(storeErr)
-		default:
-			return nil, false, storeAppError("PublishPageDraft", storeErr)
-		}
+		return s.translatePublishStoreError(storeErr, isNewPage, userID, spaceID, pageID, draft.UpdateAt)
 	}
 
 	// 7. Broadcast the write with the same shape and channel scope as the direct-CRUD page events.
@@ -455,6 +384,59 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 	s.endDraftPresenceSession(true, pageID, userID, spaceID, page.ChannelId)
 
 	return page, isNewPage, nil
+}
+
+// translatePublishStoreError maps a failed publish write to the caller-facing result, so
+// PublishPageDraft stays a sequence of steps and every publish-failure condition lands in one place.
+// It returns the same triple as PublishPageDraft: the adopted page with a nil error when a concurrent
+// publish already created this page, the current server page alongside a 409 on an edit conflict, and
+// a nil page otherwise.
+func (s *Service) translatePublishStoreError(storeErr error, isNewPage bool, userID, spaceID, pageID string, draftUpdateAt int64) (*model.Page, bool, *mmmodel.AppError) {
+	switch {
+	// The draft moved under this publish: the caller's own editor autosaved after this call read it,
+	// so the whole write was rolled back rather than committing the older content. Distinct from the
+	// conflicts below — the client republishes to ship the newer draft, it does not re-baseline.
+	case store.ConflictReason(storeErr) == store.ReasonConcurrentAutosave:
+		return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.draft_changed.app_error",
+			nil, "", http.StatusConflict).Wrap(storeErr)
+
+	// Someone else edited the page since the baseline was captured. The draft's baseline is
+	// write-once (see store.UpsertDraft), so the client cannot re-baseline the existing draft:
+	// it recovers by publishing with force, or by discarding the draft and reopening the edit
+	// session against the current page. Return the current server page alongside the conflict so
+	// the client can diff and choose in one round-trip rather than a follow-up GET.
+	// The pre-lock page snapshot is stale by definition here, so re-read the live page.
+	case store.ConflictReason(storeErr) == store.ReasonConcurrentEdit:
+		editConflictErr := mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.edit_conflict.app_error",
+			nil, "", http.StatusConflict).Wrap(storeErr)
+		current, getErr := s.GetPageInSpace("PublishPageDraft", pageID, spaceID, false)
+		if getErr != nil {
+			// A concurrent delete or cross-space move can make the page unreadable here; fall
+			// back to a bare conflict and let the client GET the page itself.
+			s.log.Warn("failed to re-read page for edit-conflict body",
+				"page_id", pageID, "user_id", userID, "err", getErr)
+			return nil, false, editConflictErr
+		}
+		return current, false, editConflictErr
+
+	case store.IsErrConflict(storeErr):
+		// PK collision on the new-page path: a concurrent publish won this page id. Adopt the
+		// winner and return 200 without broadcasting; a winner that is not this caller's to read
+		// falls through to a plain conflict (see adoptPublishRaceWinner).
+		if isNewPage {
+			if raced, adopted := s.adoptPublishRaceWinner(userID, pageID, spaceID, draftUpdateAt); adopted {
+				return raced, false, nil
+			}
+		}
+		return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.conflict.app_error",
+			nil, "", http.StatusConflict).Wrap(storeErr)
+	case store.IsErrNotFound(storeErr):
+		// A concurrent delete removed the page or its parent between the pre-checks and the lock.
+		return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.page_deleted.app_error",
+			nil, "", http.StatusConflict).Wrap(storeErr)
+	default:
+		return nil, false, storeAppError("PublishPageDraft", storeErr)
+	}
 }
 
 // derivePublishTarget classifies a publish target from the GetPageWithDeleted read: no page means

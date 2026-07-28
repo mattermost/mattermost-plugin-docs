@@ -158,14 +158,48 @@ func (d *Draft) IsValid() *mmmodel.AppError {
 		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.body_size.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
 	}
 
-	if utf8.RuneCountInString(mmmodel.ArrayToJSON(d.FileIds)) > DraftFileIdsMaxRunes {
-		return mmmodel.NewAppError("Draft.IsValid", "model.draft.is_valid.file_ids.app_error", nil, "page_id="+d.PageId, http.StatusBadRequest)
+	if err := ValidateDraftFileIds("Draft.IsValid", "page_id="+d.PageId, d.FileIds); err != nil {
+		return err
 	}
 
 	if err := ValidatePropsSize("Draft.IsValid", "page_id="+d.PageId, d.Props, PagePropsMaxBytes); err != nil {
 		return err
 	}
 
+	return nil
+}
+
+// ValidateDraftFileIds checks that the serialized file-id list stays within DraftFileIdsMaxRunes and
+// that every entry is a well-formed ID. An empty list is valid; an empty entry is not, since a blank
+// ID names no file and would be stored verbatim.
+func ValidateDraftFileIds(where, detail string, fileIDs mmmodel.StringArray) *mmmodel.AppError {
+	if utf8.RuneCountInString(mmmodel.ArrayToJSON(fileIDs)) > DraftFileIdsMaxRunes {
+		return mmmodel.NewAppError(where, "model.draft.is_valid.file_ids.app_error", nil, detail, http.StatusBadRequest)
+	}
+	for _, fileID := range fileIDs {
+		if !mmmodel.IsValidId(fileID) {
+			return mmmodel.NewAppError(where, "model.draft.is_valid.file_id.app_error", nil, detail, http.StatusBadRequest)
+		}
+	}
+	return nil
+}
+
+// ValidateDraftWriteIntent applies the FileIds and Props bounds to the pointer-carried write-intent
+// values a draft upsert takes alongside the Draft struct. Those values never reach the struct's own
+// fields — the upsert merges them in SQL — so IsValid cannot see them, and without this the bounds
+// would hold only for callers that remembered to check them separately. A nil pointer means the
+// field was omitted and the stored value is preserved, so there is nothing to bound.
+func ValidateDraftWriteIntent(where, detail string, fileIDs *mmmodel.StringArray, props *mmmodel.StringInterface) *mmmodel.AppError {
+	if fileIDs != nil {
+		if err := ValidateDraftFileIds(where, detail, *fileIDs); err != nil {
+			return err
+		}
+	}
+	if props != nil {
+		if err := ValidatePropsSize(where, detail, *props, PagePropsMaxBytes); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

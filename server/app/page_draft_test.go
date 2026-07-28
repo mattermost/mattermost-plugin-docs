@@ -957,7 +957,9 @@ func TestCreateSpaceDraftEnforcesQuota(t *testing.T) {
 
 	_, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "One Too Many", "")
 	require.NotNil(t, appErr)
-	require.Equal(t, http.StatusTooManyRequests, appErr.StatusCode)
+	// 422, not 429: the cap is a standing per-space quota, so retrying cannot clear it.
+	require.Equal(t, http.StatusUnprocessableEntity, appErr.StatusCode)
+	require.Equal(t, "app.page_draft.quota_exceeded.app_error", appErr.Id)
 }
 
 // TestGetPageDraftRejectsInvalidIDs exercises GetPageDraft's three input-validation branches at
@@ -1087,7 +1089,7 @@ func TestUpdatePageDraftRejectsInvalidFileId(t *testing.T) {
 			_, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: mmmodel.NewId(), Title: "x"}, nil, &ids, nil, "")
 			require.NotNil(t, appErr)
 			require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
-			require.Equal(t, "app.page_draft.update.invalid_file_id.app_error", appErr.Id)
+			require.Equal(t, "model.draft.is_valid.file_id.app_error", appErr.Id)
 		})
 	}
 }

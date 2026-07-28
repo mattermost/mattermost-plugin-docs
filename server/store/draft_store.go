@@ -230,8 +230,9 @@ FROM chain`, model.MaxPageDepth, model.MaxPageDepth)
 // props encodes the write intent for the Props column: nil means "omitted — preserve the existing
 // stored map", and a non-nil pointer replaces the whole map with the pointed-to value (an empty map
 // clears all keys). This is a whole-value replace, not a key-wise merge, mirroring parentID/fileIDs.
-// The written value's serialized size must be validated by the caller (App layer): the struct's own
-// Props field — the only one IsValid checks — is not what gets written.
+//
+// The pointed-to fileIDs and props values are bounded by model.ValidateDraftWriteIntent here, since
+// the struct's own fields — the only ones IsValid checks — are not what gets written.
 func (s *Store) UpsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmodel.StringArray, props *mmmodel.StringInterface) (*model.Draft, bool, error) {
 	return s.upsertDraft(draft, parentID, fileIDs, props, false)
 }
@@ -279,6 +280,11 @@ func (s *Store) upsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmod
 
 	draft.PreSave()
 	if validErr := draft.IsValid(); validErr != nil {
+		return nil, false, &ErrInvalidInput{Entity: "Draft", Field: "IsValid", Value: validErr.Error(), Reason: validErr.Id}
+	}
+	// The pointer-carried values are merged in SQL below and never populate the struct's own fields,
+	// so IsValid does not cover them; bound them here, where every caller of the upsert passes.
+	if validErr := model.ValidateDraftWriteIntent("Draft.IsValid", "page_id="+draft.PageId, fileIDs, props); validErr != nil {
 		return nil, false, &ErrInvalidInput{Entity: "Draft", Field: "IsValid", Value: validErr.Error(), Reason: validErr.Id}
 	}
 
@@ -678,9 +684,10 @@ func (s *Store) GetDraftsForSpace(userID, spaceID string, offset, limit int) ([]
 // a draft at the same reserved page id would otherwise appear in each other's presence set. Scoping
 // on the draft's own SpaceId keeps a broadcast to one space from disclosing the other space's editor.
 //
-// The filter is LastActiveAt, not UpdateAt: UpdateAt also moves when a bulk maintenance write
-// touches the row (a page delete reparents its pending child drafts; a move-to-space re-homes
-// them), which would report the draft's owner as editing a page they never opened.
+// The filter is LastActiveAt, not UpdateAt (see model.Draft): the maintenance writes that bump
+// UpdateAt without the user touching the draft — a page delete reparenting its pending child
+// drafts, a move-to-space re-homing them — would otherwise report the draft's owner as editing a
+// page they never opened.
 func (s *Store) GetPageActiveEditors(pageID, spaceID string, minActiveAt int64) ([]string, error) {
 	if pageID == "" {
 		return nil, &ErrInvalidInput{Entity: "Draft", Field: "pageId", Value: pageID}

@@ -129,21 +129,25 @@ func (p *Plugin) writeAppError(w http.ResponseWriter, appErr *mmmodel.AppError) 
 	if appErr.StatusCode >= http.StatusInternalServerError {
 		p.API.LogError("Docs API request failed", "where", appErr.Where, "id", appErr.Id, "status_code", appErr.StatusCode, "err", appErr.Error())
 	}
+	if appErr.StatusCode == http.StatusConflict {
+		p.writeConflictWithPage(w, appErr, nil)
+		return
+	}
 	safe := *appErr
 	safe.WipeDetailed()
 	writeJSON(w, appErr.StatusCode, &safe)
 }
 
-// conflictResponse is the 409 body for an edit conflict on publish: the scrubbed AppError plus the
-// current server page. It lets a client diff and re-baseline against the live page (its EditAt) in
-// one round-trip instead of following up with a GET. The whole page is returned rather than a
-// curated snapshot — it is the complete source of truth, and the client renders whatever it needs.
+// conflictResponse is the body every 409 carries: the scrubbed AppError plus the current server
+// page. One shape across all conflicts means a client parses a 409 the same way whichever endpoint
+// produced it, rather than branching on the route.
 //
-// This is intentionally richer than the other optimistic-lock 409s (handleUpdatePage, handleMovePage,
-// handleMovePageToSpace), which return a bare AppError and expect the client to re-read via GET.
-// Publish embeds the page because it is the one conflict where the client needs the full current
-// content immediately to diff its pending draft against; the edit/move conflicts only need the caller
-// to retry against a fresh baseline. New page-mutation 409s should align with one of these two shapes.
+// current_page is null when the handler has no page to offer — the conflict was not about a page, or
+// the re-read that would have produced it failed — so a client treats it as an optional shortcut and
+// falls back to a GET. Where it is populated (publish and page-update conflicts, which already read
+// the live page to build the error) it saves that round-trip: the client diffs and re-baselines
+// against the returned EditAt directly. The whole page is returned rather than a curated snapshot,
+// so the client renders whatever it needs.
 type conflictResponse struct {
 	Error       *mmmodel.AppError `json:"error"`
 	CurrentPage *model.Page       `json:"current_page"`

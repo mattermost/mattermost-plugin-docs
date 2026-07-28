@@ -149,7 +149,10 @@ func storeAppError(where string, err error) *mmmodel.AppError {
 		case store.ReasonSubtreeMaxDepthExceeded:
 			return mmmodel.NewAppError(where, "app.page.subtree_max_depth_exceeded.app_error", map[string]any{"MaxDepth": limitErr.Limit}, "", http.StatusBadRequest).Wrap(err)
 		case store.ReasonDraftQuotaExceeded:
-			return mmmodel.NewAppError(where, "app.page_draft.quota_exceeded.app_error", nil, "", http.StatusTooManyRequests).Wrap(err)
+			// 422, not 429: the caller is over a standing per-space draft cap, not sending too many
+			// requests. Retrying the same request never succeeds until a draft is discarded, so a
+			// rate-limit code would send clients into a wait-and-retry loop.
+			return mmmodel.NewAppError(where, "app.page_draft.quota_exceeded.app_error", nil, "", http.StatusUnprocessableEntity).Wrap(err)
 		}
 		return mmmodel.NewAppError(where, "app.store.too_large.app_error", map[string]any{"Limit": limitErr.Limit}, "", http.StatusUnprocessableEntity).Wrap(err)
 	default:

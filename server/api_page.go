@@ -100,6 +100,10 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 
 	updated, appErr := p.service.UpdatePage(vars["page_id"], vars["space_id"], patch, req.BaseEditAt, req.Force, userID)
 	if appErr != nil {
+		if updated != nil {
+			p.writeConflictWithPage(w, appErr, updated)
+			return
+		}
 		p.writeAppError(w, appErr)
 		return
 	}

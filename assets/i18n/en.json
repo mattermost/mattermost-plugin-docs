@@ -328,10 +328,6 @@
     "translation": "A concurrent edit has been published; please reload the page to continue editing."
   },
   {
-    "id": "app.page_draft.update.invalid_file_id.app_error",
-    "translation": "One or more file IDs are invalid."
-  },
-  {
     "id": "app.page_draft.update.invalid_page_id.app_error",
     "translation": "Invalid page ID."
   },
@@ -542,6 +538,10 @@
   {
     "id": "model.draft.is_valid.create_at.app_error",
     "translation": "Invalid draft creation time."
+  },
+  {
+    "id": "model.draft.is_valid.file_id.app_error",
+    "translation": "One or more file IDs are invalid."
   },
   {
     "id": "model.draft.is_valid.file_ids.app_error",

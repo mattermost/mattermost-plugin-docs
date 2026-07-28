@@ -7,6 +7,8 @@ import (
 	"net/http"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
+
+	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
 // ActiveEditorTimeoutMs is the window within which a draft autosave keeps a user counted as an
@@ -95,7 +97,7 @@ func (s *Service) publishSelfPresence(userID, pageID, spaceID string, editors []
 }
 
 // broadcastPagePresence fans a page_presence_updated event out to the space audience on channelID
-// (the space's backing channel), carrying the current active-editor set, snapshot_at, and active_timeout_ms.
+// (the space's backing channel), carrying the current presence snapshot.
 // Best-effort: failures are logged, never surfaced. The return value reports whether a snapshot was
 // actually published, so a throttling caller can release its claimed slot on failure; a nil client
 // (store-only unit tests) is a deliberate no-op, not a failure.
@@ -173,20 +175,11 @@ func (s *Service) endDraftPresenceSession(pageWasLive bool, pageID, userID, spac
 	s.broadcastPagePresence(pageID, spaceID, channelID)
 }
 
-// PageActiveEditors is the editor-presence snapshot returned by the REST active-editors endpoint. Its
-// fields mirror the page_presence_updated WebSocket payload (active_editors, snapshot_at, active_timeout_ms)
-// so a client sees the same presence contract whether it resyncs over REST or receives a live event.
-type PageActiveEditors struct {
-	ActiveEditors   []string `json:"active_editors"`
-	SnapshotAt      int64    `json:"snapshot_at"`
-	ActiveTimeoutMs int64    `json:"active_timeout_ms"`
-}
-
 // GetPageActiveEditors returns the editor-presence snapshot for the given page in the given space,
 // after confirming the page exists in that space. Returns 404 if the page is unknown or belongs to
 // another space; store failures are propagated (unlike the best-effort getActiveEditors, this backs
 // a REST read that must not report "nobody editing" when the query actually failed).
-func (s *Service) GetPageActiveEditors(pageID, spaceID string) (*PageActiveEditors, *mmmodel.AppError) {
+func (s *Service) GetPageActiveEditors(pageID, spaceID string) (*model.PageActiveEditors, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("GetPageActiveEditors", "app.page.presence.invalid_page_id.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -206,7 +199,7 @@ func (s *Service) GetPageActiveEditors(pageID, spaceID string) (*PageActiveEdito
 	if storeErr != nil {
 		return nil, storeAppError("GetPageActiveEditors", storeErr)
 	}
-	return &PageActiveEditors{
+	return &model.PageActiveEditors{
 		ActiveEditors:   editors,
 		SnapshotAt:      snapshotAt,
 		ActiveTimeoutMs: ActiveEditorTimeoutMs,

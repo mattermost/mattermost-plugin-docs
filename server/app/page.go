@@ -95,6 +95,8 @@ func (s *Service) GetPage(pageID string) (*model.Page, *mmmodel.AppError) {
 // UpdatePage patches a page, optimistic-locked on baseEditAt; a nil baseEditAt without force is
 // rejected. spaceID scopes the write: a page moved to another space since the caller's last
 // check returns not-found instead of updating the wrong copy.
+// On a 409 the returned page is the current server page (nil if the re-read failed), so the caller
+// can re-baseline without a follow-up read; on every other error it is nil.
 func (s *Service) UpdatePage(pageID, spaceID string, patch *model.PagePatch, baseEditAt *int64, force bool, userID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -138,7 +140,9 @@ func (s *Service) UpdatePage(pageID, spaceID string, patch *model.PagePatch, bas
 			return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.conflict.app_error",
 				nil, "conflict", http.StatusConflict).Wrap(storeErr)
 		}
-		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.conflict.app_error",
+		// The page travels back alongside the conflict so the caller can re-baseline without a
+		// follow-up read, matching PublishPageDraft's edit-conflict contract.
+		return fresh, mmmodel.NewAppError("UpdatePage", "app.page.update.conflict.app_error",
 			map[string]any{"ModifiedBy": fresh.LastModifiedBy, "ModifiedAt": fresh.EditAt},
 			"conflict", http.StatusConflict).Wrap(storeErr)
 	}
