@@ -58,6 +58,13 @@ export type Page = {
     delete_at: number;
 };
 
+// The fields needed to create a page. parentId is omitted for a root page (the
+// data source maps it to the server's parent_id).
+export type CreatePageInput = {
+    title: string;
+    parentId?: string;
+};
+
 export type SpaceSummary = {
     space: Space;
 

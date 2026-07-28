@@ -28,9 +28,15 @@ const UPDATED_TIME_SPEC: TimestampUnit[] = [
     'year',
 ];
 
-// Controls (pages toggle, comments, edit, overflow, expand) are visual
-// scaffolding wired in later passes.
-const PageBar = ({space}: {space: Space}) => {
+type Props = {
+    space: Space;
+    treeOpen: boolean;
+    onTogglePages: () => void;
+};
+
+// Controls (comments, edit, overflow, expand) are visual scaffolding wired in
+// later passes; the pages toggle drives the page tree panel.
+const PageBar = ({space, treeOpen, onTogglePages}: Props) => {
     const {formatMessage} = useIntl();
 
     const pagesLabel = formatMessage({id: 'docs.space.pages.toggle', defaultMessage: 'Toggle page tree'});
@@ -59,6 +65,8 @@ const PageBar = ({space}: {space: Space}) => {
                     size='sm'
                     className={styles.pagesToggle}
                     aria-label={pagesLabel}
+                    aria-pressed={treeOpen}
+                    onClick={onTogglePages}
                 >
                     <FormatListBulletedIcon size={18}/>
                     <span className={styles.pagesLabel}>

@@ -12,7 +12,49 @@ type ReceivedSpacesAction = {spaces: Space[]};
 type CreatedSpaceAction = {space: Space};
 type DeletedSpaceAction = {spaceId: string};
 type ReceivedPagesAction = {pages: Page[]};
+type MovedPageAction = {pageId: string; spaceId: string; parentId: string; siblingIndex: number};
 type ReceivedSpaceMembersAction = {spaceId: string; userIds: string[]};
+
+const bySortOrder = (a: Page, b: Page): number =>
+    a.sort_order - b.sort_order || a.title.localeCompare(b.title);
+
+// Moves a page under `newParentId` at `siblingIndex` and renumbers the affected
+// sibling groups' sort_order 0-based, mirroring the server's reindex. Returns a
+// new byId map (untouched pages are shared by reference). Only pages in
+// `spaceId` are considered; a pure reorder (same parent) skips the old group.
+export function reindexAfterMove(
+    byId: Record<string, Page>,
+    pageId: string,
+    spaceId: string,
+    newParentId: string,
+    siblingIndex: number,
+): Record<string, Page> {
+    const moved = byId[pageId];
+    if (!moved) {
+        return byId;
+    }
+    const oldParentId = moved.parent_id;
+    const next = {...byId};
+
+    const groupOf = (parentId: string): Page[] => Object.values(byId).
+        filter((page) => page.space_id === spaceId && page.parent_id === parentId && page.id !== pageId).
+        sort(bySortOrder);
+
+    const newGroup = groupOf(newParentId);
+    const index = Math.max(0, Math.min(siblingIndex, newGroup.length));
+    newGroup.splice(index, 0, moved);
+    newGroup.forEach((page, i) => {
+        next[page.id] = {...page, parent_id: newParentId, sort_order: i};
+    });
+
+    if (oldParentId !== newParentId) {
+        groupOf(oldParentId).forEach((page, i) => {
+            next[page.id] = {...page, sort_order: i};
+        });
+    }
+
+    return next;
+}
 
 // SpaceTypes'/PageTypes' values aren't string-literal types (manifest.id is
 // loaded via JSON.parse), so `action.type` can't discriminate a union by
@@ -106,6 +148,13 @@ function pages(state: Record<string, Page> = {}, action: UnknownAction): Record<
             next[page.id] = page;
         }
         return next;
+    }
+    case PageTypes.MOVED_PAGE: {
+        const {pageId, spaceId, parentId, siblingIndex} = action as unknown as MovedPageAction;
+        if (!(pageId in state)) {
+            return state;
+        }
+        return reindexAfterMove(state, pageId, spaceId, parentId, siblingIndex);
     }
     case SpaceTypes.DELETED_SPACE: {
         const {spaceId} = action as unknown as DeletedSpaceAction;

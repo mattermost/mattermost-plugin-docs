@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import type {CreateSpaceInput, Page, Space, SpaceMember} from 'types/docs';
+import type {CreatePageInput, CreateSpaceInput, Page, Space, SpaceMember} from 'types/docs';
 
 // The seam between the store's thunks and the Docs server REST API. The
 // API-backed source implements this over the plugin's /api/v1 routes; the
@@ -35,4 +35,14 @@ export interface DocsDataSource {
     // Pages in a space. The server returns page summaries (no body); the source
     // normalizes them to Page with an empty body for the store.
     listPages(spaceId: string): Promise<Page[]>;
+
+    // Reparents and/or reorders a page. `parentId` is the new parent id ('' =
+    // space root); `siblingIndex` is the 0-based position within the new parent.
+    // `expectedUpdateAt` is the moved page's current update_at for optimistic
+    // concurrency. Returns the moved page.
+    movePage(spaceId: string, pageId: string, parentId: string, siblingIndex: number, expectedUpdateAt: number): Promise<Page>;
+
+    // Creates a page in a space (optionally under a parent) and returns it (with
+    // its server-assigned id and sort_order).
+    createPage(spaceId: string, input: CreatePageInput): Promise<Page>;
 }

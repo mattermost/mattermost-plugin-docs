@@ -1,9 +1,9 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {apiUrl, listAll, restDelete, restGet, restPost} from 'client/rest';
+import {apiUrl, listAll, restDelete, restGet, restPatch, restPost} from 'client/rest';
 
-import type {CreateSpaceInput, Page, Space, SpaceMember} from 'types/docs';
+import type {CreatePageInput, CreateSpaceInput, Page, Space, SpaceMember} from 'types/docs';
 
 import type {DocsDataSource} from './docs_data_source';
 
@@ -31,5 +31,22 @@ export const apiDataSource: DocsDataSource = {
     listPages: async (spaceId) => {
         const summaries = await listAll<Page>((query) => `${apiUrl()}/spaces/${spaceId}/pages?${query}`);
         return summaries.map(toPage);
+    },
+
+    movePage: async (spaceId, pageId, parentId, siblingIndex, expectedUpdateAt) => {
+        const moved = await restPatch<Page>(`${apiUrl()}/spaces/${spaceId}/pages/${pageId}/move`, {
+            parent_id: parentId,
+            sibling_index: siblingIndex,
+            expected_update_at: expectedUpdateAt,
+        });
+        return toPage(moved);
+    },
+
+    createPage: async (spaceId, input: CreatePageInput) => {
+        const created = await restPost<Page>(`${apiUrl()}/spaces/${spaceId}/pages`, {
+            title: input.title.trim(),
+            parent_id: input.parentId || undefined,
+        });
+        return toPage(created);
     },
 };

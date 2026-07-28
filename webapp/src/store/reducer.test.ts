@@ -2,8 +2,13 @@
 // See LICENSE.txt for license information.
 
 import {PageTypes, SpaceTypes} from './action_types';
-import reducer from './reducer';
+import reducer, {reindexAfterMove} from './reducer';
 import {makePage, makeSpace} from './test_fixtures';
+
+const withParent = (id: string, parentId: string, title: string, sortOrder: number) => ({
+    ...makePage(id, 'space-a', title, sortOrder),
+    parent_id: parentId,
+});
 
 describe('spaces', () => {
     const initialState = reducer(undefined, {type: '@@INIT'});
@@ -73,5 +78,62 @@ describe('pages', () => {
         expect(afterDelete.pages).toEqual({p2: page2});
         expect(afterDelete.pagesInSpace['space-a']).toBeUndefined();
         expect(afterDelete.pagesInSpace['space-b']).toEqual(new Set(['p2']));
+    });
+
+    it('MOVED_PAGE reindexes the moved page within the store', () => {
+        const a = withParent('a', '', 'A', 0);
+        const b = withParent('b', '', 'B', 1);
+        const c = withParent('c', '', 'C', 2);
+
+        const afterReceive = reducer(initialState, {type: PageTypes.RECEIVED_PAGES, pages: [a, b, c]});
+        const afterMove = reducer(afterReceive, {
+            type: PageTypes.MOVED_PAGE,
+            pageId: 'c',
+            spaceId: 'space-a',
+            parentId: '',
+            siblingIndex: 0,
+        });
+
+        expect(afterMove.pages.c.sort_order).toBe(0);
+        expect(afterMove.pages.a.sort_order).toBe(1);
+        expect(afterMove.pages.b.sort_order).toBe(2);
+    });
+});
+
+describe('reindexAfterMove', () => {
+    it('reorders siblings within the same parent (0-based)', () => {
+        const byId = {
+            a: withParent('a', '', 'A', 0),
+            b: withParent('b', '', 'B', 1),
+            c: withParent('c', '', 'C', 2),
+        };
+
+        // Move A to the end.
+        const next = reindexAfterMove(byId, 'a', 'space-a', '', 2);
+
+        expect(next.b.sort_order).toBe(0);
+        expect(next.c.sort_order).toBe(1);
+        expect(next.a.sort_order).toBe(2);
+        expect(next.a.parent_id).toBe('');
+    });
+
+    it('reparents a page and reindexes both the old and new sibling groups', () => {
+        const byId = {
+            p: withParent('p', '', 'Parent', 0),
+            a: withParent('a', '', 'A', 1),
+            b: withParent('b', '', 'B', 2),
+            x: withParent('x', 'p', 'X', 0),
+        };
+
+        // Move B under P as its first child.
+        const next = reindexAfterMove(byId, 'b', 'space-a', 'p', 0);
+
+        expect(next.b.parent_id).toBe('p');
+        expect(next.b.sort_order).toBe(0);
+        expect(next.x.sort_order).toBe(1);
+
+        // Old root group renumbers to fill the gap.
+        expect(next.p.sort_order).toBe(0);
+        expect(next.a.sort_order).toBe(1);
     });
 });

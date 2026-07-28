@@ -7,6 +7,19 @@
     background: var(--center-channel-bg);
 }
 
+.body {
+    display: flex;
+    flex: 1 1 0;
+    min-height: 0;
+}
+
+.main {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    min-width: 0;
+}
+
 .scroll {
     flex: 1 1 0;
     overflow-y: auto;
@@ -19,7 +32,7 @@
     padding: 20px 24px;
 }
 
-.body {
+.placeholder {
     padding: 8px 4px 40px;
     color: rgba(var(--center-channel-color-rgb), 0.56);
     font-size: 14px;

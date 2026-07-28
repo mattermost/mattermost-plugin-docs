@@ -49,6 +49,9 @@ export const restGet = <T>(url: string): Promise<T> => doFetch<T>(url, {method: 
 export const restPost = <T>(url: string, body: unknown): Promise<T> =>
     doFetch<T>(url, {method: 'POST', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}});
 
+export const restPatch = <T>(url: string, body: unknown): Promise<T> =>
+    doFetch<T>(url, {method: 'PATCH', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}});
+
 export const restDelete = <T>(url: string): Promise<T> => doFetch<T>(url, {method: 'DELETE'});
 
 type Paginated<T> = {

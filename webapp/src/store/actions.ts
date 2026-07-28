@@ -6,10 +6,11 @@ import {docsDataSource} from 'data';
 import {getCurrentTeamId, getMyTeams} from 'mattermost-redux/selectors/entities/teams';
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
-import type {CreateSpaceInput, Space} from 'types/docs';
+import type {CreatePageInput, CreateSpaceInput, Page, Space} from 'types/docs';
 import type {DocsThunkAction} from 'types/store';
 
 import {PageTypes, SpaceTypes} from './action_types';
+import {getPage} from './selectors';
 
 // Spaces the caller belongs to in the current team (the server scopes the list
 // by backing-channel membership). A failed load leaves the store empty rather
@@ -56,6 +57,41 @@ export function fetchPages(spaceId: string): DocsThunkAction<Promise<void>> {
             // eslint-disable-next-line no-console
             console.error('Docs: failed to load pages', error);
         }
+    };
+}
+
+// Reparents/reorders a page. Optimistically reindexes the store, then reconciles
+// with the server-returned page. On failure it re-fetches the space's pages to
+// restore server truth. siblingIndex is 0-based within the new parent;
+// parentId '' is the space root.
+export function movePage(spaceId: string, pageId: string, parentId: string, siblingIndex: number): DocsThunkAction<Promise<void>> {
+    return async (dispatch, getState) => {
+        const page = getPage(getState(), pageId);
+        if (!page) {
+            return;
+        }
+        const expectedUpdateAt = page.update_at;
+
+        dispatch({type: PageTypes.MOVED_PAGE, pageId, spaceId, parentId, siblingIndex});
+
+        try {
+            const moved = await docsDataSource.movePage(spaceId, pageId, parentId, siblingIndex, expectedUpdateAt);
+            dispatch({type: PageTypes.RECEIVED_PAGES, pages: [moved]});
+        } catch (error) {
+            // eslint-disable-next-line no-console
+            console.error('Docs: failed to move page', error);
+            dispatch(fetchPages(spaceId));
+        }
+    };
+}
+
+// Creates a page in a space (optionally under a parent) and returns the
+// server-assigned entity (rejects on failure so the caller can surface it).
+export function createPage(spaceId: string, input: CreatePageInput): DocsThunkAction<Promise<Page>> {
+    return async (dispatch) => {
+        const page = await docsDataSource.createPage(spaceId, input);
+        dispatch({type: PageTypes.RECEIVED_PAGES, pages: [page]});
+        return page;
     };
 }
 
