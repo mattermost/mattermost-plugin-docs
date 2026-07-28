@@ -220,6 +220,57 @@ func IsValidImportHash(s string) bool {
 	return s == "" || hexSHA256.MatchString(s)
 }
 
+// ImportTargetRequest is the caller-supplied target of an import. The request — never a value from
+// the bundle — chooses the destination: bundle team values are advisory metadata only.
+type ImportTargetRequest struct {
+	Kind ImportTargetKind `json:"kind"`
+	// SpaceId is required when Kind is "existing" and must be absent otherwise. The Space's team is
+	// derived from the Space itself, never from the request.
+	SpaceId string `json:"space_id,omitempty"`
+	// TeamId is required when Kind is "new" and must be absent otherwise.
+	TeamId string `json:"team_id,omitempty"`
+}
+
+// ImportUploadRequest is the JSON `request` part of the multipart upload. The new-Space title and
+// description are deliberately not accepted here: inspection reads the bundle defaults and
+// confirmation supplies the final, user-edited values.
+type ImportUploadRequest struct {
+	Target ImportTargetRequest `json:"target"`
+}
+
+// IsValid checks that the target names exactly the one id its kind requires.
+func (r *ImportTargetRequest) IsValid() *mmmodel.AppError {
+	where := "ImportTargetRequest.IsValid"
+	switch r.Kind {
+	case ImportTargetExisting:
+		if !mmmodel.IsValidId(r.SpaceId) {
+			return mmmodel.NewAppError(where, "model.import_target.is_valid.space_id.app_error", nil, "", http.StatusBadRequest)
+		}
+		if r.TeamId != "" {
+			return mmmodel.NewAppError(where, "model.import_target.is_valid.team_id_not_allowed.app_error", nil, "", http.StatusBadRequest)
+		}
+	case ImportTargetNew:
+		if !mmmodel.IsValidId(r.TeamId) {
+			return mmmodel.NewAppError(where, "model.import_target.is_valid.team_id.app_error", nil, "", http.StatusBadRequest)
+		}
+		if r.SpaceId != "" {
+			return mmmodel.NewAppError(where, "model.import_target.is_valid.space_id_not_allowed.app_error", nil, "", http.StatusBadRequest)
+		}
+	default:
+		return mmmodel.NewAppError(where, "model.import_target.is_valid.kind.app_error", nil, "", http.StatusBadRequest)
+	}
+	return nil
+}
+
+// Acknowledgement keys the confirmation request must set (plan §17). The set a given job requires is
+// returned to the client rather than assumed, so a client never has to infer which apply.
+const (
+	ImportAckNewSpaceMetadata = "confirm_new_space_metadata"
+	ImportAckPageOnlyPartial  = "page_only_partial_import"
+	ImportAckWidenRestricted  = "widen_restricted_pages"
+	ImportAckReimportExisting = "reimport_existing_pages"
+)
+
 // ImportSource identifies one Confluence Space chosen by a user within one target Docs Space. It —
 // not organization id or space key — scopes page mappings (DOCS_ImportSource).
 type ImportSource struct {

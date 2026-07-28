@@ -20,6 +20,13 @@ const fsModeSymlink = fs.ModeSymlink
 // First-release archive/content limits. Kept as named constants (not magic numbers in handlers)
 // so the upload handler and the archive inspector share one source of truth.
 const (
+	// MaxBundleUploadBytes bounds the compressed archive a client may upload.
+	MaxBundleUploadBytes = 250 * 1024 * 1024
+	// MaxMultipartOverheadBytes is the slack added to MaxBundleUploadBytes when capping the whole
+	// multipart request body, covering part headers, boundaries, and the request JSON part.
+	MaxMultipartOverheadBytes = 1024 * 1024
+	// MaxRequestPartBytes bounds the JSON `request` part of the multipart upload.
+	MaxRequestPartBytes = 64 * 1024
 	// MaxArchiveEntries bounds the number of entries in the ZIP central directory.
 	MaxArchiveEntries = 25_000
 	// MaxManifestBytes bounds the decompressed import-manifest.json.
