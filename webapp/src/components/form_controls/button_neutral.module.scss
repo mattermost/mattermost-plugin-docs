@@ -18,5 +18,9 @@
 :global(.btn.btn-icon.btn-quaternary.btn-force-hover),
 :global(.btn.btn-quaternary.docs-btn-neutral:hover),
 :global(.btn.btn-quaternary.docs-btn-neutral.btn-force-hover) {
+
+    // btn-quaternary hovers with an accent-blue wash; neutral toolbar buttons
+    // use the grey channel-header hover instead.
+    background: rgba(var(--center-channel-color-rgb), 0.08);
     color: var(--center-channel-color);
 }
