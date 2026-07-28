@@ -235,6 +235,40 @@ func (s *Service) RequireSpaceAdminOrSysadmin(where string, space *model.Space, 
 	return existenceHidingForbidden(where)
 }
 
+// requirePageWriteFrom runs the auto-join pre-step for perm and then gates on it, the shared tail
+// of every page-write authorization on an already-resolved read.
+func (s *Service) requirePageWriteFrom(where string, space *model.Space, userID string, perm *mmmodel.Permission, admittedVia ReadResolution) *mmmodel.AppError {
+	if _, appErr := s.AutoJoinIfDefaultGranted(space, userID, admittedVia, perm, nil); appErr != nil {
+		return appErr
+	}
+	return s.RequireSpacePagePermissionFrom(where, space, userID, perm, admittedVia)
+}
+
+// RequireSpaceDraftWrite gates a draft mutation on the caller holding either page-creation or
+// page-edit authority in the space. A draft is a pending page private to its author, so this
+// establishes only that the caller may contribute pages here at all; the exact permission the
+// content needs is enforced at publish (RequireSpacePublish), the point where the draft becomes
+// state other users can see. Checking the looser pair here also keeps autosave off the page-liveness
+// lookup that the precise choice would require.
+func (s *Service) RequireSpaceDraftWrite(where string, space *model.Space, userID string, admittedVia ReadResolution) *mmmodel.AppError {
+	if appErr := s.requirePageWriteFrom(where, space, userID, mmmodel.PermissionCreatePage, admittedVia); appErr == nil {
+		return nil
+	}
+	return s.requirePageWriteFrom(where, space, userID, mmmodel.PermissionEditPage, admittedVia)
+}
+
+// RequireSpacePublish gates publishing a draft on the permission its target actually needs:
+// create_page when the draft becomes a new page, edit_page when it updates a live one. isNewPage
+// comes from the publish path's own classification of the target row, so the decision is made
+// where that fact already exists rather than costing the handler a second lookup.
+func (s *Service) RequireSpacePublish(where string, space *model.Space, userID string, admittedVia ReadResolution, isNewPage bool) *mmmodel.AppError {
+	perm := mmmodel.PermissionEditPage
+	if isNewPage {
+		perm = mmmodel.PermissionCreatePage
+	}
+	return s.requirePageWriteFrom(where, space, userID, perm, admittedVia)
+}
+
 // WouldDefaultGrant reports whether space's current default capability set (the scheme's
 // generated user role) grants perm to a plain member — the auto-join admission test. Channel
 // without a scheme (ErrNotFound) reports false, not an error.

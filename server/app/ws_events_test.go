@@ -187,7 +187,7 @@ func TestServiceUpdatePageDraft_PublishesPresenceEvent(t *testing.T) {
 	space := mustCreateSpace(t, h.store, h.db, channelID)
 
 	// Use a published page so UpdatePageDraft takes the channel-broadcast path.
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+	page := publishNewPage(t, h, space, userID, "Doc", "v1")
 
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc",
@@ -219,7 +219,7 @@ func TestServiceUpdatePageDraft_PresenceBroadcastThrottled(t *testing.T) {
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, h.db, channelID)
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+	page := publishNewPage(t, h, space, userID, "Doc", "v1")
 
 	presenceBroadcasts := func() int {
 		n := 0
@@ -256,7 +256,7 @@ func TestServicePublishPageDraft_PublishesCreatedEvent(t *testing.T) {
 	userID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, h.db, channelID)
 
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "hello")
+	page := publishNewPage(t, h, space, userID, "Doc", "hello")
 
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_created",
 		map[string]any{"page_id": page.Id, "space_id": space.Id, "parent_id": page.ParentId},
@@ -285,7 +285,7 @@ func TestServicePublishPageDraft_PublishesUpdatedEvent(t *testing.T) {
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, h.db, channelID)
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "original")
+	page := publishNewPage(t, h, space, userID, "Doc", "original")
 
 	// Start an edit session against the live page's baseline, then publish it.
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
@@ -294,7 +294,7 @@ func TestServicePublishPageDraft_PublishesUpdatedEvent(t *testing.T) {
 	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
-	republished, wasCreated, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
+	republished, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, page.Id, false, app.ReadViaMember)
 	require.Nil(t, appErr)
 	require.False(t, wasCreated, "publishing an edit to an existing page must report wasCreated=false")
 
@@ -328,7 +328,7 @@ func TestServiceDeletePageDraft_PublishesPresenceEvent(t *testing.T) {
 	space := mustCreateSpace(t, h.store, h.db, channelID)
 
 	// Use a published page so the edit-draft delete takes the channel-broadcast path.
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+	page := publishNewPage(t, h, space, userID, "Doc", "v1")
 
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc",
@@ -437,7 +437,7 @@ func TestServiceUpdatePageDraft_PresenceRateLimitSuppressesSecondBroadcast(t *te
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, h.db, channelID)
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+	page := publishNewPage(t, h, space, userID, "Doc", "v1")
 
 	// Reset call log so only the two autosaves below are counted.
 	mockAPI.Calls = nil

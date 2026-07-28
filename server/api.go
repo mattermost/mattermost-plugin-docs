@@ -231,6 +231,21 @@ func (p *Plugin) requireDeleteOwnOrAnyFrom(w http.ResponseWriter, space *model.S
 	return ok
 }
 
+// requireDraftWrite gates a draft mutation on create-or-edit authority over the space, resolving
+// the read gate first like every other write. It returns the space so the caller can pass the
+// backing channel on to the service.
+func (p *Plugin) requireDraftWrite(w http.ResponseWriter, spaceID, userID string) (*model.Space, app.ReadResolution, bool) {
+	space, resolution, ok := p.requireSpaceRead(w, spaceID, userID)
+	if !ok {
+		return nil, app.ReadDenied, false
+	}
+	if appErr := p.service.RequireSpaceDraftWrite("api.page_draft.write", space, userID, resolution); appErr != nil {
+		p.writeAppError(w, appErr)
+		return nil, app.ReadDenied, false
+	}
+	return space, resolution, true
+}
+
 // requireOwnOrAnyFrom resolves a two-tier own/any permission pair against an already-resolved
 // read, mapping a denial to the shared existence-hiding 403 under where. It reports whether the
 // caller qualified only via ownPerm, which a caller that must push ownership enforcement further

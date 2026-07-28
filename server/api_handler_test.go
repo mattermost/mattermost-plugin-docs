@@ -2422,3 +2422,98 @@ func TestHandler_OpenSpaceReadFallthrough_HiddenWithoutReadPublicChannel(t *test
 	rec = h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id, caller, nil)
 	require.Equal(t, http.StatusForbidden, rec.Code)
 }
+
+// TestHandler_DraftWritesRequireContributeCapability verifies the draft-write gate: a member who
+// can read the space but holds neither create_page nor edit_page may still read their own drafts
+// and the presence snapshot, but cannot autosave, reserve a new page id, or publish. A draft is a
+// pending page, so holding one at all requires the authority to contribute pages here.
+func TestHandler_DraftWritesRequireContributeCapability(t *testing.T) {
+	mockAPI := newEnabledMockAPI()
+	channelID := mmmodel.NewId()
+	reader := mmmodel.NewId()
+
+	// Registered before openTestPlugin so these deny-stubs win over StubDefaultSpacePermissions'
+	// permissive catch-alls (mock matching is by registration order).
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), reader).Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("HasPermissionToChannel", reader, channelID, mmmodel.PermissionReadPage).Return(true)
+	mockAPI.On("HasPermissionToChannel", reader, channelID, mmmodel.PermissionCreatePage).Return(false)
+	mockAPI.On("HasPermissionToChannel", reader, channelID, mmmodel.PermissionEditPage).Return(false)
+
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+	page := seedPage(t, h.store, space.Id, channelID, "")
+	testutil.MustAddChannelMember(t, h.db, channelID, reader)
+
+	// Seeded through the store, not the API: the publish gate must be what rejects the request,
+	// and without an existing draft publish would 404 on its idempotency guard before reaching it.
+	_, _, err := h.store.UpsertDraft(&model.Draft{
+		UserId: reader, SpaceId: space.Id, PageId: page.Id, Title: "Pending", BaseEditAt: page.EditAt,
+	}, nil, nil, nil)
+	require.NoError(t, err)
+
+	denied := []struct {
+		method string
+		path   string
+		body   any
+	}{
+		{http.MethodPost, "/api/v1/spaces/" + space.Id + "/drafts", map[string]any{"title": "D"}},
+		{http.MethodPatch, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/draft", map[string]any{"title": "D"}},
+		{http.MethodPost, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/draft/publish", nil},
+	}
+	for _, tc := range denied {
+		rec := h.do(t, tc.method, tc.path, reader, tc.body)
+		require.Equal(t, http.StatusForbidden, rec.Code, "expected 403 for %s %s", tc.method, tc.path)
+	}
+
+	// Reads stay open to a plain reader: the draft routes are own-scoped in the store, so reading
+	// carries no exposure beyond the space read the caller already holds.
+	allowed := []string{
+		"/api/v1/spaces/" + space.Id + "/drafts",
+		"/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/active-editors",
+	}
+	for _, path := range allowed {
+		rec := h.do(t, http.MethodGet, path, reader, nil)
+		require.Equal(t, http.StatusOK, rec.Code, "expected 200 for GET %s", path)
+	}
+}
+
+// TestHandler_PublishGatesOnTargetKind verifies that publish resolves its permission from the
+// target the draft lands on, not from the route: a member holding create_page but not edit_page
+// may publish a brand-new page, and is refused when the same call would overwrite a page that is
+// already live. The distinction is derived inside PublishPageDraft, where the target row is
+// classified.
+func TestHandler_PublishGatesOnTargetKind(t *testing.T) {
+	mockAPI := newEnabledMockAPI()
+	channelID := mmmodel.NewId()
+	author := mmmodel.NewId()
+
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), author).Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("HasPermissionToChannel", author, channelID, mmmodel.PermissionReadPage).Return(true)
+	mockAPI.On("HasPermissionToChannel", author, channelID, mmmodel.PermissionCreatePage).Return(true)
+	mockAPI.On("HasPermissionToChannel", author, channelID, mmmodel.PermissionEditPage).Return(false)
+
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+	testutil.MustAddChannelMember(t, h.db, channelID, author)
+
+	// New-page path: reserve an id, autosave into it, publish. create_page alone carries this.
+	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/drafts", author, map[string]any{"title": "New"})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var reserved model.Draft
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &reserved))
+
+	rec = h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages/"+reserved.PageId+"/draft/publish", author, nil)
+	require.Equal(t, http.StatusCreated, rec.Code, "create_page must carry a new-page publish")
+	var published model.Page
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &published))
+
+	// Edit path: the same author now has a draft over the page they just published. Publishing it
+	// updates live content, which needs edit_page. base_edit_at baselines the draft against the
+	// page just published, so the publish below fails on authority rather than on a stale baseline.
+	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+reserved.PageId+"/draft", author,
+		map[string]any{"title": "Revised", "base_edit_at": published.EditAt})
+	require.Equal(t, http.StatusOK, rec.Code, "the draft write itself only needs the create-or-edit pair")
+
+	rec = h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages/"+reserved.PageId+"/draft/publish", author, nil)
+	require.Equal(t, http.StatusForbidden, rec.Code, "publishing over a live page must require edit_page")
+}

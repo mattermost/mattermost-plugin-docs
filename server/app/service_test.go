@@ -13,10 +13,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
+	"github.com/mattermost/mattermost/server/public/pluginapi"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/app"
 	"github.com/mattermost/mattermost-plugin-docs/server/internal/testutil"
@@ -51,9 +53,25 @@ func openTestService(t *testing.T) *testHarness {
 
 	s, db := testutil.OpenTestStore(t)
 
-	// nil pluginapi client: these tests seed data directly through the store and
-	// never exercise the client, so no mock is needed.
-	svc := app.New(s, nil, nil)
+	// A permissive client rather than nil: most tests here seed data through the store and never
+	// touch it, but the ones that publish a draft go through PublishPageDraft's own permission
+	// gate, which needs a wired client. The stub grants the ordinary contribute-member set, so a
+	// test asserting publish behaviour is not also asserting authorization.
+	mockAPI := &plugintest.API{}
+	t.Cleanup(func() { mockAPI.AssertExpectations(t) })
+	testutil.StubDefaultSpacePermissions(mockAPI)
+	mockAPI.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
+	mockAPI.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
+	// With a client wired, the WS publishes and channel side-effects these paths perform are no
+	// longer no-ops. Tests that assert on specific events register their own expectations against
+	// their own mock.
+	mockAPI.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	mockAPI.On("GetChannelMembers", mock.Anything, mock.AnythingOfType("int"), mock.AnythingOfType("int")).
+		Return(mmmodel.ChannelMembers{}, nil).Maybe()
+	mockAPI.On("DeleteChannel", mock.Anything).Return(nil).Maybe()
+	mockAPI.On("RestoreChannel", mock.Anything).Return(nil).Maybe()
+	mockAPI.On("GetChannelOfType", mock.Anything, mock.Anything).Return((*mmmodel.Channel)(nil), nil).Maybe()
+	svc := app.New(s, nil, pluginapi.NewClient(mockAPI, nil))
 
 	return &testHarness{svc: svc, store: s, db: db}
 }
