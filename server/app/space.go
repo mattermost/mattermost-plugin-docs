@@ -499,7 +499,7 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, caps []string,
 		return nil
 	})
 	if lockErr != nil {
-		return nil, lockAppError("SetSpaceDefaultCapabilities", lockErr)
+		return nil, membershipLockAppError("SetSpaceDefaultCapabilities", lockErr)
 	}
 
 	fresh, getErr := s.GetSpace(space.Id)
@@ -590,10 +590,10 @@ func normalizeAndValidateSpacePatch(where string, patch *model.SpacePatch) *mmmo
 // UpdateSpace applies the non-nil fields of patch onto the space and saves it. A non-nil
 // field (including an empty string) overwrites the current value, so a field can be cleared.
 // Optimistic-locked on expectedUpdateAt: the caller passes the UpdateAt it last read, and a stale
-// baseline yields a conflict unless force overrides it with last-write-wins; a nil
-// expectedUpdateAt without force is rejected. The store merges the patch into the current row,
-// so a forced update overwrites only the fields the patch supplies — concurrent changes to
-// other fields survive. space is the caller's already-fetched record (from its
+// baseline yields a conflict unless force overrides the check and applies the update anyway; a
+// nil expectedUpdateAt without force is rejected. The store merges the patch into the current
+// row, so a forced update overwrites only the fields the patch supplies — concurrent changes to
+// other fields are preserved. space is the caller's already-fetched record (from its
 // membership gate); only its Id is used here.
 //
 // A patch that changes ViewAccess requires RequireSpaceAdminOrSysadmin against the live row and is
@@ -684,7 +684,7 @@ func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expec
 		return nil
 	})
 	if lockErr != nil {
-		return nil, lockAppError("UpdateSpace", lockErr)
+		return nil, membershipLockAppError("UpdateSpace", lockErr)
 	}
 	return result, nil
 }

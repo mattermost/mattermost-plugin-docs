@@ -712,7 +712,7 @@ func TestHandler_UpdatePage_BaselineRequired(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
 	require.Equal(t, "app.optimistic_lock.baseline_required.app_error", appErr.Id)
 
-	// force substitutes for the baseline (last-write-wins).
+	// force substitutes for the baseline, so the update applies over the stored row.
 	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, map[string]any{
 		"body":        `{"type":"doc","content":[]}`,
 		"search_text": "text",
@@ -1196,7 +1196,7 @@ func TestHandler_RestorePage_WrongSpaceIs404(t *testing.T) {
 
 // TestHandler_SpaceMembershipRequired verifies that all space- and page-scoped handlers
 // reject callers who are not members of a private space's backing channel with 403 Forbidden.
-// Private, not the default open fixture: an open space deliberately admits non-member reads
+// Private, not the default open fixture: an open space deliberately allows non-member reads
 // and auto-joins non-member default-granted writes, so this membership-required
 // assertion only holds on a private space.
 func TestHandler_SpaceMembershipRequired(t *testing.T) {
@@ -2267,7 +2267,7 @@ func TestHandler_UpdateSpace_ViewAccessRequiresAdmin(t *testing.T) {
 }
 
 // TestHandler_UpdateSpace_ViewAccessForceRejected verifies force=true is rejected on a ViewAccess
-// change: the exposure-policy escalation check must always run, never last-write-wins.
+// change: the exposure-policy escalation check must always run, never be skipped by force.
 func TestHandler_UpdateSpace_ViewAccessForceRejected(t *testing.T) {
 	mockAPI := newEnabledMockAPI()
 	userID := mmmodel.NewId()

@@ -160,8 +160,9 @@ func waitForPhase2Migration(ctx context.Context, adminClient *mmmodel.Client4) e
 
 // resolveBundlePath globs dist/ (relative to this package's directory) for the built plugin
 // bundle, failing with a clear pointer to `make dist` when it is absent. Several bundles can sit
-// there (a version bump, or a stale host-only bundle from `make server`), so the newest by
-// modification time wins — the same one `make test-e2e` inspects before deciding to rebuild.
+// there (a version bump, or a stale host-only bundle from `make server`), so the one with the
+// newest modification time is selected — the same one `make test-e2e` inspects before deciding
+// to rebuild.
 func resolveBundlePath() (string, error) {
 	matches, err := filepath.Glob("../../dist/" + pluginID + "-*.tar.gz")
 	if err != nil {

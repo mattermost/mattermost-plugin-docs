@@ -25,8 +25,8 @@ var grantableCapabilities = []string{
 }
 
 // TestRolesForCapabilities_CapabilitiesFromMember_RoundTrip verifies that every subset of the
-// grantable capabilities survives RolesForCapabilities -> (core persistence, which drops the base
-// scheme-user token and keeps only the atomic role names) -> CapabilitiesFromMember unchanged.
+// grantable capabilities is unchanged after RolesForCapabilities -> (core persistence, which
+// drops the base scheme-user token and keeps only the atomic role names) -> CapabilitiesFromMember.
 func TestRolesForCapabilities_CapabilitiesFromMember_RoundTrip(t *testing.T) {
 	const schemeUserRole = "generated_scheme_user_role"
 

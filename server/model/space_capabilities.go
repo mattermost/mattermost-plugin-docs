@@ -24,8 +24,8 @@ var (
 	CapabilityCommentPage   = mmmodel.PermissionCommentPage.Id
 	CapabilityEditPage      = mmmodel.PermissionEditPage.Id
 	CapabilityDeleteOwnPage = mmmodel.PermissionDeleteOwnPage.Id
-	// CapabilityDeletePage (delete-any) is never independently grantable — it rides only the
-	// admin capability (SchemeAdmin), never an ExplicitRoles atomic role.
+	// CapabilityDeletePage (delete-any) is never independently grantable — it is granted only by
+	// the admin capability (SchemeAdmin), never by an ExplicitRoles atomic role.
 	CapabilityDeletePage = mmmodel.PermissionDeletePage.Id
 	// CapabilityAdminSpace is the admin capability: a member-grant target (toggles SchemeAdmin),
 	// but never a valid space-default capability.

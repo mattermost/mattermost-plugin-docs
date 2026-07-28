@@ -123,10 +123,10 @@ func (s *Store) GetSpacesForTeam(teamID, userID string, callerHasOpenFallthrough
 
 // UpdateSpace applies patch to a live space's mutable fields (Title, Description, Icon,
 // Props). The patch is merged into the row read under lock, so fields the patch leaves nil
-// keep any concurrent writer's value rather than being clobbered by the caller's stale
-// snapshot. expectedUpdateAt is the optimistic-lock baseline (first-one-wins): a mismatch
-// returns ErrConflict. Passing force skips the check (last-write-wins), but the merge into
-// the locked row still applies.
+// keep any concurrent writer's value rather than being overwritten by the caller's stale
+// snapshot. expectedUpdateAt is the optimistic-lock baseline: a mismatch returns ErrConflict,
+// so the first update to commit is the one kept. Passing force skips that check and applies the
+// caller's update over whatever is stored, but the merge into the locked row still applies.
 func (s *Store) UpdateSpace(spaceID string, patch *model.SpacePatch, expectedUpdateAt int64, force bool) (_ *model.Space, err error) {
 	if spaceID == "" {
 		return nil, &ErrInvalidInput{Entity: "Space", Field: "Id", Value: spaceID}

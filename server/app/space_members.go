@@ -122,7 +122,8 @@ func (s *Service) hasOtherAuthorizedAdmin(space *model.Space, excludeUserID stri
 }
 
 // SetSpaceMemberCapabilities replaces targetUserID's per-member granted capability set. Callers
-// must already hold manage-tier authority over the space (see RequireSpaceManage); this method
+// must already hold manage-tier authority over the space (RequireSpaceAdminOrTeamPerm with
+// manage_space); this method
 // additionally enforces the self/admin escalation guard and the last-admin invariant. Guest
 // members are rejected: they stay read-only via the scheme's guest role. actingUserID is the
 // caller, used only to decide the self-escalation guard.

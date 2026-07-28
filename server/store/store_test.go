@@ -655,7 +655,7 @@ func TestUpdateSpaceForceAndDefault(t *testing.T) {
 	saved, err := s.CreateSpace(newSpace(mmmodel.NewId()))
 	require.NoError(t, err)
 
-	// A missing baseline (UpdateAt == 0) must conflict by default, not last-write-wins.
+	// A missing baseline (UpdateAt == 0) must conflict by default, not overwrite the stored row.
 	noBaselineTitle := "No baseline"
 	_, conflictErr := s.UpdateSpace(saved.Id, &model.SpacePatch{Title: &noBaselineTitle}, 0, false)
 	require.Error(t, conflictErr)
@@ -670,7 +670,7 @@ func TestUpdateSpaceForceAndDefault(t *testing.T) {
 
 // TestUpdateSpaceForceMergesPatch verifies that a forced update merges the patch into the row
 // read under lock: fields the patch leaves nil keep a concurrent writer's value instead of
-// being clobbered by the forcing caller's stale snapshot.
+// being overwritten by the forcing caller's stale snapshot.
 func TestUpdateSpaceForceMergesPatch(t *testing.T) {
 	s := openTestDB(t)
 
@@ -686,7 +686,7 @@ func TestUpdateSpaceForceMergesPatch(t *testing.T) {
 	forced, forceErr := s.UpdateSpace(saved.Id, &model.SpacePatch{Title: &title}, saved.UpdateAt, true)
 	require.NoError(t, forceErr)
 	require.Equal(t, "forced title", forced.Title)
-	require.Equal(t, "concurrent description", forced.Description, "force must not clobber fields the patch omits")
+	require.Equal(t, "concurrent description", forced.Description, "force must not overwrite fields the patch omits")
 	require.Greater(t, forced.UpdateAt, afterConcurrent.UpdateAt)
 }
 
@@ -1281,7 +1281,7 @@ func TestRestorePageAppendsAtEndOfSiblingGroup(t *testing.T) {
 }
 
 // TestDeleteRestoreAdvancesEditAt verifies the CAS token (EditAt) advances across a delete+restore
-// cycle, so a client holding the pre-delete token still hits a conflict instead of clobbering state.
+// cycle, so a client holding the pre-delete token still hits a conflict instead of overwriting state.
 func TestDeleteRestoreAdvancesEditAt(t *testing.T) {
 	s := openTestDB(t)
 
@@ -1552,7 +1552,7 @@ func TestUpdatePageForceConcurrentMonotonic(t *testing.T) {
 
 // TestUpdatePageForcePreservesUnpatchedFields verifies that a force save merges the patch into
 // the live row under the lock, so a field the patch leaves nil keeps a concurrent edit instead
-// of being clobbered by a stale snapshot. A title-only force save must not revert a body edit
+// of being overwritten by a stale snapshot. A title-only force save must not revert a body edit
 // that landed after the caller's baseEditAt.
 func TestUpdatePageForcePreservesUnpatchedFields(t *testing.T) {
 	s := openTestDB(t)
@@ -1577,7 +1577,7 @@ func TestUpdatePageForcePreservesUnpatchedFields(t *testing.T) {
 	forced, err := s.UpdatePage(created.Id, created.SpaceId, &model.PagePatch{Title: &forcedTitle}, created.EditAt, true, userID)
 	require.NoError(t, err)
 	require.Equal(t, forcedTitle, forced.Title)
-	require.Equal(t, concurrentBody, forced.Body, "force save must not clobber the concurrent body edit")
+	require.Equal(t, concurrentBody, forced.Body, "force save must not overwrite the concurrent body edit")
 
 	// Confirm it persisted, not just the returned struct.
 	persisted, err := s.GetPage(created.Id, false)

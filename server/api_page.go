@@ -23,13 +23,13 @@ const maxPageBodyBytes = 8 << 20 // 8 MiB
 // IDs, booleans, and timestamps — no content fields.
 const maxPageStructBodyBytes = 4 * 1024 // 4 KiB
 
-// resolveTargetSpaceRead validates a target_space_id carried in the request body and resolves the
+// requireTargetSpaceRead validates a target_space_id carried in the request body and resolves the
 // caller's read access to it. Unlike the {space_id} in the URL path — which every handler checks
 // up front — a body-supplied ID only surfaces after decoding, so it is checked inline here. It
 // writes the error response and returns ok=false on failure. Callers pass the invalid-ID
 // rejection as a pre-built AppError with a string-literal ID so the i18n extraction tool can
 // discover the message key.
-func (p *Plugin) resolveTargetSpaceRead(w http.ResponseWriter, invalidIDErr *mmmodel.AppError, targetSpaceID, userID string) (*model.Space, app.ReadResolution, bool) {
+func (p *Plugin) requireTargetSpaceRead(w http.ResponseWriter, invalidIDErr *mmmodel.AppError, targetSpaceID, userID string) (*model.Space, app.ReadResolution, bool) {
 	if !mmmodel.IsValidId(targetSpaceID) {
 		p.writeAppError(w, invalidIDErr)
 		return nil, app.ReadDenied, false
@@ -45,7 +45,7 @@ func (p *Plugin) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !p.gatePageWrite(w, space, userID, mmmodel.PermissionCreatePage) {
+	if !p.requirePageWrite(w, space, userID, mmmodel.PermissionCreatePage) {
 		return
 	}
 
@@ -90,7 +90,7 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !p.gatePageWrite(w, space, userID, mmmodel.PermissionEditPage) {
+	if !p.requirePageWrite(w, space, userID, mmmodel.PermissionEditPage) {
 		return
 	}
 
@@ -129,7 +129,7 @@ func (p *Plugin) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
-	if !p.gateDeleteOwnOrAny(w, space, userID, page.UserId, read) {
+	if !p.requireDeleteOwnOrAnyFrom(w, space, userID, page.UserId, read) {
 		return
 	}
 	if appErr := p.service.DeletePage(vars["page_id"], vars["space_id"], userID); appErr != nil {
@@ -153,7 +153,7 @@ func (p *Plugin) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
-	if !p.gateDeleteOwnOrAny(w, space, userID, page.UserId, read) {
+	if !p.requireDeleteOwnOrAnyFrom(w, space, userID, page.UserId, read) {
 		return
 	}
 	restored, appErr := p.service.RestorePage(vars["page_id"], vars["space_id"], userID)
@@ -176,7 +176,7 @@ func (p *Plugin) handleMovePage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !p.gatePageWrite(w, space, userID, mmmodel.PermissionEditPage) {
+	if !p.requirePageWrite(w, space, userID, mmmodel.PermissionEditPage) {
 		return
 	}
 
@@ -223,12 +223,12 @@ func (p *Plugin) handleDuplicatePage(w http.ResponseWriter, r *http.Request) {
 	targetSpace, targetRead := sourceSpace, sourceRead
 	if req.TargetSpaceId != "" && req.TargetSpaceId != vars["space_id"] {
 		var targetOK bool
-		targetSpace, targetRead, targetOK = p.resolveTargetSpaceRead(w, mmmodel.NewAppError("handleDuplicatePage", "api.page.duplicate.invalid_target_space_id.app_error", nil, "", http.StatusBadRequest), req.TargetSpaceId, userID)
+		targetSpace, targetRead, targetOK = p.requireTargetSpaceRead(w, mmmodel.NewAppError("handleDuplicatePage", "api.page.duplicate.invalid_target_space_id.app_error", nil, "", http.StatusBadRequest), req.TargetSpaceId, userID)
 		if !targetOK {
 			return
 		}
 	}
-	if !p.gatePageWriteFrom(w, targetSpace, userID, mmmodel.PermissionCreatePage, targetRead) {
+	if !p.requirePageWriteFrom(w, targetSpace, userID, mmmodel.PermissionCreatePage, targetRead) {
 		return
 	}
 
@@ -288,7 +288,7 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 	targetSpace, targetRead := sourceSpace, sourceRead
 	if req.TargetSpaceId != vars["space_id"] {
 		var targetOK bool
-		targetSpace, targetRead, targetOK = p.resolveTargetSpaceRead(w, mmmodel.NewAppError("handleMovePageToSpace", "api.page.move_to_space.invalid_target_space_id.app_error", nil, "", http.StatusBadRequest), req.TargetSpaceId, userID)
+		targetSpace, targetRead, targetOK = p.requireTargetSpaceRead(w, mmmodel.NewAppError("handleMovePageToSpace", "api.page.move_to_space.invalid_target_space_id.app_error", nil, "", http.StatusBadRequest), req.TargetSpaceId, userID)
 		if !targetOK {
 			return
 		}
@@ -296,10 +296,10 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 	// Source-side remove-class gate: delete_page (any) if held, else delete_own_page, which
 	// requires the caller own every page in the moved subtree (passed down as requiredOwnerID).
 	// No source auto-join —
-	// only the target side admits a non-member write. Resolved before the target gate below, which
+	// only the target side allows a non-member write. Resolved before the target gate below, which
 	// can join the caller to the target space: a caller denied here must not be left holding a
 	// membership the rejected request created.
-	ownOnly, ok := p.resolveOwnOrAnyOrDeny(w, "handleMovePageToSpace", sourceSpace, userID,
+	ownOnly, ok := p.requireOwnOrAnyFrom(w, "handleMovePageToSpace", sourceSpace, userID,
 		"api.page.move_to_space", mmmodel.PermissionDeletePage,
 		"api.page.move_to_space.own", mmmodel.PermissionDeleteOwnPage, true, sourceRead)
 	if !ok {
@@ -310,7 +310,7 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 		requiredOwnerID = userID
 	}
 
-	if !p.gatePageWriteFrom(w, targetSpace, userID, mmmodel.PermissionCreatePage, targetRead) {
+	if !p.requirePageWriteFrom(w, targetSpace, userID, mmmodel.PermissionCreatePage, targetRead) {
 		return
 	}
 

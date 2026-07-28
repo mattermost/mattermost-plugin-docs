@@ -12,7 +12,7 @@ import (
 // "custom_<pluginid>_" to each name on the wire, so the names carry no redundant plugin prefix.
 //
 // Every event is scoped to the space's backing channel. Reads are not purely
-// membership-gated (an open space also admits non-member reads via the team read_public_channel
+// membership-gated (an open space also allows non-member reads via the team read_public_channel
 // fall-through, and the team space list includes open spaces the caller hasn't joined), but WS
 // delivery deliberately stays channel-scoped: a non-member reader of an open space receives no
 // live updates until a write auto-joins them. This is narrower than the read set — an accepted

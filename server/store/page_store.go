@@ -166,7 +166,7 @@ func (s *Store) GetPage(pageID string, includeDeleted bool) (*model.Page, error)
 // When force is false it compare-and-swaps on EditAt, returning ErrConflict if a concurrent
 // writer has advanced it. When force is true the CAS is skipped, but the patch is still merged
 // into the current row, so fields the patch leaves untouched keep any concurrent edit rather
-// than being clobbered by a stale snapshot. lastModifiedBy records the editor.
+// than being overwritten by a stale snapshot. lastModifiedBy records the editor.
 func (s *Store) UpdatePage(pageID, spaceID string, patch *model.PagePatch, baseEditAt int64, force bool, lastModifiedBy string) (_ *model.Page, err error) {
 	if pageID == "" {
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "Id", Value: pageID}

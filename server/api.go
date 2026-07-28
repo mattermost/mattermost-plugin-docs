@@ -23,7 +23,7 @@ import (
 //
 // Authorization: every route requires an authenticated user via MattermostAuthorizationRequired.
 // Every space- and page-scoped handler additionally gates on the capability-based RBAC model:
-// requireSpaceRead/requireSpacePagePerm for reads, gatePageWrite/gateDeleteOwnOrAny for page
+// requireSpaceRead/requireSpacePagePerm for reads, requirePageWrite/requireDeleteOwnOrAnyFrom for page
 // writes (with the open-space auto-join pre-step), requireSpaceManage for membership management
 // and general space-field updates, and requireSpaceAdmin/requireSpaceDelete for the space-wide
 // exposure-policy and delete/restore operations. A require* helper resolves the space by id and
@@ -137,7 +137,7 @@ func (p *Plugin) requireSpaceRead(w http.ResponseWriter, spaceID, userID string)
 	if !ok {
 		return nil, app.ReadDenied, false
 	}
-	resolution, ok := p.resolveSpaceReadOrDeny(w, "api.space.read", space, userID)
+	resolution, ok := p.requireSpaceReadFrom(w, "api.space.read", space, userID)
 	if !ok {
 		return nil, app.ReadDenied, false
 	}
@@ -145,18 +145,18 @@ func (p *Plugin) requireSpaceRead(w http.ResponseWriter, spaceID, userID string)
 }
 
 // requireSpacePagePerm gates a route on a single page-scoped permission (read-only; write
-// permissions go through gatePageWrite so the auto-join pre-step can run first).
+// permissions go through requirePageWrite so the auto-join pre-step can run first).
 func (p *Plugin) requireSpacePagePerm(w http.ResponseWriter, spaceID, userID string, perm *mmmodel.Permission) (*model.Space, bool) {
 	return p.requireSpaceGate(w, spaceID, false, func(space *model.Space) *mmmodel.AppError {
 		return p.service.RequireSpacePagePermission("api.space.page", space, userID, perm)
 	})
 }
 
-// requireSpaceManage gates a route on Service.RequireSpaceManage: sysadmin, channel admin_space, or
+// requireSpaceManage gates a route on manage-tier authority: sysadmin, channel admin_space, or
 // (once the read resolver has already admitted the caller) team manage_space.
 func (p *Plugin) requireSpaceManage(w http.ResponseWriter, spaceID, userID string) (*model.Space, bool) {
 	return p.requireSpaceGate(w, spaceID, false, func(space *model.Space) *mmmodel.AppError {
-		return p.service.RequireSpaceManage("api.space.manage", space, userID)
+		return p.service.RequireSpaceAdminOrTeamPerm("api.space.manage", space, userID, mmmodel.PermissionManageSpace)
 	})
 }
 
@@ -174,25 +174,25 @@ func (p *Plugin) requireSpaceAdmin(w http.ResponseWriter, spaceID, userID string
 // gate then evaluate against that soft-deleted record.
 func (p *Plugin) requireSpaceDelete(w http.ResponseWriter, spaceID, userID string, includeDeleted bool) (*model.Space, bool) {
 	return p.requireSpaceGate(w, spaceID, includeDeleted, func(space *model.Space) *mmmodel.AppError {
-		return p.service.RequireSpaceDeleteAuthority("api.space.delete", space, userID)
+		return p.service.RequireSpaceAdminOrTeamPerm("api.space.delete", space, userID, mmmodel.PermissionDeleteSpace)
 	})
 }
 
-// gatePageWrite resolves the read gate first — a caller cannot be granted write authority over a
+// requirePageWrite resolves the read gate first — a caller cannot be granted write authority over a
 // space it cannot read — then runs the auto-join pre-step when that read was admitted only via the
 // non-member open-space fall-through, then re-resolves perm as a (possibly just-joined) member.
 // Writes the error response and returns false on any denial.
-func (p *Plugin) gatePageWrite(w http.ResponseWriter, space *model.Space, userID string, perm *mmmodel.Permission) bool {
-	resolution, ok := p.resolveSpaceReadOrDeny(w, "gatePageWrite", space, userID)
+func (p *Plugin) requirePageWrite(w http.ResponseWriter, space *model.Space, userID string, perm *mmmodel.Permission) bool {
+	resolution, ok := p.requireSpaceReadFrom(w, "requirePageWrite", space, userID)
 	if !ok {
 		return false
 	}
-	return p.gatePageWriteFrom(w, space, userID, perm, resolution)
+	return p.requirePageWriteFrom(w, space, userID, perm, resolution)
 }
 
-// gatePageWriteFrom is gatePageWrite for a caller that has already resolved the read gate for the
+// requirePageWriteFrom is requirePageWrite for a caller that has already resolved the read gate for the
 // same space and user, so that resolution is not derived a second time.
-func (p *Plugin) gatePageWriteFrom(w http.ResponseWriter, space *model.Space, userID string, perm *mmmodel.Permission, resolution app.ReadResolution) bool {
+func (p *Plugin) requirePageWriteFrom(w http.ResponseWriter, space *model.Space, userID string, perm *mmmodel.Permission, resolution app.ReadResolution) bool {
 	if _, appErr := p.service.AutoJoinIfDefaultGranted(space, userID, resolution, perm, nil); appErr != nil {
 		p.writeAppError(w, appErr)
 		return false
@@ -204,26 +204,26 @@ func (p *Plugin) gatePageWriteFrom(w http.ResponseWriter, space *model.Space, us
 	return true
 }
 
-// gateDeleteOwnOrAny gates a delete-class page operation: delete_page (any), or delete_own_page
+// requireDeleteOwnOrAnyFrom gates a delete-class page operation: delete_page (any), or delete_own_page
 // when ownerID == userID. The auto-join pre-step runs against delete_own_page, gated on
 // ownership, since only that path can admit a non-member write. resolution is the read gate the
 // caller has already resolved for the same space and user, so it is not re-derived here.
-func (p *Plugin) gateDeleteOwnOrAny(w http.ResponseWriter, space *model.Space, userID, ownerID string, resolution app.ReadResolution) bool {
+func (p *Plugin) requireDeleteOwnOrAnyFrom(w http.ResponseWriter, space *model.Space, userID, ownerID string, resolution app.ReadResolution) bool {
 	if _, appErr := p.service.AutoJoinIfDefaultGranted(space, userID, resolution, mmmodel.PermissionDeleteOwnPage, func() (bool, error) { return ownerID == userID, nil }); appErr != nil {
 		p.writeAppError(w, appErr)
 		return false
 	}
-	_, ok := p.resolveOwnOrAnyOrDeny(w, "gateDeleteOwnOrAny", space, userID,
+	_, ok := p.requireOwnOrAnyFrom(w, "requireDeleteOwnOrAnyFrom", space, userID,
 		"api.page.delete", mmmodel.PermissionDeletePage,
 		"api.page.delete_own", mmmodel.PermissionDeleteOwnPage, ownerID == userID, resolution)
 	return ok
 }
 
-// resolveOwnOrAnyOrDeny resolves a two-tier own/any permission pair against an already-resolved
+// requireOwnOrAnyFrom resolves a two-tier own/any permission pair against an already-resolved
 // read, mapping a denial to the shared existence-hiding 403 under where. It reports whether the
 // caller qualified only via ownPerm, which a caller that must push ownership enforcement further
 // down needs. Writes the error response and returns ok=false on failure.
-func (p *Plugin) resolveOwnOrAnyOrDeny(w http.ResponseWriter, where string, space *model.Space, userID, anyWhere string, anyPerm *mmmodel.Permission, ownWhere string, ownPerm *mmmodel.Permission, ownerMatches bool, resolution app.ReadResolution) (ownOnly, ok bool) {
+func (p *Plugin) requireOwnOrAnyFrom(w http.ResponseWriter, where string, space *model.Space, userID, anyWhere string, anyPerm *mmmodel.Permission, ownWhere string, ownPerm *mmmodel.Permission, ownerMatches bool, resolution app.ReadResolution) (ownOnly, ok bool) {
 	ownOnly, allowed, permErr := p.service.ResolveSpacePageOwnOrAny(space, userID, anyWhere, anyPerm, ownWhere, ownPerm, ownerMatches, resolution)
 	if permErr != nil {
 		p.writeAppError(w, permErr)
@@ -236,10 +236,10 @@ func (p *Plugin) resolveOwnOrAnyOrDeny(w http.ResponseWriter, where string, spac
 	return ownOnly, true
 }
 
-// resolveSpaceReadOrDeny resolves the read gate that precedes every page read and page-write gate,
+// requireSpaceReadFrom resolves the read gate that precedes every page read and page-write gate,
 // mapping a denied read to the shared existence-hiding 403. Writes the error response and returns
 // ok=false on failure.
-func (p *Plugin) resolveSpaceReadOrDeny(w http.ResponseWriter, where string, space *model.Space, userID string) (app.ReadResolution, bool) {
+func (p *Plugin) requireSpaceReadFrom(w http.ResponseWriter, where string, space *model.Space, userID string) (app.ReadResolution, bool) {
 	resolution, resErr := p.service.ResolveSpaceRead(where, space, userID)
 	if resErr != nil {
 		p.writeAppError(w, resErr)
