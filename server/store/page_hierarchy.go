@@ -27,6 +27,8 @@ var pageColListP = strings.Join(pageColumnsP, ", ")
 
 // These CTEs are built once at package init (inputs are compile-time constants) rather than on
 // every query.
+// The hierarchy walks below use WITH RECURSIVE, which squirrel cannot express, so each CTE is built
+// as a raw (parameterized) SQL string and consumed by callers that append their own SELECT.
 var (
 	pageDescendantsCTE = computeDescendantsCTE()
 

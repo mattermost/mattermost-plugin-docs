@@ -10,7 +10,6 @@ import (
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
-	"github.com/mattermost/mattermost-plugin-docs/server/app"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
@@ -186,7 +185,7 @@ func TestServiceMovePage_ErrorPaths(t *testing.T) {
 
 		// A chain of MaxPageDepth pages: the deepest has MaxPageDepth-1 ancestors, so a leaf
 		// moved under it would land at depth (MaxPageDepth-1)+2 = MaxPageDepth+1 > MaxPageDepth.
-		chain := buildPageChain(t, h.store, space.Id, channelID, userID, app.MaxPageDepth)
+		chain := buildPageChain(t, h.store, space.Id, channelID, userID, model.MaxPageDepth)
 		deepest := chain[len(chain)-1]
 		leaf := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
@@ -206,7 +205,7 @@ func TestServiceMovePage_ErrorPaths(t *testing.T) {
 		// Anchor at depth MaxPageDepth-1 (MaxPageDepth-2 ancestors): a moved page lands at
 		// (MaxPageDepth-2)+2 = MaxPageDepth (passes the per-page check), but its one child would
 		// be one deeper, MaxPageDepth+1, tripping the subtree check.
-		chain := buildPageChain(t, h.store, space.Id, channelID, userID, app.MaxPageDepth-1)
+		chain := buildPageChain(t, h.store, space.Id, channelID, userID, model.MaxPageDepth-1)
 		anchor := chain[len(chain)-1]
 
 		subtreeRoot := mustCreatePage(t, h.store, space.Id, channelID, userID, "")

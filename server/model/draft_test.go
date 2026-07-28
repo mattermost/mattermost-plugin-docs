@@ -127,6 +127,28 @@ func TestDraftIsValid(t *testing.T) {
 		require.NotNil(t, aerr)
 		require.Equal(t, "model.draft.is_valid.update_at.app_error", aerr.Id)
 	})
+
+	t.Run("negative BaseEditAt rejected", func(t *testing.T) {
+		d := validDraft()
+		d.BaseEditAt = -1
+		aerr := d.IsValid()
+		require.NotNil(t, aerr)
+		require.Equal(t, "model.draft.is_valid.base_edit_at.app_error", aerr.Id)
+	})
+
+	t.Run("zero BaseEditAt allowed", func(t *testing.T) {
+		d := validDraft()
+		d.BaseEditAt = 0
+		require.Nil(t, d.IsValid())
+	})
+}
+
+func TestDraftIsValidLastActiveAtZeroRejected(t *testing.T) {
+	d := validDraft()
+	d.LastActiveAt = 0
+	aerr := d.IsValid()
+	require.NotNil(t, aerr)
+	require.Equal(t, "model.draft.is_valid.last_active_at.app_error", aerr.Id)
 }
 
 func TestDraftPreSaveDefaults(t *testing.T) {
@@ -134,6 +156,32 @@ func TestDraftPreSaveDefaults(t *testing.T) {
 	d.PreSave()
 	require.NotZero(t, d.CreateAt)
 	require.NotZero(t, d.UpdateAt)
+	require.NotZero(t, d.LastActiveAt)
 	require.NotNil(t, d.FileIds)
 	require.NotNil(t, d.Props)
+}
+
+func TestDraftPreSavePreservesExistingCreateAt(t *testing.T) {
+	d := &model.Draft{UserId: mmmodel.NewId(), SpaceId: mmmodel.NewId(), PageId: mmmodel.NewId(), CreateAt: 12345}
+	d.PreSave()
+	require.Equal(t, int64(12345), d.CreateAt, "PreSave must not overwrite an existing CreateAt")
+}
+
+func TestDraftPreSaveTrimsTitleWhitespace(t *testing.T) {
+	d := &model.Draft{UserId: mmmodel.NewId(), SpaceId: mmmodel.NewId(), PageId: mmmodel.NewId(), Title: "  hello  "}
+	d.PreSave()
+	require.Equal(t, "hello", d.Title)
+}
+
+func TestDraftGetPropsNilReturnsEmpty(t *testing.T) {
+	d := &model.Draft{Props: nil}
+	require.NotNil(t, d.GetProps(), "GetProps must return an empty map, not nil")
+	require.Empty(t, d.GetProps())
+}
+
+func TestDraftAuditable(t *testing.T) {
+	d := validDraft()
+	d.BaseEditAt = 42
+	auditable := d.Auditable()
+	require.Equal(t, int64(42), auditable["base_edit_at"])
 }
