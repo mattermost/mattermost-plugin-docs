@@ -104,7 +104,7 @@ const PageBar = ({space, treeOpen, onTogglePages}: Props) => {
                     size='sm'
                     className={classNames('docs-btn-neutral', styles.edit)}
                 >
-                    <PencilOutlineIcon size={14}/>
+                    <PencilOutlineIcon size={18}/>
                     <FormattedMessage
                         id='docs.space.edit'
                         defaultMessage='Edit'
@@ -126,7 +126,7 @@ const PageBar = ({space, treeOpen, onTogglePages}: Props) => {
                     className='btn-icon'
                     aria-label={expandLabel}
                 >
-                    <ArrowExpandIcon size={16}/>
+                    <ArrowExpandIcon size={18}/>
                 </Button>
             </div>
         </div>
