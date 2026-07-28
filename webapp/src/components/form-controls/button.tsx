@@ -6,6 +6,10 @@ import React from 'react';
 import {Button} from '@mattermost/shared/components/button';
 import type {ButtonProps} from '@mattermost/shared/components/button';
 
+// Neutral-grey fix for `btn-icon` buttons (the shared Button is accent-only);
+// loaded as a side effect so it applies wherever these buttons render.
+import './button_icon_neutral.module.scss';
+
 // The Docs plugin avoids styled-components (its browser ESM references `process`
 // and throws in the plugin runtime), so these are plain functional wrappers that
 // bind the emphasis/variant preset.
