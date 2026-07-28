@@ -21,9 +21,13 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
-// Logger is the logging surface the service needs.
+// Logger is the logging surface the service needs. Info exists for the operator-facing audit lines
+// the importer must emit (plan §24: upload accepted/rejected, import started/finished, cleanup
+// counts) — those must be visible without turning on debug logging, unlike the Debug tracing used
+// elsewhere in the service.
 type Logger interface {
 	Debug(msg string, keyValuePairs ...any)
+	Info(msg string, keyValuePairs ...any)
 	Warn(msg string, keyValuePairs ...any)
 	Error(msg string, keyValuePairs ...any)
 }
@@ -31,6 +35,7 @@ type Logger interface {
 type noopLogger struct{}
 
 func (noopLogger) Debug(_ string, _ ...any) {}
+func (noopLogger) Info(_ string, _ ...any)  {}
 func (noopLogger) Warn(_ string, _ ...any)  {}
 func (noopLogger) Error(_ string, _ ...any) {}
 
