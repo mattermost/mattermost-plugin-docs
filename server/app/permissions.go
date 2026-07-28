@@ -269,10 +269,10 @@ func (s *Service) RequireSpacePublish(where string, space *model.Space, userID s
 	return s.requirePageWriteFrom(where, space, userID, perm, admittedVia)
 }
 
-// WouldDefaultGrant reports whether space's current default capability set (the scheme's
+// DefaultRolesGrantPermission reports whether space's current default capability set (the scheme's
 // generated user role) grants perm to a plain member — the auto-join admission test. Channel
 // without a scheme (ErrNotFound) reports false, not an error.
-func (s *Service) WouldDefaultGrant(space *model.Space, perm *mmmodel.Permission) (bool, error) {
+func (s *Service) DefaultRolesGrantPermission(space *model.Space, perm *mmmodel.Permission) (bool, error) {
 	roles, err := s.store.GetSchemeRolesForChannel(space.ChannelId)
 	if err != nil {
 		if store.IsErrNotFound(err) {
@@ -328,7 +328,7 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 		if resolution != ReadViaOpenFallthrough {
 			return nil // Re-validation failed: e.g. the space flipped private concurrently.
 		}
-		granted, grantErr := s.WouldDefaultGrant(fresh, perm)
+		granted, grantErr := s.DefaultRolesGrantPermission(fresh, perm)
 		if grantErr != nil {
 			return grantErr
 		}
