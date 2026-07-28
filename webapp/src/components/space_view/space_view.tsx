@@ -1,6 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import classNames from 'classnames';
 import {useSpaceStats} from 'hooks/spaces';
 import React, {useCallback, useState} from 'react';
 import {FormattedMessage} from 'react-intl';
@@ -16,10 +17,11 @@ import PageTreePanel from './page_tree/page_tree_panel';
 import SpaceHeader from './space_header';
 import styles from './space_view.module.scss';
 
-// Main content for a routed space: the space header spans the full width; a
-// flex row holds the page tree panel, the content column (page header over the
-// front-door hero), and the optional space info panel as a right column. The
-// page body is a placeholder until the editor is mounted.
+// Main content for a routed space: the space header and page header stack
+// full-width at the top; below them a flex row holds the pages sidebar (which
+// slides in/out), the page content column (front-door hero over the editor
+// area), and the optional space info panel as a right column. The page body is
+// a placeholder until the editor is mounted.
 const SpaceView = ({space}: {space: Space}) => {
     const {pageCount, memberCount} = useSpaceStats(space.id);
     const [treeOpen, setTreeOpen] = useState(true);
@@ -39,14 +41,16 @@ const SpaceView = ({space}: {space: Space}) => {
                 onToggleInfo={toggleInfo}
                 onOpenSettings={openSettings}
             />
+            <PageHeader
+                space={space}
+                treeOpen={treeOpen}
+                onTogglePages={togglePages}
+            />
             <div className={styles.body}>
-                {treeOpen && <PageTreePanel space={space}/>}
+                <div className={classNames(styles.sidebar, {[styles.sidebarOpen]: treeOpen})}>
+                    <PageTreePanel space={space}/>
+                </div>
                 <div className={styles.main}>
-                    <PageHeader
-                        space={space}
-                        treeOpen={treeOpen}
-                        onTogglePages={togglePages}
-                    />
                     <div className={styles.scroll}>
                         <div className={styles.content}>
                             <PageHero

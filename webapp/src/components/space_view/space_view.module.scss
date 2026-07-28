@@ -13,6 +13,18 @@
     min-height: 0;
 }
 
+// Fixed-width tree panel clipped by a wrapper whose width animates open/closed.
+.sidebar {
+    flex-shrink: 0;
+    width: 0;
+    overflow: hidden;
+    transition: width 200ms ease;
+}
+
+.sidebarOpen {
+    width: 264px;
+}
+
 .main {
     display: flex;
     flex: 1 1 0;
