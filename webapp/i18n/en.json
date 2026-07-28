@@ -91,6 +91,7 @@
   "docs.space.edit": "Edit",
   "docs.space.expand": "Expand",
   "docs.space.favorite": "Favorite this space",
+  "docs.space.membersButton": "Members",
   "docs.space.membersOverflow": "+{count}",
   "docs.space.menu": "Space options",
   "docs.space.more": "More actions",

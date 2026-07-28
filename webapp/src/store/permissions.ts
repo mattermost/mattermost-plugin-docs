@@ -16,17 +16,20 @@ export type SpacePermissions = {
     canManageMembers: boolean;
 };
 
-const NO_PERMISSIONS: SpacePermissions = {
-    canManageMembers: false,
+// DEV OVERRIDE: canManageMembers is forced on so the add-people flow is
+// exercisable before PR #10's capability set exists. Revert to false (and wire
+// the real capability source below) before shipping.
+const DEFAULT_PERMISSIONS: SpacePermissions = {
+    canManageMembers: true,
 };
 
 // Pure selector so a check works in thunks/other selectors too, mirroring
 // core's getHaveIChannelBookmarkPermission (channel_bookmarks/utils). PR #10's
-// capability set will feed this, keyed by spaceId; today it returns the safe
-// defaults. Returns a stable reference so useSelector doesn't re-render.
+// capability set will feed this, keyed by spaceId. Returns a stable reference so
+// useSelector doesn't re-render.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- state/spaceId are the API the real capability lookup (PR #10) will use
 export function getSpacePermissions(state: GlobalState, spaceId: string): SpacePermissions {
-    return NO_PERMISSIONS;
+    return DEFAULT_PERMISSIONS;
 }
 
 // Thin hook wrapper, matching core's useChannelBookmarkPermission.

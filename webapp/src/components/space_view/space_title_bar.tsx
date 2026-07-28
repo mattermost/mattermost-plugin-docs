@@ -28,6 +28,7 @@ const SpaceTitleBar = ({space, memberCount}: {space: Space; memberCount: number}
     const favoriteLabel = formatMessage({id: 'docs.space.favorite', defaultMessage: 'Favorite this space'});
     const menuLabel = formatMessage({id: 'docs.space.menu', defaultMessage: 'Space options'});
     const detailsLabel = formatMessage({id: 'docs.space.details', defaultMessage: 'Space details'});
+    const membersLabel = formatMessage({id: 'docs.space.membersButton', defaultMessage: 'Members'});
 
     return (
         <div className={styles.bar}>
@@ -63,10 +64,17 @@ const SpaceTitleBar = ({space, memberCount}: {space: Space; memberCount: number}
                         size={16}
                     />
                 </Button>
-                <span className={styles.members}>
+                <Button
+                    type='button'
+                    emphasis='quaternary'
+                    size='sm'
+                    className={styles.members}
+                    aria-label={membersLabel}
+                    onClick={() => setShareOpen(true)}
+                >
                     <AccountMultipleOutlineIcon size={16}/>
                     <span>{memberCount}</span>
-                </span>
+                </Button>
             </div>
 
             <div className={styles.right}>
