@@ -6,11 +6,11 @@ import {docsDataSource} from 'data';
 import {getCurrentTeamId, getMyTeams} from 'mattermost-redux/selectors/entities/teams';
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
-import type {CreatePageInput, CreateSpaceInput, Page, Space} from 'types/docs';
+import type {CreatePageInput, CreateSpaceInput, Page, Space, UpdateSpacePatch} from 'types/docs';
 import type {DocsThunkAction} from 'types/store';
 
 import {PageTypes, SpaceTypes} from './action_types';
-import {getPage} from './selectors';
+import {getPage, getSpace} from './selectors';
 
 // Spaces the caller belongs to in the current team (the server scopes the list
 // by backing-channel membership). A failed load leaves the store empty rather
@@ -116,6 +116,28 @@ export function createSpace(input: CreateSpaceInput): DocsThunkAction<Promise<Sp
         const space = await docsDataSource.createSpace(teamId, input);
         dispatch({type: SpaceTypes.CREATED_SPACE, space});
         return space;
+    };
+}
+
+// Patches a space's editable fields and reconciles the store with the
+// server-returned space. Reads the current update_at for optimistic concurrency
+// (the server rejects a stale write). Rejects on failure so the settings form
+// can surface it and stay open.
+export function updateSpace(spaceId: string, patch: UpdateSpacePatch): DocsThunkAction<Promise<Space>> {
+    return async (dispatch, getState) => {
+        const expectedUpdateAt = getSpace(getState(), spaceId)?.update_at ?? 0;
+        const updated = await docsDataSource.updateSpace(spaceId, patch, expectedUpdateAt);
+        dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: [updated]});
+        return updated;
+    };
+}
+
+// Archives (soft-deletes) a space and prunes it from the store. Rejects on
+// failure so the caller can surface it.
+export function deleteSpace(spaceId: string): DocsThunkAction<Promise<void>> {
+    return async (dispatch) => {
+        await docsDataSource.deleteSpace(spaceId);
+        dispatch({type: SpaceTypes.DELETED_SPACE, spaceId});
     };
 }
 

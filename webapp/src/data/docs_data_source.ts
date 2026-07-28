@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import type {CreatePageInput, CreateSpaceInput, Page, Space, SpaceMember} from 'types/docs';
+import type {CreatePageInput, CreateSpaceInput, Page, Space, SpaceMember, UpdateSpacePatch} from 'types/docs';
 
 // The seam between the store's thunks and the Docs server REST API. The
 // API-backed source implements this over the plugin's /api/v1 routes; the
@@ -23,6 +23,16 @@ export interface DocsDataSource {
     // visibility is dropped by the API source until the server models it (see
     // PR #10's view_access).
     createSpace(teamId: string, input: CreateSpaceInput): Promise<Space>;
+
+    // Patches a space's editable fields (name/description/icon) and returns the
+    // updated space. `expectedUpdateAt` is the space's current update_at for
+    // optimistic concurrency (the server rejects a stale write). Only the
+    // provided fields are sent.
+    updateSpace(spaceId: string, patch: UpdateSpacePatch, expectedUpdateAt: number): Promise<Space>;
+
+    // Archives (soft-deletes) a space. The server rejects when the caller can't
+    // manage the space; the caller surfaces that.
+    deleteSpace(spaceId: string): Promise<void>;
 
     // Removes a member from a space. Leaving a space is removing yourself; the
     // server rejects removing the last authorized member (409).

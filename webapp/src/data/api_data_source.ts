@@ -3,7 +3,7 @@
 
 import {apiUrl, listAll, restDelete, restGet, restPatch, restPost} from 'client/rest';
 
-import type {CreatePageInput, CreateSpaceInput, Page, Space, SpaceMember} from 'types/docs';
+import type {CreatePageInput, CreateSpaceInput, Page, Space, SpaceMember, UpdateSpacePatch} from 'types/docs';
 
 import type {DocsDataSource} from './docs_data_source';
 
@@ -23,6 +23,15 @@ export const apiDataSource: DocsDataSource = {
         description: input.description?.trim() || undefined,
         icon: input.icon || undefined,
     }),
+
+    updateSpace: (spaceId, patch: UpdateSpacePatch, expectedUpdateAt) => restPatch<Space>(`${apiUrl()}/spaces/${spaceId}`, {
+        title: patch.title?.trim(),
+        description: patch.description?.trim(),
+        icon: patch.icon,
+        expected_update_at: expectedUpdateAt,
+    }),
+
+    deleteSpace: (spaceId) => restDelete<void>(`${apiUrl()}/spaces/${spaceId}`),
 
     removeSpaceMember: (spaceId, userId) => restDelete<void>(`${apiUrl()}/spaces/${spaceId}/members/${userId}`),
 

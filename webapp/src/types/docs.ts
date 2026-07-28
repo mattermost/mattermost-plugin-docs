@@ -41,6 +41,15 @@ export type CreateSpaceInput = {
     icon?: string;
 };
 
+// The editable fields of a space, as sent to the update-space API. Every field
+// is optional so a patch carries only what changed; the server model's
+// concurrency token (expected_update_at) is passed separately.
+export type UpdateSpacePatch = {
+    title?: string;
+    description?: string;
+    icon?: string;
+};
+
 // Mirrors the server model (server/model/page.go). search_text, user_id,
 // last_modified_by, original_id, and props exist on the server model too; add
 // them as the API/editor lands.
