@@ -804,9 +804,9 @@ func TestUpdatePageDraftRejectsDraftHierarchyTooDeep(t *testing.T) {
 
 	// Build a chain of model.MaxPageDepth+1 drafts. The first draft is the root
 	// (no parent). Each subsequent draft sets its parent to the previous one.
-	// model.MaxPageDepth is 10; a chain of 10 drafts fills the limit, so
-	// adding one more child is the first rejection.
-	const chainLen = 10
+	// A chain of model.MaxPageDepth drafts fills the limit, so adding one more
+	// child is the first rejection.
+	const chainLen = model.MaxPageDepth
 	drafts := make([]*model.Draft, chainLen)
 	for i := range chainLen {
 		d, appErr := h.svc.CreateSpaceDraft(userID, space.Id, fmt.Sprintf("D%d", i), "")

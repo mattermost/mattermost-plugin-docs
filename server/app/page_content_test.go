@@ -115,6 +115,36 @@ func TestNormalizePatchContent(t *testing.T) {
 	})
 }
 
+// TestNormalizeContentBody covers the draft autosave entry point, the only one that sanitizes a body
+// without deriving SearchText — publish derives it later from the same content.
+func TestNormalizeContentBody(t *testing.T) {
+	t.Run("an empty body is left alone", func(t *testing.T) {
+		body, appErr := normalizeContentBody("test", "")
+		require.Nil(t, appErr)
+		require.Empty(t, body)
+	})
+
+	t.Run("valid TipTap content is normalized", func(t *testing.T) {
+		body, appErr := normalizeContentBody("test",
+			`{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"hello"}]}]}`)
+		require.Nil(t, appErr)
+		require.Contains(t, body, "hello")
+	})
+
+	t.Run("dangerous URLs are stripped", func(t *testing.T) {
+		body, appErr := normalizeContentBody("test",
+			`{"type":"doc","content":[{"type":"text","text":"x","marks":[{"type":"link","attrs":{"href":"javascript:alert(1)"}}]}]}`)
+		require.Nil(t, appErr)
+		require.NotContains(t, body, "javascript:alert")
+	})
+
+	t.Run("an unlisted node type is rejected", func(t *testing.T) {
+		_, appErr := normalizeContentBody("test", `{"type":"doc","content":[{"type":"script"}]}`)
+		require.NotNil(t, appErr)
+		require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+	})
+}
+
 func TestNormalizeContentRejectsOversizedBodyBeforeParsing(t *testing.T) {
 	// The size gate must run before json.Unmarshal, so the stored-body limit — not the larger
 	// request-transport cap — bounds the parse allocation.

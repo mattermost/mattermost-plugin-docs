@@ -117,14 +117,14 @@ func TestHandler_PublishMalformedBodyReturns400(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, "a malformed publish body must not publish or delete the draft")
 }
 
-// TestHandler_UpdatePageDraftRequiresExistingDraft confirms the update-only guard: PUT on a page id
+// TestHandler_UpdatePageDraftRequiresExistingDraft confirms the update-only guard: PATCH on a page id
 // that has no existing draft must return 404 rather than silently creating one.
 func TestHandler_UpdatePageDraftRequiresExistingDraft(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	space := seedSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
-	// No draft has been created for this page id — the PUT must be rejected.
+	// No draft has been created for this page id — the PATCH must be rejected.
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+mmmodel.NewId()+"/draft", userID, map[string]any{
 		"title": "ghost",
 	})
@@ -132,7 +132,7 @@ func TestHandler_UpdatePageDraftRequiresExistingDraft(t *testing.T) {
 }
 
 // TestHandler_UpdatePageDraftClearsParentWhenParentIdIsEmptyString covers the null-vs-empty
-// distinction: sending parent_id: "" in the PUT body must clear an existing parent (set it to
+// distinction: sending parent_id: "" in the PATCH body must clear an existing parent (set it to
 // root), while omitting parent_id entirely must leave the parent unchanged.
 func TestHandler_UpdatePageDraftClearsParentWhenParentIdIsEmptyString(t *testing.T) {
 	h := openTestPlugin(t, nil)
@@ -156,7 +156,7 @@ func TestHandler_UpdatePageDraftClearsParentWhenParentIdIsEmptyString(t *testing
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &childDraft))
 	require.Equal(t, parentDraft.PageId, childDraft.ParentId)
 
-	// PUT with parent_id omitted must preserve the existing parent.
+	// PATCH with parent_id omitted must preserve the existing parent.
 	rec = h.do(t, http.MethodPatch, base+"/pages/"+childDraft.PageId+"/draft", userID, map[string]any{
 		"title": "Child updated",
 	})
@@ -165,7 +165,7 @@ func TestHandler_UpdatePageDraftClearsParentWhenParentIdIsEmptyString(t *testing
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &saved))
 	require.Equal(t, parentDraft.PageId, saved.ParentId, "omitting parent_id must preserve the existing parent")
 
-	// PUT with parent_id: "" must clear the parent to root.
+	// PATCH with parent_id: "" must clear the parent to root.
 	rec = h.do(t, http.MethodPatch, base+"/pages/"+childDraft.PageId+"/draft", userID, map[string]any{
 		"parent_id": "",
 	})
@@ -198,7 +198,7 @@ func TestHandler_UpdatePageDraftCreatesForExistingPage(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &page))
 	require.Equal(t, pageID, page.Id)
 
-	// Step 2: open an edit session — first PUT creates the draft for an existing page.
+	// Step 2: open an edit session — first PATCH creates the draft for an existing page.
 	rec = h.do(t, http.MethodPatch, base+"/pages/"+pageID+"/draft", userID, map[string]any{
 		"title":        "Original",
 		"base_edit_at": page.EditAt,

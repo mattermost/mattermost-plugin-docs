@@ -258,8 +258,17 @@ func stripDangerousKeys(m map[string]any) {
 		// Trim leading/trailing whitespace and control characters before matching: an HTML
 		// tokenizer treats "\tonclick" as the onclick attribute, so a key that fails to match
 		// here because of such a prefix would carry its payload through every check below.
-		lower := strings.ToLower(trimBrowserIgnoredChars(key))
+		trimmed := trimBrowserIgnoredChars(key)
+		lower := strings.ToLower(trimmed)
 		if _, dangerous := dangerousAttrKeys[lower]; strings.HasPrefix(lower, "on") || dangerous {
+			delete(m, key)
+			continue
+		}
+		// A padded key is not a name any editor schema defines — the padding exists only to slip
+		// past a matcher that does not trim. Drop it outright instead of sanitizing its value in
+		// place, so a renderer that resolves the trimmed name cannot find both a padded and a
+		// canonical entry for the same attribute.
+		if trimmed != key {
 			delete(m, key)
 			continue
 		}
@@ -350,6 +359,11 @@ func sanitizeObjAttrsAndFlatKeys(obj map[string]any, attrsErrMsg string, skipKey
 		if !ok {
 			return errors.New(attrsErrMsg)
 		}
+		// The attrs subtree restarts the depth budget at 0, while the flat-key values below inherit
+		// the node's depth and so get what remains of it. Both fail closed at maxTipTapDepth, and
+		// attrs nesting is a property of the attribute value rather than of the document tree, so
+		// charging it against the node's remaining depth would bound it by where the node happens
+		// to sit. The asymmetry is deliberate.
 		if err := sanitizeAttrs(attrs, 0); err != nil {
 			return err
 		}

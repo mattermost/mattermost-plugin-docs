@@ -128,11 +128,11 @@ func TestParseTipTapDocumentSanitizesURLs(t *testing.T) {
 	}
 }
 
-// TestParseTipTapDocumentRejectsForbiddenTypes pins the node/mark denylist — the strongest
-// defense in the sanitizer — by asserting that a document carrying a forbidden type is rejected
+// TestParseTipTapDocumentRejectsForbiddenTypes pins the node/mark allowlist — the strongest
+// defense in the sanitizer — by asserting that a document carrying an unlisted type is rejected
 // outright rather than stripped and accepted.
 func TestParseTipTapDocumentRejectsForbiddenTypes(t *testing.T) {
-	// Every forbidden node type, plus a couple of allowed ones as a control.
+	// Types a lenient renderer could execute, plus a couple of allowed ones as a control.
 	nodeCases := []struct {
 		nodeType string
 		rejected bool
@@ -151,7 +151,7 @@ func TestParseTipTapDocumentRejectsForbiddenTypes(t *testing.T) {
 		{"animatetransform", true},
 		{"foreignobject", true},
 		{"maction", true},
-		{"SCRIPT", true}, // denylist is case-insensitive
+		{"SCRIPT", true}, // the allowlist is case-sensitive, so a cased variant is not listed
 		{"IFrame", true},
 		{"paragraph", false}, // control: allowed
 	}
@@ -172,7 +172,7 @@ func TestParseTipTapDocumentRejectsForbiddenTypes(t *testing.T) {
 		})
 	}
 
-	// Forbidden mark types on an otherwise-valid text node. "link" is intentionally absent — it is a
+	// Unlisted mark types on an otherwise-valid text node. "link" is intentionally absent — it is a
 	// valid mark whose href is sanitized rather than blocked (see TestParseTipTapDocumentSanitizesURLs).
 	markCases := []struct {
 		markType string
@@ -183,7 +183,7 @@ func TestParseTipTapDocumentRejectsForbiddenTypes(t *testing.T) {
 		{"style", true},
 		{"svg", true},
 		{"foreignobject", true},
-		{"MAction", true}, // case-insensitive
+		{"MAction", true}, // cased variant of an unlisted type is still unlisted
 		{"link", false},   // control: allowed as a mark
 		{"bold", false},   // control: ordinary formatting mark
 		{"", true},        // a mark with an empty type is rejected, matching node-type strictness
@@ -719,8 +719,9 @@ func TestBuildSearchText(t *testing.T) {
 
 func TestParseTipTapDocumentSanitizesWhitespacePrefixedAttrKeys(t *testing.T) {
 	// An HTML tokenizer treats "\tonclick" as the onclick attribute, so keys carrying leading or
-	// trailing whitespace/control characters must match the handler denylist and URL allowlist the
-	// same as their clean forms.
+	// trailing whitespace/control characters must be recognized the same as their clean forms. No
+	// editor schema defines a padded name, so every one of them is dropped rather than kept with a
+	// sanitized value — a renderer resolving the trimmed name must not find two entries for it.
 	raw := map[string]any{
 		"type": "doc",
 		"content": []any{
@@ -746,6 +747,7 @@ func TestParseTipTapDocumentSanitizesWhitespacePrefixedAttrKeys(t *testing.T) {
 
 	require.NotContains(t, attrs, " onclick", "whitespace-prefixed event handler must be stripped")
 	require.NotContains(t, attrs, "\tonerror", "control-char-prefixed event handler must be stripped")
-	require.Equal(t, "", attrs[" href"], "whitespace-prefixed URL key must pass through sanitizeURL")
+	require.NotContains(t, attrs, " href", "whitespace-prefixed URL key must be dropped, not kept sanitized")
+	require.NotContains(t, attrs, "href", "dropping the padded key must not introduce a canonical one")
 	require.Equal(t, "a cat", attrs["alt"], "clean attr must survive")
 }
