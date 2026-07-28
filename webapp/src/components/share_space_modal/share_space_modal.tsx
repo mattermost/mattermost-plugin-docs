@@ -1,10 +1,11 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import type {MemberProfile} from 'hooks/members';
 import {useSpaceMemberProfiles} from 'hooks/members';
 import {useDocsNavigation} from 'hooks/navigation';
 import {useAppSelector} from 'hooks/redux';
-import React, {useState} from 'react';
+import React, {useMemo, useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {copyToClipboard} from 'utils/clipboard';
 import {Avatar} from 'webapp_globals';
@@ -12,16 +13,17 @@ import {Avatar} from 'webapp_globals';
 import ChevronDownIcon from '@mattermost/compass-icons/components/chevron-down';
 import ContentCopyIcon from '@mattermost/compass-icons/components/content-copy';
 import GlobeIcon from '@mattermost/compass-icons/components/globe';
-import MagnifyIcon from '@mattermost/compass-icons/components/magnify';
 
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
+import {useSpacePermissions} from 'store/permissions';
+
 import {Button, SecondaryButton} from 'components/form-controls/button';
-import TextInput from 'components/form-controls/text_input';
 import GenericModal from 'components/generic_modal/generic_modal';
 
 import type {Space} from 'types/docs';
 
+import PeoplePicker from './people_picker';
 import styles from './share_space_modal.module.scss';
 
 type Props = {
@@ -29,17 +31,30 @@ type Props = {
     onClose: () => void;
 };
 
-// Members come from the real member API; roles and space visibility (Admin /
-// Public / Can View) are capability/view-access features from PR #10, so those
-// dropdowns and the add-people search are visual scaffolding for now. Copy link
-// is functional.
+// Members come from the real member API and Copy link is functional. Roles and
+// space visibility (Admin / Public / Can View) are capability/view-access
+// features from PR #10, so those dropdowns are visual scaffolding.
+//
+// Adding people needs a server add-member API (also PR #10). The people-search
+// combobox and its live search pipeline are built, but gated on the
+// canManageMembers permission so we don't ship an "add people" control whose
+// selections can't persist (they'd only live client-side).
 const ShareSpaceModal = ({space, onClose}: Props) => {
     const {formatMessage} = useIntl();
     const {paths} = useDocsNavigation();
     const members = useSpaceMemberProfiles(space.id);
     const currentUserId = useAppSelector(getCurrentUserId);
+    const {canManageMembers} = useSpacePermissions(space.id);
 
-    const [query, setQuery] = useState('');
+    // People chosen from the search picker. There's no add-member API yet
+    // (roles/view-access land with PR #10), so these are held client-side and
+    // shown alongside the real members until the server can persist them.
+    const [added, setAdded] = useState<MemberProfile[]>([]);
+
+    const displayedMembers = useMemo(() => [...members, ...added], [members, added]);
+    const excludeIds = useMemo(() => displayedMembers.map((member) => member.id), [displayedMembers]);
+
+    const addPerson = (user: MemberProfile) => setAdded((prev) => [...prev, user]);
 
     const copyLink = () => copyToClipboard(`${window.location.origin}${paths.space(space.id)}`);
 
@@ -111,15 +126,14 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
             footer={footer}
         >
             <div className={styles.body}>
-                <TextInput
-                    id='docs-share-search'
-                    label={formatMessage({id: 'docs.share.search', defaultMessage: 'Add people or groups'})}
-                    value={query}
-                    onChange={setQuery}
-                    leading={<MagnifyIcon size={16}/>}
-                />
+                {canManageMembers && (
+                    <PeoplePicker
+                        excludeIds={excludeIds}
+                        onSelect={addPerson}
+                    />
+                )}
                 <div className={styles.memberList}>
-                    {members.map((member) => (
+                    {displayedMembers.map((member) => (
                         <div
                             key={member.id}
                             className={styles.memberRow}
