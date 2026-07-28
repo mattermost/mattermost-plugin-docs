@@ -17,7 +17,7 @@ import type {Space} from 'types/docs';
 
 import styles from './space_info_panel.module.scss';
 
-// Relative "Created …" buckets for the host Timestamp, mirroring the page bar's
+// Relative "Created …" buckets for the host Timestamp, mirroring the page header's
 // relative spec but reaching back far enough for an old space.
 const CREATED_TIME_SPEC: TimestampUnit[] = [
     ['minute', -59],

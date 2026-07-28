@@ -17,7 +17,7 @@ import {Button} from 'components/form_controls/button';
 
 import type {Space} from 'types/docs';
 
-import styles from './page_bar.module.scss';
+import styles from './page_header.module.scss';
 
 // Relative "Updated …" buckets for the host Timestamp.
 const UPDATED_TIME_SPEC: TimestampUnit[] = [
@@ -36,7 +36,7 @@ type Props = {
 
 // Controls (comments, edit, overflow, expand) are visual scaffolding wired in
 // later passes; the pages toggle drives the page tree panel.
-const PageBar = ({space, treeOpen, onTogglePages}: Props) => {
+const PageHeader = ({space, treeOpen, onTogglePages}: Props) => {
     const {formatMessage} = useIntl();
 
     const pagesLabel = formatMessage({id: 'docs.space.pages.toggle', defaultMessage: 'Toggle page tree'});
@@ -133,4 +133,4 @@ const PageBar = ({space, treeOpen, onTogglePages}: Props) => {
     );
 };
 
-export default PageBar;
+export default PageHeader;

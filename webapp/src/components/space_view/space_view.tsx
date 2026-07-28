@@ -10,14 +10,14 @@ import SpaceSettingsModal from 'components/space_settings_modal/space_settings_m
 
 import type {Space} from 'types/docs';
 
-import PageBar from './page_bar';
+import PageHeader from './page_header';
 import PageHero from './page_hero';
 import PageTreePanel from './page_tree/page_tree_panel';
-import SpaceTitleBar from './space_title_bar';
+import SpaceHeader from './space_header';
 import styles from './space_view.module.scss';
 
-// Main content for a routed space: the space title bar spans the full width; a
-// flex row holds the page tree panel, the content column (page bar over the
+// Main content for a routed space: the space header spans the full width; a
+// flex row holds the page tree panel, the content column (page header over the
 // front-door hero), and the optional space info panel as a right column. The
 // page body is a placeholder until the editor is mounted.
 const SpaceView = ({space}: {space: Space}) => {
@@ -32,7 +32,7 @@ const SpaceView = ({space}: {space: Space}) => {
 
     return (
         <div className={styles.root}>
-            <SpaceTitleBar
+            <SpaceHeader
                 space={space}
                 memberCount={memberCount}
                 infoOpen={infoOpen}
@@ -42,7 +42,7 @@ const SpaceView = ({space}: {space: Space}) => {
             <div className={styles.body}>
                 {treeOpen && <PageTreePanel space={space}/>}
                 <div className={styles.main}>
-                    <PageBar
+                    <PageHeader
                         space={space}
                         treeOpen={treeOpen}
                         onTogglePages={togglePages}

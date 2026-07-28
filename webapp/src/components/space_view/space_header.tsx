@@ -30,7 +30,7 @@ import ShareSpaceModal from 'components/share_space_modal/share_space_modal';
 
 import type {Space} from 'types/docs';
 
-import styles from './space_title_bar.module.scss';
+import styles from './space_header.module.scss';
 
 type Props = {
     space: Space;
@@ -40,7 +40,7 @@ type Props = {
     onOpenSettings: () => void;
 };
 
-const SpaceTitleBar = ({space, memberCount, infoOpen, onToggleInfo, onOpenSettings}: Props) => {
+const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onOpenSettings}: Props) => {
     const {formatMessage} = useIntl();
     const dispatch = useAppDispatch();
     const {paths, spaceId, goHome} = useDocsNavigation();
@@ -305,4 +305,4 @@ const SpaceTitleBar = ({space, memberCount, infoOpen, onToggleInfo, onOpenSettin
     );
 };
 
-export default SpaceTitleBar;
+export default SpaceHeader;
