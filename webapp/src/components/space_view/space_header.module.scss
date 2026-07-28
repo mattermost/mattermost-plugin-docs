@@ -1,28 +1,3 @@
-.bar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 56px;
-    padding: 0 12px 0 8px;
-    border-bottom: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
-    background: var(--center-channel-bg);
-}
-
-.left {
-    display: flex;
-    flex: 1 1 auto;
-    min-width: 0;
-    align-items: center;
-    gap: 4px;
-}
-
-.right {
-    display: flex;
-    flex-shrink: 0;
-    align-items: center;
-    gap: 8px;
-}
-
 .titleTrigger {
     display: inline-flex;
     min-width: 0;
@@ -59,7 +34,6 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    margin-left: 4px;
     color: rgba(var(--center-channel-color-rgb), 0.64);
     font-size: 12px;
     font-weight: 600;

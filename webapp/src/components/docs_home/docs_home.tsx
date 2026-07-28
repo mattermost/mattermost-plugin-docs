@@ -16,6 +16,7 @@ import PlusIcon from '@mattermost/compass-icons/components/plus';
 import SearchListIcon from '@mattermost/compass-icons/components/search-list';
 
 import {PrimaryButton, TertiaryButton} from 'components/form_controls/button';
+import Header from 'components/header/header';
 
 import type {SpaceSummary} from 'types/docs';
 
@@ -37,18 +38,22 @@ const DocsHome = ({onCreateSpace, onBrowseSpaces}: Props) => {
     const summaries = useRecentSpaceSummaries();
 
     const header = (
-        <header className={styles.header}>
-            <h1 className={styles.headerTitle}>
-                {formatMessage({id: 'docs.home.title', defaultMessage: 'Home'})}
-            </h1>
-            <PrimaryButton
-                className={styles.cta}
-                onClick={onCreateSpace}
-            >
-                <PlusIcon size={16}/>
-                {formatMessage({id: 'docs.home.newSpace', defaultMessage: 'New Space'})}
-            </PrimaryButton>
-        </header>
+        <Header
+            left={
+                <h1 className={styles.headerTitle}>
+                    {formatMessage({id: 'docs.home.title', defaultMessage: 'Home'})}
+                </h1>
+            }
+            right={
+                <PrimaryButton
+                    className={styles.cta}
+                    onClick={onCreateSpace}
+                >
+                    <PlusIcon size={16}/>
+                    {formatMessage({id: 'docs.home.newSpace', defaultMessage: 'New Space'})}
+                </PrimaryButton>
+            }
+        />
     );
 
     if (summaries.length === 0) {

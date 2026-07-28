@@ -24,6 +24,7 @@ import {useSpacePermissions} from 'store/permissions';
 
 import ConfirmModal from 'components/confirm_modal/confirm_modal';
 import {Button, PrimaryButton} from 'components/form_controls/button';
+import Header from 'components/header/header';
 import Menu from 'components/menu/menu';
 import type {MenuItemSpec} from 'components/menu/menu_types';
 import ShareSpaceModal from 'components/share_space_modal/share_space_modal';
@@ -158,85 +159,94 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onOpenSettings
         }] : []),
     ];
 
-    return (
-        <div className={styles.bar}>
-            <div className={styles.left}>
-                <Button
-                    type='button'
-                    emphasis='quaternary'
-                    size='xs'
-                    className='btn-icon'
-                    aria-label={favoriteLabel}
-                >
-                    <StarOutlineIcon size={18}/>
-                </Button>
-                <Menu
-                    ariaLabel={menuLabel}
-                    tooltip={menuLabel}
-                    items={items}
-                    trigger={(
-                        <Button
-                            type='button'
-                            emphasis='quaternary'
-                            size='sm'
-                            className={styles.titleTrigger}
-                            aria-label={menuLabel}
+    const left = (
+        <>
+            <Button
+                type='button'
+                emphasis='quaternary'
+                size='xs'
+                className='btn-icon'
+                aria-label={favoriteLabel}
+            >
+                <StarOutlineIcon size={18}/>
+            </Button>
+            <Menu
+                ariaLabel={menuLabel}
+                tooltip={menuLabel}
+                items={items}
+                trigger={(
+                    <Button
+                        type='button'
+                        emphasis='quaternary'
+                        size='sm'
+                        className={styles.titleTrigger}
+                        aria-label={menuLabel}
+                    >
+                        <span
+                            className={styles.emoji}
+                            aria-hidden={true}
                         >
-                            <span
-                                className={styles.emoji}
-                                aria-hidden={true}
-                            >
-                                <SpaceIcon
-                                    space={space}
-                                    size={18}
-                                />
-                            </span>
-                            <span className={styles.title}>{space.title}</span>
-                            <ChevronDownIcon
-                                className={styles.chevron}
-                                size={16}
+                            <SpaceIcon
+                                space={space}
+                                size={18}
                             />
-                        </Button>
-                    )}
-                />
-                <Button
-                    type='button'
-                    emphasis='quaternary'
-                    size='xs'
-                    className={classNames('docs-btn-neutral', styles.members)}
-                    aria-label={membersLabel}
-                    onClick={() => setShareOpen(true)}
-                >
-                    <AccountMultipleOutlineIcon size={16}/>
-                    <span>{memberCount}</span>
-                </Button>
-            </div>
+                        </span>
+                        <span className={styles.title}>{space.title}</span>
+                        <ChevronDownIcon
+                            className={styles.chevron}
+                            size={16}
+                        />
+                    </Button>
+                )}
+            />
+            <Button
+                type='button'
+                emphasis='quaternary'
+                size='xs'
+                className={classNames('docs-btn-neutral', styles.members)}
+                aria-label={membersLabel}
+                onClick={() => setShareOpen(true)}
+            >
+                <AccountMultipleOutlineIcon size={16}/>
+                <span>{memberCount}</span>
+            </Button>
+        </>
+    );
 
-            <div className={styles.right}>
-                <Button
-                    type='button'
-                    emphasis='quaternary'
-                    size='sm'
-                    className={classNames('btn-icon', {active: infoOpen})}
-                    aria-label={infoLabel}
-                    aria-pressed={infoOpen}
-                    onClick={onToggleInfo}
-                >
-                    <InformationOutlineIcon size={18}/>
-                </Button>
-                <PrimaryButton
-                    type='button'
-                    size='sm'
-                    className={styles.share}
-                    onClick={() => setShareOpen(true)}
-                >
-                    <ShareVariantOutlineIcon size={16}/>
-                    <FormattedMessage
-                        id='docs.space.share'
-                        defaultMessage='Share'
-                    />
-                </PrimaryButton>
-            </div>
+    const right = (
+        <>
+            <Button
+                type='button'
+                emphasis='quaternary'
+                size='sm'
+                className={classNames('btn-icon', {active: infoOpen})}
+                aria-label={infoLabel}
+                aria-pressed={infoOpen}
+                onClick={onToggleInfo}
+            >
+                <InformationOutlineIcon size={18}/>
+            </Button>
+            <PrimaryButton
+                type='button'
+                size='sm'
+                className={styles.share}
+                onClick={() => setShareOpen(true)}
+            >
+                <ShareVariantOutlineIcon size={16}/>
+                <FormattedMessage
+                    id='docs.space.share'
+                    defaultMessage='Share'
+                />
+            </PrimaryButton>
+        </>
+    );
+
+    return (
+        <>
+            <Header
+                left={left}
+                right={right}
+            />
             {shareOpen && (
                 <ShareSpaceModal
                     space={space}
@@ -301,7 +311,7 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onOpenSettings
                     />
                 </ConfirmModal>
             )}
-        </div>
+        </>
     );
 };
 
