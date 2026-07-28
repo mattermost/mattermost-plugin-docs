@@ -1,6 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import classNames from 'classnames';
 import React, {useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {SpaceIcon} from 'utils/space_icon';
@@ -11,7 +12,7 @@ import InformationOutlineIcon from '@mattermost/compass-icons/components/informa
 import ShareVariantOutlineIcon from '@mattermost/compass-icons/components/share-variant-outline';
 import StarOutlineIcon from '@mattermost/compass-icons/components/star-outline';
 
-import {Button, PrimaryButton} from 'components/form-controls/button';
+import {Button, PrimaryButton} from 'components/form_controls/button';
 import ShareSpaceModal from 'components/share_space_modal/share_space_modal';
 
 import type {Space} from 'types/docs';
@@ -36,7 +37,7 @@ const SpaceTitleBar = ({space, memberCount}: {space: Space; memberCount: number}
                 <Button
                     type='button'
                     emphasis='quaternary'
-                    size='sm'
+                    size='xs'
                     className='btn-icon'
                     aria-label={favoriteLabel}
                 >
@@ -67,8 +68,8 @@ const SpaceTitleBar = ({space, memberCount}: {space: Space; memberCount: number}
                 <Button
                     type='button'
                     emphasis='quaternary'
-                    size='sm'
-                    className={styles.members}
+                    size='xs'
+                    className={classNames('docs-btn-neutral', styles.members)}
                     aria-label={membersLabel}
                     onClick={() => setShareOpen(true)}
                 >

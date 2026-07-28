@@ -13,7 +13,7 @@ import FormatListBulletedIcon from '@mattermost/compass-icons/components/format-
 import MessageTextOutlineIcon from '@mattermost/compass-icons/components/message-text-outline';
 import PencilOutlineIcon from '@mattermost/compass-icons/components/pencil-outline';
 
-import {Button, SecondaryButton} from 'components/form-controls/button';
+import {Button} from 'components/form_controls/button';
 
 import type {Space} from 'types/docs';
 
@@ -63,7 +63,7 @@ const PageBar = ({space, treeOpen, onTogglePages}: Props) => {
                     type='button'
                     emphasis='quaternary'
                     size='sm'
-                    className={styles.pagesToggle}
+                    className={classNames('docs-btn-neutral', styles.pagesToggle)}
                     aria-label={pagesLabel}
                     aria-pressed={treeOpen}
                     onClick={onTogglePages}
@@ -98,17 +98,18 @@ const PageBar = ({space, treeOpen, onTogglePages}: Props) => {
                     <MessageTextOutlineIcon size={18}/>
                     <span className={styles.badge}/>
                 </Button>
-                <SecondaryButton
+                <Button
                     type='button'
+                    emphasis='quaternary'
                     size='sm'
-                    className={styles.edit}
+                    className={classNames('docs-btn-neutral', styles.edit)}
                 >
                     <PencilOutlineIcon size={14}/>
                     <FormattedMessage
                         id='docs.space.edit'
                         defaultMessage='Edit'
                     />
-                </SecondaryButton>
+                </Button>
                 <Button
                     type='button'
                     emphasis='quaternary'

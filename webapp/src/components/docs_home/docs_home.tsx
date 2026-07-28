@@ -15,7 +15,7 @@ import NotebookOutlineIcon from '@mattermost/compass-icons/components/notebook-o
 import PlusIcon from '@mattermost/compass-icons/components/plus';
 import SearchListIcon from '@mattermost/compass-icons/components/search-list';
 
-import {PrimaryButton, TertiaryButton} from 'components/form-controls/button';
+import {PrimaryButton, TertiaryButton} from 'components/form_controls/button';
 
 import type {SpaceSummary} from 'types/docs';
 

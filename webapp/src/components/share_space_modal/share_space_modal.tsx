@@ -18,7 +18,7 @@ import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
 import {useSpacePermissions} from 'store/permissions';
 
-import {Button, SecondaryButton} from 'components/form-controls/button';
+import {Button, SecondaryButton} from 'components/form_controls/button';
 import GenericModal from 'components/generic_modal/generic_modal';
 
 import type {Space} from 'types/docs';

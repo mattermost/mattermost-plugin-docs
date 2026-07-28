@@ -13,7 +13,7 @@ import {createPage, movePage} from 'store/actions';
 import {buildDescendantMap, buildPageTree} from 'store/page_tree';
 import {getPagesForSpace} from 'store/selectors';
 
-import {Button} from 'components/form-controls/button';
+import {Button} from 'components/form_controls/button';
 
 import type {Space} from 'types/docs';
 

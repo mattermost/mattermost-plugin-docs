@@ -1,0 +1,22 @@
+/*
+ * PORT-TO-CORE: the shared Button is accent-only (every emphasis colors with
+ * --button-bg). These :global rules restore a neutral (grey) treatment for
+ * ghost buttons that should read as toolbar controls, not accent actions —
+ * matching core's header icon buttons (center-channel-color + icon opacity):
+ *   - `.btn-icon` quaternary icon buttons (core's .btn-icon grey is otherwise
+ *     overridden by the later emphasis color, so raise its specificity)
+ *   - quaternary buttons marked `docs-btn-neutral` that carry a label
+ * Fold the icon rule into core's .btn-icon; the label rule is a docs stopgap
+ * until a neutral emphasis exists upstream.
+ */
+:global(.btn.btn-icon.btn-quaternary),
+:global(.btn.btn-quaternary.docs-btn-neutral) {
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+}
+
+:global(.btn.btn-icon.btn-quaternary:hover),
+:global(.btn.btn-icon.btn-quaternary.btn-force-hover),
+:global(.btn.btn-quaternary.docs-btn-neutral:hover),
+:global(.btn.btn-quaternary.docs-btn-neutral.btn-force-hover) {
+    color: var(--center-channel-color);
+}

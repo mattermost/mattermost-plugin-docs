@@ -13,7 +13,7 @@ import FolderOutlineIcon from '@mattermost/compass-icons/components/folder-outli
 
 import type {PageNode} from 'store/page_tree';
 
-import {Button} from 'components/form-controls/button';
+import {Button} from 'components/form_controls/button';
 
 import {usePageDragDrop} from './dnd/use_page_drag_drop';
 import styles from './page_tree_node.module.scss';
@@ -37,9 +37,7 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, dndEnabled, o
     const hasChildren = children.length > 0;
     const isCollapsed = collapsed.has(page.id);
 
-    const toggleLabel = isCollapsed ?
-        formatMessage({id: 'docs.pageTree.expand', defaultMessage: 'Expand {title}'}, {title: page.title}) :
-        formatMessage({id: 'docs.pageTree.collapse', defaultMessage: 'Collapse {title}'}, {title: page.title});
+    const toggleLabel = isCollapsed ? formatMessage({id: 'docs.pageTree.expand', defaultMessage: 'Expand {title}'}, {title: page.title}) : formatMessage({id: 'docs.pageTree.collapse', defaultMessage: 'Collapse {title}'}, {title: page.title});
 
     const {dragging, dropTarget} = usePageDragDrop({
         pageId: page.id,

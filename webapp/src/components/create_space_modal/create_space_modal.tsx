@@ -10,11 +10,11 @@ import {SPACE_DESCRIPTION_MAX_LENGTH, SPACE_NAME_MAX_LENGTH} from 'validation/sp
 import GlobeIcon from '@mattermost/compass-icons/components/globe';
 import LockOutlineIcon from '@mattermost/compass-icons/components/lock-outline';
 
-import {PrimaryButton, TertiaryButton} from 'components/form-controls/button';
-import type {SelectorOption} from 'components/form-controls/public_private_selector';
-import PublicPrivateSelector from 'components/form-controls/public_private_selector';
-import TextArea from 'components/form-controls/text_area';
-import TextInput from 'components/form-controls/text_input';
+import {PrimaryButton, TertiaryButton} from 'components/form_controls/button';
+import type {SelectorOption} from 'components/form_controls/public_private_selector';
+import PublicPrivateSelector from 'components/form_controls/public_private_selector';
+import TextArea from 'components/form_controls/text_area';
+import TextInput from 'components/form_controls/text_input';
 import GenericModal from 'components/generic_modal/generic_modal';
 
 import type {Space, SpaceVisibility} from 'types/docs';

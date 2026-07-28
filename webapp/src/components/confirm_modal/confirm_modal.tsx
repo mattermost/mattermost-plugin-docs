@@ -4,7 +4,7 @@
 import React, {useRef} from 'react';
 import {FormattedMessage} from 'react-intl';
 
-import {DestructiveButton, PrimaryButton, TertiaryButton} from 'components/form-controls/button';
+import {DestructiveButton, PrimaryButton, TertiaryButton} from 'components/form_controls/button';
 import GenericModal from 'components/generic_modal/generic_modal';
 
 import styles from './confirm_modal.module.scss';
