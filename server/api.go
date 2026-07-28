@@ -23,11 +23,12 @@ import (
 //
 // Authorization: every route requires an authenticated user via MattermostAuthorizationRequired.
 // Every space- and page-scoped handler additionally gates on the capability-based RBAC model:
-// requireSpaceRead/requireSpacePagePerm for reads, requirePageWrite/requireDeleteOwnOrAnyFrom for page
-// writes (with the open-space auto-join pre-step), requireSpaceManage for membership management
-// and general space-field updates, and requireSpaceAdmin/requireSpaceDelete for the space-wide
-// exposure-policy and delete/restore operations. A require* helper resolves the space by id and
-// then gates it; a gate* helper gates a space the caller already holds. See
+// requireSpaceRead/requireSpacePagePerm for reads, requirePageWrite/requireDeleteOwnOrAnyFrom for
+// page writes (with the open-space auto-join pre-step), requireSpaceManage for membership
+// management and general space-field updates, and requireSpaceAdmin/requireSpaceDelete for the
+// space-wide exposure-policy and delete/restore operations. A helper taking a space id resolves
+// the record and then gates it; one taking a *model.Space gates a record the caller already
+// holds, and a From suffix means the caller supplies the ReadResolution too. See
 // server/app/permissions.go for the gate implementations.
 func (p *Plugin) initRouter() *mux.Router {
 	router := mux.NewRouter()
@@ -65,6 +66,17 @@ func (p *Plugin) initRouter() *mux.Router {
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/move", p.handleMovePage).Methods(http.MethodPatch)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/move-to-space", p.handleMovePageToSpace).Methods(http.MethodPatch)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/duplicate", p.handleDuplicatePage).Methods(http.MethodPost)
+
+	// Draft CRUD + publish.
+	api.HandleFunc("/spaces/{space_id}/drafts", p.handleCreateSpaceDraft).Methods(http.MethodPost)
+	api.HandleFunc("/spaces/{space_id}/drafts", p.handleGetPageDraftsForSpace).Methods(http.MethodGet)
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/draft", p.handleUpdatePageDraft).Methods(http.MethodPatch)
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/draft", p.handleGetPageDraft).Methods(http.MethodGet)
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/draft", p.handleDeletePageDraft).Methods(http.MethodDelete)
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/draft/publish", p.handlePublishPageDraft).Methods(http.MethodPost)
+
+	// Presence.
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/active-editors", p.handleGetPageActiveEditors).Methods(http.MethodGet)
 
 	return router
 }
@@ -273,9 +285,36 @@ func (p *Plugin) writeAppError(w http.ResponseWriter, appErr *mmmodel.AppError) 
 	if appErr.StatusCode >= http.StatusInternalServerError {
 		p.API.LogError("Docs API request failed", "where", appErr.Where, "id", appErr.Id, "status_code", appErr.StatusCode, "err", appErr.Error())
 	}
+	if appErr.StatusCode == http.StatusConflict {
+		p.writeConflictWithPage(w, appErr, nil)
+		return
+	}
 	safe := *appErr
 	safe.WipeDetailed()
 	writeJSON(w, appErr.StatusCode, &safe)
+}
+
+// conflictResponse is the body every 409 carries: the scrubbed AppError plus the current server
+// page. One shape across all conflicts means a client parses a 409 the same way whichever endpoint
+// produced it, rather than branching on the route.
+//
+// current_page is null when the handler has no page to offer — the conflict was not about a page, or
+// the re-read that would have produced it failed — so a client treats it as an optional shortcut and
+// falls back to a GET. Where it is populated (publish and page-update conflicts, which already read
+// the live page to build the error) it saves that round-trip: the client diffs and re-baselines
+// against the returned EditAt directly. The whole page is returned rather than a curated snapshot,
+// so the client renders whatever it needs.
+type conflictResponse struct {
+	Error       *mmmodel.AppError `json:"error"`
+	CurrentPage *model.Page       `json:"current_page"`
+}
+
+// writeConflictWithPage writes a conflictResponse using the AppError's own StatusCode (409) as the
+// HTTP status. DetailedError is scrubbed first, matching writeAppError.
+func (p *Plugin) writeConflictWithPage(w http.ResponseWriter, appErr *mmmodel.AppError, current *model.Page) {
+	safe := *appErr
+	safe.WipeDetailed()
+	writeJSON(w, appErr.StatusCode, conflictResponse{Error: &safe, CurrentPage: current})
 }
 
 // writeJSON serialises v as a JSON body with the given status.

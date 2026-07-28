@@ -236,6 +236,8 @@ func (s *Store) execBuilder(e sqlx.ExtContext, b sq.Sqlizer) (sql.Result, error)
 }
 
 // advisoryXactLock takes the transaction-scoped advisory lock for key, held until tx ends.
+// It is a bare pg_advisory_xact_lock function-call SELECT, which squirrel does not model, so
+// it is issued raw.
 // hashtextextended maps the key to a single bigint, so a hash collision only over-serializes
 // the two colliding keys' operations — added contention, never corruption, with negligible
 // probability. Must be called inside tx.
@@ -328,6 +330,15 @@ const (
 	ReasonSubtreeMaxDepthExceeded = "subtree_max_depth_exceeded"
 	ReasonParentNotLive           = "parent_not_live"
 	ReasonSubtreeNotOwned         = "subtree_not_owned"
+	ReasonDraftCycle              = "draft_cycle"
+	ReasonDraftTooDeep            = "draft_too_deep"
+	ReasonDraftQuotaExceeded      = "draft_quota_exceeded"
+	// ReasonPageNotLive marks an autosave whose target is not addressable in the request's space:
+	// the page was deleted, snapshotted, or moved out of it, the existing draft belongs to another
+	// space, or the page id was never reserved at all (no page row and no draft). The caller maps
+	// it to 404 rather than a generic 400 — from the requester's view the page does not exist in
+	// that space.
+	ReasonPageNotLive = "page_not_live"
 )
 
 func (e *ErrInvalidInput) Error() string {
@@ -340,17 +351,39 @@ func IsErrInvalidInput(err error) bool {
 	return errors.As(err, &e)
 }
 
-// ErrConflict is returned when a unique constraint is violated or a CAS check fails.
+// InvalidInputReason returns the Reason of the ErrInvalidInput in err's chain, or "" if err is not
+// an ErrInvalidInput or carries no reason.
+func InvalidInputReason(err error) string {
+	var e *ErrInvalidInput
+	if errors.As(err, &e) {
+		return e.Reason
+	}
+	return ""
+}
+
+// Conflict reasons let a caller tell one CAS failure from another without parsing Resource. An
+// ErrConflict with no Reason is an unqualified conflict (e.g. a primary-key collision).
+const (
+	// ReasonConcurrentEdit: the page's EditAt no longer matches the baseline the caller published
+	// against — someone else edited the page.
+	ReasonConcurrentEdit = "concurrent_edit"
+	// ReasonConcurrentAutosave: the draft's version token no longer matches what the caller read —
+	// usually a concurrent autosave, but also a bulk write (a page delete reparenting a pending
+	// draft, or a move-to-space re-homing it) that bumps the token without changing content.
+	ReasonConcurrentAutosave = "concurrent_autosave"
+)
+
+// ErrConflict is returned when a unique constraint is violated or a CAS check fails. Reason, when
+// set, names which CAS failed so a caller can map it to a specific response.
 type ErrConflict struct {
 	Resource string
-	// Reason optionally distinguishes a structurally different conflict — currently only
-	// ReasonLockTimeout, for a WithSpaceMembershipLock acquisition timeout — from the default
-	// unique-constraint/CAS-mismatch conflict, so a caller can map it to its own status/error key
-	// instead of the shared 409 conflict mapping.
-	Reason string
+	Reason   string
 }
 
 func (e *ErrConflict) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("conflict on %s: %s", e.Resource, e.Reason)
+	}
 	return fmt.Sprintf("conflict: %s", e.Resource)
 }
 
@@ -369,6 +402,16 @@ const ReasonLockTimeout = "lock_timeout"
 func IsErrLockTimeout(err error) bool {
 	var e *ErrConflict
 	return errors.As(err, &e) && e.Reason == ReasonLockTimeout
+}
+
+// ConflictReason returns the Reason of the ErrConflict in err's chain, or "" if err is not an
+// ErrConflict or carries no reason.
+func ConflictReason(err error) string {
+	var e *ErrConflict
+	if errors.As(err, &e) {
+		return e.Reason
+	}
+	return ""
 }
 
 // ErrLimitExceeded is returned when a result set exceeds a hard size limit.

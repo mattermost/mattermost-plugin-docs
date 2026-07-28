@@ -10,6 +10,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"unicode/utf8"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -37,6 +39,23 @@ type Service struct {
 	store  *store.Store
 	log    Logger
 	client *pluginapi.Client
+
+	// presenceBroadcastTimes records the last channel-wide presence broadcast time (ms) per
+	// (pageID, userID). Autosave cadence is client-driven and unbounded server-side, and every autosave
+	// on a live page would otherwise fan a presence event out to the whole channel, so this caps those
+	// broadcasts to at most one per presenceBroadcastMinIntervalMs per (page, user). Delete and publish
+	// paths bypass this and always broadcast.
+	//
+	// The map is per-process, so each node throttles independently: a user whose autosaves are
+	// spread across nodes can broadcast more often than the interval implies. That is acceptable —
+	// the payload is queried fresh from the shared DB on every broadcast, so the throttle only
+	// trades broadcast volume, never correctness. Entries are dropped on discard and publish, and
+	// swept by age via sweepPresenceBroadcastTimes for sessions abandoned without either.
+	presenceBroadcastTimes sync.Map
+
+	// lastPresenceSweepAt is the timestamp (ms) of the most recent presenceBroadcastTimes sweep, used
+	// to rate-limit the sweep itself to once per presenceBroadcastSweepIntervalMs.
+	lastPresenceSweepAt atomic.Int64
 }
 
 // New creates a Service wired to the given store, logger, and optional pluginapi client.
@@ -146,6 +165,11 @@ func storeAppError(where string, err error) *mmmodel.AppError {
 			return mmmodel.NewAppError(where, "app.page.max_depth_exceeded.app_error", map[string]any{"MaxDepth": limitErr.Limit}, "", http.StatusBadRequest).Wrap(err)
 		case store.ReasonSubtreeMaxDepthExceeded:
 			return mmmodel.NewAppError(where, "app.page.subtree_max_depth_exceeded.app_error", map[string]any{"MaxDepth": limitErr.Limit}, "", http.StatusBadRequest).Wrap(err)
+		case store.ReasonDraftQuotaExceeded:
+			// 422, not 429: the caller is over a standing per-space draft cap, not sending too many
+			// requests. Retrying the same request never succeeds until a draft is discarded, so a
+			// rate-limit code would send clients into a wait-and-retry loop.
+			return mmmodel.NewAppError(where, "app.page_draft.quota_exceeded.app_error", nil, "", http.StatusUnprocessableEntity).Wrap(err)
 		}
 		return mmmodel.NewAppError(where, "app.store.too_large.app_error", map[string]any{"Limit": limitErr.Limit}, "", http.StatusUnprocessableEntity).Wrap(err)
 	default:
@@ -160,11 +184,16 @@ func storeAppError(where string, err error) *mmmodel.AppError {
 func invalidInputAppError(where string, err error) *mmmodel.AppError {
 	var invErr *store.ErrInvalidInput
 	if errors.As(err, &invErr) && invErr.Reason != "" {
-		if invErr.Reason == store.ReasonParentNotLive {
+		switch invErr.Reason {
+		case store.ReasonParentNotLive:
 			// Same key as the app-layer parent pre-checks (validateParentExists), so a parent
 			// that disappears between the pre-check and the store's locked check reads
 			// identically to one that never existed — the contract is not race-dependent.
 			return mmmodel.NewAppError(where, "app.page.invalid_parent.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+		case store.ReasonDraftCycle:
+			return mmmodel.NewAppError(where, "app.page_draft.update.parent_cycle.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+		case store.ReasonDraftTooDeep:
+			return mmmodel.NewAppError(where, "app.page_draft.update.parent_too_deep.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 		}
 		if invErr.Reason == store.ReasonSubtreeNotOwned {
 			return mmmodel.NewAppError(where, "app.page.move_to_space.subtree_not_owned.app_error", nil, "", http.StatusBadRequest).Wrap(err)

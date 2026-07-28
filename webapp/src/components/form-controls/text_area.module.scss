@@ -1,0 +1,45 @@
+.root {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+}
+
+.field {
+    width: 100%;
+    min-height: 80px;
+    padding: 10px 16px;
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.16);
+    border-radius: 4px;
+    background: var(--center-channel-bg);
+    color: var(--center-channel-color);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 14px;
+    line-height: 20px;
+    resize: vertical;
+
+    &::placeholder {
+        color: rgba(var(--center-channel-color-rgb), 0.64);
+    }
+
+    &:focus {
+        padding: 9px 15px;
+        border: 2px solid var(--button-bg);
+        outline: none;
+    }
+}
+
+.error {
+    color: var(--error-text);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 12px;
+    line-height: 16px;
+}
+
+.hasError .field {
+    border-color: var(--error-text);
+
+    &:focus {
+        border-color: var(--error-text);
+    }
+}

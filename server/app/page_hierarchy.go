@@ -140,7 +140,7 @@ func (s *Service) MovePage(pageID, spaceID string, newParentID *string, newIndex
 // committed in between (surviving here via force) would make the earlier-read parent stale and
 // point clients at the wrong subtree to invalidate.
 func (s *Service) reparentWithinSpace(where, pageID, spaceID string, newParentID *string, newIndex *int64, expectedUpdateAt *int64, force bool) (*model.Page, *mmmodel.AppError) {
-	moved, priorParentID, didMove, storeErr := s.store.MovePage(pageID, spaceID, newParentID, newIndex, mmmodel.SafeDereference(expectedUpdateAt), force, MaxPageDepth)
+	moved, priorParentID, didMove, storeErr := s.store.MovePage(pageID, spaceID, newParentID, newIndex, mmmodel.SafeDereference(expectedUpdateAt), force, model.MaxPageDepth)
 	if storeErr != nil {
 		return nil, storeAppError(where, storeErr)
 	}
@@ -160,13 +160,13 @@ func (s *Service) reparentWithinSpace(where, pageID, spaceID string, newParentID
 // destination-inside-subtree cycles, and depth-cap breaches are all rejected.
 // A nil expectedUpdateAt without force is rejected: the mutation must supply a baseline.
 // sourceSpace and targetSpace are the caller's already-fetched records (from its membership
-// gates), so no re-read happens here. userID is the acting user, recorded in logs only — a
-// move does not change the page's LastModifiedBy. requiredOwnerID, when non-empty, requires
-// every live page in the moved subtree to be owned by it — the gate resolves this to userID on
-// the delete_own_page-only path and "" on the delete_page (any) path — and the move is rejected
-// as a whole if any page has a different owner. A same-space request
-// requires only the reparented root to be owned, since no other page leaves the space.
-// Per-page restrictions and redirects are not handled yet.
+// gates), so no re-read happens here. userID is the acting user and must be a valid ID: the store
+// scopes the target-space draft quota to the drafts it owns. It does not change the page's
+// LastModifiedBy. requiredOwnerID, when non-empty, requires every live page in the moved subtree
+// to be owned by it — the gate resolves this to userID on the delete_own_page-only path and "" on
+// the delete_page (any) path — and the move is rejected as a whole if any page has a different
+// owner. A same-space request requires only the reparented root to be owned, since no other page
+// leaves the space. Per-page restrictions and redirects are not handled yet.
 func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model.Space, parentPageID *string, expectedUpdateAt *int64, force bool, userID, requiredOwnerID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -249,7 +249,7 @@ func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model
 
 	s.log.Debug("Moving page to space", "page_id", pageID, "source_space_id", sourceSpace.Id, "target_space_id", targetSpace.Id, "user_id", userID)
 
-	moved, priorParentID, storeErr := s.store.MovePageToSpace(pageID, sourceSpace.Id, targetSpace.Id, parentPageID, mmmodel.SafeDereference(expectedUpdateAt), force, MaxPageDepth, requiredOwnerID)
+	moved, priorParentID, storeErr := s.store.MovePageToSpace(pageID, sourceSpace.Id, targetSpace.Id, userID, parentPageID, mmmodel.SafeDereference(expectedUpdateAt), force, model.MaxPageDepth, requiredOwnerID)
 	if storeErr != nil {
 		return nil, storeAppError("MovePageToSpace", storeErr)
 	}

@@ -22,6 +22,11 @@ const (
 	// so this is a storage safety bound against unbounded writes.
 	PageBodyMaxBytes = 2 * 1024 * 1024
 
+	// MaxPageDepth is the page hierarchy depth limit (root is depth 1). It also bounds draft
+	// nesting: a draft chain publishes into a page chain of the same depth, so the store's
+	// draft-cycle walk is capped at the same value.
+	MaxPageDepth = 10
+
 	// PagePropsMaxBytes caps the serialized size of the opaque Props map.
 	PagePropsMaxBytes = 64 * 1024
 
@@ -108,9 +113,7 @@ func MaxDepthOfPages(pages []*Page, rootID string) int {
 			}
 			cur = parent
 		}
-		if depth > maxDepth {
-			maxDepth = depth
-		}
+		maxDepth = max(maxDepth, depth)
 	}
 	return maxDepth
 }
@@ -252,7 +255,7 @@ func (p *Page) IsValid() *mmmodel.AppError {
 		return mmmodel.NewAppError("Page.IsValid", "model.page.is_valid.search_text_without_body.app_error", nil, "id="+p.Id, http.StatusBadRequest)
 	}
 
-	if err := validatePropsSize("Page.IsValid", "id="+p.Id, p.Props, PagePropsMaxBytes); err != nil {
+	if err := ValidatePropsSize("Page.IsValid", "id="+p.Id, p.Props, PagePropsMaxBytes); err != nil {
 		return err
 	}
 

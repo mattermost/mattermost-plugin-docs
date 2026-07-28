@@ -13,7 +13,6 @@ import (
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 
-	"github.com/mattermost/mattermost-plugin-docs/server/app"
 	"github.com/mattermost/mattermost-plugin-docs/server/internal/testutil"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
@@ -207,7 +206,7 @@ func TestServiceMovePageToSpace_RejectsDepthExceeded(t *testing.T) {
 
 	// Build a chain in spaceB down to MaxPageDepth; a child under the deepest node would breach it.
 	parentID := ""
-	for range app.MaxPageDepth {
+	for range model.MaxPageDepth {
 		p := mustCreatePage(t, h.store, spaceB.Id, chB, user, parentID)
 		parentID = p.Id
 	}

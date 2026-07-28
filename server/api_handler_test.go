@@ -263,16 +263,16 @@ func TestHandler_SpaceAndPageRoundTrip(t *testing.T) {
 		require.Equal(t, space.Id, page.SpaceId)
 	})
 
-	t.Run("create page with content and search_text", func(t *testing.T) {
+	t.Run("create page derives search_text from body", func(t *testing.T) {
 		rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages", user, map[string]any{
 			"title":       "Page B",
-			"body":        `{"type":"doc","content":[]}`,
-			"search_text": "plain text projection",
+			"body":        `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"searchable body"}]}]}`,
+			"search_text": "ignored client value",
 		})
 		require.Equal(t, http.StatusCreated, rec.Code)
 		var page model.Page
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &page))
-		require.Equal(t, "plain text projection", page.SearchText)
+		require.Equal(t, "searchable body", page.SearchText, "SearchText is derived from the body, not the caller-supplied value")
 	})
 
 	t.Run("get page in wrong space is 404", func(t *testing.T) {
@@ -673,11 +673,10 @@ func TestHandler_UpdatePage(t *testing.T) {
 	space := seedSpace(t, h.store, h.db, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
-	// Body and search text must be patched together (search text is the body's plain-text
-	// projection), so both are supplied.
+	// SearchText is derived from the body server-side, so only the body is supplied; a
+	// caller-supplied search_text is ignored.
 	body := map[string]any{
-		"body":         `{"type":"doc","content":[{"type":"paragraph"}]}`,
-		"search_text":  "updated text",
+		"body":         `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"updated text"}]}]}`,
 		"base_edit_at": page.EditAt,
 	}
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, body)
@@ -685,12 +684,24 @@ func TestHandler_UpdatePage(t *testing.T) {
 
 	var updated model.Page
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updated))
-	require.Equal(t, `{"type":"doc","content":[{"type":"paragraph"}]}`, updated.Body)
+	require.Contains(t, updated.Body, "updated text")
 	require.Equal(t, "updated text", updated.SearchText)
 
 	// The first update bumped EditAt, so the same baseline is now stale.
 	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, body)
 	require.Equal(t, http.StatusConflict, rec.Code)
+
+	// Every 409 carries the same shape, so a client parses it without branching on the route. This
+	// one populates current_page, letting the caller re-baseline without a follow-up read.
+	var conflict struct {
+		Error       *mmmodel.AppError `json:"error"`
+		CurrentPage *model.Page       `json:"current_page"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &conflict))
+	require.NotNil(t, conflict.Error)
+	require.Empty(t, conflict.Error.DetailedError, "the conflict body must not carry internal error detail")
+	require.NotNil(t, conflict.CurrentPage, "the update conflict must carry the current server page")
+	require.Greater(t, conflict.CurrentPage.EditAt, page.EditAt, "current page must carry the advanced baseline")
 }
 
 // TestHandler_UpdatePage_BaselineRequired verifies a PATCH that omits base_edit_at without force
@@ -901,7 +912,7 @@ func TestHandler_MovePageToSpace_DepthExceeded(t *testing.T) {
 	require.NoError(t, err)
 
 	parentID := ""
-	for range app.MaxPageDepth {
+	for range model.MaxPageDepth {
 		p := seedPage(t, h.store, spaceB.Id, channelB, parentID)
 		parentID = p.Id
 	}
@@ -973,7 +984,7 @@ func TestHandler_MovePage_MaxDepthExceeded(t *testing.T) {
 	space := seedSpace(t, h.store, h.db, channelID)
 
 	parentID := ""
-	for range app.MaxPageDepth {
+	for range model.MaxPageDepth {
 		p := seedPage(t, h.store, space.Id, channelID, parentID)
 		parentID = p.Id
 	}
@@ -1240,6 +1251,14 @@ func TestHandler_SpaceMembershipRequired(t *testing.T) {
 		{http.MethodPatch, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/move", nil},
 		{http.MethodPatch, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/move-to-space", nil},
 		{http.MethodPost, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/duplicate", nil},
+		// Draft + presence handlers.
+		{http.MethodPost, "/api/v1/spaces/" + space.Id + "/drafts", map[string]any{"title": "D"}},
+		{http.MethodGet, "/api/v1/spaces/" + space.Id + "/drafts", nil},
+		{http.MethodPatch, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/draft", map[string]any{"title": "D"}},
+		{http.MethodGet, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/draft", nil},
+		{http.MethodDelete, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/draft", nil},
+		{http.MethodPost, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/draft/publish", nil},
+		{http.MethodGet, "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/active-editors", nil},
 	}
 	for _, tc := range cases {
 		rec := h.do(t, tc.method, tc.path, stranger, tc.body)
@@ -1950,9 +1969,16 @@ func TestHandler_SetSpaceMemberCapabilities_LastAdminConflict(t *testing.T) {
 		"granted_capabilities": []string{},
 	})
 	require.Equal(t, http.StatusConflict, rec.Code)
-	var appErr mmmodel.AppError
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
-	require.Equal(t, "app.space.member.last_admin.app_error", appErr.Id)
+	// A membership 409 carries the shared conflict envelope like every other 409; current_page is
+	// nil because the conflict is not about a page.
+	var conflict struct {
+		Error       *mmmodel.AppError `json:"error"`
+		CurrentPage *model.Page       `json:"current_page"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &conflict))
+	require.NotNil(t, conflict.Error)
+	require.Equal(t, "app.space.member.last_admin.app_error", conflict.Error.Id)
+	require.Nil(t, conflict.CurrentPage)
 }
 
 // TestHandler_SetSpaceMemberCapabilities_EmptyDoesNotDemoteBelowDefault verifies the additive-only

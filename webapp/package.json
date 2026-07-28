@@ -3,7 +3,7 @@
   "scripts": {
     "build": "webpack --mode=production",
     "build:watch": "webpack --mode=production --watch",
-    "debug": "webpack --mode=none",
+    "debug": "webpack --mode=development",
     "debug:watch": "webpack --mode=development --watch",
     "lint": "eslint --ignore-pattern node_modules --ignore-pattern dist --ext=.js,.jsx,tsx,ts . --quiet --cache",
     "fix": "eslint --ignore-pattern node_modules --ignore-pattern dist --ext=.js,.jsx,tsx,ts . --quiet --fix --cache",
@@ -11,7 +11,7 @@
     "test:watch": "jest --watch",
     "test-ci": "jest --forceExit --detectOpenHandles --maxWorkers=2",
     "check-types": "tsc",
-    "extract": "formatjs extract \"src/**/*.{ts,tsx}\" --ignore \"**/*.d.ts\" --id-interpolation-pattern '[sha512:contenthash:base64:6]' --format simple --out-file i18n/en.json"
+    "i18n-extract": "formatjs extract \"src/**/*.{ts,tsx}\" --ignore \"**/*.d.ts\" --id-interpolation-pattern '[sha512:contenthash:base64:6]' --format simple --out-file i18n/en.json"
   },
   "devDependencies": {
     "@babel/cli": "7.25.6",
@@ -22,18 +22,21 @@
     "@babel/runtime": "7.25.6",
     "@emotion/babel-preset-css-prop": "11.2.0",
     "@emotion/react": "11.9.0",
-    "@formatjs/cli": "4.7.0",
-    "@mattermost/client": "11.1.0",
+    "@formatjs/cli": "6.7.4",
+    "@mattermost/client": "11.8.0",
     "@mattermost/eslint-plugin": "1.1.0-0",
-    "@mattermost/types": "11.1.0",
+    "@mattermost/types": "11.8.0",
     "@testing-library/jest-dom": "5.16.1",
+    "@testing-library/react": "14.3.1",
     "@types/babel__core": "7.20.5",
     "@types/babel__template": "7.4.4",
     "@types/jest": "27.4.0",
     "@types/node": "20.17.6",
     "@types/react": "18.2.64",
+    "@types/react-dom": "18.2.0",
     "@types/react-redux": "7.1.22",
-    "@types/react-router-dom": "5.1.5",
+    "@types/react-router": "5.1.20",
+    "@types/react-router-dom": "5.3.3",
     "@types/react-transition-group": "4.4.0",
     "@typescript-eslint/eslint-plugin": "7.18.0",
     "@typescript-eslint/parser": "7.0.2",
@@ -41,6 +44,8 @@
     "babel-plugin-formatjs": "10.3.7",
     "babel-plugin-typescript-to-proptypes": "2.0.0",
     "css-loader": "6.5.1",
+    "eslint": "8.57.0",
+    "eslint-plugin-formatjs": "4.13.3",
     "eslint-plugin-import": "2.31.0",
     "eslint-plugin-react": "7.34.1",
     "eslint-plugin-react-hooks": "4.6.0",
@@ -50,6 +55,7 @@
     "jest": "27.4.7",
     "jest-canvas-mock": "2.3.1",
     "jest-junit": "13.0.0",
+    "process": "0.11.10",
     "sass": "1.52.3",
     "sass-loader": "13.0.0",
     "style-loader": "3.3.1",
@@ -57,12 +63,27 @@
     "webpack-cli": "5.1.4"
   },
   "dependencies": {
+    "@atlaskit/pragmatic-drag-and-drop": "1.7.7",
+    "@atlaskit/pragmatic-drag-and-drop-hitbox": "1.1.0",
+    "@atlaskit/pragmatic-drag-and-drop-react-drop-indicator": "3.2.12",
+    "@base-ui-components/react": "1.0.0-rc.0",
+    "@floating-ui/react": "0.26.28",
+    "@mattermost/compass-icons": "0.1.53",
+    "@mattermost/shared": "11.8.0",
+    "@tanstack/react-form": "1.33.0",
+    "classnames": "2.3.1",
     "core-js": "3.26.0",
-    "mattermost-redux": "11.1.0",
+    "mattermost-redux": "11.8.0",
     "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "react-hotkeys-hook": "5.3.3",
+    "react-intl": "7.1.14",
     "react-redux": "9.2.0",
+    "react-router-dom": "5.3.4",
     "redux": "5.0.1",
-    "typescript": "4.9.5"
+    "reselect": "5.2.0",
+    "typescript": "5.5.4",
+    "zod": "4.4.3"
   },
   "jest": {
     "testPathIgnorePatterns": [
@@ -70,6 +91,7 @@
       "/non_npm_dependencies/"
     ],
     "clearMocks": true,
+    "testEnvironment": "jsdom",
     "collectCoverageFrom": [
       "src/**/*.{js,jsx}"
     ],
@@ -81,7 +103,10 @@
       "^.+\\.(jpg|jpeg|png|gif|eot|otf|webp|svg|ttf|woff|woff2|mp4|webm|wav|mp3|m4a|aac|oga)$": "identity-obj-proxy",
       "^.+\\.(css|less|scss)$": "identity-obj-proxy",
       "^.*i18n.*\\.(json)$": "<rootDir>/tests/i18n_mock.json",
-      "^bundle-loader\\?lazy\\!(.*)$": "$1"
+      "^bundle-loader\\?lazy\\!(.*)$": "$1",
+      "^mattermost-redux\\/(.*)$": "<rootDir>/node_modules/mattermost-redux/lib/$1",
+      "^@mattermost/types/(.*)$": "<rootDir>/node_modules/@mattermost/types/lib/$1",
+      "^@mattermost/shared/(.*)$": "<rootDir>/node_modules/@mattermost/shared/dist/$1/index.main.js"
     },
     "moduleDirectories": [
       "src",

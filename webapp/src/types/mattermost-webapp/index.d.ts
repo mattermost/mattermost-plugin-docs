@@ -947,6 +947,7 @@ export interface PluginRegistry {
             headerCentreComponent: ReactResolvable;
             headerRightComponent?: ReactResolvable;
             showTeamSidebar: boolean;
+            isTeamScoped?: boolean;
         }]
     ): UniqueIdentifier;
 

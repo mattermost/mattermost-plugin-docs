@@ -14,13 +14,9 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
-// MaxPageDepth is the page hierarchy depth limit (root is depth 1).
-// store.MaxPageHierarchyDepth (50) is a separate, larger bound used by descendant/ancestor reads.
-const MaxPageDepth = 10
-
 // CreatePage creates a new page in spaceID. ChannelId is derived from the space, not supplied by the caller.
 // The page ID is always server-generated; callers must not supply one.
-func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID string) (*model.Page, *mmmodel.AppError) {
+func (s *Service) CreatePage(spaceID, parentID, title, body, userID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(spaceID) {
 		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.invalid_space_id.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -31,10 +27,11 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID 
 	if titleErr != nil {
 		return nil, titleErr
 	}
-	// SearchText is the body's plain-text projection, so it makes no sense without a body
-	// (matches the update path's rule).
-	if searchText != "" && body == "" {
-		return nil, mmmodel.NewAppError("CreatePage", "app.page.create.search_text_without_content.app_error", nil, "", http.StatusBadRequest)
+	// Validate and normalize the TipTap body and derive SearchText from it. SearchText is the body's
+	// server-derived projection, so it is never taken from the caller.
+	normBody, normSearch, contentErr := normalizePageContent("CreatePage", body)
+	if contentErr != nil {
+		return nil, contentErr
 	}
 
 	// Space existence and liveness are validated by store.CreatePage itself (surfaced as
@@ -49,21 +46,20 @@ func (s *Service) CreatePage(spaceID, parentID, title, body, searchText, userID 
 		}
 	}
 
-	// Body is stored as-is (TipTap validation/normalization and SearchText deferred).
 	page := &model.Page{
 		SpaceId:        spaceID,
 		ParentId:       parentID,
 		Type:           model.PageTypePage,
 		Title:          title,
-		Body:           body,
-		SearchText:     searchText,
+		Body:           normBody,
+		SearchText:     normSearch,
 		UserId:         userID,
 		LastModifiedBy: userID,
 	}
 
 	s.log.Debug("Creating page", "space_id", spaceID, "parent_id", parentID, "user_id", userID)
 
-	created, storeErr := s.store.CreatePage(page, MaxPageDepth)
+	created, storeErr := s.store.CreatePage(page, model.MaxPageDepth)
 	if storeErr != nil {
 		if store.IsErrNotFound(storeErr) {
 			// The space is missing or soft-deleted.
@@ -99,6 +95,8 @@ func (s *Service) GetPage(pageID string) (*model.Page, *mmmodel.AppError) {
 // UpdatePage patches a page, optimistic-locked on baseEditAt; a nil baseEditAt without force is
 // rejected. spaceID scopes the write: a page moved to another space since the caller's last
 // check returns not-found instead of updating the wrong copy.
+// On a 409 the returned page is the current server page (nil if the re-read failed), so the caller
+// can re-baseline without a follow-up read; on every other error it is nil.
 func (s *Service) UpdatePage(pageID, spaceID string, patch *model.PagePatch, baseEditAt *int64, force bool, userID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -111,6 +109,11 @@ func (s *Service) UpdatePage(pageID, spaceID string, patch *model.PagePatch, bas
 	}
 	if appErr := requireBaseline("UpdatePage", "base_edit_at", baseEditAt, force); appErr != nil {
 		return nil, appErr
+	}
+	// Validate/normalize the TipTap body (and recompute SearchText) before patch validation, so a
+	// body-only patch is valid and a direct edit is sanitized on the same content path as publish.
+	if contentErr := normalizePatchContent("UpdatePage", patch); contentErr != nil {
+		return nil, contentErr
 	}
 	if validErr := normalizeAndValidatePagePatch("UpdatePage", patch); validErr != nil {
 		return nil, validErr
@@ -137,7 +140,9 @@ func (s *Service) UpdatePage(pageID, spaceID string, patch *model.PagePatch, bas
 			return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.conflict.app_error",
 				nil, "conflict", http.StatusConflict).Wrap(storeErr)
 		}
-		return nil, mmmodel.NewAppError("UpdatePage", "app.page.update.conflict.app_error",
+		// The page travels back alongside the conflict so the caller can re-baseline without a
+		// follow-up read, matching PublishPageDraft's edit-conflict contract.
+		return fresh, mmmodel.NewAppError("UpdatePage", "app.page.update.conflict.app_error",
 			map[string]any{"ModifiedBy": fresh.LastModifiedBy, "ModifiedAt": fresh.EditAt},
 			"conflict", http.StatusConflict).Wrap(storeErr)
 	}
@@ -197,7 +202,7 @@ func (s *Service) RestorePage(pageID, spaceID, userID string) (*model.Page, *mmm
 		return nil, mmmodel.NewAppError("RestorePage", "app.page.restore.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	s.log.Debug("Restoring page", "page_id", pageID, "user_id", userID)
-	restored, restoreErr := s.store.RestorePage(pageID, spaceID, userID, MaxPageDepth)
+	restored, restoreErr := s.store.RestorePage(pageID, spaceID, userID, model.MaxPageDepth)
 	if restoreErr != nil {
 		if appErr := restoreReasonAppError(restoreErr, map[string]*mmmodel.AppError{
 			store.ReasonNotRestorable: mmmodel.NewAppError("RestorePage", "app.page.restore.not_restorable.app_error", nil, "", http.StatusBadRequest),
@@ -268,7 +273,7 @@ func (s *Service) DuplicatePage(pageID string, sourceSpace *model.Space, userID 
 
 	s.log.Debug("Duplicating page", "page_id", pageID, "source_space_id", sourceSpace.Id, "user_id", userID)
 
-	created, createErr := s.store.CreatePageSubtree(pages, MaxPageDepth)
+	created, createErr := s.store.CreatePageSubtree(pages, model.MaxPageDepth)
 	if createErr != nil {
 		if store.IsErrNotFound(createErr) {
 			return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.dest_not_found.app_error", nil, "", http.StatusNotFound).Wrap(createErr)
@@ -277,7 +282,7 @@ func (s *Service) DuplicatePage(pageID string, sourceSpace *model.Space, userID 
 		// plain placement-depth breach uses storeAppError's operation-neutral key.
 		var limErr *store.ErrLimitExceeded
 		if errors.As(createErr, &limErr) && limErr.Reason == store.ReasonSubtreeMaxDepthExceeded {
-			return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.subtree_max_depth_exceeded.app_error", map[string]any{"MaxDepth": MaxPageDepth}, "", http.StatusBadRequest).Wrap(createErr)
+			return nil, mmmodel.NewAppError("DuplicatePage", "app.page.duplicate.subtree_max_depth_exceeded.app_error", map[string]any{"MaxDepth": model.MaxPageDepth}, "", http.StatusBadRequest).Wrap(createErr)
 		}
 		return nil, storeAppError("DuplicatePage", createErr)
 	}
@@ -299,35 +304,28 @@ func buildDuplicatePages(source *model.Page, descendants []*model.Page, destSpac
 	rootID := mmmodel.NewId()
 	idMap := map[string]string{source.Id: rootID}
 	pages := make([]*model.Page, 0, 1+len(descendants))
-	pages = append(pages, &model.Page{
-		Id:             rootID,
-		SpaceId:        destSpaceID,
-		ParentId:       destParentID,
-		Type:           source.Type,
-		Title:          copyTitle(source.Title),
-		Body:           source.Body,
-		SearchText:     source.SearchText,
-		Props:          maps.Clone(source.Props),
-		UserId:         userID,
-		LastModifiedBy: userID,
-	})
+	pages = append(pages, clonePageFields(source, rootID, destSpaceID, destParentID, copyTitle(source.Title), userID))
 	for _, d := range descendants {
 		newID := mmmodel.NewId()
-		pages = append(pages, &model.Page{
-			Id:             newID,
-			SpaceId:        destSpaceID,
-			ParentId:       idMap[d.ParentId],
-			Type:           d.Type,
-			Title:          d.Title,
-			Body:           d.Body,
-			SearchText:     d.SearchText,
-			Props:          maps.Clone(d.Props),
-			UserId:         userID,
-			LastModifiedBy: userID,
-		})
+		pages = append(pages, clonePageFields(d, newID, destSpaceID, idMap[d.ParentId], d.Title, userID))
 		idMap[d.Id] = newID
 	}
 	return pages
+}
+
+func clonePageFields(src *model.Page, id, spaceID, parentID, title, userID string) *model.Page {
+	return &model.Page{
+		Id:             id,
+		SpaceId:        spaceID,
+		ParentId:       parentID,
+		Type:           src.Type,
+		Title:          title,
+		Body:           src.Body,
+		SearchText:     src.SearchText,
+		Props:          maps.Clone(src.Props),
+		UserId:         userID,
+		LastModifiedBy: userID,
+	}
 }
 
 // copyTitle prefixes "Copy of " and truncates to the page-title cap so the duplicate's title
