@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import React from 'react';
+import React, {useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {SpaceIcon} from 'utils/space_icon';
 
@@ -11,16 +11,19 @@ import InformationOutlineIcon from '@mattermost/compass-icons/components/informa
 import ShareVariantOutlineIcon from '@mattermost/compass-icons/components/share-variant-outline';
 import StarOutlineIcon from '@mattermost/compass-icons/components/star-outline';
 
-import {PrimaryButton} from 'components/form-controls/button';
+import {Button, PrimaryButton} from 'components/form-controls/button';
+import ShareSpaceModal from 'components/share_space_modal/share_space_modal';
 
 import type {Space} from 'types/docs';
 
 import styles from './space_title_bar.module.scss';
 
 // The controls here (favorite, space menu, details, share) are visual
-// scaffolding — wired in later passes.
+// scaffolding — wired in later passes. Icon buttons use the shared Button with
+// the compass `btn-icon` treatment (quaternary + square), the same as core.
 const SpaceTitleBar = ({space, memberCount}: {space: Space; memberCount: number}) => {
     const {formatMessage} = useIntl();
+    const [shareOpen, setShareOpen] = useState(false);
 
     const favoriteLabel = formatMessage({id: 'docs.space.favorite', defaultMessage: 'Favorite this space'});
     const menuLabel = formatMessage({id: 'docs.space.menu', defaultMessage: 'Space options'});
@@ -29,15 +32,19 @@ const SpaceTitleBar = ({space, memberCount}: {space: Space; memberCount: number}
     return (
         <div className={styles.bar}>
             <div className={styles.left}>
-                <button
+                <Button
                     type='button'
-                    className={styles.iconButton}
+                    emphasis='quaternary'
+                    size='sm'
+                    className='btn-icon'
                     aria-label={favoriteLabel}
                 >
                     <StarOutlineIcon size={18}/>
-                </button>
-                <button
+                </Button>
+                <Button
                     type='button'
+                    emphasis='quaternary'
+                    size='sm'
                     className={styles.titleTrigger}
                     aria-label={menuLabel}
                 >
@@ -55,7 +62,7 @@ const SpaceTitleBar = ({space, memberCount}: {space: Space; memberCount: number}
                         className={styles.chevron}
                         size={16}
                     />
-                </button>
+                </Button>
                 <span className={styles.members}>
                     <AccountMultipleOutlineIcon size={16}/>
                     <span>{memberCount}</span>
@@ -63,23 +70,34 @@ const SpaceTitleBar = ({space, memberCount}: {space: Space; memberCount: number}
             </div>
 
             <div className={styles.right}>
-                <button
+                <Button
                     type='button'
-                    className={styles.iconButton}
+                    emphasis='quaternary'
+                    size='sm'
+                    className='btn-icon'
                     aria-label={detailsLabel}
                 >
                     <InformationOutlineIcon size={18}/>
-                </button>
-                <PrimaryButton type='button'>
-                    <span className={styles.share}>
-                        <ShareVariantOutlineIcon size={16}/>
-                        <FormattedMessage
-                            id='docs.space.share'
-                            defaultMessage='Share'
-                        />
-                    </span>
+                </Button>
+                <PrimaryButton
+                    type='button'
+                    size='sm'
+                    className={styles.share}
+                    onClick={() => setShareOpen(true)}
+                >
+                    <ShareVariantOutlineIcon size={16}/>
+                    <FormattedMessage
+                        id='docs.space.share'
+                        defaultMessage='Share'
+                    />
                 </PrimaryButton>
             </div>
+            {shareOpen && (
+                <ShareSpaceModal
+                    space={space}
+                    onClose={() => setShareOpen(false)}
+                />
+            )}
         </div>
     );
 };

@@ -2,7 +2,8 @@
 // See LICENSE.txt for license information.
 
 import type {History} from 'history';
-import type {ComponentType, ReactNode} from 'react';
+import React from 'react';
+import type {ComponentType, ReactElement, ReactNode} from 'react';
 import type {Action} from 'redux';
 
 // Hand-typed view of the API the host web app attaches to `window` for plugins
@@ -52,16 +53,35 @@ type TimestampProps = {
     children?: ReactNode;
 };
 
+export type AvatarSize = 'xxs' | 'xs' | 'sm' | 'md' | 'lg' | 'xl' | 'xxl';
+
+// Mirrors core's Avatar props (widgets/users/avatar). `name` is set to '' when a
+// visible label already accompanies the avatar, so screen readers don't repeat it.
+type AvatarProps = {
+    url?: string;
+    username?: string;
+    size?: AvatarSize;
+    name?: string;
+};
+
 // Core exposes shared React components to plugins on `window.Components`
-// (core's plugins/export.ts). Timestamp renders localized, timezone-aware
-// relative/absolute times so plugins don't hand-roll date formatting.
+// (core's plugins/export.ts). Timestamp renders localized times; Avatar renders
+// a user's profile picture with the host's sizing/fallback.
 type HostComponents = {
     Timestamp?: ComponentType<TimestampProps>;
+    Avatar?: ComponentType<AvatarProps>;
 };
 
 const hostComponents = (): HostComponents => (window as unknown as {Components?: HostComponents}).Components ?? {};
 
 export const Timestamp = hostComponents().Timestamp;
+
+// Renders the host Avatar, or nothing on a host that doesn't publish it. The
+// fallback lives here so callers just render <Avatar/> without a null check.
+export const Avatar = (props: AvatarProps): ReactElement | null => {
+    const HostAvatar = hostComponents().Avatar;
+    return HostAvatar ? React.createElement(HostAvatar, props) : null;
+};
 
 export function getBrowserHistory(): History | undefined {
     return webappUtils().browserHistory;

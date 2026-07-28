@@ -8,6 +8,7 @@ import {SpaceIcon} from 'utils/space_icon';
 
 import type {Space} from 'types/docs';
 
+import MemberAvatars from './member_avatars';
 import styles from './page_hero.module.scss';
 
 type Stat = {
@@ -63,11 +64,14 @@ const PageHero = ({space, pageCount, memberCount}: Props) => {
                         key={stat.key}
                         className={styles.stat}
                     >
-                        {/* eslint-disable-next-line formatjs/no-literal-string-in-jsx -- em dash placeholder until counts are wired */}
+                        {/* eslint-disable-next-line formatjs/no-literal-string-in-jsx -- em dash placeholder for the view count, which has no server source yet */}
                         <span className={styles.statValue}>{stat.value ?? '—'}</span>
                         <span className={styles.statLabel}>{stat.label}</span>
                     </div>
                 ))}
+                <div className={styles.avatars}>
+                    <MemberAvatars spaceId={space.id}/>
+                </div>
             </div>
         </section>
     );

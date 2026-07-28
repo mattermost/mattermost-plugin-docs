@@ -1,6 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import classNames from 'classnames';
 import React from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {Timestamp} from 'webapp_globals';
@@ -11,6 +12,8 @@ import DotsHorizontalIcon from '@mattermost/compass-icons/components/dots-horizo
 import FormatListBulletedIcon from '@mattermost/compass-icons/components/format-list-bulleted';
 import MessageTextOutlineIcon from '@mattermost/compass-icons/components/message-text-outline';
 import PencilOutlineIcon from '@mattermost/compass-icons/components/pencil-outline';
+
+import {Button, SecondaryButton} from 'components/form-controls/button';
 
 import type {Space} from 'types/docs';
 
@@ -50,8 +53,10 @@ const PageBar = ({space}: {space: Space}) => {
     return (
         <div className={styles.bar}>
             <div className={styles.left}>
-                <button
+                <Button
                     type='button'
+                    emphasis='quaternary'
+                    size='sm'
                     className={styles.pagesToggle}
                     aria-label={pagesLabel}
                 >
@@ -62,7 +67,7 @@ const PageBar = ({space}: {space: Space}) => {
                             defaultMessage='Pages'
                         />
                     </span>
-                </button>
+                </Button>
             </div>
 
             <div className={styles.right}>
@@ -75,16 +80,19 @@ const PageBar = ({space}: {space: Space}) => {
                         />
                     </span>
                 )}
-                <button
+                <Button
                     type='button'
-                    className={styles.iconButton}
+                    emphasis='quaternary'
+                    size='sm'
+                    className={classNames('btn-icon', styles.commentButton)}
                     aria-label={commentsLabel}
                 >
                     <MessageTextOutlineIcon size={18}/>
                     <span className={styles.badge}/>
-                </button>
-                <button
+                </Button>
+                <SecondaryButton
                     type='button'
+                    size='sm'
                     className={styles.edit}
                 >
                     <PencilOutlineIcon size={14}/>
@@ -92,21 +100,25 @@ const PageBar = ({space}: {space: Space}) => {
                         id='docs.space.edit'
                         defaultMessage='Edit'
                     />
-                </button>
-                <button
+                </SecondaryButton>
+                <Button
                     type='button'
-                    className={styles.iconButton}
+                    emphasis='quaternary'
+                    size='sm'
+                    className='btn-icon'
                     aria-label={moreLabel}
                 >
                     <DotsHorizontalIcon size={18}/>
-                </button>
-                <button
+                </Button>
+                <Button
                     type='button'
-                    className={styles.iconButton}
+                    emphasis='quaternary'
+                    size='sm'
+                    className='btn-icon'
                     aria-label={expandLabel}
                 >
                     <ArrowExpandIcon size={16}/>
-                </button>
+                </Button>
             </div>
         </div>
     );

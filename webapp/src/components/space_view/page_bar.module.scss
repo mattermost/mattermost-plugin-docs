@@ -19,23 +19,11 @@
     display: flex;
     flex-shrink: 0;
     align-items: center;
-    gap: 2px;
+    gap: 4px;
 }
 
 .pagesToggle {
-    display: flex;
-    align-items: center;
     gap: 8px;
-    padding: 4px 8px;
-    border: none;
-    border-radius: 4px;
-    background: transparent;
-    color: rgba(var(--center-channel-color-rgb), 0.72);
-    cursor: pointer;
-
-    &:hover {
-        background: rgba(var(--center-channel-color-rgb), 0.08);
-    }
 }
 
 .pagesLabel {
@@ -45,30 +33,14 @@
 }
 
 .updated {
-    margin-right: 8px;
+    margin-right: 4px;
     color: rgba(var(--center-channel-color-rgb), 0.56);
     font-size: 12px;
     white-space: nowrap;
 }
 
-.iconButton {
+.commentButton {
     position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    padding: 0;
-    border: none;
-    border-radius: 4px;
-    background: transparent;
-    color: rgba(var(--center-channel-color-rgb), 0.64);
-    cursor: pointer;
-
-    &:hover {
-        background: rgba(var(--center-channel-color-rgb), 0.08);
-        color: rgba(var(--center-channel-color-rgb), 0.72);
-    }
 }
 
 .badge {
@@ -83,21 +55,5 @@
 }
 
 .edit {
-    display: flex;
-    align-items: center;
     gap: 6px;
-    height: 28px;
-    margin: 0 4px;
-    padding: 0 12px;
-    border: 1px solid rgba(var(--center-channel-color-rgb), 0.16);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--center-channel-color);
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-
-    &:hover {
-        background: rgba(var(--center-channel-color-rgb), 0.08);
-    }
 }
