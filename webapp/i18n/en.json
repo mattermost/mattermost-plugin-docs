@@ -53,7 +53,6 @@
   "docs.leaveSpace.confirm": "Yes, leave space",
   "docs.leaveSpace.message": "Are you sure you want to leave the <b>{name}</b> space? You can rejoin later if it is public.",
   "docs.leaveSpace.title": "Leave {name}",
-  "docs.main.page": "Page {pageId}",
   "docs.main.spaceOverview": "Space overview",
   "docs.sidebar.add.browse": "Browse spaces",
   "docs.sidebar.add.create": "Create a space",
