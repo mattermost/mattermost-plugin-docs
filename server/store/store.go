@@ -168,13 +168,13 @@ func (s *Store) finalizeTransaction(tx *sqlx.Tx, perr *error) {
 	}
 }
 
-// beginTxBounded starts a transaction whose connection acquisition is bounded by
+// beginBoundedTx starts a transaction whose connection acquisition is bounded by
 // defaultQueryTimeout, and must be used by any transaction that can run while its caller already
 // holds WithSpaceMembershipLock's dedicated connection. Such a caller needs a second pooled
 // connection while holding one, so an unbounded acquisition can wait forever on a saturated pool
 // while itself holding a connection that pool needs in order to drain. The returned cancel must be
 // deferred by the caller: it bounds acquisition, and releasing it ends the transaction's context.
-func (s *Store) beginTxBounded() (*sqlx.Tx, context.CancelFunc, error) {
+func (s *Store) beginBoundedTx() (*sqlx.Tx, context.CancelFunc, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {

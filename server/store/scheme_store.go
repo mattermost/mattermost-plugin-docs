@@ -125,7 +125,7 @@ func (s *Store) GetRolePermissionsByName(roleName string) ([]string, error) {
 // scheme's id. The scheme is unreferenced by any channel until the caller repoints the space's
 // backing channel at it.
 func (s *Store) CreateSpaceCustomScheme(userPermissions, adminPermissions, guestPermissions []string) (_ string, err error) {
-	tx, cancel, err := s.beginTxBounded()
+	tx, cancel, err := s.beginBoundedTx()
 	if err != nil {
 		return "", errors.Wrap(err, "begin_transaction")
 	}
@@ -210,7 +210,7 @@ func (s *Store) DeleteSpaceCustomSchemeIfUnreferenced(schemeID, excludeChannelID
 		return &ErrInvalidInput{Entity: "Scheme", Field: "id", Value: schemeID}
 	}
 
-	tx, cancel, err := s.beginTxBounded()
+	tx, cancel, err := s.beginBoundedTx()
 	if err != nil {
 		return errors.Wrap(err, "begin_transaction")
 	}

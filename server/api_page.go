@@ -41,7 +41,7 @@ func (p *Plugin) requireTargetSpaceRead(w http.ResponseWriter, invalidIDErr *mmm
 func (p *Plugin) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	space, ok := p.fetchSpaceForGate(w, vars["space_id"], false)
+	space, ok := p.getSpaceForGate(w, vars["space_id"], false)
 	if !ok {
 		return
 	}
@@ -86,7 +86,7 @@ func (p *Plugin) handleGetPage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	space, ok := p.fetchSpaceForGate(w, vars["space_id"], false)
+	space, ok := p.getSpaceForGate(w, vars["space_id"], false)
 	if !ok {
 		return
 	}
@@ -176,7 +176,7 @@ func (p *Plugin) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleMovePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
-	space, ok := p.fetchSpaceForGate(w, vars["space_id"], false)
+	space, ok := p.getSpaceForGate(w, vars["space_id"], false)
 	if !ok {
 		return
 	}

@@ -40,7 +40,7 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int) ([]*mod
 	}
 	members := make([]*model.SpaceMember, 0, len(channelMembers))
 	for _, cm := range channelMembers {
-		members = append(members, projectSpaceMember(cm, defaultCaps))
+		members = append(members, toSpaceMember(cm, defaultCaps))
 	}
 	hasMore := false
 	if len(channelMembers) == perPage {
@@ -56,8 +56,8 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int) ([]*mod
 	return members, hasMore, nil
 }
 
-// projectSpaceMember builds the wire projection of a channel member's capability state.
-func projectSpaceMember(cm *mmmodel.ChannelMember, defaultCaps []string) *model.SpaceMember {
+// toSpaceMember builds the wire representation of a channel member's capability state.
+func toSpaceMember(cm *mmmodel.ChannelMember, defaultCaps []string) *model.SpaceMember {
 	mc := model.CapabilitiesFromMember(cm.ExplicitRoles, cm.SchemeAdmin, cm.SchemeGuest, defaultCaps)
 	member := &model.SpaceMember{
 		UserId:              cm.UserId,
@@ -110,7 +110,7 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 		return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.add_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
 	s.publishToChannels(wsEventSpaceMemberAdded, map[string]any{"space_id": space.Id, "user_id": member.UserId}, space.ChannelId)
-	return projectSpaceMember(member, defaultCaps), nil
+	return toSpaceMember(member, defaultCaps), nil
 }
 
 // hasOtherAuthorizedAdmin reports whether space's backing channel still has a SchemeAdmin member
@@ -230,13 +230,13 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 		// (guests are rejected above, so schemeGuest is always false here), still firing the WS
 		// event.
 		s.log.Warn("SetSpaceMemberCapabilities: post-commit member re-read failed; responding from the requested set", "space_id", space.Id, "user_id", targetUserID, "err", memErr)
-		result = projectSpaceMember(&mmmodel.ChannelMember{
+		result = toSpaceMember(&mmmodel.ChannelMember{
 			UserId:        targetUserID,
 			ExplicitRoles: newRoles,
 			SchemeAdmin:   newSchemeAdmin,
 		}, defaultCaps)
 	} else {
-		result = projectSpaceMember(fresh, defaultCaps)
+		result = toSpaceMember(fresh, defaultCaps)
 	}
 
 	payload := map[string]any{"space_id": space.Id, "user_id": targetUserID}

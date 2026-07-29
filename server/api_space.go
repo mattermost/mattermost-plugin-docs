@@ -72,7 +72,7 @@ func (p *Plugin) handleGetSpace(w http.ResponseWriter, r *http.Request) {
 	spaceID := mux.Vars(r)["space_id"]
 	// BuildSpaceWithAccess resolves the read gate itself and returns the same existence-hiding 403
 	// on a denial, so it is the gate here rather than a second resolution behind requireSpaceRead.
-	space, ok := p.fetchSpaceForGate(w, spaceID, false)
+	space, ok := p.getSpaceForGate(w, spaceID, false)
 	if !ok {
 		return
 	}

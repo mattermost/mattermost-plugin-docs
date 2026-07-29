@@ -102,11 +102,11 @@ func (p *Plugin) MattermostAuthorizationRequired(next http.Handler) http.Handler
 	})
 }
 
-// fetchSpaceForGate fetches spaceID (with soft-deleted rows included when includeDeleted is
+// getSpaceForGate fetches spaceID (with soft-deleted rows included when includeDeleted is
 // true) and maps a not-found lookup to the shared existence-hiding 403, so no enforcement helper
 // ever needs to special-case a missing space differently from a denied one. Writes the error
 // response and returns ok=false on failure.
-func (p *Plugin) fetchSpaceForGate(w http.ResponseWriter, spaceID string, includeDeleted bool) (*model.Space, bool) {
+func (p *Plugin) getSpaceForGate(w http.ResponseWriter, spaceID string, includeDeleted bool) (*model.Space, bool) {
 	var space *model.Space
 	var appErr *mmmodel.AppError
 	if includeDeleted {
@@ -116,7 +116,7 @@ func (p *Plugin) fetchSpaceForGate(w http.ResponseWriter, spaceID string, includ
 	}
 	if appErr != nil {
 		if appErr.StatusCode == http.StatusNotFound {
-			p.writeAppError(w, mmmodel.NewAppError("fetchSpaceForGate", "app.space.access.forbidden.app_error", nil, "", http.StatusForbidden).Wrap(appErr))
+			p.writeAppError(w, mmmodel.NewAppError("getSpaceForGate", "app.space.access.forbidden.app_error", nil, "", http.StatusForbidden).Wrap(appErr))
 			return nil, false
 		}
 		p.writeAppError(w, appErr)
@@ -129,7 +129,7 @@ func (p *Plugin) fetchSpaceForGate(w http.ResponseWriter, spaceID string, includ
 // returning ok=false on either a failed fetch or a denied gate. Every space-scoped route gate
 // below is this shape — only the enforcement helper and its operation label differ.
 func (p *Plugin) requireSpaceGate(w http.ResponseWriter, spaceID string, includeDeleted bool, gate func(space *model.Space) *mmmodel.AppError) (*model.Space, bool) {
-	space, ok := p.fetchSpaceForGate(w, spaceID, includeDeleted)
+	space, ok := p.getSpaceForGate(w, spaceID, includeDeleted)
 	if !ok {
 		return nil, false
 	}
@@ -145,7 +145,7 @@ func (p *Plugin) requireSpaceGate(w http.ResponseWriter, spaceID string, include
 // caller that goes on to evaluate a further permission on the same space can pass the resolution
 // down instead of re-deriving the team membership behind it.
 func (p *Plugin) requireSpaceRead(w http.ResponseWriter, spaceID, userID string) (*model.Space, app.ReadResolution, bool) {
-	space, ok := p.fetchSpaceForGate(w, spaceID, false)
+	space, ok := p.getSpaceForGate(w, spaceID, false)
 	if !ok {
 		return nil, app.ReadDenied, false
 	}

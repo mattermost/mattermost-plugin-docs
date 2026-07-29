@@ -138,7 +138,7 @@ func (s *Store) UpdateSpace(spaceID string, patch *model.SpacePatch, expectedUpd
 		return nil, &ErrInvalidInput{Entity: "Space", Field: "Patch", Value: validErr.Error(), Reason: validErr.Id}
 	}
 
-	tx, cancel, err := s.beginTxBounded()
+	tx, cancel, err := s.beginBoundedTx()
 	if err != nil {
 		return nil, errors.Wrap(err, "begin_transaction")
 	}
@@ -369,7 +369,7 @@ const (
 // transaction of its own. fn may perform store work of its own — reads and its own transactions
 // — so each in-flight caller holds two pooled connections for the critical section: this
 // lock's session connection plus any connection fn's own transaction acquires. Any transaction fn
-// opens must therefore bound its connection acquisition (see beginTxBounded), or a saturated pool
+// opens must therefore bound its connection acquisition (see beginBoundedTx), or a saturated pool
 // can leave every lock holder waiting on a connection no other holder will release. fn must also
 // stay short: the lock connection is held for fn's whole duration, and cross-process
 // serialization of a read-modify-write that spans non-database calls has no cheaper primitive.

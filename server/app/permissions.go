@@ -30,23 +30,23 @@ func existenceHidingForbidden(where string) *mmmodel.AppError {
 	return mmmodel.NewAppError(where, "app.space.access.forbidden.app_error", nil, "", http.StatusForbidden)
 }
 
-// complianceModeOff reports whether ComplianceSettings.Enable is unset or false. A nil client
-// (or nil config) is treated as compliance-off, matching core's own SafeDereference default.
-func (s *Service) complianceModeOff() bool {
+// isComplianceEnabled reports whether ComplianceSettings.Enable is set and true. A nil client (or
+// nil config) reports false, matching core's own SafeDereference default.
+func (s *Service) isComplianceEnabled() bool {
 	if s.client == nil {
-		return true
+		return false
 	}
 	cfg := s.client.Configuration.GetConfig()
 	if cfg == nil {
-		return true
+		return false
 	}
-	return !mmmodel.SafeDereference(cfg.ComplianceSettings.Enable)
+	return mmmodel.SafeDereference(cfg.ComplianceSettings.Enable)
 }
 
-// openTeamFallthrough reports whether userID holds the non-member team read_public_channel
+// hasOpenTeamFallthrough reports whether userID holds the non-member team read_public_channel
 // fall-through into teamID's open spaces. Suppressed under compliance mode.
-func (s *Service) openTeamFallthrough(userID, teamID string) bool {
-	return s.client.User.HasPermissionToTeam(userID, teamID, mmmodel.PermissionReadPublicChannel) && s.complianceModeOff()
+func (s *Service) hasOpenTeamFallthrough(userID, teamID string) bool {
+	return s.client.User.HasPermissionToTeam(userID, teamID, mmmodel.PermissionReadPublicChannel) && !s.isComplianceEnabled()
 }
 
 // readResolutionFrom evaluates the read gate against space for userID, taking sysadmin and active
@@ -58,7 +58,7 @@ func (s *Service) readResolutionFrom(sysadmin, active bool, space *model.Space, 
 	if active && s.client.User.HasPermissionToChannel(userID, space.ChannelId, mmmodel.PermissionReadPage) {
 		return ReadViaMember
 	}
-	if space.ViewAccess == model.ViewAccessOpen && active && s.openTeamFallthrough(userID, space.TeamId) {
+	if space.ViewAccess == model.ViewAccessOpen && active && s.hasOpenTeamFallthrough(userID, space.TeamId) {
 		return ReadViaOpenFallthrough
 	}
 	return ReadDenied
@@ -128,7 +128,7 @@ func (s *Service) evaluatePagePermission(where string, space *model.Space, userI
 		return nil
 	}
 	if perm.Id == mmmodel.PermissionReadPage.Id && space.ViewAccess == model.ViewAccessOpen && active &&
-		s.openTeamFallthrough(userID, space.TeamId) {
+		s.hasOpenTeamFallthrough(userID, space.TeamId) {
 		return nil
 	}
 	return existenceHidingForbidden(where)

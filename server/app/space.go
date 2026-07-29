@@ -550,7 +550,7 @@ func (s *Service) GetSpacesForTeam(teamID, userID string, page, perPage int) ([]
 		!s.client.User.HasPermissionToTeam(userID, teamID, mmmodel.PermissionReadSpace) {
 		return nil, false, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.forbidden.app_error", nil, "", http.StatusForbidden)
 	}
-	callerHasOpenFallthrough := active && s.openTeamFallthrough(userID, teamID)
+	callerHasOpenFallthrough := active && s.hasOpenTeamFallthrough(userID, teamID)
 	spaces, err := s.store.GetSpacesForTeam(teamID, userID, callerHasOpenFallthrough, offset, limit)
 	if err != nil {
 		return nil, false, storeAppError("GetSpacesForTeam", err)
