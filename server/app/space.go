@@ -135,24 +135,26 @@ func (s *Service) archiveOrphanChannel(channelID, reason string, cause error) bo
 	return true
 }
 
-// resolveSpaceScheme resolves the backing-channel scheme id for a space-default capability set:
-// a set matching one of the three seeded presets repoints to the shared preset scheme; any other
-// set creates a new space-private immutable custom scheme. Returns the scheme id and
-// whether a custom scheme was created (so the caller can retire it on a later create-step
-// failure).
-func (s *Service) resolveSpaceScheme(caps []string) (schemeID string, createdCustom bool, err error) {
+// resolveSpaceScheme picks the backing-channel scheme that gives a space's plain members the
+// requested capabilities. A set matching one of the seeded presets resolves to that preset's
+// scheme, which is shared by every space using the same preset. Any other set gets a scheme
+// created here and used by this space alone.
+//
+// createdCustom tells those two cases apart, so a caller whose next create step fails knows
+// whether there is a scheme of its own to retire.
+func (s *Service) resolveSpaceScheme(capabilities []string) (schemeID string, createdCustom bool, err error) {
 	// Normalize before the permission set is persisted: the validators are dedup-tolerant, so
 	// without this a request repeating one allowlisted token would write that repetition verbatim
 	// into the generated role's Permissions column.
-	caps = model.NormalizeCapabilitySet(caps)
-	if presetName, ok := model.SchemeNameForDefaultCapabilities(caps); ok {
+	capabilities = model.NormalizeCapabilitySet(capabilities)
+	if presetName, ok := model.SchemeNameForDefaultCapabilities(capabilities); ok {
 		id, getErr := s.store.GetSchemeIDByName(presetName)
 		if getErr != nil {
 			return "", false, getErr
 		}
 		return id, false, nil
 	}
-	userPerms := append([]string{model.CapabilityReadPage}, caps...)
+	userPerms := append([]string{model.CapabilityReadPage}, capabilities...)
 	adminPerms := mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions)
 	guestPerms := []string{model.CapabilityReadPage}
 	id, createErr := s.store.CreateSpaceCustomScheme(userPerms, adminPerms, guestPerms)
@@ -262,15 +264,15 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultCapabili
 	}
 	space.ViewAccess = va
 
-	caps, _ := model.DefaultCapabilitiesForSchemeName(mmmodel.SchemeNameSpaceContribute)
+	capabilities, _ := model.DefaultCapabilitiesForSchemeName(mmmodel.SchemeNameSpaceContribute)
 	if defaultCapabilities != nil {
-		caps = *defaultCapabilities
+		capabilities = *defaultCapabilities
 	}
-	if capErr := model.ValidateDefaultCapabilities(caps); capErr != nil {
+	if capErr := model.ValidateDefaultCapabilities(capabilities); capErr != nil {
 		return nil, capErr
 	}
 
-	schemeID, createdCustom, schemeErr := s.resolveSpaceScheme(caps)
+	schemeID, createdCustom, schemeErr := s.resolveSpaceScheme(capabilities)
 	if schemeErr != nil {
 		return nil, storeAppError("CreateSpace", schemeErr)
 	}
@@ -372,8 +374,8 @@ func (s *Service) spaceDefaultCapabilities(space *model.Space) ([]string, error)
 // defaultCapabilitiesForRoles is spaceDefaultCapabilities for a caller that already holds the
 // backing channel's scheme roles.
 func (s *Service) defaultCapabilitiesForRoles(roles *store.SchemeRoles) ([]string, error) {
-	if caps, ok := model.DefaultCapabilitiesForSchemeName(roles.SchemeName); ok {
-		return caps, nil
+	if capabilities, ok := model.DefaultCapabilitiesForSchemeName(roles.SchemeName); ok {
+		return capabilities, nil
 	}
 	perms, err := s.store.GetRolePermissionsByName(roles.UserRoleName)
 	if err != nil {
@@ -401,28 +403,28 @@ func (s *Service) BuildSpaceWithAccess(space *model.Space, userID string) (*mode
 	if resolution == ReadDenied {
 		return nil, existenceHidingForbidden("BuildSpaceWithAccess")
 	}
-	defaultCaps, err := s.spaceDefaultCapabilities(space)
+	defaultCapabilities, err := s.spaceDefaultCapabilities(space)
 	if err != nil {
 		return nil, storeAppError("BuildSpaceWithAccess", err)
 	}
 
-	var caps []string
+	var capabilities []string
 	switch resolution {
 	case ReadViaSysadmin:
-		caps = model.AdminEffectiveCapabilities()
+		capabilities = model.AdminEffectiveCapabilities()
 	case ReadViaMember:
 		member, memErr := s.client.Channel.GetMember(space.ChannelId, userID)
 		if memErr != nil {
 			return nil, mmmodel.NewAppError("BuildSpaceWithAccess", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memErr)
 		}
-		caps = model.CapabilitiesFromMember(member.ExplicitRoles, member.SchemeAdmin, member.SchemeGuest, defaultCaps).Effective
+		capabilities = model.CapabilitiesFromMember(member.ExplicitRoles, member.SchemeAdmin, member.SchemeGuest, defaultCapabilities).Effective
 	case ReadViaOpenFallthrough:
-		caps = []string{model.CapabilityReadPage}
+		capabilities = []string{model.CapabilityReadPage}
 	default:
 		return nil, existenceHidingForbidden("BuildSpaceWithAccess")
 	}
 
-	wrapper := &model.SpaceWithAccess{Space: *space, DefaultCapabilities: defaultCaps, Capabilities: caps}
+	wrapper := &model.SpaceWithAccess{Space: *space, DefaultCapabilities: defaultCapabilities, Capabilities: capabilities}
 	wrapper.EnsureCapabilities()
 	return wrapper, nil
 }
@@ -433,11 +435,11 @@ func (s *Service) BuildSpaceWithAccess(space *model.Space, userID string) (*mode
 // unreferenced. The repoint goes through pluginapi Channel.Update (not a store-direct write) so
 // core's member-cache invalidation runs and the new scheme takes effect on the next permission
 // check, rather than when the cache expires.
-func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, caps []string, actingUserID string) (*model.SpaceWithAccess, *mmmodel.AppError) {
+func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities []string, actingUserID string) (*model.SpaceWithAccess, *mmmodel.AppError) {
 	if space == nil {
 		return nil, mmmodel.NewAppError("SetSpaceDefaultCapabilities", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	if appErr := model.ValidateDefaultCapabilities(caps); appErr != nil {
+	if appErr := model.ValidateDefaultCapabilities(capabilities); appErr != nil {
 		return nil, appErr
 	}
 	if appErr := s.requireClient("SetSpaceDefaultCapabilities", "space_id", space.Id); appErr != nil {
@@ -463,13 +465,13 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, caps []string,
 		// scheme — so without this an unchanged custom set would create, repoint, and retire on
 		// every save, and the id comparison below could never catch it.
 		if currentRolesErr == nil {
-			if liveCaps, capsErr := s.defaultCapabilitiesForRoles(currentRoles); capsErr == nil &&
-				slices.Equal(liveCaps, model.NormalizeCapabilitySet(caps)) {
+			if liveCapabilities, capsErr := s.defaultCapabilitiesForRoles(currentRoles); capsErr == nil &&
+				slices.Equal(liveCapabilities, model.NormalizeCapabilitySet(capabilities)) {
 				return nil
 			}
 		}
 
-		targetSchemeID, createdCustom, schemeErr := s.resolveSpaceScheme(caps)
+		targetSchemeID, createdCustom, schemeErr := s.resolveSpaceScheme(capabilities)
 		if schemeErr != nil {
 			return storeAppError("SetSpaceDefaultCapabilities", schemeErr)
 		}
@@ -513,7 +515,7 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, caps []string,
 		if buildErr != nil {
 			return nil, buildErr
 		}
-		wrapper.DefaultCapabilities = model.NormalizeCapabilitySet(caps)
+		wrapper.DefaultCapabilities = model.NormalizeCapabilitySet(capabilities)
 		return wrapper, nil
 	}
 	s.publishToChannels(wsEventSpaceUpdated, map[string]any{"space_id": fresh.Id}, fresh.ChannelId)

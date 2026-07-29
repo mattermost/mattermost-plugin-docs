@@ -31,15 +31,15 @@ func TestRolesForCapabilities_CapabilitiesFromMember_RoundTrip(t *testing.T) {
 	const schemeUserRole = "generated_scheme_user_role"
 
 	for mask := range 1 << len(grantableCapabilities) {
-		var caps []string
+		var capabilities []string
 		for i, c := range grantableCapabilities {
 			if mask&(1<<i) != 0 {
-				caps = append(caps, c)
+				capabilities = append(capabilities, c)
 			}
 		}
-		want := model.NormalizeCapabilitySet(caps)
+		want := model.NormalizeCapabilitySet(capabilities)
 
-		explicitRoles, schemeAdmin := model.RolesForCapabilities(caps, schemeUserRole)
+		explicitRoles, schemeAdmin := model.RolesForCapabilities(capabilities, schemeUserRole)
 
 		// Simulate core's own persistence: the base scheme-user token is consumed into the
 		// SchemeUser flag and never stored; only the atomic role names survive in ExplicitRoles.
@@ -48,8 +48,8 @@ func TestRolesForCapabilities_CapabilitiesFromMember_RoundTrip(t *testing.T) {
 		stored := strings.Join(tokens[1:], " ")
 
 		mc := model.CapabilitiesFromMember(stored, schemeAdmin, false, nil)
-		require.Equal(t, want, mc.Granted, "caps=%v", caps)
-		require.Equal(t, len(caps) > 0 && slices.Contains(caps, model.CapabilityAdminSpace), mc.IsAdmin)
+		require.Equal(t, want, mc.Granted, "capabilities=%v", capabilities)
+		require.Equal(t, len(capabilities) > 0 && slices.Contains(capabilities, model.CapabilityAdminSpace), mc.IsAdmin)
 	}
 }
 
@@ -68,9 +68,9 @@ func TestCapabilitiesFromMember_Guest(t *testing.T) {
 	t.Run("surviving grants project without the default", func(t *testing.T) {
 		explicitRoles := mmmodel.SpacePageCreatorRoleId + " " + mmmodel.SpacePageEditorRoleId
 		// A contribute default that must NOT leak into a guest's effective set.
-		defaultCaps := []string{model.CapabilityCommentPage, model.CapabilityCreatePage, model.CapabilityEditPage, model.CapabilityDeleteOwnPage}
+		defaultCapabilities := []string{model.CapabilityCommentPage, model.CapabilityCreatePage, model.CapabilityEditPage, model.CapabilityDeleteOwnPage}
 
-		mc := model.CapabilitiesFromMember(explicitRoles, false, true, defaultCaps)
+		mc := model.CapabilitiesFromMember(explicitRoles, false, true, defaultCapabilities)
 
 		require.Equal(t, model.NormalizeCapabilitySet([]string{model.CapabilityCreatePage, model.CapabilityEditPage}), mc.Granted)
 		require.Equal(t, model.NormalizeCapabilitySet([]string{model.CapabilityReadPage, model.CapabilityCreatePage, model.CapabilityEditPage}), mc.Effective)
@@ -91,16 +91,16 @@ func TestPresetRoundTrip(t *testing.T) {
 
 	for _, name := range presetNames {
 		t.Run(name, func(t *testing.T) {
-			caps, ok := model.DefaultCapabilitiesForSchemeName(name)
+			capabilities, ok := model.DefaultCapabilitiesForSchemeName(name)
 			require.True(t, ok)
 
-			recognizedName, ok := model.SchemeNameForDefaultCapabilities(caps)
+			recognizedName, ok := model.SchemeNameForDefaultCapabilities(capabilities)
 			require.True(t, ok)
 			require.Equal(t, name, recognizedName)
 
 			roundTripped, ok := model.DefaultCapabilitiesForSchemeName(recognizedName)
 			require.True(t, ok)
-			require.Equal(t, caps, roundTripped)
+			require.Equal(t, capabilities, roundTripped)
 		})
 	}
 

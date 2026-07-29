@@ -94,11 +94,11 @@ var presetCapabilitySets = map[string][]string{
 	mmmodel.SchemeNameSpaceReadOnly:   stripReadPage(mmmodel.SpaceDefaultReadOnlyPermissions),
 }
 
-// validateCapabilities validates caps against allowed, rejecting read_page as the non-grantable
+// validateCapabilities validates capabilities against allowed, rejecting read_page as the non-grantable
 // baseline and delete_page as admin-only, plus admin_space when rejectAdmin is set. An unknown
 // token is rejected. Dedup-tolerant. where attributes the rejection to the calling validator.
-func validateCapabilities(where string, caps []string, allowed map[string]bool, rejectAdmin bool) *mmmodel.AppError {
-	for _, c := range caps {
+func validateCapabilities(where string, capabilities []string, allowed map[string]bool, rejectAdmin bool) *mmmodel.AppError {
+	for _, c := range capabilities {
 		if c == CapabilityReadPage {
 			return mmmodel.NewAppError(where, "model.space_capabilities.read_page_not_grantable.app_error", nil, "", http.StatusBadRequest)
 		}
@@ -117,15 +117,15 @@ func validateCapabilities(where string, caps []string, allowed map[string]bool, 
 
 // ValidateGrantedCapabilities validates a per-member granted-capability request: each token must
 // be one of the grantable member capabilities.
-func ValidateGrantedCapabilities(caps []string) *mmmodel.AppError {
-	return validateCapabilities("ValidateGrantedCapabilities", caps, grantableMemberCapabilities, false)
+func ValidateGrantedCapabilities(capabilities []string) *mmmodel.AppError {
+	return validateCapabilities("ValidateGrantedCapabilities", capabilities, grantableMemberCapabilities, false)
 }
 
 // ValidateDefaultCapabilities validates a space-default capability set: same rule as
 // ValidateGrantedCapabilities, plus admin_space is also rejected — a space default is never
 // admin-granting.
-func ValidateDefaultCapabilities(caps []string) *mmmodel.AppError {
-	return validateCapabilities("ValidateDefaultCapabilities", caps, grantableDefaultCapabilities, true)
+func ValidateDefaultCapabilities(capabilities []string) *mmmodel.AppError {
+	return validateCapabilities("ValidateDefaultCapabilities", capabilities, grantableDefaultCapabilities, true)
 }
 
 // RolesForCapabilities maps the requested non-admin capabilities to their atomic role names for
@@ -133,9 +133,9 @@ func ValidateDefaultCapabilities(caps []string) *mmmodel.AppError {
 // schemeUserRole token is always emitted first — core rejects a member update that leaves the base
 // scheme role unset. Pure: schemeUserRole (the scheme's generated user-role name) comes from the
 // caller, resolved via a store lookup elsewhere.
-func RolesForCapabilities(caps []string, schemeUserRole string) (explicitRoles string, schemeAdmin bool) {
+func RolesForCapabilities(capabilities []string, schemeUserRole string) (explicitRoles string, schemeAdmin bool) {
 	roles := []string{schemeUserRole}
-	for _, c := range NormalizeCapabilitySet(caps) {
+	for _, c := range NormalizeCapabilitySet(capabilities) {
 		if c == CapabilityAdminSpace {
 			schemeAdmin = true
 			continue
@@ -160,14 +160,14 @@ type MemberCapabilities struct {
 // CapabilitiesFromMember reverse-projects a member's raw role state onto the capability vocabulary.
 // explicitRoles is the raw space-delimited ChannelMember.ExplicitRoles string; any token that is
 // not an atomic capability role is ignored (harmless if the base scheme token is passed too).
-// defaultCaps is the space's default capability set (wire form, read_page-free).
+// defaultCapabilities is the space's default capability set (wire form, read_page-free).
 //
 // A SchemeGuest member's effective set is read_page union Granted only — never the space default,
 // since a guest resolves through the read-only DefaultChannelGuestRole, not the scheme's user-role
 // default. A SchemeAdmin member's effective set additionally includes the full canonical admin
 // capability set, since SchemeAdmin resolves through DefaultChannelAdminRole regardless of what is
 // (or isn't) recorded in ExplicitRoles/the space default. Pure: the model never touches the store.
-func CapabilitiesFromMember(explicitRoles string, schemeAdmin, schemeGuest bool, defaultCaps []string) MemberCapabilities {
+func CapabilitiesFromMember(explicitRoles string, schemeAdmin, schemeGuest bool, defaultCapabilities []string) MemberCapabilities {
 	granted := make(map[string]bool)
 	for token := range strings.FieldsSeq(explicitRoles) {
 		if c, ok := atomicRoleCapability[token]; ok {
@@ -186,7 +186,7 @@ func CapabilitiesFromMember(explicitRoles string, schemeAdmin, schemeGuest bool,
 				effective[c] = true
 			}
 		}
-		for _, c := range defaultCaps {
+		for _, c := range defaultCapabilities {
 			effective[c] = true
 		}
 	}
@@ -225,18 +225,18 @@ func DefaultCapabilitiesFromPermissions(permissions []string) []string {
 // DefaultCapabilitiesForSchemeName returns the wire-form default capability set for one of the
 // three seeded preset scheme names, or false if name is not a preset.
 func DefaultCapabilitiesForSchemeName(name string) ([]string, bool) {
-	caps, ok := presetCapabilitySets[name]
+	capabilities, ok := presetCapabilitySets[name]
 	if !ok {
 		return nil, false
 	}
-	return NormalizeCapabilitySet(caps), true
+	return NormalizeCapabilitySet(capabilities), true
 }
 
-// SchemeNameForDefaultCapabilities returns the seeded preset scheme name matching caps, or false
-// if caps does not match any preset. Recognition is set equality — order-insensitive, deduplicated
+// SchemeNameForDefaultCapabilities returns the seeded preset scheme name matching capabilities, or false
+// if capabilities does not match any preset. Recognition is set equality — order-insensitive, deduplicated
 // — never a raw array comparison.
-func SchemeNameForDefaultCapabilities(caps []string) (string, bool) {
-	normalized := NormalizeCapabilitySet(caps)
+func SchemeNameForDefaultCapabilities(capabilities []string) (string, bool) {
+	normalized := NormalizeCapabilitySet(capabilities)
 	for name, preset := range presetCapabilitySets {
 		if slices.Equal(NormalizeCapabilitySet(preset), normalized) {
 			return name, true
@@ -245,11 +245,11 @@ func SchemeNameForDefaultCapabilities(caps []string) (string, bool) {
 	return "", false
 }
 
-// NormalizeCapabilitySet dedupes and sorts caps into a deterministic, non-nil capability slice.
-func NormalizeCapabilitySet(caps []string) []string {
-	seen := make(map[string]bool, len(caps))
-	out := make([]string, 0, len(caps))
-	for _, c := range caps {
+// NormalizeCapabilitySet dedupes and sorts capabilities into a deterministic, non-nil capability slice.
+func NormalizeCapabilitySet(capabilities []string) []string {
+	seen := make(map[string]bool, len(capabilities))
+	out := make([]string, 0, len(capabilities))
+	for _, c := range capabilities {
 		if c == "" || seen[c] {
 			continue
 		}

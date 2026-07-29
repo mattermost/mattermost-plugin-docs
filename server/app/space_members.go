@@ -28,7 +28,7 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int) ([]*mod
 	if appErr := s.requireClient("GetSpaceMembers", "space_id", space.Id); appErr != nil {
 		return nil, false, appErr
 	}
-	defaultCaps, err := s.spaceDefaultCapabilities(space)
+	defaultCapabilities, err := s.spaceDefaultCapabilities(space)
 	if err != nil {
 		return nil, false, storeAppError("GetSpaceMembers", err)
 	}
@@ -40,7 +40,7 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int) ([]*mod
 	}
 	members := make([]*model.SpaceMember, 0, len(channelMembers))
 	for _, cm := range channelMembers {
-		members = append(members, toSpaceMember(cm, defaultCaps))
+		members = append(members, toSpaceMember(cm, defaultCapabilities))
 	}
 	hasMore := false
 	if len(channelMembers) == perPage {
@@ -57,8 +57,8 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int) ([]*mod
 }
 
 // toSpaceMember builds the wire representation of a channel member's capability state.
-func toSpaceMember(cm *mmmodel.ChannelMember, defaultCaps []string) *model.SpaceMember {
-	mc := model.CapabilitiesFromMember(cm.ExplicitRoles, cm.SchemeAdmin, cm.SchemeGuest, defaultCaps)
+func toSpaceMember(cm *mmmodel.ChannelMember, defaultCapabilities []string) *model.SpaceMember {
+	mc := model.CapabilitiesFromMember(cm.ExplicitRoles, cm.SchemeAdmin, cm.SchemeGuest, defaultCapabilities)
 	member := &model.SpaceMember{
 		UserId:              cm.UserId,
 		Capabilities:        mc.Effective,
@@ -97,7 +97,7 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 			return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.member.not_team_member.app_error", nil, "", http.StatusForbidden)
 		}
 	}
-	defaultCaps, err := s.spaceDefaultCapabilities(space)
+	defaultCapabilities, err := s.spaceDefaultCapabilities(space)
 	if err != nil {
 		return nil, storeAppError("AddSpaceMember", err)
 	}
@@ -110,7 +110,7 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 		return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.add_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
 	s.publishToChannels(wsEventSpaceMemberAdded, map[string]any{"space_id": space.Id, "user_id": member.UserId}, space.ChannelId)
-	return toSpaceMember(member, defaultCaps), nil
+	return toSpaceMember(member, defaultCapabilities), nil
 }
 
 // hasOtherAuthorizedAdmin reports whether space's backing channel still has a SchemeAdmin member
@@ -127,21 +127,21 @@ func (s *Service) hasOtherAuthorizedAdmin(space *model.Space, excludeUserID stri
 // additionally enforces the self/admin escalation guard and the last-admin invariant. Guest
 // members are rejected: they stay read-only via the scheme's guest role. actingUserID is the
 // caller, used only to decide the self-escalation guard.
-func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID string, caps []string, actingUserID string) (*model.SpaceMember, *mmmodel.AppError) {
+func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID string, capabilities []string, actingUserID string) (*model.SpaceMember, *mmmodel.AppError) {
 	if space == nil {
 		return nil, mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	if !mmmodel.IsValidId(targetUserID) {
 		return nil, mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.member.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	if appErr := model.ValidateGrantedCapabilities(caps); appErr != nil {
+	if appErr := model.ValidateGrantedCapabilities(capabilities); appErr != nil {
 		return nil, appErr
 	}
 	if appErr := s.requireClient("SetSpaceMemberCapabilities", "space_id", space.Id, "user_id", targetUserID); appErr != nil {
 		return nil, appErr
 	}
 
-	requestedAdmin := slices.Contains(caps, model.CapabilityAdminSpace)
+	requestedAdmin := slices.Contains(capabilities, model.CapabilityAdminSpace)
 	selfTargeted := targetUserID == actingUserID
 
 	// The scheme-role read, the target's current admin status, the escalation-guard decision, and
@@ -162,7 +162,7 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 			appErr = storeAppError("SetSpaceMemberCapabilities", rolesErr)
 			return appErr
 		}
-		newRoles, newSchemeAdmin = model.RolesForCapabilities(caps, schemeRoles.UserRoleName)
+		newRoles, newSchemeAdmin = model.RolesForCapabilities(capabilities, schemeRoles.UserRoleName)
 
 		target, memErr := s.client.Channel.GetMember(space.ChannelId, targetUserID)
 		if memErr != nil {
@@ -218,7 +218,7 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 	// The scheme roles read under the lock still describe this channel: only
 	// SetSpaceDefaultCapabilities repoints a channel's scheme, and it serializes behind the same
 	// space-keyed lock, so the default capability set is projected from them rather than re-read.
-	defaultCaps, defErr := s.defaultCapabilitiesForRoles(schemeRoles)
+	defaultCapabilities, defErr := s.defaultCapabilitiesForRoles(schemeRoles)
 	if defErr != nil {
 		return nil, storeAppError("SetSpaceMemberCapabilities", defErr)
 	}
@@ -234,9 +234,9 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 			UserId:        targetUserID,
 			ExplicitRoles: newRoles,
 			SchemeAdmin:   newSchemeAdmin,
-		}, defaultCaps)
+		}, defaultCapabilities)
 	} else {
-		result = toSpaceMember(fresh, defaultCaps)
+		result = toSpaceMember(fresh, defaultCapabilities)
 	}
 
 	payload := map[string]any{"space_id": space.Id, "user_id": targetUserID}

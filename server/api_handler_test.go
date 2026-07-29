@@ -1850,8 +1850,8 @@ func TestHandler_SetSpaceMemberCapabilities_InvalidCapability(t *testing.T) {
 	space := seedSpace(t, h.store, h.db, channelID)
 
 	cases := []struct {
-		name string
-		caps []string
+		name         string
+		capabilities []string
 	}{
 		{"read_page is not grantable", []string{"read_page"}},
 		{"unknown token is rejected", []string{"not_a_real_capability"}},
@@ -1859,7 +1859,7 @@ func TestHandler_SetSpaceMemberCapabilities_InvalidCapability(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
-				"granted_capabilities": tc.caps,
+				"granted_capabilities": tc.capabilities,
 			})
 			require.Equal(t, http.StatusBadRequest, rec.Code)
 		})
@@ -2143,8 +2143,8 @@ func TestHandler_SetSpaceDefaultCapabilities_InvalidCapability(t *testing.T) {
 	space := seedSpace(t, h.store, h.db, channelID)
 
 	cases := []struct {
-		name string
-		caps []string
+		name         string
+		capabilities []string
 	}{
 		{"read_page is implicit, not settable", []string{"read_page"}},
 		{"admin_space is member-grant-only", []string{"admin_space"}},
@@ -2153,7 +2153,7 @@ func TestHandler_SetSpaceDefaultCapabilities_InvalidCapability(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
-				"default_capabilities": tc.caps,
+				"default_capabilities": tc.capabilities,
 			})
 			require.Equal(t, http.StatusBadRequest, rec.Code)
 		})

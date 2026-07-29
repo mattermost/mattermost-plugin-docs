@@ -19,7 +19,7 @@ const MaxPageDescendantsLimit = 5000
 // Matches MaxPageDescendantsLimit so a full-fan-out subtree still fits the descendant cap.
 const MaxPageSiblingsLimit = MaxPageDescendantsLimit
 
-// MaxRowsPerQuery caps unpaginated reads to prevent unbounded result sets.
+// MaxRowsPerQuery capabilities unpaginated reads to prevent unbounded result sets.
 // Paginated listings reject a non-positive limit outright rather than falling back to this cap.
 const MaxRowsPerQuery = 5000
 
