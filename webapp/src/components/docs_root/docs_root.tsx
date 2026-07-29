@@ -16,7 +16,7 @@ import styles from './docs_root.module.scss';
 const DocsRoot = () => {
     useBootstrapDocs();
 
-    const {spaceId, pageId} = useDocsNavigation();
+    const {spaceId, pageId, isDraft} = useDocsNavigation();
 
     const [switcherOpen, setSwitcherOpen] = useState(false);
     const openSwitcher = useCallback(() => setSwitcherOpen(true), []);
@@ -44,6 +44,7 @@ const DocsRoot = () => {
                 <DocsMainContent
                     spaceId={spaceId}
                     pageId={pageId}
+                    isDraft={isDraft}
                     onCreateSpace={openCreateSpace}
                     onBrowseSpaces={openSwitcher}
                 />
