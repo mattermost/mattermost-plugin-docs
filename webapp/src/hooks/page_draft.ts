@@ -19,6 +19,8 @@ export type PageDraftLoad = {
 
     fromDraft: boolean;
 
+    notFound: boolean;
+
     baseEditAt?: number;
 };
 
@@ -29,6 +31,7 @@ const initial: PageDraftLoad = {
     body: '',
     page: null,
     fromDraft: false,
+    notFound: false,
 };
 
 const isNotFound = (error: unknown): boolean => error instanceof RestError && error.status === 404;
@@ -71,6 +74,7 @@ export function usePageDraft(spaceId: string, pageId: string): PageDraftLoad {
                 body: draft?.body || page?.body || '',
                 page,
                 fromDraft: Boolean(draft),
+                notFound: !draft && !page,
                 baseEditAt: page?.edit_at,
             });
         };

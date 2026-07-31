@@ -53,6 +53,7 @@ export function usePagePresence(spaceId: string, pageId: string, currentUserId: 
 
         const expiresIn = (snapshot.snapshot_at + snapshot.active_timeout_ms) - Date.now();
         if (expiresIn <= 0) {
+            setNow(Date.now());
             return undefined;
         }
         const timer = setTimeout(() => setNow(Date.now()), expiresIn);

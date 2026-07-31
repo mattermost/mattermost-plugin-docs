@@ -263,6 +263,61 @@ describe('useDraftAutosave', () => {
         expect(settled).toBe(true);
     });
 
+    it('does not merge a failed patch into a patch queued for another page', async () => {
+        let rejectSave: (error: Error) => void = () => {};
+        mockUpdate.mockReturnValueOnce(new Promise<Draft>((_, reject) => {
+            rejectSave = reject;
+        }));
+
+        const {result, rerender} = setup();
+
+        act(() => {
+            result.current.queue({body: 'page1 body'});
+        });
+        await runDebounce();
+        expect(mockUpdate).toHaveBeenCalledTimes(1);
+
+        act(() => {
+            rerender({spaceId: 'space1', pageId: 'page2', enabled: true});
+        });
+        act(() => {
+            result.current.queue({body: 'page2 body'});
+        });
+
+        await act(async () => {
+            rejectSave(new Error('offline'));
+        });
+
+        await act(async () => {
+            await result.current.flush();
+        });
+
+        const page2Writes = mockUpdate.mock.calls.filter((call) => call[1] === 'page2');
+        expect(page2Writes).toHaveLength(1);
+        expect(page2Writes[0][2]).toEqual({body: 'page2 body'});
+
+        for (const call of mockUpdate.mock.calls) {
+            if (call[1] === 'page1') {
+                expect(call[2]).not.toMatchObject({body: 'page2 body'});
+            }
+        }
+    });
+
+    it('sends the baseline of the page it targets, not the page now on screen', async () => {
+        const {result, rerender} = setup({baseEditAt: 111});
+
+        act(() => {
+            result.current.queue({body: 'typed on page1'});
+        });
+
+        await act(async () => {
+            rerender({spaceId: 'space1', pageId: 'page2', enabled: true, baseEditAt: 222});
+        });
+
+        expect(mockUpdate.mock.calls[0][1]).toBe('page1');
+        expect(patchesSent()[0]).toEqual({body: 'typed on page1', base_edit_at: 111});
+    });
+
     it('flushes the pending patch to the page being left when the id changes', async () => {
         const {result, rerender} = setup();
 

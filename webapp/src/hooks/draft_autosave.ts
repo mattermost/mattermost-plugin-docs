@@ -37,6 +37,8 @@ export type DraftAutosave = {
 type Pending = {
     spaceId: string;
     pageId: string;
+
+    baseEditAt?: number;
     patch: DraftPatch;
 };
 
@@ -61,10 +63,11 @@ export function useDraftAutosave({spaceId, pageId, enabled, baseEditAt, onSaved,
 
     const doWrite = useCallback(async (): Promise<boolean> => {
         const entry = pendingRef.current;
-        const {enabled: on, baseEditAt: baseline, onSaved: saved, onError: failed} = latest.current;
+        const {enabled: on, onSaved: saved, onError: failed} = latest.current;
         if (!entry || !on) {
             return true;
         }
+        const baseline = entry.baseEditAt;
 
         pendingRef.current = null;
         const generation = generationRef.current;
@@ -88,11 +91,15 @@ export function useDraftAutosave({spaceId, pageId, enabled, baseEditAt, onSaved,
             }
 
             const queuedSince = pendingRef.current as Pending | null;
-            pendingRef.current = {
-                spaceId: entry.spaceId,
-                pageId: entry.pageId,
-                patch: {...entry.patch, ...(queuedSince?.patch ?? {})},
-            };
+            const sameTarget = !queuedSince ||
+                (queuedSince.spaceId === entry.spaceId && queuedSince.pageId === entry.pageId);
+
+            if (sameTarget) {
+                pendingRef.current = {
+                    ...entry,
+                    patch: {...entry.patch, ...(queuedSince?.patch ?? {})},
+                };
+            }
             setStatus('unsaved');
             failed?.(error);
             return false;
@@ -110,10 +117,10 @@ export function useDraftAutosave({spaceId, pageId, enabled, baseEditAt, onSaved,
     }, [doWrite]);
 
     const queue = useCallback((patch: DraftPatch) => {
-        const {spaceId: space, pageId: page} = latest.current;
+        const {spaceId: space, pageId: page, baseEditAt: baseline} = latest.current;
         const prior = pendingRef.current?.spaceId === space && pendingRef.current?.pageId === page ? pendingRef.current.patch : {};
 
-        pendingRef.current = {spaceId: space, pageId: page, patch: {...prior, ...patch}};
+        pendingRef.current = {spaceId: space, pageId: page, baseEditAt: baseline, patch: {...prior, ...patch}};
         setStatus('unsaved');
         clearTimer();
         timerRef.current = setTimeout(() => {

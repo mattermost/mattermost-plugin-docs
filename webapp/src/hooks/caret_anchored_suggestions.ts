@@ -33,9 +33,12 @@ export const useCaretAnchoredSuggestions = (surfaceRef: React.RefObject<HTMLElem
             const above = caret.top - surfaceRect.top - (height + GAP);
             const below = (caret.bottom - surfaceRect.top) + GAP;
 
+            const maxLeft = Math.max(0, surface.clientWidth - list.offsetWidth);
+            const left = Math.min(Math.max(0, caret.left - surfaceRect.left), maxLeft);
+
             list.style.bottom = 'auto';
-            list.style.top = `${flipAbove ? above : below}px`;
-            list.style.left = `${caret.left - surfaceRect.left}px`;
+            list.style.top = `${Math.round(flipAbove ? above : below)}px`;
+            list.style.left = `${Math.round(left)}px`;
         };
 
         const schedule = () => {
@@ -46,6 +49,26 @@ export const useCaretAnchoredSuggestions = (surfaceRef: React.RefObject<HTMLElem
                 frame = 0;
                 position();
             });
+        };
+
+        const sync = () => {
+            const found = surface.querySelector<HTMLElement>(SELECTOR);
+            if (found !== list) {
+                list = found;
+                if (list) {
+                    document.addEventListener('selectionchange', schedule);
+                    window.addEventListener('resize', schedule);
+                    surface.closest('[data-docs-scroll]')?.addEventListener('scroll', schedule);
+                } else {
+                    document.removeEventListener('selectionchange', schedule);
+                    window.removeEventListener('resize', schedule);
+                    surface.closest('[data-docs-scroll]')?.removeEventListener('scroll', schedule);
+                }
+            }
+
+            if (list) {
+                schedule();
+            }
         };
 
         const onMutation = (records: MutationRecord[]) => {
@@ -66,28 +89,18 @@ export const useCaretAnchoredSuggestions = (surfaceRef: React.RefObject<HTMLElem
                 return;
             }
 
-            const found = surface.querySelector<HTMLElement>(SELECTOR);
-            if (found !== list) {
-                list = found;
-                if (list) {
-                    document.addEventListener('selectionchange', schedule);
-                } else {
-                    document.removeEventListener('selectionchange', schedule);
-                }
-            }
-
-            if (!list) {
-                return;
-            }
-            schedule();
+            sync();
         };
 
         const observer = new MutationObserver(onMutation);
         observer.observe(surface, {childList: true, subtree: true});
+        sync();
 
         return () => {
             observer.disconnect();
             document.removeEventListener('selectionchange', schedule);
+            window.removeEventListener('resize', schedule);
+            surface.closest('[data-docs-scroll]')?.removeEventListener('scroll', schedule);
             if (frame) {
                 cancelAnimationFrame(frame);
             }

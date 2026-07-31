@@ -68,24 +68,25 @@ export const CalloutControl = ({getEditor}: CalloutProps) => {
                 setOpen(false);
             }
         };
-        const onKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') {
-                e.stopPropagation();
-                setOpen(false);
-                triggerRef.current?.focus();
-            }
-        };
         document.addEventListener('click', onDocumentClick);
-        document.addEventListener('keydown', onKeyDown, true);
-        return () => {
-            document.removeEventListener('click', onDocumentClick);
-            document.removeEventListener('keydown', onKeyDown, true);
-        };
+        return () => document.removeEventListener('click', onDocumentClick);
     }, [open]);
+
+    const onKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if (e.key === 'Escape') {
+            e.stopPropagation();
+            setOpen(false);
+            triggerRef.current?.focus();
+        }
+    }, []);
 
     const insert = useCallback((type: CalloutType) => {
         const editor = getEditor() as Editor | null;
-        editor?.chain().focus().toggleCallout(type).run();
+        const chain = editor?.chain().focus();
+
+        if (chain && typeof chain.toggleCallout === 'function') {
+            chain.toggleCallout(type).run();
+        }
         setOpen(false);
     }, [getEditor]);
 
@@ -95,6 +96,7 @@ export const CalloutControl = ({getEditor}: CalloutProps) => {
         <div
             ref={wrapperRef}
             className={styles.menuWrapper}
+            onKeyDown={onKeyDown}
         >
             <button
                 ref={triggerRef}
