@@ -13,6 +13,25 @@
     }
 }
 
+.label {
+    display: flex;
+    flex-direction: column;
+}
+
+.labelList {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.labelName {
+    font-weight: 600;
+}
+
+.labelUsername {
+    opacity: 0.72;
+}
+
 .overflow {
     display: inline-flex;
     align-items: center;

@@ -10,14 +10,16 @@ import {getCurrentTeamId} from 'mattermost-redux/selectors/entities/teams';
 
 import type {Page, Space} from 'types/docs';
 
-import type {DocsPluginState} from './types';
+import type {DocsEntitiesState, DocsPluginState} from './types';
 
 const EMPTY_PLUGIN_STATE: DocsPluginState = {
-    spaces: {},
-    spacesInTeam: {},
-    pages: {},
-    pagesInSpace: {},
-    spaceMembers: {},
+    entities: {
+        spaces: {},
+        spacesInTeam: {},
+        pages: {},
+        pagesInSpace: {},
+        spaceMembers: {},
+    },
 };
 
 const EMPTY_SPACES: Space[] = [];
@@ -29,6 +31,8 @@ const EMPTY_PAGES: Page[] = [];
 // crash consumers.
 const pluginState = (state: GlobalState): DocsPluginState =>
     (state as unknown as Record<string, DocsPluginState>)['plugins-' + manifest.id] ?? EMPTY_PLUGIN_STATE;
+
+const entities = (state: GlobalState): DocsEntitiesState => pluginState(state).entities;
 
 const compact = <T>(items: Array<T | undefined>): T[] => items.filter((item): item is T => Boolean(item));
 
@@ -51,18 +55,18 @@ const resolvePages = (ids: Set<string> | undefined, byId: Record<string, Page>):
     return compact([...ids].map((id) => byId[id])).sort(bySortOrder);
 };
 
-export const getSpacesById = (state: GlobalState): Record<string, Space> => pluginState(state).spaces;
+export const getSpacesById = (state: GlobalState): Record<string, Space> => entities(state).spaces;
 
-export const getSpacesInTeamIndex = (state: GlobalState): Record<string, Set<string>> => pluginState(state).spacesInTeam;
+export const getSpacesInTeamIndex = (state: GlobalState): Record<string, Set<string>> => entities(state).spacesInTeam;
 
-export const getPagesById = (state: GlobalState): Record<string, Page> => pluginState(state).pages;
+export const getPagesById = (state: GlobalState): Record<string, Page> => entities(state).pages;
 
-export const getPagesInSpaceIndex = (state: GlobalState): Record<string, Set<string>> => pluginState(state).pagesInSpace;
+export const getPagesInSpaceIndex = (state: GlobalState): Record<string, Set<string>> => entities(state).pagesInSpace;
 
 const EMPTY_MEMBER_IDS: string[] = [];
 
 export const getSpaceMemberIds = (state: GlobalState, spaceId: string): string[] =>
-    pluginState(state).spaceMembers[spaceId] ?? EMPTY_MEMBER_IDS;
+    entities(state).spaceMembers[spaceId] ?? EMPTY_MEMBER_IDS;
 
 // Spaces for an explicit team, resolved through the byId map and sorted.
 // Mirrors core's getChannelsInTeam-style read: index Set → entities → order.
@@ -75,6 +79,12 @@ export const getSpacesForCurrentTeam = createSelector(
     [getSpacesById, getSpacesInTeamIndex, getCurrentTeamId],
     (byId, index, teamId) => resolveSpaces(index[teamId], byId),
 );
+
+// Whether the current team's space list has been loaded (see fetchSpaces, which
+// seeds the index entry even for a team with no spaces). Lets consumers tell an
+// unknown space id from one that simply hasn't arrived yet.
+export const areSpacesLoadedForCurrentTeam = (state: GlobalState): boolean =>
+    getCurrentTeamId(state) in getSpacesInTeamIndex(state);
 
 // All spaces the store holds, across every team the user has loaded. Backs the
 // cross-team docs switcher (which finds docs regardless of the current team).

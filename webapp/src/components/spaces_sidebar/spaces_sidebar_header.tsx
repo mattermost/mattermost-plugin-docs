@@ -17,7 +17,6 @@ import SettingsOutlineIcon from '@mattermost/compass-icons/components/settings-o
 import {invitePeople, leaveTeam, manageMembers, openTeamSettings} from 'actions/team_menu';
 
 import Menu from 'components/menu/menu';
-import type {MenuItemSpec} from 'components/menu/menu_types';
 
 import styles from './spaces_sidebar_header.module.scss';
 
@@ -35,31 +34,12 @@ const SpacesSidebarHeader = ({teamName, teamDescription, onCreateSpace, onBrowse
     const {formatMessage} = useIntl();
     const dispatch = useAppDispatch();
 
-    const teamItems: MenuItemSpec[] = [
-        {
-            id: 'invite',
-            label: formatMessage({id: 'docs.sidebar.team.invite', defaultMessage: 'Invite people'}),
-            secondaryLabel: formatMessage({id: 'docs.sidebar.team.invite.secondary', defaultMessage: 'Add or invite people to the team'}),
-            leadingIcon: <AccountMultiplePlusOutlineIcon size={18}/>,
-            onClick: () => dispatch(invitePeople()),
-        },
-        {id: 'settings', label: formatMessage({id: 'docs.sidebar.team.settings', defaultMessage: 'Team settings'}), leadingIcon: <SettingsOutlineIcon size={18}/>, onClick: () => dispatch(openTeamSettings())},
-        {id: 'members', label: formatMessage({id: 'docs.sidebar.team.members', defaultMessage: 'Manage members'}), leadingIcon: <AccountMultipleOutlineIcon size={18}/>, onClick: () => dispatch(manageMembers())},
-        {id: 'leave', label: formatMessage({id: 'docs.sidebar.team.leave', defaultMessage: 'Leave team'}), leadingIcon: <ExitToAppIcon size={18}/>, isDestructive: true, onClick: () => dispatch(leaveTeam())},
-        {id: 'createTeam', label: formatMessage({id: 'docs.sidebar.team.createTeam', defaultMessage: 'Create a team'}), leadingIcon: <PlusIcon size={18}/>, hasDivider: true, href: CREATE_TEAM_URL},
-        {id: 'learn', label: formatMessage({id: 'docs.sidebar.team.learn', defaultMessage: 'Learn about teams'}), leadingIcon: <LightbulbOutlineIcon size={18}/>, isLink: true, hasDivider: true, href: LEARN_ABOUT_TEAMS_URL, external: true},
-    ];
-
-    const addItems: MenuItemSpec[] = [
-        {id: 'create', label: formatMessage({id: 'docs.sidebar.add.create', defaultMessage: 'Create a space'}), leadingIcon: <PlusIcon size={18}/>, onClick: onCreateSpace},
-        {id: 'browse', label: formatMessage({id: 'docs.sidebar.add.browse', defaultMessage: 'Browse spaces'}), leadingIcon: <GlobeIcon size={18}/>, onClick: onBrowseSpaces},
-    ];
+    const addMenuLabel = formatMessage({id: 'docs.sidebar.add.menu', defaultMessage: 'Add or browse spaces'});
 
     return (
         <div className={styles.root}>
             <Menu
                 ariaLabel={formatMessage({id: 'docs.sidebar.team.menu', defaultMessage: 'Manage {teamName}'}, {teamName})}
-                items={teamItems}
                 tooltip={teamDescription || teamName}
                 trigger={(
                     <button
@@ -70,22 +50,76 @@ const SpacesSidebarHeader = ({teamName, teamDescription, onCreateSpace, onBrowse
                         <ChevronDownIcon size={16}/>
                     </button>
                 )}
-            />
+            >
+                <Menu.Item
+                    leadingIcon={<AccountMultiplePlusOutlineIcon size={18}/>}
+                    secondaryLabel={formatMessage({id: 'docs.sidebar.team.invite.secondary', defaultMessage: 'Add or invite people to the team'})}
+                    onClick={() => dispatch(invitePeople())}
+                >
+                    {formatMessage({id: 'docs.sidebar.team.invite', defaultMessage: 'Invite people'})}
+                </Menu.Item>
+                <Menu.Item
+                    leadingIcon={<SettingsOutlineIcon size={18}/>}
+                    onClick={() => dispatch(openTeamSettings())}
+                >
+                    {formatMessage({id: 'docs.sidebar.team.settings', defaultMessage: 'Team settings'})}
+                </Menu.Item>
+                <Menu.Item
+                    leadingIcon={<AccountMultipleOutlineIcon size={18}/>}
+                    onClick={() => dispatch(manageMembers())}
+                >
+                    {formatMessage({id: 'docs.sidebar.team.members', defaultMessage: 'Manage members'})}
+                </Menu.Item>
+                <Menu.Item
+                    leadingIcon={<ExitToAppIcon size={18}/>}
+                    destructive={true}
+                    onClick={() => dispatch(leaveTeam())}
+                >
+                    {formatMessage({id: 'docs.sidebar.team.leave', defaultMessage: 'Leave team'})}
+                </Menu.Item>
+                <Menu.Separator/>
+                <Menu.LinkItem
+                    href={CREATE_TEAM_URL}
+                    leadingIcon={<PlusIcon size={18}/>}
+                >
+                    {formatMessage({id: 'docs.sidebar.team.createTeam', defaultMessage: 'Create a team'})}
+                </Menu.LinkItem>
+                <Menu.Separator/>
+                <Menu.LinkItem
+                    href={LEARN_ABOUT_TEAMS_URL}
+                    external={true}
+                    leadingIcon={<LightbulbOutlineIcon size={18}/>}
+                >
+                    {formatMessage({id: 'docs.sidebar.team.learn', defaultMessage: 'Learn about teams'})}
+                </Menu.LinkItem>
+            </Menu>
             <Menu
-                ariaLabel={formatMessage({id: 'docs.sidebar.add.menu', defaultMessage: 'Add or browse spaces'})}
+                ariaLabel={addMenuLabel}
                 align='right'
-                items={addItems}
-                tooltip={formatMessage({id: 'docs.sidebar.add.menu', defaultMessage: 'Add or browse spaces'})}
+                tooltip={addMenuLabel}
                 trigger={(
                     <button
                         type='button'
                         className={styles.add}
-                        aria-label={formatMessage({id: 'docs.sidebar.add.menu', defaultMessage: 'Add or browse spaces'})}
+                        aria-label={addMenuLabel}
                     >
                         <PlusIcon size={16}/>
                     </button>
                 )}
-            />
+            >
+                <Menu.Item
+                    leadingIcon={<PlusIcon size={18}/>}
+                    onClick={onCreateSpace}
+                >
+                    {formatMessage({id: 'docs.sidebar.add.create', defaultMessage: 'Create a space'})}
+                </Menu.Item>
+                <Menu.Item
+                    leadingIcon={<GlobeIcon size={18}/>}
+                    onClick={onBrowseSpaces}
+                >
+                    {formatMessage({id: 'docs.sidebar.add.browse', defaultMessage: 'Browse spaces'})}
+                </Menu.Item>
+            </Menu>
         </div>
     );
 };

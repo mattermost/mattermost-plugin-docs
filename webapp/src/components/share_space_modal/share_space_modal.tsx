@@ -47,36 +47,36 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
     const {canManageMembers} = useSpacePermissions(space.id);
 
     // People chosen from the search picker. There's no add-member API yet
-    // (roles/view-access land with PR #10), so these are held client-side and
-    // shown alongside the real members until the server can persist them.
-    const [added, setAdded] = useState<MemberProfile[]>([]);
+    // (roles/view-access land with PR #10), so they stay as pending chips in the
+    // picker rather than joining the member list.
+    const [pending, setPending] = useState<MemberProfile[]>([]);
 
-    const displayedMembers = useMemo(() => [...members, ...added], [members, added]);
-    const excludeIds = useMemo(() => displayedMembers.map((member) => member.id), [displayedMembers]);
-
-    const addPerson = (user: MemberProfile) => setAdded((prev) => [...prev, user]);
+    const excludeIds = useMemo(
+        () => [...members.map((member) => member.id), ...pending.map((user) => user.id)],
+        [members, pending],
+    );
 
     const copyLink = () => copyToClipboard(`${window.location.origin}${paths.space(space.id)}`);
 
     const title = (
-        <span className={styles.titleBar}>
+        <FormattedMessage
+            id='docs.share.title'
+            defaultMessage='Share space'
+        />
+    );
+
+    const titleActions = (
+        <SecondaryButton
+            size='sm'
+            className={styles.copyLink}
+            onClick={copyLink}
+        >
+            <ContentCopyIcon size={16}/>
             <FormattedMessage
-                id='docs.share.title'
-                defaultMessage='Share space'
+                id='docs.share.copyLink'
+                defaultMessage='Copy link'
             />
-            <SecondaryButton
-                type='button'
-                size='sm'
-                className={styles.copyLink}
-                onClick={copyLink}
-            >
-                <ContentCopyIcon size={16}/>
-                <FormattedMessage
-                    id='docs.share.copyLink'
-                    defaultMessage='Copy link'
-                />
-            </SecondaryButton>
-        </span>
+        </SecondaryButton>
     );
 
     const footer = (
@@ -121,6 +121,7 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
         <GenericModal
             className={styles.modal}
             title={title}
+            titleActions={titleActions}
             ariaLabel={formatMessage({id: 'docs.share.title', defaultMessage: 'Share space'})}
             onClose={onClose}
             footer={footer}
@@ -128,12 +129,13 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
             <div className={styles.body}>
                 {canManageMembers && (
                     <PeoplePicker
+                        selected={pending}
                         excludeIds={excludeIds}
-                        onSelect={addPerson}
+                        onChange={setPending}
                     />
                 )}
                 <div className={styles.memberList}>
-                    {displayedMembers.map((member) => (
+                    {members.map((member) => (
                         <div
                             key={member.id}
                             className={styles.memberRow}

@@ -15,9 +15,9 @@ import type {Middleware, Store} from 'redux';
 
 import type {GlobalState} from '@mattermost/types/store';
 
-import type {DocsPluginState} from 'store/types';
+import type {DocsEntitiesState} from 'store/types';
 
-const EMPTY_DOCS_STATE: DocsPluginState = {
+const EMPTY_DOCS_ENTITIES: DocsEntitiesState = {
     spaces: {},
     spacesInTeam: {},
     pages: {},
@@ -29,7 +29,7 @@ type TestTeam = {id: string; name: string; display_name?: string};
 type TestUser = {id: string; username?: string; first_name?: string; last_name?: string; nickname?: string};
 
 export type TestStateOptions = {
-    docs?: Partial<DocsPluginState>;
+    docs?: Partial<DocsEntitiesState>;
     currentTeam?: TestTeam;
 
     // The user's teams (for cross-team reads like the switcher). Defaults to just
@@ -47,7 +47,7 @@ export function makeTestState({docs, currentTeam, teams, currentUser}: TestState
     const allTeams = teams ?? (currentTeam ? [currentTeam] : []);
 
     return {
-        ['plugins-' + manifest.id]: {...EMPTY_DOCS_STATE, ...docs},
+        ['plugins-' + manifest.id]: {entities: {...EMPTY_DOCS_ENTITIES, ...docs}},
         entities: {
             teams: {
                 currentTeamId: teamId,

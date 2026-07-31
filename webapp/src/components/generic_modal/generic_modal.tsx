@@ -19,12 +19,24 @@ type Props = {
     headerClassName?: string;
     initialFocus?: React.RefObject<HTMLElement | null>;
     showCloseButton?: boolean;
+
+    /**
+     * Content aligned to the right of the title, before the close button — for
+     * actions that belong to the header rather than the body or footer.
+     */
+    titleActions?: React.ReactNode;
     headerContent?: React.ReactNode;
     footer?: React.ReactNode;
+
+    /** Divider under the header. On by default; opt out for minimal modals. */
+    headerDivider?: boolean;
+
+    /** Renders a divider between the body and the footer actions. */
+    footerDivider?: boolean;
     children: React.ReactNode;
 };
 
-const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, initialFocus, showCloseButton = true, headerContent, footer, children}: Props) => {
+const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, initialFocus, showCloseButton = true, titleActions, headerContent, footer, headerDivider = true, footerDivider = false, children}: Props) => {
     const {formatMessage} = useIntl();
     const closeLabel = formatMessage({id: 'docs.genericModal.close', defaultMessage: 'Close'});
 
@@ -49,11 +61,12 @@ const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, in
                         initialFocus={initialFocus}
                         aria-label={ariaLabel}
                     >
-                        <div className={classNames(styles.header, headerClassName)}>
+                        <div className={classNames(styles.header, {[styles.headerDivider]: headerDivider}, headerClassName)}>
                             <div className={styles.titleRow}>
                                 <Dialog.Title render={<h1 className={styles.title}/>}>
                                     {title}
                                 </Dialog.Title>
+                                {titleActions != null && <div className={styles.titleActions}>{titleActions}</div>}
                                 {showCloseButton && (
                                     <WithTooltip title={closeLabel}>
                                         <Dialog.Close
@@ -73,7 +86,7 @@ const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, in
                             {headerContent}
                         </div>
                         {children}
-                        {footer && <div className={styles.footer}>{footer}</div>}
+                        {footer && <div className={classNames(styles.footer, {[styles.footerDivider]: footerDivider})}>{footer}</div>}
                     </Dialog.Popup>
                 </div>
             </Dialog.Portal>

@@ -1,11 +1,10 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import classNames from 'classnames';
 import {useSpaceMemberProfiles} from 'hooks/members';
 import {useDocsNavigation} from 'hooks/navigation';
-import {useAppDispatch} from 'hooks/redux';
-import React, {useMemo, useState} from 'react';
+import {useAppDispatch, useAppSelector} from 'hooks/redux';
+import React, {useEffect, useMemo, useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {SpaceIcon} from 'utils/space_icon';
 import {Avatar} from 'webapp_globals';
@@ -13,21 +12,30 @@ import {Avatar} from 'webapp_globals';
 import ArchiveOutlineIcon from '@mattermost/compass-icons/components/archive-outline';
 import ChevronDownIcon from '@mattermost/compass-icons/components/chevron-down';
 import CogOutlineIcon from '@mattermost/compass-icons/components/cog-outline';
+import FileTextOutlineIcon from '@mattermost/compass-icons/components/file-text-outline';
 import GlobeIcon from '@mattermost/compass-icons/components/globe';
+import HomeVariantOutlineIcon from '@mattermost/compass-icons/components/home-variant-outline';
 import InformationOutlineIcon from '@mattermost/compass-icons/components/information-outline';
 import LockOutlineIcon from '@mattermost/compass-icons/components/lock-outline';
+import MagnifyIcon from '@mattermost/compass-icons/components/magnify';
 import type IconProps from '@mattermost/compass-icons/components/props';
 import ShieldOutlineIcon from '@mattermost/compass-icons/components/shield-outline';
 
-import {deleteSpace, updateSpace} from 'store/actions';
+import {deleteSpace, fetchPages, updateSpace} from 'store/actions';
+import {getPagesForSpace, getSpace} from 'store/selectors';
 
 import ConfirmModal from 'components/confirm_modal/confirm_modal';
-import {Button, DestructiveButton, PrimaryButton, TertiaryButton} from 'components/form_controls/button';
+import {Button, DestructiveButton} from 'components/form_controls/button';
 import PublicPrivateSelector from 'components/form_controls/public_private_selector';
+import Select from 'components/form_controls/select';
+import type {SelectOption} from 'components/form_controls/select';
 import TextArea from 'components/form_controls/text_area';
 import TextInput from 'components/form_controls/text_input';
 import GenericModal from 'components/generic_modal/generic_modal';
+import SaveChangesBar from 'components/save_changes_bar/save_changes_bar';
+import {Tab, TabList, TabPanel, Tabs, TabsSeparator} from 'components/tabs/tabs';
 
+import {SPACE_PROP_DEFAULT_PAGE_ID} from 'types/docs';
 import type {Space} from 'types/docs';
 
 import styles from './space_settings_modal.module.scss';
@@ -44,6 +52,11 @@ type TabDef = {
     id: SpaceSettingsTab;
     label: string;
     icon: React.ComponentType<IconProps>;
+
+    // Renders a separator above the item, grouping the destructive action away
+    // from the settings sections.
+    separated?: boolean;
+
     destructive?: boolean;
 };
 
@@ -56,132 +69,175 @@ const SpaceSettingsModal = ({space, onClose, initialTab = 'info'}: Props) => {
         {id: 'info', label: formatMessage({id: 'docs.spaceSettings.tab.info', defaultMessage: 'Info'}), icon: InformationOutlineIcon},
         {id: 'permissions', label: formatMessage({id: 'docs.spaceSettings.tab.permissions', defaultMessage: 'Permissions'}), icon: ShieldOutlineIcon},
         {id: 'configuration', label: formatMessage({id: 'docs.spaceSettings.tab.configuration', defaultMessage: 'Configuration'}), icon: CogOutlineIcon},
-        {id: 'archive', label: formatMessage({id: 'docs.spaceSettings.tab.archive', defaultMessage: 'Archive space'}), icon: ArchiveOutlineIcon, destructive: true},
+        {id: 'archive', label: formatMessage({id: 'docs.spaceSettings.tab.archive', defaultMessage: 'Archive space'}), icon: ArchiveOutlineIcon, separated: true, destructive: true},
     ];
 
-    const info = useInfoTab(space, onClose);
+    const info = useInfoTab(space);
+    const [discarding, setDiscarding] = useState(false);
 
-    const footer = activeTab === 'info' ? (
-        <>
-            <TertiaryButton
-                type='button'
-                onClick={onClose}
-            >
-                <FormattedMessage
-                    id='docs.spaceSettings.cancel'
-                    defaultMessage='Cancel'
-                />
-            </TertiaryButton>
-            <PrimaryButton
-                type='button'
-                disabled={!info.canSave}
-                onClick={info.save}
-            >
-                <FormattedMessage
-                    id='docs.spaceSettings.save'
-                    defaultMessage='Save'
-                />
-            </PrimaryButton>
-        </>
-    ) : undefined;
+    // Guard the close affordances (backdrop, Esc, ✕) when there are unsaved
+    // edits, confirming a discard before actually closing.
+    const handleClose = () => {
+        if (info.dirty) {
+            setDiscarding(true);
+            return;
+        }
+        onClose();
+    };
 
-    const subtitle = (
-        <span className={styles.subtitle}>
-            <span
-                className={styles.subtitleIcon}
-                aria-hidden={true}
-            >
-                <SpaceIcon
-                    space={space}
-                    size={16}
-                />
-            </span>
-            {space.title}
-        </span>
+    const title = (
+        <FormattedMessage
+            id='docs.spaceSettings.title'
+            defaultMessage='Space Settings'
+        />
     );
 
     return (
         <GenericModal
             className={styles.modal}
-            title={formatMessage({id: 'docs.spaceSettings.title', defaultMessage: 'Space Settings'})}
+            title={title}
             ariaLabel={formatMessage({id: 'docs.spaceSettings.title', defaultMessage: 'Space Settings'})}
-            headerContent={subtitle}
-            onClose={onClose}
-            footer={footer}
+            onClose={handleClose}
         >
-            <div className={styles.body}>
-                <nav
+            <Tabs
+                className={styles.body}
+                orientation='vertical'
+                value={activeTab}
+                onValueChange={(value) => setActiveTab(value as SpaceSettingsTab)}
+            >
+                <TabList
                     className={styles.nav}
                     aria-label={formatMessage({id: 'docs.spaceSettings.navLabel', defaultMessage: 'Space settings sections'})}
                 >
                     {tabs.map((tab) => {
                         const Icon = tab.icon;
-                        const active = tab.id === activeTab;
                         return (
-                            <Button
-                                key={tab.id}
-                                type='button'
-                                emphasis='quaternary'
-                                size='sm'
-                                aria-current={active}
-                                className={classNames(styles.navItem, {
-                                    [styles.navItemActive]: active,
-                                    [styles.navItemDestructive]: tab.destructive && !active,
-                                })}
-                                onClick={() => setActiveTab(tab.id)}
-                            >
-                                <Icon size={16}/>
-                                <span className={styles.navLabel}>{tab.label}</span>
-                            </Button>
+                            <React.Fragment key={tab.id}>
+                                {tab.separated && <TabsSeparator/>}
+                                <Tab
+                                    value={tab.id}
+                                    leadingIcon={<Icon size={16}/>}
+                                    destructive={tab.destructive}
+                                >
+                                    {tab.label}
+                                </Tab>
+                            </React.Fragment>
                         );
                     })}
-                </nav>
+                </TabList>
 
-                <div
-                    className={styles.pane}
-                    role='tabpanel'
-                >
-                    {activeTab === 'info' && (
+                <div className={styles.pane}>
+                    <TabPanel
+                        value='info'
+                        className={styles.panelContent}
+                    >
                         <InfoTab
                             space={space}
                             info={info}
                             url={`${window.location.origin}${paths.space(space.id)}`}
                         />
-                    )}
-                    {activeTab === 'permissions' && <PermissionsTab space={space}/>}
-                    {activeTab === 'configuration' && <ConfigurationTab/>}
-                    {activeTab === 'archive' && (
+                    </TabPanel>
+                    <TabPanel
+                        value='permissions'
+                        className={styles.panelContent}
+                    >
+                        <PermissionsTab space={space}/>
+                    </TabPanel>
+                    <TabPanel
+                        value='configuration'
+                        className={styles.panelContent}
+                    >
+                        <ConfigurationTab/>
+                    </TabPanel>
+                    <TabPanel
+                        value='archive'
+                        className={styles.panelContent}
+                    >
                         <ArchiveTab
                             space={space}
                             onClose={onClose}
                         />
-                    )}
+                    </TabPanel>
                 </div>
-            </div>
+            </Tabs>
+            {info.dirty && (
+                <div className={styles.floatingFooter}>
+                    <SaveChangesBar
+                        state={info.error ? 'error' : 'editing'}
+                        errorMessage={info.error}
+                        saving={info.saving}
+                        onSave={info.save}
+                        onReset={info.reset}
+                    />
+                </div>
+            )}
+
+            {/* Nested inside this dialog's tree so Base UI stacks it as a child
+                dialog rather than a sibling at the app root. */}
+            {discarding && (
+                <ConfirmModal
+                    isConfirmDestructive={true}
+                    title={formatMessage({id: 'docs.spaceSettings.discard.title', defaultMessage: 'Discard unsaved changes?'})}
+                    confirmButtonText={formatMessage({id: 'docs.spaceSettings.discard.confirm', defaultMessage: 'Discard changes'})}
+                    onConfirm={() => {
+                        setDiscarding(false);
+                        onClose();
+                    }}
+                    onCancel={() => setDiscarding(false)}
+                >
+                    <FormattedMessage
+                        id='docs.spaceSettings.discard.body'
+                        defaultMessage='Your unsaved changes to this space will be lost.'
+                    />
+                </ConfirmModal>
+            )}
         </GenericModal>
     );
 };
+
+const Section = ({title, children}: {title: React.ReactNode; children: React.ReactNode}) => (
+    <section className={styles.section}>
+        <h2 className={styles.sectionTitle}>{title}</h2>
+        {children}
+    </section>
+);
 
 type InfoTabState = {
     name: string;
     setName: (value: string) => void;
     description: string;
     setDescription: (value: string) => void;
+
+    // '' = the space front door (hero) rather than a specific page.
+    landingPageId: string;
+    setLandingPageId: (value: string) => void;
     error?: string;
+    dirty: boolean;
     canSave: boolean;
+    saving: boolean;
     save: () => void;
+    reset: () => void;
 };
 
-// Owns the editable Info-tab fields and the save flow so the footer (rendered by
-// the modal shell) and the pane share one source of truth.
-function useInfoTab(space: Space, onClose: () => void): InfoTabState {
+// Owns the editable Info-tab fields and the save flow. The baseline is read live
+// from the store (via getSpace) so a successful save clears the dirty state and
+// the floating save bar without closing the modal. Save no longer closes; the
+// user dismisses the modal themselves (guarded when there are unsaved changes).
+function useInfoTab(space: Space): InfoTabState {
     const dispatch = useAppDispatch();
+    const liveSpace = useAppSelector((state) => getSpace(state, space.id)) ?? space;
+
+    const savedLandingPageId = liveSpace.props?.[SPACE_PROP_DEFAULT_PAGE_ID] ?? '';
+
     const [name, setName] = useState(space.title);
     const [description, setDescription] = useState(space.description ?? '');
+    const [landingPageId, setLandingPageId] = useState(savedLandingPageId);
     const [error, setError] = useState<string>();
     const [saving, setSaving] = useState(false);
 
-    const dirty = name.trim() !== space.title || description.trim() !== (space.description ?? '');
+    const dirty = name.trim() !== liveSpace.title ||
+        description.trim() !== (liveSpace.description ?? '') ||
+        landingPageId !== savedLandingPageId;
     const canSave = dirty && Boolean(name.trim()) && !saving;
 
     const save = async () => {
@@ -191,112 +247,130 @@ function useInfoTab(space: Space, onClose: () => void): InfoTabState {
         setSaving(true);
         setError(undefined);
         try {
-            await dispatch(updateSpace(space.id, {title: name.trim(), description: description.trim()}));
-            onClose();
+            // Props replace wholesale server-side, so merge onto the live map to
+            // avoid dropping keys this UI doesn't manage.
+            const props = {...liveSpace.props, [SPACE_PROP_DEFAULT_PAGE_ID]: landingPageId};
+            await dispatch(updateSpace(space.id, {title: name.trim(), description: description.trim(), props}));
         } catch (err) {
-            setSaving(false);
             setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setSaving(false);
         }
     };
 
-    return {name, setName, description, setDescription, error, canSave, save};
+    const reset = () => {
+        setName(liveSpace.title);
+        setDescription(liveSpace.description ?? '');
+        setLandingPageId(savedLandingPageId);
+        setError(undefined);
+    };
+
+    return {name, setName, description, setDescription, landingPageId, setLandingPageId, error, dirty, canSave, saving, save, reset};
 }
 
 const InfoTab = ({space, info, url}: {space: Space; info: InfoTabState; url: string}) => {
     const {formatMessage} = useIntl();
 
+    // The landing-page options need the space's pages, which aren't guaranteed
+    // loaded when settings is opened from outside the space view.
+    const dispatch = useAppDispatch();
+    useEffect(() => {
+        dispatch(fetchPages(space.id));
+    }, [dispatch, space.id]);
+
+    const pages = useAppSelector((state) => getPagesForSpace(state, space.id));
+
+    const landingPageOptions: SelectOption[] = useMemo(() => [
+        {
+            value: '',
+            label: formatMessage({id: 'docs.spaceSettings.info.landingSpaceHome', defaultMessage: 'Space home'}),
+            leadingIcon: <HomeVariantOutlineIcon size={16}/>,
+        },
+        ...pages.map((page) => ({
+            value: page.id,
+            label: page.title,
+            leadingIcon: <FileTextOutlineIcon size={16}/>,
+        })),
+    ], [pages, formatMessage]);
+
     return (
-        <>
-            <h2 className={styles.heading}>
+        <Section
+            title={(
                 <FormattedMessage
                     id='docs.spaceSettings.info.heading'
                     defaultMessage='Space info'
                 />
-            </h2>
-
-            <TextInput
-                id='docs-space-settings-name'
-                label={formatMessage({id: 'docs.spaceSettings.info.nameLabel', defaultMessage: 'Space name'})}
-                value={info.name}
-                onChange={info.setName}
-                maxLength={64}
-                leading={(
-                    <SpaceIcon
-                        space={space}
-                        size={18}
-                    />
-                )}
-            />
-
-            <div className={styles.fieldLabel}>
-                <FormattedMessage
-                    id='docs.spaceSettings.info.urlLabel'
-                    defaultMessage='Space URL'
+            )}
+        >
+            <div className={styles.field}>
+                <TextInput
+                    id='docs-space-settings-name'
+                    label={formatMessage({id: 'docs.spaceSettings.info.nameLabel', defaultMessage: 'Space name'})}
+                    value={info.name}
+                    onChange={info.setName}
+                    maxLength={64}
+                    leading={(
+                        <SpaceIcon
+                            space={space}
+                            size={18}
+                        />
+                    )}
                 />
+                <div className={styles.urlRow}>
+                    <span className={styles.helper}>
+                        <FormattedMessage
+                            id='docs.spaceSettings.info.urlLabel'
+                            defaultMessage='Space URL'
+                        />
+                    </span>
+                    <span className={styles.urlText}>{url}</span>
+                    <Button
+                        emphasis='quaternary'
+                        size='xs'
+                        disabled={true}
+                        className={styles.inlineButton}
+                    >
+                        <FormattedMessage
+                            id='docs.spaceSettings.info.editUrl'
+                            defaultMessage='Edit'
+                        />
+                    </Button>
+                </div>
             </div>
-            <div className={styles.urlRow}>
-                <span className={styles.urlText}>{url}</span>
-                <Button
-                    type='button'
-                    emphasis='quaternary'
-                    size='sm'
-                    disabled={true}
-                    aria-disabled={true}
-                >
+
+            <div className={styles.field}>
+                <span className={styles.fieldLabel}>
                     <FormattedMessage
-                        id='docs.spaceSettings.info.editUrl'
-                        defaultMessage='Edit'
+                        id='docs.spaceSettings.info.descriptionLabel'
+                        defaultMessage='Description'
                     />
-                </Button>
-            </div>
-
-            <div className={styles.fieldLabel}>
-                <FormattedMessage
-                    id='docs.spaceSettings.info.descriptionLabel'
-                    defaultMessage='Description'
-                />
-            </div>
-            <TextArea
-                id='docs-space-settings-description'
-                label={formatMessage({id: 'docs.spaceSettings.info.descriptionPlaceholder', defaultMessage: 'Enter a description for this space…'})}
-                value={info.description}
-                onChange={info.setDescription}
-                maxLength={1024}
-                rows={3}
-            />
-            <div className={styles.helper}>
-                <FormattedMessage
-                    id='docs.spaceSettings.info.descriptionHelper'
-                    defaultMessage='Describe how this space should be used. This will show when browsing spaces.'
-                />
-            </div>
-
-            <div className={styles.fieldLabel}>
-                <FormattedMessage
-                    id='docs.spaceSettings.info.landingLabel'
-                    defaultMessage='Default landing page'
-                />
-            </div>
-            <Button
-                type='button'
-                emphasis='quaternary'
-                size='sm'
-                disabled={true}
-                aria-disabled={true}
-                className={styles.selectStub}
-            >
-                <span className={styles.selectStubLabel}>
-                    <SpaceIcon
-                        space={space}
-                        size={16}
-                    />
-                    {space.title}
                 </span>
-                <ChevronDownIcon size={16}/>
-            </Button>
+                <TextArea
+                    id='docs-space-settings-description'
+                    label={formatMessage({id: 'docs.spaceSettings.info.descriptionPlaceholder', defaultMessage: 'Enter a description for this space…'})}
+                    value={info.description}
+                    onChange={info.setDescription}
+                    maxLength={1024}
+                    rows={3}
+                />
+                <p className={styles.helper}>
+                    <FormattedMessage
+                        id='docs.spaceSettings.info.descriptionHelper'
+                        defaultMessage='Describe how this space should be used. This will show when browsing spaces.'
+                    />
+                </p>
+            </div>
+
+            <Select
+                id='docs-space-settings-landing-page'
+                label={formatMessage({id: 'docs.spaceSettings.info.landingLabel', defaultMessage: 'Default landing page'})}
+                value={info.landingPageId}
+                options={landingPageOptions}
+                onChange={info.setLandingPageId}
+            />
 
             {info.error && <div className={styles.error}>{info.error}</div>}
-        </>
+        </Section>
     );
 };
 
@@ -325,165 +399,166 @@ const PermissionsTab = ({space}: {space: Space}) => {
 
     return (
         <>
-            <h2 className={styles.heading}>
-                <FormattedMessage
-                    id='docs.spaceSettings.permissions.accessHeading'
-                    defaultMessage='Space access'
-                />
-            </h2>
-            <PublicPrivateSelector
-                ariaLabel={formatMessage({id: 'docs.spaceSettings.permissions.accessLabel', defaultMessage: 'Space access'})}
-                options={accessOptions}
-                value='public'
-                onChange={() => {}}
-            />
-
-            <h2 className={styles.heading}>
-                <FormattedMessage
-                    id='docs.spaceSettings.permissions.peopleHeading'
-                    defaultMessage='People and groups with access'
-                />
-            </h2>
-            <div
-                className={styles.searchStub}
-                aria-disabled={true}
+            <Section
+                title={(
+                    <FormattedMessage
+                        id='docs.spaceSettings.permissions.accessHeading'
+                        defaultMessage='Space access'
+                    />
+                )}
             >
-                <FormattedMessage
-                    id='docs.spaceSettings.permissions.searchPlaceholder'
-                    defaultMessage='Add people, groups or channels'
+                <PublicPrivateSelector
+                    ariaLabel={formatMessage({id: 'docs.spaceSettings.permissions.accessLabel', defaultMessage: 'Space access'})}
+                    options={accessOptions}
+                    value='public'
+                    onChange={() => {}}
                 />
-            </div>
-            <div className={styles.memberList}>
-                {members.map((member) => (
-                    <div
-                        key={member.id}
-                        className={styles.memberRow}
-                    >
-                        <Avatar
-                            url={member.avatarUrl}
-                            username={member.username}
-                            size='md'
-                            name=''
-                        />
-                        <span className={styles.memberInfo}>
-                            <span className={styles.memberName}>{member.displayName}</span>
-                            {member.username && (
-                                <span className={styles.memberUsername}>
-                                    <FormattedMessage
-                                        id='docs.spaceSettings.permissions.handle'
-                                        defaultMessage='@{username}'
-                                        values={{username: member.username}}
-                                    />
-                                </span>
-                            )}
-                        </span>
-                        <Button
-                            type='button'
-                            emphasis='quaternary'
-                            size='sm'
-                            disabled={true}
-                            aria-disabled={true}
-                            className={styles.roleTrigger}
-                        >
-                            <FormattedMessage
-                                id='docs.spaceSettings.permissions.role.admin'
-                                defaultMessage='Admin'
-                            />
-                            <ChevronDownIcon size={16}/>
-                        </Button>
-                    </div>
-                ))}
-            </div>
+            </Section>
 
-            <div className={styles.toggleRow}>
-                <span className={styles.toggleText}>
-                    <span className={styles.toggleTitle}>
-                        <FormattedMessage
-                            id='docs.spaceSettings.permissions.externalSharing.title'
-                            defaultMessage='External sharing'
-                        />
-                    </span>
-                    <span className={styles.helper}>
-                        <FormattedMessage
-                            id='docs.spaceSettings.permissions.externalSharing.description'
-                            defaultMessage='Let people outside the team access this space with a link.'
-                        />
-                    </span>
-                </span>
-                <Button
-                    type='button'
-                    emphasis='quaternary'
-                    size='sm'
-                    disabled={true}
+            <Section
+                title={(
+                    <FormattedMessage
+                        id='docs.spaceSettings.permissions.peopleHeading'
+                        defaultMessage='People and groups with access'
+                    />
+                )}
+            >
+                <div
+                    className={styles.search}
                     aria-disabled={true}
                 >
+                    <span className={styles.mutedIcon}>
+                        <MagnifyIcon size={16}/>
+                    </span>
                     <FormattedMessage
-                        id='docs.spaceSettings.permissions.externalSharing.comingSoon'
-                        defaultMessage='Coming soon'
+                        id='docs.spaceSettings.permissions.searchPlaceholder'
+                        defaultMessage='Add people, groups or channels'
                     />
-                </Button>
-            </div>
+                </div>
+                <div className={styles.memberList}>
+                    {members.map((member) => (
+                        <div
+                            key={member.id}
+                            className={styles.memberRow}
+                        >
+                            <Avatar
+                                url={member.avatarUrl}
+                                username={member.username}
+                                size='sm'
+                                name=''
+                            />
+                            <span className={styles.memberInfo}>
+                                <span className={styles.memberName}>{member.displayName}</span>
+                                {member.username && (
+                                    <span className={styles.memberUsername}>
+                                        <FormattedMessage
+                                            id='docs.spaceSettings.permissions.handle'
+                                            defaultMessage='@{username}'
+                                            values={{username: member.username}}
+                                        />
+                                    </span>
+                                )}
+                            </span>
+                            <span
+                                className={styles.roleTrigger}
+                                aria-disabled={true}
+                            >
+                                <FormattedMessage
+                                    id='docs.spaceSettings.permissions.role.admin'
+                                    defaultMessage='Admin'
+                                />
+                                <ChevronDownIcon size={12}/>
+                            </span>
+                        </div>
+                    ))}
+                </div>
+            </Section>
+
+            <section className={styles.section}>
+                <div className={styles.toggleRow}>
+                    <span className={styles.toggleText}>
+                        <span className={styles.toggleTitle}>
+                            <FormattedMessage
+                                id='docs.spaceSettings.permissions.externalSharing.title'
+                                defaultMessage='External sharing'
+                            />
+                        </span>
+                        <span className={styles.helper}>
+                            <FormattedMessage
+                                id='docs.spaceSettings.permissions.externalSharing.description'
+                                defaultMessage='Let people outside the team access this space with a link.'
+                            />
+                        </span>
+                    </span>
+                    <span className={styles.comingSoonPill}>
+                        <FormattedMessage
+                            id='docs.spaceSettings.permissions.externalSharing.comingSoon'
+                            defaultMessage='Coming soon'
+                        />
+                    </span>
+                </div>
+            </section>
         </>
     );
 };
 
 const ConfigurationTab = () => (
-    <>
-        <h2 className={styles.heading}>
+    <Section
+        title={(
             <FormattedMessage
                 id='docs.spaceSettings.configuration.heading'
                 defaultMessage='Configuration'
             />
-        </h2>
-        <p className={styles.comingSoon}>
+        )}
+    >
+        <p className={styles.copy}>
             <FormattedMessage
                 id='docs.spaceSettings.configuration.comingSoon'
                 defaultMessage='Space configuration options are coming soon.'
             />
         </p>
-    </>
+    </Section>
 );
 
 const ArchiveTab = ({space, onClose}: {space: Space; onClose: () => void}) => {
     const {formatMessage} = useIntl();
     const dispatch = useAppDispatch();
     const {goHome} = useDocsNavigation();
-    const [confirming, setConfirming] = useState(false);
     const [error, setError] = useState<string>();
+    const [confirming, setConfirming] = useState(false);
 
-    const archive = async () => {
+    const confirmArchive = async () => {
         setError(undefined);
         try {
             await dispatch(deleteSpace(space.id));
-            setConfirming(false);
             onClose();
             goHome();
         } catch (err) {
-            setConfirming(false);
             setError(err instanceof Error ? err.message : String(err));
         }
+        setConfirming(false);
     };
 
     return (
-        <>
-            <h2 className={styles.heading}>
+        <Section
+            title={(
                 <FormattedMessage
                     id='docs.spaceSettings.archive.heading'
                     defaultMessage='Archive space'
                 />
-            </h2>
+            )}
+        >
             <div className={styles.archiveCard}>
-                <p className={styles.archiveCopy}>
+                <p className={styles.copy}>
                     <FormattedMessage
                         id='docs.spaceSettings.archive.copy'
                         defaultMessage='Archiving removes this space and its pages from the team. Members will lose access. You can ask an admin to restore it later.'
                     />
                 </p>
                 <DestructiveButton
-                    type='button'
+                    leadingIcon={<ArchiveOutlineIcon size={16}/>}
                     onClick={() => setConfirming(true)}
                 >
-                    <ArchiveOutlineIcon size={16}/>
                     <FormattedMessage
                         id='docs.spaceSettings.archive.button'
                         defaultMessage='Archive space'
@@ -492,12 +567,15 @@ const ArchiveTab = ({space, onClose}: {space: Space; onClose: () => void}) => {
                 {error && <div className={styles.error}>{error}</div>}
             </div>
 
+            {/* Rendered inside this modal's tree (not through the modal
+                controller, which mounts at the app root) so Base UI sees it as a
+                nested dialog and stacks it over the settings modal. */}
             {confirming && (
                 <ConfirmModal
                     isConfirmDestructive={true}
                     title={formatMessage({id: 'docs.spaceSettings.archive.confirmTitle', defaultMessage: 'Archive this space?'})}
                     confirmButtonText={formatMessage({id: 'docs.spaceSettings.archive.confirmButton', defaultMessage: 'Archive'})}
-                    onConfirm={archive}
+                    onConfirm={confirmArchive}
                     onCancel={() => setConfirming(false)}
                 >
                     <FormattedMessage
@@ -507,7 +585,7 @@ const ArchiveTab = ({space, onClose}: {space: Space; onClose: () => void}) => {
                     />
                 </ConfirmModal>
             )}
-        </>
+        </Section>
     );
 };
 

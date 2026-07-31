@@ -11,6 +11,42 @@
  * until a neutral emphasis exists upstream.
  */
 
+// Badge overlay (see the `badge` prop on the Button wrappers). Local classes —
+// the wrapper imports this stylesheet for both the badge and the rules below.
+.badged {
+    position: relative;
+}
+
+.badgeDot {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 8px;
+    height: 8px;
+    border: 2px solid var(--center-channel-bg);
+    border-radius: 50%;
+    background: var(--button-bg);
+}
+
+.badgeCount {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    display: flex;
+    min-width: 16px;
+    height: 16px;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+    border: 2px solid var(--center-channel-bg);
+    border-radius: 8px;
+    background: var(--button-bg);
+    color: var(--button-color);
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 12px;
+}
+
 // Base — neutral grey.
 :global(.btn.btn-icon.btn-quaternary),
 :global(.btn.btn-quaternary.docs-btn-neutral) {

@@ -1,22 +1,20 @@
+// Full-height right column; the width comes from the resize hook, so the panel
+// only holds its flex/`position` context here. `position: relative` anchors the
+// resize handle on the left edge.
 .panel {
+    position: relative;
     display: flex;
-    flex: 0 0 320px;
+    flex-shrink: 0;
     flex-direction: column;
-    width: 320px;
+    height: 100%;
     min-height: 0;
     border-left: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
     background: var(--center-channel-bg);
 }
 
-.header {
-    display: flex;
-    flex-shrink: 0;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    height: 48px;
-    padding: 0 8px 0 16px;
-    border-bottom: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
+// Dragging sets the width every frame; no transition to fight the pointer.
+.resizing {
+    transition: none;
 }
 
 .headerTitle {
@@ -99,6 +97,58 @@
     color: rgba(var(--center-channel-color-rgb), 0.56);
     font-size: 14px;
     line-height: 20px;
+}
+
+// Clickable description with a trailing pencil that fades in on hover, ported
+// from core's channel_info_rhs EditableArea. Scoped under `.btn.btn-sm` to beat
+// core's quaternary color/padding; the negative inline margin keeps the text
+// aligned with the section while the padding gives the hover surface room.
+.editableArea:global(.btn.btn-sm) {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    width: 100%;
+    height: auto;
+    margin-inline-start: -8px;
+    padding: 4px 8px;
+    color: var(--center-channel-color);
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 20px;
+    text-align: left;
+    white-space: normal;
+
+    &:hover {
+        background: rgba(var(--center-channel-color-rgb), 0.08);
+    }
+
+    &:hover .editIcon,
+    &:focus-visible .editIcon {
+        opacity: 1;
+    }
+}
+
+.editableText {
+    flex: 1 1 auto;
+    min-width: 0;
+
+    // Keeps the description selectable even though it sits inside a button.
+    user-select: text;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.editablePlaceholder {
+    color: rgba(var(--center-channel-color-rgb), 0.56);
+}
+
+.editIcon {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+    opacity: 0;
+    transition: opacity 150ms ease;
 }
 
 .memberList {

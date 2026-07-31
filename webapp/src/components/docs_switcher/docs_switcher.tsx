@@ -6,7 +6,7 @@ import {useDocsSearch, useRecentDocs} from 'hooks/docs';
 import {useDocsNavigation} from 'hooks/navigation';
 import {useAppDispatch} from 'hooks/redux';
 import {useAllSpaces} from 'hooks/spaces';
-import {useTeamNamesById} from 'hooks/team';
+import {useTeamContext, useTeamDisplayNamesById, useTeamNamesById} from 'hooks/team';
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useIntl} from 'react-intl';
 import {SpaceIcon} from 'utils/space_icon';
@@ -17,6 +17,7 @@ import TextBoxOutlineIcon from '@mattermost/compass-icons/components/text-box-ou
 import {fetchAllSpaces} from 'store/actions';
 
 import GenericModal from 'components/generic_modal/generic_modal';
+import Spacer from 'components/spacer/spacer';
 
 import type {Page, Space} from 'types/docs';
 
@@ -55,12 +56,21 @@ const DocsSwitcher = ({onClose}: Props) => {
     const recent = useRecentDocs();
     const results = useDocsSearch(query);
     const teamNamesById = useTeamNamesById();
+    const teamDisplayNamesById = useTeamDisplayNamesById();
+    const {id: currentTeamId} = useTeamContext();
 
     // Cross-team: each space's title and owning team, so a result can render its
     // space label and route to that space's own team.
     const spaceMetaById = useMemo(
-        () => new Map(allSpaces.map((space) => [space.id, {title: space.title, teamName: teamNamesById.get(space.team_id)}])),
-        [allSpaces, teamNamesById],
+        () => new Map(allSpaces.map((space) => [space.id, {
+            title: space.title,
+            teamName: teamNamesById.get(space.team_id),
+
+            // Only set for a space outside the current team, so the result can be
+            // labelled with the team it actually lives in.
+            otherTeam: space.team_id === currentTeamId ? undefined : teamDisplayNamesById.get(space.team_id),
+        }])),
+        [allSpaces, teamNamesById, teamDisplayNamesById, currentTeamId],
     );
 
     const groups: Group[] = useMemo(() => {
@@ -155,36 +165,43 @@ const DocsSwitcher = ({onClose}: Props) => {
     const title = hasQuery ? formatMessage({id: 'docs.switcher.title.query', defaultMessage: 'Find spaces or pages'}) : formatMessage({id: 'docs.switcher.title', defaultMessage: 'Find docs'});
     const placeholder = formatMessage({id: 'docs.switcher.placeholder', defaultMessage: 'Search all spaces and pages'});
 
-    const renderEntry = (entry: Entry) => (
-        <button
-            key={entry.key}
-            id={optionId(entry.index)}
-            type='button'
-            role='option'
-            aria-selected={entry.index === active}
-            className={classNames(styles.item, {[styles.active]: entry.index === active})}
-            onMouseMove={() => setActiveIndex(entry.index)}
-            onClick={() => selectEntry(entry)}
-        >
-            {entry.kind === 'space' ? (
-                <>
-                    <span className={classNames(styles.itemIcon, styles.itemIconEmoji)}>
-                        <SpaceIcon
-                            space={entry.space}
-                            size={16}
-                        />
-                    </span>
-                    <span className={styles.itemLabel}>{entry.space.title}</span>
-                </>
-            ) : (
-                <>
-                    <span className={styles.itemIcon}><TextBoxOutlineIcon size={16}/></span>
-                    <span className={styles.itemLabel}>{entry.page.title}</span>
-                    <span className={styles.itemMeta}>{spaceMetaById.get(entry.page.space_id)?.title}</span>
-                </>
-            )}
-        </button>
-    );
+    const renderEntry = (entry: Entry) => {
+        // The trailing slot names where a result lives: a space in another team is
+        // labelled with that team, a page with its space.
+        const meta = entry.kind === 'space' ? spaceMetaById.get(entry.space.id)?.otherTeam : spaceMetaById.get(entry.page.space_id)?.title;
+
+        return (
+            <button
+                key={entry.key}
+                id={optionId(entry.index)}
+                type='button'
+                role='option'
+                aria-selected={entry.index === active}
+                className={classNames(styles.item, {[styles.active]: entry.index === active})}
+                onMouseMove={() => setActiveIndex(entry.index)}
+                onClick={() => selectEntry(entry)}
+            >
+                {entry.kind === 'space' ? (
+                    <>
+                        <span className={classNames(styles.itemIcon, styles.itemIconEmoji)}>
+                            <SpaceIcon
+                                space={entry.space}
+                                size={16}
+                            />
+                        </span>
+                        <span className={styles.itemLabel}>{entry.space.title}</span>
+                    </>
+                ) : (
+                    <>
+                        <span className={styles.itemIcon}><TextBoxOutlineIcon size={16}/></span>
+                        <span className={styles.itemLabel}>{entry.page.title}</span>
+                    </>
+                )}
+                <Spacer/>
+                {meta && <span className={styles.itemMeta}>{meta}</span>}
+            </button>
+        );
+    };
 
     const searchField = (
         <div className={styles.inputWrap}>

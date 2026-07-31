@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import type {CreatePageInput, CreateSpaceInput, Page, Space, SpaceMember, UpdateSpacePatch} from 'types/docs';
+import type {CreatePageInput, CreateSpaceInput, Page, Space, SpaceMember, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
 
 // The seam between the store's thunks and the Docs server REST API. The
 // API-backed source implements this over the plugin's /api/v1 routes; the
@@ -55,4 +55,12 @@ export interface DocsDataSource {
     // Creates a page in a space (optionally under a parent) and returns it (with
     // its server-assigned id and sort_order).
     createPage(spaceId: string, input: CreatePageInput): Promise<Page>;
+
+    // Patches a page's editable fields (title/body) and returns the updated page.
+    // `baseEditAt` is the page's current edit_at, the optimistic-lock baseline:
+    // the server rejects a stale baseline (409) and a missing one (400).
+    updatePage(spaceId: string, pageId: string, patch: UpdatePagePatch, baseEditAt: number): Promise<Page>;
+
+    // Deletes (soft-deletes) a page and, on the server, its subpages.
+    deletePage(spaceId: string, pageId: string): Promise<void>;
 }

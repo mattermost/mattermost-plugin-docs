@@ -47,3 +47,18 @@ export function toggleCollapsed(userId: string, pageId: string): Set<string> {
     write(userId, [...next]);
     return next;
 }
+
+// Sets the collapsed state for many pages at once (a subtree). Backs shift-click
+// expand/collapse-all on a node.
+export function setCollapsedFor(userId: string, ids: string[], collapsed: boolean): Set<string> {
+    const next = getCollapsed(userId);
+    for (const id of ids) {
+        if (collapsed) {
+            next.add(id);
+        } else {
+            next.delete(id);
+        }
+    }
+    write(userId, [...next]);
+    return next;
+}

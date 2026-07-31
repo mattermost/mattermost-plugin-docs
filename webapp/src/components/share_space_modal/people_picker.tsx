@@ -1,62 +1,96 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {Autocomplete} from '@base-ui-components/react/autocomplete';
+import {Combobox} from '@base-ui-components/react/combobox';
 import type {MemberProfile} from 'hooks/members';
 import {useUserSearch} from 'hooks/user_search';
 import React, {useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {Avatar} from 'webapp_globals';
 
+import CloseIcon from '@mattermost/compass-icons/components/close';
 import MagnifyIcon from '@mattermost/compass-icons/components/magnify';
 
 import styles from './people_picker.module.scss';
 
 type Props = {
+    selected: MemberProfile[];
     excludeIds: string[];
-    onSelect: (user: MemberProfile) => void;
+    onChange: (users: MemberProfile[]) => void;
 };
 
-// Searchable people combobox for the share modal. Built on Base UI's Autocomplete
-// (mode='none' so the list is driven by the server search, not client filtering).
-// Picking a result fires onSelect and clears the query.
-const PeoplePicker = ({excludeIds, onSelect}: Props) => {
+const itemToLabel = (user: MemberProfile) => user.displayName;
+const sameUser = (a: MemberProfile, b: MemberProfile) => a.id === b.id;
+
+// Multi-select people picker for the share modal: chips for who's been picked,
+// plus a server-driven suggestion list.
+//
+// Base UI's Combobox (not Autocomplete) is the right primitive here — it owns the
+// selected values and ships the Chips/Chip/ChipRemove parts. `filter={null}`
+// disables client-side filtering because `useUserSearch` already queries the
+// server, and `itemToStringLabel` keeps Base UI from serialising a profile object
+// when it needs a string for an item.
+const PeoplePicker = ({selected, excludeIds, onChange}: Props) => {
     const {formatMessage} = useIntl();
     const [query, setQuery] = useState('');
     const {results, loading} = useUserSearch(query, excludeIds);
 
     const placeholder = formatMessage({id: 'docs.share.search', defaultMessage: 'Add people or groups'});
 
-    const pick = (user: MemberProfile) => {
-        onSelect(user);
-        setQuery('');
-    };
-
     return (
-        <Autocomplete.Root
+        <Combobox.Root<MemberProfile, true>
+            multiple={true}
             items={results}
-            mode='none'
-            value={query}
-            onValueChange={setQuery}
+            filter={null}
+            value={selected}
+            onValueChange={onChange}
+            inputValue={query}
+            onInputValueChange={setQuery}
+            itemToStringLabel={itemToLabel}
+            isItemEqualToValue={sameUser}
+            openOnInputClick={false}
         >
-            <div className={styles.control}>
+            <Combobox.Chips className={styles.control}>
                 <MagnifyIcon
                     className={styles.searchIcon}
                     size={16}
                 />
-                <Autocomplete.Input
+                {selected.map((user) => (
+                    <Combobox.Chip
+                        key={user.id}
+                        className={styles.chip}
+                    >
+                        <Avatar
+                            url={user.avatarUrl}
+                            username={user.username}
+                            size='xs'
+                            name=''
+                        />
+                        <span className={styles.chipName}>{user.displayName}</span>
+                        <Combobox.ChipRemove
+                            className={styles.chipRemove}
+                            aria-label={formatMessage(
+                                {id: 'docs.share.remove', defaultMessage: 'Remove {name}'},
+                                {name: user.displayName},
+                            )}
+                        >
+                            <CloseIcon size={12}/>
+                        </Combobox.ChipRemove>
+                    </Combobox.Chip>
+                ))}
+                <Combobox.Input
                     className={styles.input}
-                    placeholder={placeholder}
+                    placeholder={selected.length === 0 ? placeholder : undefined}
                     aria-label={placeholder}
                 />
-            </div>
-            <Autocomplete.Portal>
-                <Autocomplete.Positioner
+            </Combobox.Chips>
+            <Combobox.Portal>
+                <Combobox.Positioner
                     className={styles.positioner}
                     sideOffset={4}
                 >
-                    <Autocomplete.Popup className={styles.popup}>
-                        <Autocomplete.Empty className={styles.empty}>
+                    <Combobox.Popup className={styles.popup}>
+                        <Combobox.Empty className={styles.empty}>
                             {loading ? (
                                 <FormattedMessage
                                     id='docs.share.searching'
@@ -68,14 +102,13 @@ const PeoplePicker = ({excludeIds, onSelect}: Props) => {
                                     defaultMessage='No people found'
                                 />
                             )}
-                        </Autocomplete.Empty>
-                        <Autocomplete.List>
+                        </Combobox.Empty>
+                        <Combobox.List className={styles.list}>
                             {(user: MemberProfile) => (
-                                <Autocomplete.Item
+                                <Combobox.Item
                                     key={user.id}
                                     value={user}
                                     className={styles.item}
-                                    onClick={() => pick(user)}
                                 >
                                     <Avatar
                                         url={user.avatarUrl}
@@ -95,13 +128,13 @@ const PeoplePicker = ({excludeIds, onSelect}: Props) => {
                                             </span>
                                         )}
                                     </span>
-                                </Autocomplete.Item>
+                                </Combobox.Item>
                             )}
-                        </Autocomplete.List>
-                    </Autocomplete.Popup>
-                </Autocomplete.Positioner>
-            </Autocomplete.Portal>
-        </Autocomplete.Root>
+                        </Combobox.List>
+                    </Combobox.Popup>
+                </Combobox.Positioner>
+            </Combobox.Portal>
+        </Combobox.Root>
     );
 };
 

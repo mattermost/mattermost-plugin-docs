@@ -2,6 +2,8 @@
 // See LICENSE.txt for license information.
 
 import classNames from 'classnames';
+import {useCreateRootPage} from 'hooks/pages';
+import {useSidebarWidth} from 'hooks/sidebar_width';
 import React from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {Timestamp} from 'webapp_globals';
@@ -12,12 +14,24 @@ import DotsHorizontalIcon from '@mattermost/compass-icons/components/dots-horizo
 import FormatListBulletedIcon from '@mattermost/compass-icons/components/format-list-bulleted';
 import MessageTextOutlineIcon from '@mattermost/compass-icons/components/message-text-outline';
 import PencilOutlineIcon from '@mattermost/compass-icons/components/pencil-outline';
+import PlusIcon from '@mattermost/compass-icons/components/plus';
 
 import {Button} from 'components/form_controls/button';
+import PageMenu from 'components/page_menu/page_menu';
+import Spacer from 'components/spacer/spacer';
 
-import type {Space} from 'types/docs';
+import type {Page, Space} from 'types/docs';
 
 import styles from './page_header.module.scss';
+import {DEFAULT_SIDEBAR_WIDTH} from './sidebar/sidebar';
+
+// The pages toggle doubles as the accessible label for the page tree section;
+// the tree references it via aria-labelledby.
+export const PAGES_SECTION_LABEL_ID = 'docsPagesToggle';
+
+// Mirrors `.bar`'s inline-start padding, which the pages cluster has to discount
+// from the sidebar width to land on the sidebar's right edge.
+const BAR_INLINE_START_PADDING = 8;
 
 // Relative "Updated …" buckets for the host Timestamp.
 const UPDATED_TIME_SPEC: TimestampUnit[] = [
@@ -30,45 +44,61 @@ const UPDATED_TIME_SPEC: TimestampUnit[] = [
 
 type Props = {
     space: Space;
+
+    // The routed page, when one is selected. Drives the "Updated" timestamp and
+    // the page-scoped controls; on the space home (no page) only the space's
+    // last-updated time shows.
+    page?: Page;
     treeOpen: boolean;
     onTogglePages: () => void;
 };
 
-// Controls (comments, edit, overflow, expand) are visual scaffolding wired in
-// later passes; the pages toggle drives the page tree panel.
-const PageHeader = ({space, treeOpen, onTogglePages}: Props) => {
+// Page controls (comments, edit, overflow, expand) are visual scaffolding wired
+// in later passes; the pages toggle drives the page tree panel.
+const PageHeader = ({space, page, treeOpen, onTogglePages}: Props) => {
     const {formatMessage} = useIntl();
+    const createRootPage = useCreateRootPage(space.id);
 
-    const pagesLabel = formatMessage({id: 'docs.space.pages.toggle', defaultMessage: 'Toggle page tree'});
+    // Read-only view of the pages sidebar's live width, so the add-page button
+    // can sit on its right edge (shared store, no prop threading).
+    const {width: sidebarWidth} = useSidebarWidth('pages', DEFAULT_SIDEBAR_WIDTH);
+
+    const addPageLabel = formatMessage({id: 'docs.pageTree.add', defaultMessage: 'Add page'});
     const commentsLabel = formatMessage({id: 'docs.space.comments', defaultMessage: 'Comments'});
     const moreLabel = formatMessage({id: 'docs.space.more', defaultMessage: 'More actions'});
     const expandLabel = formatMessage({id: 'docs.space.expand', defaultMessage: 'Expand'});
 
+    // The current page's last-updated time when a page is open, otherwise the
+    // space's.
+    const updatedAt = page ? page.update_at : space.update_at;
+
     // Timestamp's `style` is a narrow/short/long format variant, not a DOM style object.
     /* eslint-disable react/style-prop-object */
-    const updatedRelative = Timestamp ? (
+    const updatedRelative = (
         <Timestamp
-            value={space.update_at}
+            value={updatedAt}
             units={UPDATED_TIME_SPEC}
             useTime={false}
             style='narrow'
         />
-    ) : null;
+    );
     /* eslint-enable react/style-prop-object */
 
     return (
         <div className={styles.bar}>
-            <div className={styles.left}>
+            <div
+                className={styles.left}
+                style={treeOpen ? {width: sidebarWidth - BAR_INLINE_START_PADDING} : undefined}
+            >
                 <Button
-                    type='button'
+                    id={PAGES_SECTION_LABEL_ID}
                     emphasis='quaternary'
                     size='sm'
-                    className={classNames('docs-btn-neutral', styles.pagesToggle)}
-                    aria-label={pagesLabel}
+                    className={classNames('docs-btn-neutral', styles.iconLabel, {active: treeOpen})}
                     aria-pressed={treeOpen}
+                    leadingIcon={<FormatListBulletedIcon size={18}/>}
                     onClick={onTogglePages}
                 >
-                    <FormatListBulletedIcon size={18}/>
                     <span className={styles.pagesLabel}>
                         <FormattedMessage
                             id='docs.space.pages'
@@ -76,58 +106,75 @@ const PageHeader = ({space, treeOpen, onTogglePages}: Props) => {
                         />
                     </span>
                 </Button>
+                {treeOpen && <Spacer/>}
+                {treeOpen && (
+                    <Button
+                        emphasis='quaternary'
+                        size='sm'
+                        className='btn-icon'
+                        tooltip={addPageLabel}
+                        leadingIcon={<PlusIcon size={18}/>}
+                        onClick={createRootPage}
+                    />
+                )}
             </div>
 
+            <Spacer/>
+
             <div className={styles.right}>
-                {updatedRelative && (
-                    <span className={styles.updated}>
-                        <FormattedMessage
-                            id='docs.space.updated'
-                            defaultMessage='Updated {relative}'
-                            values={{relative: updatedRelative}}
-                        />
-                    </span>
-                )}
-                <Button
-                    type='button'
-                    emphasis='quaternary'
-                    size='sm'
-                    className={classNames('btn-icon', styles.commentButton)}
-                    aria-label={commentsLabel}
-                >
-                    <MessageTextOutlineIcon size={18}/>
-                    <span className={styles.badge}/>
-                </Button>
-                <Button
-                    type='button'
-                    emphasis='quaternary'
-                    size='sm'
-                    className={classNames('docs-btn-neutral', styles.edit)}
-                >
-                    <PencilOutlineIcon size={18}/>
+                <span className={styles.updated}>
                     <FormattedMessage
-                        id='docs.space.edit'
-                        defaultMessage='Edit'
+                        id='docs.space.updated'
+                        defaultMessage='Updated {relative}'
+                        values={{relative: updatedRelative}}
                     />
-                </Button>
-                <Button
-                    type='button'
-                    emphasis='quaternary'
-                    size='sm'
-                    className='btn-icon'
-                    aria-label={moreLabel}
-                >
-                    <DotsHorizontalIcon size={18}/>
-                </Button>
-                <Button
-                    type='button'
-                    emphasis='quaternary'
-                    size='sm'
-                    className='btn-icon'
-                    aria-label={expandLabel}
-                >
-                    <ArrowExpandIcon size={18}/>
-                </Button>
+                </span>
+                {page && (
+                    <>
+                        <Button
+                            emphasis='quaternary'
+                            size='sm'
+                            className='btn-icon'
+                            badge={true}
+                            tooltip={commentsLabel}
+                            leadingIcon={<MessageTextOutlineIcon size={18}/>}
+                        />
+                        <Button
+                            emphasis='quaternary'
+                            size='sm'
+                            className={classNames('docs-btn-neutral', styles.iconLabel)}
+                            leadingIcon={<PencilOutlineIcon size={18}/>}
+                        >
+                            <FormattedMessage
+                                id='docs.space.edit'
+                                defaultMessage='Edit'
+                            />
+                        </Button>
+                        <PageMenu
+                            spaceId={space.id}
+                            pageId={page.id}
+                            pageTitle={page.title}
+                            align='right'
+                            tooltip={moreLabel}
+                            trigger={(
+                                <Button
+                                    emphasis='quaternary'
+                                    size='sm'
+                                    className='btn-icon'
+                                    aria-label={moreLabel}
+                                    leadingIcon={<DotsHorizontalIcon size={18}/>}
+                                />
+                            )}
+                        />
+                        <Button
+                            emphasis='quaternary'
+                            size='sm'
+                            className='btn-icon'
+                            tooltip={expandLabel}
+                            leadingIcon={<ArrowExpandIcon size={18}/>}
+                        />
+                    </>
+                )}
             </div>
         </div>
     );

@@ -16,9 +16,10 @@ type Props = {
     error?: string;
     maxLength?: number;
     rows?: number;
+    autoFocus?: boolean;
 };
 
-const TextArea = ({id, label, value, onChange, error, maxLength, rows = 3}: Props) => {
+const TextArea = ({id, label, value, onChange, error, maxLength, rows = 3, autoFocus}: Props) => {
     const errorId = error ? `${id}-error` : undefined;
 
     return (
@@ -33,6 +34,7 @@ const TextArea = ({id, label, value, onChange, error, maxLength, rows = 3}: Prop
                 value={value}
                 rows={rows}
                 maxLength={maxLength}
+                autoFocus={autoFocus}
                 onChange={(e) => onChange(e.target.value)}
             />
             {error && (

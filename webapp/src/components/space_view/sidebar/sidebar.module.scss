@@ -1,0 +1,25 @@
+.sidebar {
+    position: relative;
+    flex-shrink: 0;
+    overflow: hidden;
+
+    // Closed: width animates to 0, then visibility flips so the clipped content
+    // leaves the tab order (it stays mounted for the slide).
+    visibility: hidden;
+    transition: width 200ms ease, visibility 0s 200ms;
+}
+
+.open {
+    visibility: visible;
+    transition: width 200ms ease;
+}
+
+// Dragging sets the width every frame; animating it would lag the pointer.
+.resizing {
+    transition: none;
+}
+
+// Holds the full width so the content is revealed, not squeezed, mid-slide.
+.inner {
+    height: 100%;
+}

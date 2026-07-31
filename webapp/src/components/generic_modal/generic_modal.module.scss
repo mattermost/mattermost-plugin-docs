@@ -41,17 +41,31 @@
     flex-direction: column;
     gap: 24px;
     padding: 24px 32px;
+}
+
+// Opt-in divider under the header (on by default via the component).
+.headerDivider {
     border-bottom: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
 }
 
+// Title grows; the actions slot and close button sit at the right edge.
 .titleRow {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 10px;
 }
 
+.titleActions {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 8px;
+}
+
+// Grows so the actions slot and close button are pushed to the right edge.
 .title {
+    flex: 1 1 auto;
+    min-width: 0;
     margin: 0;
     color: var(--center-channel-color);
     font-family: 'Metropolis', sans-serif;
@@ -67,6 +81,11 @@
     align-items: center;
     justify-content: flex-end;
     padding: 24px 32px;
+}
+
+// Opt-in divider between the body and footer actions.
+.footerDivider {
+    border-top: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
 }
 
 .close {

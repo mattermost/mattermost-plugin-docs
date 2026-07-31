@@ -3,13 +3,19 @@
 
 import {apiUrl, listAll, restDelete, restGet, restPatch, restPost} from 'client/rest';
 
-import type {CreatePageInput, CreateSpaceInput, Page, Space, SpaceMember, UpdateSpacePatch} from 'types/docs';
+import type {CreatePageInput, CreateSpaceInput, Page, Space, SpaceMember, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
 
 import type {DocsDataSource} from './docs_data_source';
 
 // The server's page list returns summaries (no body/delete_at); fill the fields
 // the store's Page type needs so a summary is a valid, body-less Page.
-const toPage = (summary: Page): Page => ({...summary, body: summary.body ?? '', delete_at: summary.delete_at ?? 0});
+const toPage = (summary: Page): Page => ({
+    ...summary,
+    body: summary.body ?? '',
+    delete_at: summary.delete_at ?? 0,
+    user_id: summary.user_id ?? '',
+    last_modified_by: summary.last_modified_by ?? '',
+});
 
 // Docs data over the plugin REST API (server/api.go). Ids are opaque; lists are
 // paginated ({items, has_more}) and followed to completion by listAll.
@@ -28,6 +34,7 @@ export const apiDataSource: DocsDataSource = {
         title: patch.title?.trim(),
         description: patch.description?.trim(),
         icon: patch.icon,
+        props: patch.props,
         expected_update_at: expectedUpdateAt,
     }),
 
@@ -58,4 +65,15 @@ export const apiDataSource: DocsDataSource = {
         });
         return toPage(created);
     },
+
+    updatePage: async (spaceId, pageId, patch: UpdatePagePatch, baseEditAt) => {
+        const updated = await restPatch<Page>(`${apiUrl()}/spaces/${spaceId}/pages/${pageId}`, {
+            title: patch.title?.trim(),
+            body: patch.body,
+            base_edit_at: baseEditAt,
+        });
+        return toPage(updated);
+    },
+
+    deletePage: (spaceId, pageId) => restDelete<void>(`${apiUrl()}/spaces/${spaceId}/pages/${pageId}`),
 };

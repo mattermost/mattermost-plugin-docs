@@ -1,28 +1,23 @@
+// Row: the primary column, then the full-height space info panel.
 .root {
+    display: flex;
+    flex: 1 1 0;
+    min-width: 0;
+    height: 100%;
+    background: var(--center-channel-bg);
+}
+
+.primary {
     display: flex;
     flex: 1 1 0;
     flex-direction: column;
     min-width: 0;
-    height: 100%;
-    background: var(--center-channel-bg);
 }
 
 .body {
     display: flex;
     flex: 1 1 0;
     min-height: 0;
-}
-
-// Fixed-width tree panel clipped by a wrapper whose width animates open/closed.
-.sidebar {
-    flex-shrink: 0;
-    width: 0;
-    overflow: hidden;
-    transition: width 200ms ease;
-}
-
-.sidebarOpen {
-    width: 264px;
 }
 
 .main {
@@ -33,20 +28,16 @@
 }
 
 .scroll {
+    display: flex;
     flex: 1 1 0;
+    flex-direction: column;
     overflow-y: auto;
 }
 
 .content {
     display: flex;
+    flex: 1 1 auto;
     flex-direction: column;
     gap: 24px;
     padding: 20px 24px;
-}
-
-.placeholder {
-    padding: 8px 4px 40px;
-    color: rgba(var(--center-channel-color-rgb), 0.56);
-    font-size: 14px;
-    line-height: 20px;
 }

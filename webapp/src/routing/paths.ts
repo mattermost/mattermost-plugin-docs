@@ -33,6 +33,19 @@ const SPACE_OR_PAGE_ID = '[a-z0-9][a-z0-9\\-_]*';
 export const DOCS_ROUTE = `/:team/${DOCS_KEYWORD}/:spaceId(${SPACE_OR_PAGE_ID})?/:pageId(${SPACE_OR_PAGE_ID})?`;
 export const DOCS_DRAFT_ROUTE = `/:team/${DOCS_KEYWORD}/:spaceId(${SPACE_OR_PAGE_ID})/drafts/:pageId(${SPACE_OR_PAGE_ID})`;
 
+// A routed space, with or without a page. Distinct from DOCS_ROUTE (whose params
+// are both optional, for parsing the current location) so it can be matched on
+// its own in a <Switch> — the product home is then the fallthrough.
+export const DOCS_SPACE_ROUTE = `/:team/${DOCS_KEYWORD}/:spaceId(${SPACE_OR_PAGE_ID})/:pageId(${SPACE_OR_PAGE_ID})?`;
+
+// The space's front door, addressed explicitly. A bare space URL redirects to the
+// space's default page when one is set, so "show me the overview" needs a URL of
+// its own — otherwise the redirect would always win. Like `drafts`, this segment
+// must be matched before the generic page route, which would otherwise read it as
+// a page id.
+export const DOCS_OVERVIEW_SEGMENT = 'overview';
+export const DOCS_SPACE_OVERVIEW_ROUTE = `/:team/${DOCS_KEYWORD}/:spaceId(${SPACE_OR_PAGE_ID})/${DOCS_OVERVIEW_SEGMENT}`;
+
 const segment = (value: string): string => encodeURIComponent(value);
 
 const teamRoot = (teamName: string): string => `/${segment(teamName)}/${DOCS_KEYWORD}`;
@@ -42,6 +55,8 @@ export const docsHomePath = (teamName: string): string => teamRoot(teamName);
 export const spacePath = (teamName: string, spaceId: string): string => `${teamRoot(teamName)}/${segment(spaceId)}`;
 
 export const pagePath = (teamName: string, spaceId: string, pageId: string): string => `${spacePath(teamName, spaceId)}/${segment(pageId)}`;
+
+export const overviewPath = (teamName: string, spaceId: string): string => `${spacePath(teamName, spaceId)}/${DOCS_OVERVIEW_SEGMENT}`;
 
 export const draftPath = (teamName: string, spaceId: string, pageId: string): string => `${spacePath(teamName, spaceId)}/drafts/${segment(pageId)}`;
 

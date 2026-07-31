@@ -2,42 +2,38 @@
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
-    width: 264px;
+    width: 100%;
     height: 100%;
     padding: 8px;
     border-right: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
     background: var(--center-channel-bg);
-}
-
-.header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    height: 32px;
-    padding: 0 4px 0 8px;
-}
-
-.heading {
-    color: rgba(var(--center-channel-color-rgb), 0.75);
-    font-size: 12px;
-    font-weight: 600;
-    line-height: 16px;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
+    overflow-y: auto;
 }
 
 .tree {
     display: flex;
-    flex: 1 1 0;
     flex-direction: column;
-    margin-top: 4px;
-    overflow-y: auto;
+    gap: 8px;
 }
 
-.addPage {
-    gap: 6px;
+.separator {
+    flex-shrink: 0;
+    height: 1px;
+    margin: 8px 4px;
+    background: rgba(var(--center-channel-color-rgb), 0.12);
+}
+
+// Neutral (not accent-blue): scoped under `.btn.btn-quaternary` so it beats
+// core's quaternary button color.
+.addPage:global(.btn.btn-quaternary) {
     justify-content: flex-start;
-    margin-top: 4px;
+    width: 100%;
+    gap: 6px;
     color: rgba(var(--center-channel-color-rgb), 0.64);
     font-weight: 400;
+
+    &:hover {
+        background: rgba(var(--center-channel-color-rgb), 0.08);
+        color: var(--center-channel-color);
+    }
 }

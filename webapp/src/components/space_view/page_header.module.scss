@@ -5,15 +5,27 @@
     height: 52px;
     padding: 0 12px 0 8px;
     background: var(--center-channel-bg);
+
+    // Core's global `.btn + .btn { margin-left: 8px }` keys off DOM adjacency and
+    // toggles as Base UI mounts focus guards around an open menu trigger, which
+    // made the dot-menu button jump/shrink on open. Spacing comes from `gap`.
+    :global(.btn + .btn) {
+        margin-left: 0;
+    }
 }
 
+// Spans the pages sidebar while it's open (width set inline from the shared
+// sidebar width) so the add-page button lands on the sidebar's right edge.
+// Shrinkable with a cap, so a wide sidebar can't crowd the page controls.
 .left {
     display: flex;
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-width: 0;
+    max-width: 50%;
     align-items: center;
 }
 
+// Sits at the bar's right edge; a <Spacer/> before it absorbs the free space.
 .right {
     display: flex;
     flex-shrink: 0;
@@ -21,8 +33,9 @@
     gap: 4px;
 }
 
-.pagesToggle {
-    gap: 8px;
+.iconLabel {
+    gap: 6px;
+    padding: 0 8px;
 }
 
 .pagesLabel {
@@ -38,21 +51,3 @@
     white-space: nowrap;
 }
 
-.commentButton {
-    position: relative;
-}
-
-.badge {
-    position: absolute;
-    top: 6px;
-    right: 6px;
-    width: 8px;
-    height: 8px;
-    border: 2px solid var(--center-channel-bg);
-    border-radius: 50%;
-    background: var(--button-bg);
-}
-
-.edit {
-    gap: 6px;
-}

@@ -48,7 +48,15 @@ export type UpdateSpacePatch = {
     title?: string;
     description?: string;
     icon?: string;
+
+    // Replaces the whole props map server-side, so callers must send the merged
+    // result rather than just the keys they changed.
+    props?: Record<string, string>;
 };
+
+// Space prop holding the page the space opens to; absent/empty means the space
+// front door (hero).
+export const SPACE_PROP_DEFAULT_PAGE_ID = 'default_page_id';
 
 // Mirrors the server model (server/model/page.go). search_text, user_id,
 // last_modified_by, original_id, and props exist on the server model too; add
@@ -60,11 +68,23 @@ export type Page = {
     type: string;
     title: string;
     body: string;
+
+    // Author and last editor, returned on both the full page and list summaries.
+    user_id: string;
+    last_modified_by: string;
     sort_order: number;
     create_at: number;
     update_at: number;
     edit_at: number;
     delete_at: number;
+};
+
+// The editable fields of a page, as sent to the update-page API. Every field is
+// optional so a patch carries only what changed; the optimistic-lock baseline
+// (base_edit_at) is passed separately.
+export type UpdatePagePatch = {
+    title?: string;
+    body?: string;
 };
 
 // The fields needed to create a page. parentId is omitted for a root page (the

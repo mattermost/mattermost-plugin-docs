@@ -74,7 +74,12 @@ type HostComponents = {
 
 const hostComponents = (): HostComponents => (window as unknown as {Components?: HostComponents}).Components ?? {};
 
-export const Timestamp = hostComponents().Timestamp;
+// Renders the host Timestamp, or nothing on a host that doesn't publish it. The
+// fallback lives here so callers just render <Timestamp/> without a null check.
+export const Timestamp = (props: TimestampProps): ReactElement | null => {
+    const HostTimestamp = hostComponents().Timestamp;
+    return HostTimestamp ? React.createElement(HostTimestamp, props) : null;
+};
 
 // Renders the host Avatar, or nothing on a host that doesn't publish it. The
 // fallback lives here so callers just render <Avatar/> without a null check.

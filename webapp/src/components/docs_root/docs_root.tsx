@@ -9,7 +9,9 @@ import {useHotkeys} from 'react-hotkeys-hook';
 
 import CreateSpaceModal from 'components/create_space_modal/create_space_modal';
 import DocsSwitcher from 'components/docs_switcher/docs_switcher';
+import {DocsModalController, openDocsModal} from 'components/modals';
 import SpacesSidebar from 'components/spaces_sidebar/spaces_sidebar';
+import {DocsToaster} from 'components/toast';
 
 import DocsMainContent from './docs_main_content';
 import styles from './docs_root.module.scss';
@@ -17,7 +19,7 @@ import styles from './docs_root.module.scss';
 const DocsRoot = () => {
     useBootstrapDocs();
 
-    const {spaceId, pageId} = useDocsNavigation();
+    const {spaceId} = useDocsNavigation();
 
     useRecordSpaceView(spaceId);
 
@@ -25,9 +27,9 @@ const DocsRoot = () => {
     const openSwitcher = useCallback(() => setSwitcherOpen(true), []);
     const closeSwitcher = useCallback(() => setSwitcherOpen(false), []);
 
-    const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
-    const openCreateSpace = useCallback(() => setCreateSpaceOpen(true), []);
-    const closeCreateSpace = useCallback(() => setCreateSpaceOpen(false), []);
+    const openCreateSpace = useCallback(() => {
+        openDocsModal((modal) => <CreateSpaceModal onClose={modal.close}/>);
+    }, []);
 
     // stopPropagation so the Docs switcher wins the shortcut over the host's.
     useHotkeys('mod+k', (e) => {
@@ -45,14 +47,13 @@ const DocsRoot = () => {
             </div>
             <main className={styles.main}>
                 <DocsMainContent
-                    spaceId={spaceId}
-                    pageId={pageId}
                     onCreateSpace={openCreateSpace}
                     onBrowseSpaces={openSwitcher}
                 />
             </main>
             {switcherOpen && <DocsSwitcher onClose={closeSwitcher}/>}
-            {createSpaceOpen && <CreateSpaceModal onClose={closeCreateSpace}/>}
+            <DocsModalController/>
+            <DocsToaster/>
         </div>
     );
 };

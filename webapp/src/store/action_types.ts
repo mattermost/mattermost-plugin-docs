@@ -13,4 +13,5 @@ export const SpaceTypes = {
 export const PageTypes = {
     RECEIVED_PAGES: manifest.id + '_received_pages',
     MOVED_PAGE: manifest.id + '_moved_page',
+    DELETED_PAGE: manifest.id + '_deleted_page',
 } as const;

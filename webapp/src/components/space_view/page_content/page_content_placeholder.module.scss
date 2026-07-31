@@ -1,0 +1,37 @@
+// Stand-in for the not-yet-mounted editor: a full-height block of muted bars
+// that reads as a content skeleton rather than an empty gap.
+.placeholder {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 240px;
+    padding: 4px 0 40px;
+}
+
+.block {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.block + .block {
+    margin-top: 12px;
+}
+
+.heading,
+.line {
+    height: 12px;
+    border-radius: 4px;
+    background: rgba(var(--center-channel-color-rgb), 0.08);
+}
+
+.heading {
+    width: 40%;
+    height: 20px;
+    background: rgba(var(--center-channel-color-rgb), 0.12);
+}
+
+.lineShort {
+    width: 62%;
+}

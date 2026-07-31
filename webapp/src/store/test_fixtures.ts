@@ -24,6 +24,8 @@ export const makePage = (id: string, spaceId: string, title: string, sortOrder =
     type: 'page',
     title,
     body: '',
+    user_id: '',
+    last_modified_by: '',
     sort_order: sortOrder,
     create_at: 0,
     update_at: 0,

@@ -1,0 +1,62 @@
+// A 12px grab area centered on the container's edge, so the pointer target is
+// forgiving while the visible line stays 4px (matching core).
+.divider {
+    position: absolute;
+    z-index: 5;
+    top: 0;
+    width: 12px;
+    height: 100%;
+    cursor: col-resize;
+
+    &::after {
+        position: absolute;
+        top: 0;
+        width: 4px;
+        height: 100%;
+        background: transparent;
+        content: '';
+    }
+
+    &:hover::after,
+    &:focus-visible::after {
+        background: var(--sidebar-text-active-border);
+    }
+
+    &:focus-visible {
+        outline: none;
+    }
+}
+
+.active::after {
+    background: var(--sidebar-text-active-border);
+}
+
+// Emphasized while the drag is snapped to the default width, so the snap is
+// visible rather than just felt.
+.snapped::after {
+    width: 6px;
+    background: var(--button-bg);
+}
+
+// `left`/`right` name the edge the handle sits on, so the line hugs the border.
+.left {
+    right: -6px;
+
+    &::after {
+        left: 4px;
+    }
+}
+
+.right {
+    left: -6px;
+
+    &::after {
+        right: 4px;
+    }
+}
+
+// Set on <body> for the duration of a drag.
+.resizing {
+    cursor: col-resize;
+    user-select: none;
+}

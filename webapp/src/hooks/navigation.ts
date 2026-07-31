@@ -4,7 +4,7 @@
 import {useTeamContext} from 'hooks/team';
 import {useCallback} from 'react';
 import {useHistory, useRouteMatch} from 'react-router-dom';
-import {DOCS_DRAFT_ROUTE, DOCS_ROUTE, docsHomePath, docsPath, draftPath, pagePath, spacePath} from 'routing/paths';
+import {DOCS_DRAFT_ROUTE, DOCS_ROUTE, DOCS_SPACE_OVERVIEW_ROUTE, docsHomePath, docsPath, draftPath, overviewPath, pagePath, spacePath} from 'routing/paths';
 
 type DocsRouteParams = {
     team?: string;
@@ -20,20 +20,22 @@ type DocsRouteParams = {
 export function useDocsNavigation() {
     const history = useHistory();
 
-    // Draft route first: it's the more specific pattern. DOCS_ROUTE treats the
-    // segment after :spaceId as :pageId, so a draft URL (…/:spaceId/drafts/:pageId)
-    // would otherwise parse pageId='drafts' and drop the real page id.
-    const match = useRouteMatch<DocsRouteParams>([DOCS_DRAFT_ROUTE, DOCS_ROUTE]);
+    // Specific patterns first: DOCS_ROUTE treats the segment after :spaceId as
+    // :pageId, so a draft URL (…/:spaceId/drafts/:pageId) would parse
+    // pageId='drafts', and an overview URL would parse pageId='overview'.
+    const match = useRouteMatch<DocsRouteParams>([DOCS_DRAFT_ROUTE, DOCS_SPACE_OVERVIEW_ROUTE, DOCS_ROUTE]);
     const {name: currentTeamName} = useTeamContext();
 
     const teamName = match?.params.team || currentTeamName;
     const spaceId = match?.params.spaceId;
     const pageId = match?.params.pageId;
     const isDraft = match?.path === DOCS_DRAFT_ROUTE;
+    const isOverview = match?.path === DOCS_SPACE_OVERVIEW_ROUTE;
 
     const goToSpace = useCallback((id: string) => history.push(spacePath(teamName, id)), [history, teamName]);
     const goToPage = useCallback((space: string, page: string) => history.push(pagePath(teamName, space, page)), [history, teamName]);
     const goToDraft = useCallback((space: string, page: string) => history.push(draftPath(teamName, space, page)), [history, teamName]);
+    const goToOverview = useCallback((space: string) => history.push(overviewPath(teamName, space)), [history, teamName]);
     const goHome = useCallback(() => history.push(docsHomePath(teamName)), [history, teamName]);
     const navigate = useCallback((space: string, page?: string) => history.push(docsPath(teamName, space, page)), [history, teamName]);
 
@@ -46,9 +48,11 @@ export function useDocsNavigation() {
         spaceId,
         pageId,
         isDraft,
+        isOverview,
         goToSpace,
         goToPage,
         goToDraft,
+        goToOverview,
         goHome,
         navigate,
         navigateInTeam,
@@ -59,6 +63,7 @@ export function useDocsNavigation() {
             home: () => docsHomePath(teamName),
             space: (id: string) => spacePath(teamName, id),
             page: (space: string, page: string) => pagePath(teamName, space, page),
+            overview: (space: string) => overviewPath(teamName, space),
             draft: (space: string, page: string) => draftPath(teamName, space, page),
             to: (space?: string, page?: string) => docsPath(teamName, space, page),
         },

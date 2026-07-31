@@ -5,23 +5,30 @@ import {fireEvent, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 
 import Menu from './menu';
-import type {MenuItemSpec} from './menu_types';
 
 import {renderWithContext} from '../../../tests/react_testing_utils';
 
-function renderMenu(items: MenuItemSpec[]) {
+function renderMenu(onRename: () => void) {
     return renderWithContext(
         <Menu
             ariaLabel='Space actions'
-            items={items}
             trigger={<button type='button'>{'Open menu'}</button>}
-        />,
+        >
+            <Menu.Item onClick={onRename}>{'Rename'}</Menu.Item>
+            <Menu.Separator/>
+            <Menu.Item
+                destructive={true}
+                onClick={jest.fn()}
+            >
+                {'Delete'}
+            </Menu.Item>
+        </Menu>,
     );
 }
 
 describe('Menu', () => {
     it('renders the trigger and keeps items closed initially', () => {
-        renderMenu([{id: 'a', label: 'Rename', onClick: jest.fn()}]);
+        renderMenu(jest.fn());
 
         expect(screen.getByRole('button', {name: 'Open menu'})).toBeInTheDocument();
         expect(screen.queryByText('Rename')).not.toBeInTheDocument();
@@ -29,10 +36,7 @@ describe('Menu', () => {
 
     it('opens on trigger click and fires the item handler', async () => {
         const onClick = jest.fn();
-        renderMenu([
-            {id: 'rename', label: 'Rename', onClick},
-            {id: 'delete', label: 'Delete', onClick: jest.fn(), isDestructive: true, hasDivider: true},
-        ]);
+        renderMenu(onClick);
 
         fireEvent.click(screen.getByRole('button', {name: 'Open menu'}));
 

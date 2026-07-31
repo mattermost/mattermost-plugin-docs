@@ -18,11 +18,13 @@ describe('getSpacesInTeam', () => {
         const spaceB = makeSpace('b', 'Space B', 't1', 0);
 
         const state = makeState({
-            spaces: {a: spaceA, b: spaceB},
-            spacesInTeam: {t1: new Set(['a', 'b', 'missing'])},
-            pages: {},
-            pagesInSpace: {},
-            spaceMembers: {},
+            entities: {
+                spaces: {a: spaceA, b: spaceB},
+                spacesInTeam: {t1: new Set(['a', 'b', 'missing'])},
+                pages: {},
+                pagesInSpace: {},
+                spaceMembers: {},
+            },
         });
 
         expect(getSpacesInTeam(state, 't1')).toEqual([spaceB, spaceA]);
@@ -36,11 +38,13 @@ describe('getPagesForSpace', () => {
         const page2 = makePage('p2', 'space-b', 'Page 2');
 
         const state = makeState({
-            spaces: {},
-            spacesInTeam: {},
-            pages: {p1: page1, p2: page2},
-            pagesInSpace: {'space-a': new Set(['p1']), 'space-b': new Set(['p2'])},
-            spaceMembers: {},
+            entities: {
+                spaces: {},
+                spacesInTeam: {},
+                pages: {p1: page1, p2: page2},
+                pagesInSpace: {'space-a': new Set(['p1']), 'space-b': new Set(['p2'])},
+                spaceMembers: {},
+            },
         });
 
         expect(getPagesForSpace(state, 'space-a')).toEqual([page1]);

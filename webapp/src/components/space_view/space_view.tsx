@@ -1,83 +1,99 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import classNames from 'classnames';
+import {useDocsNavigation} from 'hooks/navigation';
+import {useDefaultPagePath} from 'hooks/pages';
+import {useAppSelector} from 'hooks/redux';
 import {useSpaceStats} from 'hooks/spaces';
 import React, {useCallback, useState} from 'react';
-import {FormattedMessage} from 'react-intl';
+import {Redirect} from 'react-router-dom';
+
+import {getPage} from 'store/selectors';
 
 import SpaceInfoPanel from 'components/space_info/space_info_panel';
-import SpaceSettingsModal from 'components/space_settings_modal/space_settings_modal';
+import type {SpaceInfoView} from 'components/space_info/space_info_panel';
 
 import type {Space} from 'types/docs';
 
+import PageContent from './page_content/page_content';
+import PageContentPlaceholder from './page_content/page_content_placeholder';
 import PageHeader from './page_header';
 import PageHero from './page_hero';
 import PageTreePanel from './page_tree/page_tree_panel';
+import Sidebar from './sidebar/sidebar';
 import SpaceHeader from './space_header';
 import styles from './space_view.module.scss';
 
-// Main content for a routed space: the space header and page header stack
-// full-width at the top; below them a flex row holds the pages sidebar (which
-// slides in/out), the page content column (front-door hero over the editor
-// area), and the optional space info panel as a right column. The page body is
-// a placeholder until the editor is mounted.
+// Main content for a routed space. The space info panel is a full-height right
+// column, so its own header lines up with the space header rather than starting
+// below it; everything else lives in the primary column to its left — the space
+// header and page header stacked at the top, then a row of the resizable pages
+// sidebar and the page content. The content column shows the space front door
+// (hero) until a page is routed, at which point it shows that page instead.
+// Page bodies are a placeholder until the editor is mounted.
 const SpaceView = ({space}: {space: Space}) => {
+    const {pageId} = useDocsNavigation();
+    const page = useAppSelector((state) => (pageId ? getPage(state, pageId) : undefined));
     const {pageCount, memberCount} = useSpaceStats(space.id);
+    const defaultPagePath = useDefaultPagePath(space);
     const [treeOpen, setTreeOpen] = useState(true);
-    const [infoOpen, setInfoOpen] = useState(false);
-    const [settingsOpen, setSettingsOpen] = useState(false);
+    const [infoView, setInfoView] = useState<SpaceInfoView | null>(null);
 
     const togglePages = useCallback(() => setTreeOpen((open) => !open), []);
-    const toggleInfo = useCallback(() => setInfoOpen((open) => !open), []);
-    const openSettings = useCallback(() => setSettingsOpen(true), []);
+    const toggleInfo = useCallback(() => setInfoView((view) => (view ? null : 'root')), []);
+    const closeInfo = useCallback(() => setInfoView(null), []);
+    const showMembers = useCallback(() => setInfoView('members'), []);
+
+    // A space with a default page opens on that page; `<Redirect>` replaces the
+    // space-home entry rather than pushing one.
+    if (defaultPagePath) {
+        return <Redirect to={defaultPagePath}/>;
+    }
 
     return (
         <div className={styles.root}>
-            <SpaceHeader
-                space={space}
-                memberCount={memberCount}
-                infoOpen={infoOpen}
-                onToggleInfo={toggleInfo}
-                onOpenSettings={openSettings}
-            />
-            <PageHeader
-                space={space}
-                treeOpen={treeOpen}
-                onTogglePages={togglePages}
-            />
-            <div className={styles.body}>
-                <div className={classNames(styles.sidebar, {[styles.sidebarOpen]: treeOpen})}>
-                    <PageTreePanel space={space}/>
-                </div>
-                <div className={styles.main}>
-                    <div className={styles.scroll}>
-                        <div className={styles.content}>
-                            <PageHero
-                                space={space}
-                                pageCount={pageCount}
-                                memberCount={memberCount}
-                            />
-                            <div className={styles.placeholder}>
-                                <FormattedMessage
-                                    id='docs.space.bodyPlaceholder'
-                                    defaultMessage='Page content will appear here once the editor is available.'
-                                />
-                            </div>
+            <div className={styles.primary}>
+                <SpaceHeader
+                    space={space}
+                    memberCount={memberCount}
+                    infoOpen={infoView !== null}
+                    onToggleInfo={toggleInfo}
+                    onShowMembers={showMembers}
+                />
+                <PageHeader
+                    space={space}
+                    page={page}
+                    treeOpen={treeOpen}
+                    onTogglePages={togglePages}
+                />
+                <div className={styles.body}>
+                    <Sidebar open={treeOpen}>
+                        <PageTreePanel space={space}/>
+                    </Sidebar>
+                    <div className={styles.main}>
+                        <div className={styles.scroll}>
+                            {pageId ? (
+                                <PageContent pageId={pageId}/>
+                            ) : (
+                                <div className={styles.content}>
+                                    <PageHero
+                                        space={space}
+                                        pageCount={pageCount}
+                                        memberCount={memberCount}
+                                    />
+                                    <PageContentPlaceholder/>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>
-                {infoOpen && (
-                    <SpaceInfoPanel
-                        space={space}
-                        onClose={toggleInfo}
-                    />
-                )}
             </div>
-            {settingsOpen && (
-                <SpaceSettingsModal
+            {infoView && (
+                <SpaceInfoPanel
                     space={space}
-                    onClose={() => setSettingsOpen(false)}
+                    view={infoView}
+                    onViewChange={setInfoView}
+                    onClose={closeInfo}
                 />
             )}
         </div>

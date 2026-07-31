@@ -3,14 +3,17 @@
 
 import {docsDataSource} from 'data';
 
+import {ClientError} from '@mattermost/client';
+
 import {getCurrentTeamId, getMyTeams} from 'mattermost-redux/selectors/entities/teams';
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
-import type {CreatePageInput, CreateSpaceInput, Page, Space, UpdateSpacePatch} from 'types/docs';
+import type {CreatePageInput, CreateSpaceInput, Page, Space, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
 import type {DocsThunkAction} from 'types/store';
 
 import {PageTypes, SpaceTypes} from './action_types';
-import {getPage, getSpace} from './selectors';
+import {collectSubtreeIds} from './entities';
+import {getPage, getPagesById, getSpace} from './selectors';
 
 // Spaces the caller belongs to in the current team (the server scopes the list
 // by backing-channel membership). A failed load leaves the store empty rather
@@ -23,7 +26,11 @@ export function fetchSpaces(): DocsThunkAction<Promise<void>> {
         }
         try {
             const spaces = await docsDataSource.listSpaces(teamId);
-            dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces});
+
+            // `teamId` records that this team's list is now known, so consumers
+            // can tell "no spaces" from "not loaded yet" (an empty result would
+            // otherwise leave no trace in the index).
+            dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces, teamId});
         } catch (error) {
             // eslint-disable-next-line no-console
             console.error('Docs: failed to load spaces', error);
@@ -95,6 +102,32 @@ export function createPage(spaceId: string, input: CreatePageInput): DocsThunkAc
     };
 }
 
+// Patches a page's editable fields and reconciles the store with the
+// server-returned page. Reads the current edit_at as the optimistic-lock
+// baseline (the server rejects a stale write). Rejects on failure so the caller
+// can surface it and stay open.
+export function updatePage(spaceId: string, pageId: string, patch: UpdatePagePatch): DocsThunkAction<Promise<Page>> {
+    return async (dispatch, getState) => {
+        const page = getPage(getState(), pageId);
+        if (!page) {
+            throw new Error(`Docs: page ${pageId} is not loaded`);
+        }
+        const updated = await docsDataSource.updatePage(spaceId, pageId, patch, page.edit_at);
+        dispatch({type: PageTypes.RECEIVED_PAGES, pages: [updated]});
+        return updated;
+    };
+}
+
+// Deletes (soft-deletes) a page and prunes it — and its descendants — from the
+// store. Rejects on failure so the caller can surface it.
+export function deletePage(spaceId: string, pageId: string): DocsThunkAction<Promise<void>> {
+    return async (dispatch, getState) => {
+        const pageIds = [...collectSubtreeIds(getPagesById(getState()), pageId)];
+        await docsDataSource.deletePage(spaceId, pageId);
+        dispatch({type: PageTypes.DELETED_PAGE, pageId, spaceId, pageIds});
+    };
+}
+
 // Loads a space's members (user ids) into the store, backing the member count.
 export function fetchSpaceMembers(spaceId: string): DocsThunkAction<Promise<void>> {
     return async (dispatch) => {
@@ -139,6 +172,14 @@ export function deleteSpace(spaceId: string): DocsThunkAction<Promise<void>> {
         await docsDataSource.deleteSpace(spaceId);
         dispatch({type: SpaceTypes.DELETED_SPACE, spaceId});
     };
+}
+
+// The server rejects removing a space's last authorized member with
+// `app.space.remove_member.last_member.app_error` (409). The REST layer keeps
+// only {message, status_code} from the AppError, so the status is all a caller
+// has to recognize it by.
+export function isLastSpaceMemberError(error: unknown): boolean {
+    return error instanceof ClientError && error.status_code === 409;
 }
 
 // Leaving a space is removing yourself from its membership. The server rejects

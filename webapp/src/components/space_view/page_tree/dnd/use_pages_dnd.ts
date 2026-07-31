@@ -3,7 +3,7 @@
 
 import {monitorForElements} from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
 import {useLatest} from 'hooks/utils';
-import {useEffect} from 'react';
+import {useEffect, useState} from 'react';
 
 import type {Page} from 'types/docs';
 
@@ -58,11 +58,19 @@ export function usePagesDnd({pages, onMove, enabled}: Args) {
     const onMoveRef = useLatest(onMove);
     const enabledRef = useLatest(enabled);
 
+    // The page currently being dragged (null when idle). Lets rows mark
+    // themselves as an invalid drop zone when they sit inside the dragged
+    // page's own subtree.
+    const [draggingId, setDraggingId] = useState<string | null>(null);
+
     useEffect(() => monitorForElements({
         canMonitor: ({source}) => enabledRef.current && source.data.type === PAGE_DRAG_TYPE,
+        onDragStart: ({source}) => setDraggingId(source.data.pageId as string),
         onDrop: ({source, location}) => {
+            setDraggingId(null);
+
             const target = location.current.dropTargets[0];
-            if (!target || target.data.type !== PAGE_DRAG_TYPE) {
+            if (!target || target.data.type !== PAGE_DRAG_TYPE || target.data.blocked) {
                 return;
             }
 
@@ -76,4 +84,6 @@ export function usePagesDnd({pages, onMove, enabled}: Args) {
             }
         },
     }), [pagesRef, onMoveRef, enabledRef]);
+
+    return {draggingId};
 }

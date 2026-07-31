@@ -6,6 +6,8 @@ import React from 'react';
 import {useIntl} from 'react-intl';
 import {SpaceIcon} from 'utils/space_icon';
 
+import Spacer from 'components/spacer/spacer';
+
 import type {Space} from 'types/docs';
 
 import MemberAvatars from './member_avatars';
@@ -69,9 +71,8 @@ const PageHero = ({space, pageCount, memberCount}: Props) => {
                         <span className={styles.statLabel}>{stat.label}</span>
                     </div>
                 ))}
-                <div className={styles.avatars}>
-                    <MemberAvatars spaceId={space.id}/>
-                </div>
+                <Spacer/>
+                <MemberAvatars spaceId={space.id}/>
             </div>
         </section>
     );

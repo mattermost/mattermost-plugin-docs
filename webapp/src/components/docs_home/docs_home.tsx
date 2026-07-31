@@ -169,14 +169,14 @@ const SpaceCard = ({summary, onOpen}: {summary: SpaceSummary; onOpen: (id: strin
 
     // Timestamp's `style` is a narrow/short/long format variant, not a DOM style object.
     /* eslint-disable react/style-prop-object */
-    const relative = lastViewedAt !== undefined && Timestamp ? (
+    const relative = lastViewedAt === undefined ? null : (
         <Timestamp
             value={lastViewedAt}
             units={VIEWED_TIME_SPEC}
             useTime={false}
             style='narrow'
         />
-    ) : null;
+    );
     /* eslint-enable react/style-prop-object */
 
     return (

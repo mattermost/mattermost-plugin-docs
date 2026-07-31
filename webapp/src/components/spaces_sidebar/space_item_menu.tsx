@@ -1,6 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {useSpaceFavoriteState, useToggleFavorite} from 'hooks/favorites';
 import {useDocsNavigation} from 'hooks/navigation';
 import {useAppDispatch} from 'hooks/redux';
 import React, {useCallback, useState} from 'react';
@@ -10,12 +11,13 @@ import {copyToClipboard} from 'utils/clipboard';
 import DotsVerticalIcon from '@mattermost/compass-icons/components/dots-vertical';
 import ExitToAppIcon from '@mattermost/compass-icons/components/exit-to-app';
 import LinkVariantIcon from '@mattermost/compass-icons/components/link-variant';
+import StarIcon from '@mattermost/compass-icons/components/star';
+import StarOutlineIcon from '@mattermost/compass-icons/components/star-outline';
 
 import {leaveSpace} from 'store/actions';
 
 import ConfirmModal from 'components/confirm_modal/confirm_modal';
 import Menu from 'components/menu/menu';
-import type {MenuItemSpec} from 'components/menu/menu_types';
 
 import type {Space} from 'types/docs';
 
@@ -29,6 +31,9 @@ const SpaceItemMenu = ({space}: Props) => {
     const {formatMessage} = useIntl();
     const dispatch = useAppDispatch();
     const {paths, spaceId, goHome} = useDocsNavigation();
+    const favoriteState = useSpaceFavoriteState(space.id);
+    const toggleFavorite = useToggleFavorite();
+    const favorited = favoriteState === 'on';
 
     const [confirmLeaveOpen, setConfirmLeaveOpen] = useState(false);
 
@@ -50,56 +55,6 @@ const SpaceItemMenu = ({space}: Props) => {
         setConfirmLeaveOpen(false);
     }, [dispatch, space.id, spaceId, goHome]);
 
-    const items: MenuItemSpec[] = [
-
-        // Favorite space is deferred until ordering/favorites persist to user
-        // preferences (spec §4, Phase B).
-        // {
-        //     id: 'favorite',
-        //     label: <FormattedMessage id='docs.sidebar.space.favorite' defaultMessage='Add to favorites'/>,
-        //     leadingIcon: <StarOutlineIcon size={18}/>,
-        //     onClick: () => onToggleFavorite(space.id),
-        // },
-
-        // Mute space is deferred until the mute feature exists.
-        // {
-        //     id: 'mute',
-        //     label: formatMessage({id: 'docs.sidebar.space.mute', defaultMessage: 'Mute space'}),
-        //     leadingIcon: <BellOutlineIcon size={18}/>,
-        // },
-        {
-            id: 'copy-link',
-            label: (
-                <FormattedMessage
-                    id='docs.sidebar.space.copyLink'
-                    defaultMessage='Copy link'
-                />
-            ),
-            leadingIcon: <LinkVariantIcon size={18}/>,
-            onClick: copyLink,
-        },
-
-        // Space settings is deferred until the settings feature exists.
-        // {
-        //     id: 'settings',
-        //     label: formatMessage({id: 'docs.sidebar.space.settings', defaultMessage: 'Space settings'}),
-        //     leadingIcon: <CogOutlineIcon size={18}/>,
-        // },
-        {
-            id: 'leave',
-            label: (
-                <FormattedMessage
-                    id='docs.sidebar.space.leave'
-                    defaultMessage='Leave space'
-                />
-            ),
-            leadingIcon: <ExitToAppIcon size={18}/>,
-            isDestructive: true,
-            hasDivider: true,
-            onClick: () => setConfirmLeaveOpen(true),
-        },
-    ];
-
     const menuLabel = formatMessage({id: 'docs.sidebar.space.menu', defaultMessage: 'Space options for {name}'}, {name: space.title});
 
     return (
@@ -107,7 +62,6 @@ const SpaceItemMenu = ({space}: Props) => {
             <Menu
                 ariaLabel={menuLabel}
                 align='right'
-                items={items}
                 tooltip={menuLabel}
                 trigger={(
                     <button
@@ -119,7 +73,52 @@ const SpaceItemMenu = ({space}: Props) => {
                         <DotsVerticalIcon size={16}/>
                     </button>
                 )}
-            />
+            >
+                {/* Mute is deferred until a mute feature exists; space settings
+                  * until that surface lands. */}
+                <Menu.Item
+                    leadingIcon={favorited ? <StarIcon size={18}/> : <StarOutlineIcon size={18}/>}
+                    secondaryLabel={favoriteState === 'partial' ? (
+                        <FormattedMessage
+                            id='docs.sidebar.space.favoritePartial'
+                            defaultMessage='Some pages are favorited'
+                        />
+                    ) : undefined}
+                    onClick={() => toggleFavorite('space', space.id)}
+                >
+                    {favorited ? (
+                        <FormattedMessage
+                            id='docs.sidebar.space.unfavorite'
+                            defaultMessage='Remove from favorites'
+                        />
+                    ) : (
+                        <FormattedMessage
+                            id='docs.sidebar.space.favorite'
+                            defaultMessage='Add to favorites'
+                        />
+                    )}
+                </Menu.Item>
+                <Menu.Item
+                    leadingIcon={<LinkVariantIcon size={18}/>}
+                    onClick={copyLink}
+                >
+                    <FormattedMessage
+                        id='docs.sidebar.space.copyLink'
+                        defaultMessage='Copy link'
+                    />
+                </Menu.Item>
+                <Menu.Separator/>
+                <Menu.Item
+                    leadingIcon={<ExitToAppIcon size={18}/>}
+                    destructive={true}
+                    onClick={() => setConfirmLeaveOpen(true)}
+                >
+                    <FormattedMessage
+                        id='docs.sidebar.space.leave'
+                        defaultMessage='Leave space'
+                    />
+                </Menu.Item>
+            </Menu>
             {confirmLeaveOpen && (
                 <ConfirmModal
                     title={(

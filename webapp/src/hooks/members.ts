@@ -19,6 +19,33 @@ export type MemberProfile = {
     avatarUrl: string;
 };
 
+// Resolves a single user id to a display profile, fetching it if the host store
+// doesn't have it yet (e.g. a page's author who isn't a loaded space member).
+export function useUserProfile(userId?: string): MemberProfile | undefined {
+    const dispatch = useAppDispatch();
+    const usersById = useAppSelector(getUsers);
+    const nameDisplay = useAppSelector(getTeammateNameDisplaySetting) || '';
+
+    useEffect(() => {
+        if (userId) {
+            dispatch(getMissingProfilesByIds([userId]));
+        }
+    }, [dispatch, userId]);
+
+    return useMemo(() => {
+        if (!userId) {
+            return undefined;
+        }
+        const user = usersById[userId];
+        return {
+            id: userId,
+            displayName: displayUsername(user, nameDisplay),
+            username: user?.username ?? '',
+            avatarUrl: Client4.getProfilePictureUrl(userId, user?.last_picture_update),
+        };
+    }, [userId, usersById, nameDisplay]);
+}
+
 // Resolves a space's member ids (from the Docs store) to display profiles,
 // fetching any not yet in the host store. Member ids are loaded by
 // fetchSpaceMembers (see useSpaceStats).
