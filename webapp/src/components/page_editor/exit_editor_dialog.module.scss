@@ -1,0 +1,15 @@
+.actions {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    gap: 8px;
+}
+
+.error {
+    margin-top: 8px;
+    color: var(--error-text);
+}
+
+.spacer {
+    flex: 1;
+}

@@ -1,0 +1,22 @@
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
+// See LICENSE.txt for license information.
+
+.bar {
+    position: absolute;
+    z-index: 10;
+
+    width: min(660px, 100%);
+    padding-right: 7px;
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.16);
+    border-radius: 4px;
+    background: var(--center-channel-bg);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.hidden {
+    top: 0;
+    left: 0;
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+}
