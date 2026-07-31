@@ -83,17 +83,21 @@ const FloatingFormattingBar = ({editorRef, applyFormatting, getEditor, barRef, a
     }, [reposition]);
 
     useEffect(() => {
+        const scroller = editorRef.current?.closest('[data-docs-scroll]');
+
         document.addEventListener('selectionchange', schedule);
         window.addEventListener('resize', schedule);
+        scroller?.addEventListener('scroll', schedule);
         return () => {
             document.removeEventListener('selectionchange', schedule);
             window.removeEventListener('resize', schedule);
+            scroller?.removeEventListener('scroll', schedule);
             if (frameRef.current) {
                 cancelAnimationFrame(frameRef.current);
                 frameRef.current = 0;
             }
         };
-    }, [schedule]);
+    }, [schedule, editorRef]);
 
     const onMouseDown = useCallback((e: React.MouseEvent) => {
         interactingRef.current = true;

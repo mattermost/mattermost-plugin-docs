@@ -13,6 +13,15 @@ const readStored = (): boolean => {
     }
 };
 
+const writeStored = (pinned: boolean): boolean => {
+    try {
+        window.localStorage.setItem(STORAGE_KEY, String(pinned));
+        return true;
+    } catch {
+        return false;
+    }
+};
+
 export const usePinnedToolbar = (): [boolean, () => void] => {
     const [pinned, setPinned] = useState(readStored);
 
@@ -24,11 +33,7 @@ export const usePinnedToolbar = (): [boolean, () => void] => {
             firstRender.current = false;
             return;
         }
-        try {
-            window.localStorage.setItem(STORAGE_KEY, String(pinned));
-        } catch {
-            // Storage unavailable; the preference stays session-only.
-        }
+        writeStored(pinned);
     }, [pinned]);
 
     return [pinned, toggle];

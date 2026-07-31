@@ -4,8 +4,6 @@
 import type {Editor} from '@tiptap/core';
 import type {PublishedMarkdownMode} from 'webapp_globals';
 
-// These commands come from the host's StarterKit extensions, which are not
-// dependencies here, so the chain they extend is typed structurally.
 type FormattingChain = {
     toggleBold: () => FormattingChain;
     toggleItalic: () => FormattingChain;
@@ -20,7 +18,8 @@ type FormattingChain = {
 
 const selectWordUnderCaret = (editor: Editor) => {
     const {$from} = editor.state.selection;
-    const text = $from.parent.textContent;
+
+    const text = $from.parent.textBetween(0, $from.parent.content.size, undefined, '\ufffc');
     const offset = $from.parentOffset;
     if (!text || offset < 0) {
         return;
@@ -42,13 +41,22 @@ const selectWordUnderCaret = (editor: Editor) => {
     }
 };
 
-export function applyWysiwygFormatting(editor: Editor, mode: PublishedMarkdownMode): void {
+export function applyWysiwygFormatting(editor: Editor, mode: PublishedMarkdownMode): boolean {
     if (mode === 'bold' || mode === 'italic' || mode === 'strike') {
         if (editor.state.selection.empty) {
             selectWordUnderCaret(editor);
         }
     }
 
+    try {
+        applyMode(editor, mode);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function applyMode(editor: Editor, mode: PublishedMarkdownMode): void {
     const chain = editor.chain().focus() as unknown as FormattingChain;
     switch (mode) {
     case 'bold':

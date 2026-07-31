@@ -2,12 +2,13 @@
 // See LICENSE.txt for license information.
 
 import {siteRoot} from 'client/rest';
-import React from 'react';
+import React, {useEffect} from 'react';
 import {FormattedMessage} from 'react-intl';
-import {useSelector} from 'react-redux';
+import {useDispatch, useSelector} from 'react-redux';
 
 import type {GlobalState} from '@mattermost/types/store';
 
+import {getMissingProfilesByIds} from 'mattermost-redux/actions/users';
 import {getTeammateNameDisplaySetting} from 'mattermost-redux/selectors/entities/preferences';
 import {getUser} from 'mattermost-redux/selectors/entities/users';
 import {displayUsername} from 'mattermost-redux/utils/user_utils';
@@ -19,8 +20,15 @@ type Props = {
 };
 
 const PageByline = ({userId}: Props) => {
+    const dispatch = useDispatch();
     const author = useSelector((state: GlobalState) => getUser(state, userId));
     const teammateNameDisplay = useSelector(getTeammateNameDisplaySetting) || '';
+
+    useEffect(() => {
+        if (userId && !author) {
+            dispatch(getMissingProfilesByIds([userId]) as never);
+        }
+    }, [dispatch, userId, author]);
 
     if (!author) {
         return null;

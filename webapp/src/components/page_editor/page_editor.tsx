@@ -61,6 +61,8 @@ const PageEditor = ({spaceId, pageId, isDraft}: Props) => {
     const [actionError, setActionError] = useState<unknown>(null);
     const [contentError, setContentError] = useState(false);
     const [busy, setBusy] = useState(false);
+
+    const busyRef = useRef(false);
     const [baseEditAt, setBaseEditAt] = useState<number | undefined>(undefined);
     const [draftExists, setDraftExists] = useState(false);
 
@@ -89,6 +91,9 @@ const PageEditor = ({spaceId, pageId, isDraft}: Props) => {
         setContentError(false);
         setDraftExists(false);
         setActionError(null);
+
+        setConflict(null);
+        setShowExitDialog(false);
     }, [spaceId, pageId]);
 
     useEffect(() => {
@@ -145,9 +150,10 @@ const PageEditor = ({spaceId, pageId, isDraft}: Props) => {
     const leave = useCallback(() => goToPage(spaceId, pageId), [goToPage, spaceId, pageId]);
 
     const publish = useCallback(async (force: boolean, exitAfter = false) => {
-        if (busy) {
+        if (busyRef.current) {
             return;
         }
+        busyRef.current = true;
         setBusy(true);
         setActionError(null);
         try {
@@ -169,14 +175,16 @@ const PageEditor = ({spaceId, pageId, isDraft}: Props) => {
             }
             setActionError(error);
         } finally {
+            busyRef.current = false;
             setBusy(false);
         }
-    }, [autosave, spaceId, pageId, leave, busy]);
+    }, [autosave, spaceId, pageId, leave]);
 
     const discard = useCallback(async () => {
-        if (busy) {
+        if (busyRef.current) {
             return;
         }
+        busyRef.current = true;
         setBusy(true);
         setActionError(null);
         autosave.cancel();
@@ -187,14 +195,16 @@ const PageEditor = ({spaceId, pageId, isDraft}: Props) => {
         } catch (error) {
             setActionError(error);
         } finally {
+            busyRef.current = false;
             setBusy(false);
         }
-    }, [autosave, spaceId, pageId, leave, busy]);
+    }, [autosave, spaceId, pageId, leave]);
 
     const saveDraftAndLeave = useCallback(async () => {
-        if (busy) {
+        if (busyRef.current) {
             return;
         }
+        busyRef.current = true;
         setBusy(true);
         setActionError(null);
         try {
@@ -204,9 +214,10 @@ const PageEditor = ({spaceId, pageId, isDraft}: Props) => {
             setShowExitDialog(false);
             leave();
         } finally {
+            busyRef.current = false;
             setBusy(false);
         }
-    }, [autosave, leave, busy]);
+    }, [autosave, leave]);
 
     const onPublish = useCallback(() => {
         publish(false);
@@ -248,6 +259,17 @@ const PageEditor = ({spaceId, pageId, isDraft}: Props) => {
                 <FormattedMessage
                     id='docs.editor.loadFailed'
                     defaultMessage='This page could not be loaded. Refresh to try again.'
+                />
+            </div>
+        );
+    }
+
+    if (load.notFound) {
+        return (
+            <div className={styles.empty}>
+                <FormattedMessage
+                    id='docs.editor.notFound'
+                    defaultMessage='This page does not exist, or you do not have access to it.'
                 />
             </div>
         );
