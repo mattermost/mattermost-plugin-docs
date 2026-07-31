@@ -1,6 +1,8 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {publishPagePresence} from 'client/presence_events';
+import type {PagePresenceEvent} from 'client/presence_events';
 import manifest from 'manifest';
 import type {Reducer} from 'redux';
 import {DOCS_BASE_URL, DOCS_SWITCHER_LINK_URL} from 'routing/paths';
@@ -20,6 +22,8 @@ const SWITCHER_ICON = 'file-text-outline';
 
 const DocsHeaderCentre = () => null;
 
+const PAGE_PRESENCE_EVENT = `custom_${manifest.id}_page_presence_updated`;
+
 export default class Plugin {
     public async initialize(registry: PluginRegistry) {
         registry.registerTranslations({
@@ -38,6 +42,10 @@ export default class Plugin {
         // init must not fetch (no UI is shown yet, and the user may be logged
         // out).
         registry.registerReducer(reducer as Reducer);
+
+        registry.registerWebSocketEventHandler<PagePresenceEvent>(PAGE_PRESENCE_EVENT, (msg) => {
+            publishPagePresence(msg.data);
+        });
 
         registry.registerProduct({
             baseURL: DOCS_BASE_URL,

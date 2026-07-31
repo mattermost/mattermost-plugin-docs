@@ -25,3 +25,7 @@ export function useCurrentUser(): {name: string} {
 
     return {name};
 }
+
+export function useCurrentUserId(): string {
+    return useSelector((state: GlobalState) => getCurrentUser(state)?.id ?? '');
+}

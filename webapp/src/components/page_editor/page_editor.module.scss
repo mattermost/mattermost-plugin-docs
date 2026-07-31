@@ -3,34 +3,173 @@
     flex: 1 1 0;
     flex-direction: column;
     min-width: 0;
+
+    min-height: 0;
     height: 100%;
-    padding: 24px 32px;
-    gap: 16px;
-    overflow: auto;
     background: var(--center-channel-bg);
 }
 
 .header {
     display: flex;
+    flex-shrink: 0;
     align-items: center;
-    justify-content: space-between;
-    color: var(--center-channel-color);
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    justify-content: flex-end;
+    height: 52px;
+    padding: 0 20px;
+    gap: 12px;
 }
 
-.stub {
+.scroll {
+    flex: 1 1 auto;
+    min-height: 320px;
+    overflow-y: auto;
+}
+
+.column {
+    max-width: 700px;
+    margin: 0 auto;
+    padding: 0 24px 96px;
+}
+
+.titleBlock {
     display: flex;
-    flex: 1;
-    align-items: center;
-    justify-content: center;
-    padding: 32px;
-    border: 1px dashed rgba(var(--center-channel-color-rgb), 0.24);
-    border-radius: 8px;
+    flex-direction: column;
+    padding: 32px 0 16px;
+    border-bottom: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
+    gap: 12px;
+    margin-bottom: 24px;
+}
+
+.title {
+    width: 100%;
+    padding: 0;
+    border: none;
+    background: transparent;
     color: var(--center-channel-color);
-    font-size: 14px;
-    text-align: center;
+    font-size: 40px;
+    font-weight: 700;
+    line-height: 1.2;
+
+    &:focus {
+        outline: none;
+    }
+
+    &::placeholder {
+        color: rgba(var(--center-channel-color-rgb), 0.4);
+    }
+}
+
+.column {
+    :global {
+        .WysiwygEditor .ProseMirror {
+            min-height: 60vh;
+            max-height: none;
+            padding: 0;
+            font-size: 16px;
+            line-height: 1.7;
+            overflow-y: visible;
+        }
+    }
+}
+
+.surface {
+    position: relative;
+}
+
+.pinnedToolbar {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    border-bottom: 1px solid rgba(var(--center-channel-color-rgb), 0.08);
+    margin-bottom: 8px;
+    background: var(--center-channel-bg);
+}
+
+.column :global {
+    .docs-callout {
+        position: relative;
+        padding: 12px 16px 12px 44px;
+        border-radius: 4px;
+        margin: 16px 0;
+        background: rgba(var(--center-channel-color-rgb), 0.04);
+
+        &::before {
+            position: absolute;
+            top: 12px;
+            left: 16px;
+            font-size: 16px;
+            line-height: 1.4;
+        }
+
+        > :last-child {
+            margin-bottom: 0;
+        }
+    }
+
+    .docs-callout[data-callout-type='info'] {
+        background: rgba(var(--button-bg-rgb), 0.08);
+        box-shadow: inset 3px 0 0 var(--button-bg);
+
+        &::before {
+            content: 'ℹ';
+        }
+    }
+
+    .docs-callout[data-callout-type='note'] {
+        background: rgba(var(--center-channel-color-rgb), 0.08);
+        box-shadow: inset 3px 0 0 rgba(var(--center-channel-color-rgb), 0.32);
+
+        &::before {
+            content: '✎';
+        }
+    }
+
+    .docs-callout[data-callout-type='success'] {
+        background: rgba(var(--online-indicator-rgb), 0.08);
+        box-shadow: inset 3px 0 0 var(--online-indicator);
+
+        &::before {
+            content: '✓';
+        }
+    }
+
+    .docs-callout[data-callout-type='warning'] {
+        background: rgba(var(--away-indicator-rgb), 0.08);
+        box-shadow: inset 3px 0 0 var(--away-indicator);
+
+        &::before {
+            content: '⚠';
+        }
+    }
+
+    .docs-callout[data-callout-type='error'] {
+        background: rgba(var(--dnd-indicator-rgb), 0.08);
+        box-shadow: inset 3px 0 0 var(--dnd-indicator);
+
+        &::before {
+            content: '⊗';
+        }
+    }
+}
+
+.presence {
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.notice {
+    padding: 8px 12px;
+    margin-top: 16px;
+    border-radius: 4px;
+    background: rgba(var(--away-indicator-rgb), 0.08);
+    color: var(--center-channel-color);
+    font-size: 12px;
+}
+
+.error {
+    background: rgba(var(--center-channel-color-rgb), 0.04);
+    color: var(--error-text);
 }
 
 .empty {
