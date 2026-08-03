@@ -3,7 +3,7 @@
 
 import type {History} from 'history';
 import React from 'react';
-import type {ComponentType, ElementType, ForwardRefExoticComponent, KeyboardEvent, KeyboardEventHandler, ReactElement, ReactNode, ReactNodeArray, RefAttributes, RefObject} from 'react';
+import type {ComponentType, ElementType, ForwardRefExoticComponent, KeyboardEvent, KeyboardEventHandler, ReactElement, ReactNode, RefAttributes, RefObject} from 'react';
 import type {MessageDescriptor} from 'react-intl';
 import type {Action} from 'redux';
 
@@ -77,7 +77,7 @@ export type SuggestionResults<Item = unknown> =
 
 export type WysiwygEditorProps = {
     value: string;
-    onChange: (markdown: string) => void;
+    onChange: (content: string) => void;
     onSubmit: () => void;
     onFocus?: () => void;
     onBlur?: () => void;
@@ -89,6 +89,18 @@ export type WysiwygEditorProps = {
     useCtrlSend?: boolean;
     sendCodeBlockOnCtrlEnter?: boolean;
     onKeyDown?: (e: KeyboardEvent<HTMLDivElement>) => void;
+
+    // Document mode: 'json' hands the editor structured TipTap content instead of
+    // markdown, which is what a Docs page body is.
+    contentType?: 'markdown' | 'json';
+
+    // TipTap extensions to register on top of the host's own set. Left as
+    // `unknown[]` so consumers don't take a TipTap dependency.
+    extensions?: unknown[];
+
+    // Raised when stored content can't be parsed, so a caller can refuse to edit
+    // rather than overwrite the stored version with a fallback document.
+    onContentError?: (error: Error) => void;
 };
 
 export type SuggestionListProps = {
@@ -116,7 +128,7 @@ export type FormattingBarProps = {
     applyFormatting: (mode: PublishedMarkdownMode) => void;
     disableControls: boolean;
     location: string;
-    additionalControls?: ReactNodeArray;
+    additionalControls?: ReactNode[];
     aiActionsMenu?: ReactNode;
 
     // Returns a Tiptap Editor. Left as `unknown` so consumers don't have to
@@ -129,6 +141,12 @@ export type PublishedWysiwygEditorHandle = {
     focus: () => void;
     blur: () => void;
     getInputBox: () => HTMLElement | null;
+
+    // The underlying TipTap editor, for callers that drive it directly. Absent on
+    // hosts that predate document mode — see hostSupportsDocumentEditor.
+    getEditor?: () => unknown;
+
+    hasContentError?: () => boolean;
 };
 
 export type PublishedFormattingBarHandle = {
@@ -261,6 +279,12 @@ export function hostOpenModalAction(modalId: PublishedModalId, dialogProps?: Rec
 // read-only render or an "update your server" empty state.
 export function hostCanUseEditor(): boolean {
     return Boolean(webappUtils().editor?.WysiwygEditor);
+}
+
+// Document-mode support is detected from the handle rather than the module: a host
+// can publish the editor without publishing structured-content access.
+export function hostSupportsDocumentEditor(handle: PublishedWysiwygEditorHandle | null | undefined): boolean {
+    return typeof handle?.getEditor === 'function';
 }
 
 // The published editor components + suggestion provider constructors, or

@@ -13,6 +13,10 @@ import {Client4} from 'mattermost-redux/client';
 // Client4.url after our bundle loads.
 const apiUrl = (): string => `${Client4.url}/plugins/${manifest.id}/api/v1`;
 
+// The host site URL, for the platform's own endpoints (avatars, files) that are
+// not under our plugin's API root.
+export const siteRoot = (): string => Client4.url;
+
 type FetchOptions = {
     method: string;
     body?: string;
@@ -20,14 +24,33 @@ type FetchOptions = {
     signal?: AbortSignal;
 };
 
+/**
+ * A failed Docs API call. Extends ClientError so existing callers keep matching
+ * on `instanceof ClientError` and `status_code`, and adds the two things an
+ * AppError body carries that ClientError drops: the raw parsed payload, and a
+ * plain `status`. The payload matters for endpoints that answer an error with
+ * data — draft publish returns the current page alongside its 409.
+ */
+export class RestError extends ClientError {
+    status: number;
+    body: unknown;
+
+    constructor(url: string, status: number, message: string, body: unknown, serverErrorId?: string) {
+        super(Client4.url, {message, status_code: status, url, server_error_id: serverErrorId});
+        this.name = 'RestError';
+        this.status = status;
+        this.body = body;
+    }
+}
+
 // Single fetch idiom shared by every Docs API call. Client4.getOptions injects
 // the session credentials and CSRF header the server expects (it reads the
 // platform-supplied Mattermost-User-Id header), so this never hand-rolls auth.
 // Server errors are JSON `AppError`s ({message, status_code}); non-OK responses
-// are normalized into ClientError from @mattermost/client. An aborted request
+// are normalized into RestError. An aborted request
 // rejects with fetch's own `AbortError` DOMException instead, so callers can tell
 // "I cancelled this" apart from "the server said no".
-async function doFetch<T>(url: string, options: FetchOptions): Promise<T> {
+async function request<T>(url: string, options: FetchOptions): Promise<T> {
     const response = await fetch(url, Client4.getOptions(options));
 
     if (response.ok) {
@@ -38,26 +61,49 @@ async function doFetch<T>(url: string, options: FetchOptions): Promise<T> {
     }
 
     let message = `Received status code ${response.status}`;
+    let body: unknown;
+    let serverErrorId: string | undefined;
     try {
-        const data = await response.json();
+        body = await response.json();
+        const data = body as {message?: string; id?: string};
         message = data.message || message;
+        serverErrorId = data.id;
     } catch {
         // Non-JSON error body — keep the status-based message.
     }
-    throw new ClientError(Client4.url, {message, status_code: response.status, url});
+    throw new RestError(url, response.status, message, body, serverErrorId);
 }
 
 export const restGet = <T>(url: string, signal?: AbortSignal): Promise<T> =>
-    doFetch<T>(url, {method: 'GET', signal});
+    request<T>(url, {method: 'GET', signal});
 
 export const restPost = <T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> =>
-    doFetch<T>(url, {method: 'POST', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}, signal});
+    request<T>(url, {method: 'POST', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}, signal});
 
 export const restPatch = <T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> =>
-    doFetch<T>(url, {method: 'PATCH', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}, signal});
+    request<T>(url, {method: 'PATCH', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}, signal});
 
 export const restDelete = <T>(url: string, signal?: AbortSignal): Promise<T> =>
-    doFetch<T>(url, {method: 'DELETE', signal});
+    request<T>(url, {method: 'DELETE', signal});
+
+type DoFetchOptions = {
+    method?: string;
+    body?: unknown;
+    signal?: AbortSignal;
+};
+
+/**
+ * Path-relative form of the request helpers: `path` is resolved against the
+ * plugin's API root and `body` is serialized here. Client modules that describe a
+ * whole endpoint family (see `client/drafts.ts`) read better this way than
+ * building an absolute URL per call.
+ */
+export const doFetch = <T>(path: string, {method = 'GET', body, signal}: DoFetchOptions = {}): Promise<T> =>
+    request<T>(`${apiUrl()}${path}`, {
+        method,
+        signal,
+        ...(body === undefined ? {} : {body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}}),
+    });
 
 type Paginated<T> = {
     items: T[];

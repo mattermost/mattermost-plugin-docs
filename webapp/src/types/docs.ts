@@ -58,9 +58,8 @@ export type UpdateSpacePatch = {
 // front door (hero).
 export const SPACE_PROP_DEFAULT_PAGE_ID = 'default_page_id';
 
-// Mirrors the server model (server/model/page.go). search_text, user_id,
-// last_modified_by, original_id, and props exist on the server model too; add
-// them as the API/editor lands.
+// Mirrors the server model (server/model/page.go). search_text, original_id, and
+// props exist on the server model too; add them as the editor lands.
 export type Page = {
     id: string;
     space_id: string;
