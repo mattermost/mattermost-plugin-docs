@@ -17,13 +17,16 @@ type FetchOptions = {
     method: string;
     body?: string;
     headers?: Record<string, string>;
+    signal?: AbortSignal;
 };
 
 // Single fetch idiom shared by every Docs API call. Client4.getOptions injects
 // the session credentials and CSRF header the server expects (it reads the
 // platform-supplied Mattermost-User-Id header), so this never hand-rolls auth.
 // Server errors are JSON `AppError`s ({message, status_code}); non-OK responses
-// are normalized into ClientError from @mattermost/client.
+// are normalized into ClientError from @mattermost/client. An aborted request
+// rejects with fetch's own `AbortError` DOMException instead, so callers can tell
+// "I cancelled this" apart from "the server said no".
 async function doFetch<T>(url: string, options: FetchOptions): Promise<T> {
     const response = await fetch(url, Client4.getOptions(options));
 
@@ -44,15 +47,17 @@ async function doFetch<T>(url: string, options: FetchOptions): Promise<T> {
     throw new ClientError(Client4.url, {message, status_code: response.status, url});
 }
 
-export const restGet = <T>(url: string): Promise<T> => doFetch<T>(url, {method: 'GET'});
+export const restGet = <T>(url: string, signal?: AbortSignal): Promise<T> =>
+    doFetch<T>(url, {method: 'GET', signal});
 
-export const restPost = <T>(url: string, body: unknown): Promise<T> =>
-    doFetch<T>(url, {method: 'POST', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}});
+export const restPost = <T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> =>
+    doFetch<T>(url, {method: 'POST', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}, signal});
 
-export const restPatch = <T>(url: string, body: unknown): Promise<T> =>
-    doFetch<T>(url, {method: 'PATCH', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}});
+export const restPatch = <T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> =>
+    doFetch<T>(url, {method: 'PATCH', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}, signal});
 
-export const restDelete = <T>(url: string): Promise<T> => doFetch<T>(url, {method: 'DELETE'});
+export const restDelete = <T>(url: string, signal?: AbortSignal): Promise<T> =>
+    doFetch<T>(url, {method: 'DELETE', signal});
 
 type Paginated<T> = {
     items: T[];
@@ -67,11 +72,11 @@ const MAX_PAGES = 1000;
 // Follows the server's {items, page, per_page, has_more} envelope across pages
 // and returns the flattened list. The page cap is a runaway-loop backstop, not
 // an expected limit.
-export async function listAll<T>(path: (query: string) => string): Promise<T[]> {
+export async function listAll<T>(path: (query: string) => string, signal?: AbortSignal): Promise<T[]> {
     const out: T[] = [];
     for (let page = 0; page < MAX_PAGES; page++) {
         // eslint-disable-next-line no-await-in-loop
-        const res = await restGet<Paginated<T>>(path(`page=${page}&per_page=${PER_PAGE}`));
+        const res = await restGet<Paginated<T>>(path(`page=${page}&per_page=${PER_PAGE}`), signal);
         out.push(...res.items);
         if (!res.has_more) {
             break;
