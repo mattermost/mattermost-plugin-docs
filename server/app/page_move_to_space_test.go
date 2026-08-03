@@ -19,9 +19,11 @@ import (
 )
 
 // seedSpaceForTeam creates a space with a caller-chosen team id (mustCreateSpace randomizes it).
+// No test in this package resolves a scheme for a store-direct-created space, so no per-channel
+// scheme stub is registered here.
 func seedSpaceForTeam(t *testing.T, s *store.Store, db *sql.DB, channelID, teamID string) *model.Space {
 	t.Helper()
-	return testutil.MustCreateSpaceWithScheme(t, s, db, channelID, teamID)
+	return testutil.MustCreateSpace(t, s, channelID, teamID)
 }
 
 func pageIDs(pages []*model.PageSummary) map[string]bool {

@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -64,11 +65,19 @@ func openTestPlugin(t *testing.T, mockAPI *plugintest.API) *apiTestHarness {
 	mockAPI.On("RestoreChannel", mock.Anything).Return(nil).Maybe()
 	mockAPI.On("GetChannelMembers", mock.Anything, mock.AnythingOfType("int"), mock.AnythingOfType("int")).Return(mmmodel.ChannelMembers{}, nil).Maybe()
 	mockAPI.On("GetChannelStats", mock.Anything).Return(&mmmodel.ChannelStats{}, nil).Maybe()
-	mockAPI.On("GetChannelOfType", mock.Anything, mock.Anything).Return((*mmmodel.Channel)(nil), nil).Maybe()
 	// writeAppError logs 500-class failures (message plus four key/value pairs) regardless of
-	// which mock a test supplies, so stub it universally.
+	// which mock a test supplies, so stub it universally. The two-pair shape covers the
+	// custom-scheme retire failures.
+	mockAPI.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	mockAPI.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	testutil.StubDefaultSpacePermissions(mockAPI)
+	testutil.StubPresetSchemes(mockAPI)
+	// Resolves any channel to the contribute preset, and serves the channel read/write that
+	// UpdateSpace's best-effort metadata sync (syncSpaceChannelMetadata) performs. Registered last
+	// because mock.Mock matches in registration order: a test seeding a channel at a specific
+	// (non-contribute) scheme, or asserting a repoint, registers its own stub before calling
+	// openTestPlugin (testutil.MustSeedChannelScheme / stubSpaceSchemeRepoint) so it wins.
+	testutil.StubDefaultChannelScheme(mockAPI)
 	// CreateSpace assigns the creator SchemeAdmin via the scheme's resolved role-name string; no
 	// test asserts the exact roles argument, so a wildcard catch-all covers every create.
 	mockAPI.On("UpdateChannelMemberRoles", mock.Anything, mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
@@ -142,9 +151,12 @@ func seedSpace(t *testing.T, s *store.Store, db *sql.DB, channelID string) *mode
 	return seedSpaceInTeam(t, s, db, channelID, mmmodel.NewId())
 }
 
+// seedSpaceInTeam creates a space via the store directly. Its channel resolves to the contribute
+// preset through the generic catch-all (testutil.StubDefaultChannelScheme, wired in
+// openTestPlugin), so no per-channel scheme stub is registered here.
 func seedSpaceInTeam(t *testing.T, s *store.Store, db *sql.DB, channelID, teamID string) *model.Space {
 	t.Helper()
-	return testutil.MustCreateSpaceWithScheme(t, s, db, channelID, teamID)
+	return testutil.MustCreateSpace(t, s, channelID, teamID)
 }
 
 func seedPage(t *testing.T, s *store.Store, spaceID, channelID, parentID string) *model.Page {
@@ -186,7 +198,6 @@ func TestHandler_CreateSpace(t *testing.T) {
 	mockAPI.On("UpdateChannelMemberRoles", backingChannelID, mock.Anything, mock.Anything).
 		Return(&mmmodel.ChannelMember{}, nil)
 	h := openTestPlugin(t, mockAPI)
-	testutil.MustSeedChannelScheme(t, h.db, backingChannelID, mmmodel.SchemeNameSpaceContribute)
 
 	teamID := mmmodel.NewId()
 	rec := h.do(t, http.MethodPost, "/api/v1/teams/"+teamID+"/spaces", mmmodel.NewId(), map[string]any{
@@ -217,7 +228,6 @@ func TestHandler_CreateSpace_IgnoresServerOwnedFields(t *testing.T) {
 	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.ChannelMember{}, nil)
 	h := openTestPlugin(t, mockAPI)
-	testutil.MustSeedChannelScheme(t, h.db, backingChannelID, mmmodel.SchemeNameSpaceContribute)
 
 	forgedID := mmmodel.NewId()
 	teamID := mmmodel.NewId()
@@ -1788,7 +1798,6 @@ func TestHandler_RemoveSpaceMember_NonSelfMissingTargetIsNotFound(t *testing.T) 
 
 	space, err := h.store.CreateSpace(&model.Space{ChannelId: channelID, TeamId: mmmodel.NewId(), CreatorId: mmmodel.NewId(), Title: "Private Space", ViewAccess: model.ViewAccessPrivate})
 	require.NoError(t, err)
-	testutil.MustSeedChannelScheme(t, h.db, channelID, mmmodel.SchemeNameSpaceContribute)
 
 	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID, adminID, nil)
 	require.Equal(t, http.StatusNotFound, rec.Code)
@@ -1884,11 +1893,14 @@ func TestHandler_SetSpaceMemberCapabilities_Grant(t *testing.T) {
 	// the projection is pinned by the specific role token the requested capability set maps to.
 	mockAPI.On("GetChannelMember", channelID, targetUserID).
 		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: targetUserID, ExplicitRoles: mmmodel.SpacePageCreatorRoleId}, nil)
+	// Registered before openTestPlugin: the read-only preset must win over
+	// StubDefaultChannelScheme's contribute-preset catch-all, and mock matching is by
+	// registration order.
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceReadOnly)
 	h := openTestPlugin(t, mockAPI)
 
 	space, err := h.store.CreateSpace(&model.Space{ChannelId: channelID, TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "RO Space", ViewAccess: model.ViewAccessOpen})
 	require.NoError(t, err)
-	testutil.MustSeedChannelScheme(t, h.db, channelID, mmmodel.SchemeNameSpaceReadOnly)
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
 		"granted_capabilities": []string{"create_page"},
@@ -2041,37 +2053,75 @@ func TestHandler_SetSpaceMemberCapabilities_PublishesEvent(t *testing.T) {
 		payload, &mmmodel.WebsocketBroadcast{ChannelId: channelID})
 }
 
-// stubSpaceSchemeRepoint wires GetChannelOfType/UpdateChannel so a SetSpaceDefaultCapabilities
-// repoint against channelID is observable: the shared *model.Channel returned by GetChannelOfType
-// is mutated in place by UpdateChannel's SchemeId argument, and that same value is written into
-// the isolated test DB's Channels stand-in row, keeping subsequent store-side scheme resolution
-// (GetSchemeRolesForChannel, spaceDefaultCapabilities — which read the DB row directly, not the
-// mocked channel) consistent with the mocked channel across repeated calls in the same test.
+// stubSpaceSchemeRepoint makes a SetSpaceDefaultCapabilities repoint against channelID observable:
+// the returned shared *model.Channel is the one GetChannelOfType hands out, so the repoint's
+// in-place SchemeId write is visible to the caller and to every subsequent scheme-resolving read.
+// The channel starts pointed at the contribute preset scheme, mirroring seedSpace's default.
 //
-// Must be registered before openTestPlugin (GetChannelOfType's default catch-all would otherwise
-// shadow it — the same registration-order rule as grantSpaceManage/grantSpaceAdmin). hp is
-// assigned by the caller once openTestPlugin returns, and the returned *model.Channel lets the
-// caller seed a specific starting scheme id once the harness (and its seeded preset scheme ids)
-// exists.
-func stubSpaceSchemeRepoint(t *testing.T, mockAPI *plugintest.API, hp **apiTestHarness, channelID string) *mmmodel.Channel {
+// Must be registered before openTestPlugin, whose testutil.StubDefaultChannelScheme catch-all would
+// otherwise shadow it for this channelID — the same registration-order rule as
+// grantSpaceManage/grantSpaceAdmin.
+func stubSpaceSchemeRepoint(t *testing.T, mockAPI *plugintest.API, channelID string) *mmmodel.Channel {
 	t.Helper()
-	channel := &mmmodel.Channel{Id: channelID, SchemeId: mmmodel.NewPointer(mmmodel.NewId())}
-	mockAPI.On("GetChannelOfType", channelID, mmmodel.ChannelTypeSpace).Return(channel, nil)
-	// pluginapi's Channel.Update does `*channel = *updatedChannel` after this call, so the mock
-	// must return the same shared object (already mutated to the new SchemeId by the caller before
-	// Update runs) — returning a fresh, empty Channel would wipe the shared object's SchemeId back
-	// to nil on the very next GetChannelOfType read. Not every code path calls Update (a no-op
-	// resubmit never does), so this stub is Maybe().
-	mockAPI.On("UpdateChannel", mock.AnythingOfType("*model.Channel")).
-		Run(func(args mock.Arguments) {
-			updated, ok := args.Get(0).(*mmmodel.Channel)
-			require.True(t, ok)
-			require.NotNil(t, updated.SchemeId)
-			_, dbErr := (*hp).db.Exec(`UPDATE Channels SET SchemeId = $1 WHERE Id = $2`, *updated.SchemeId, channelID)
-			require.NoError(t, dbErr)
-		}).
-		Return(channel, nil).Maybe()
-	return channel
+	return testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
+}
+
+// spaceCustomSchemeNamePrefix mirrors the plugin-internal prefix app.createSpaceCustomScheme labels
+// its schemes with. It is restated here rather than imported because it is unexported, and it is
+// only a label: core proves a scheme's space scope by the backing channel pointing at it, never by
+// the name.
+const spaceCustomSchemeNamePrefix = "docs_space_custom_"
+
+// stubSpaceCustomSchemeCreate wires the mock calls the custom-scheme path needs for a non-preset
+// default-capability set: CreateScheme returning a scheme whose Name carries the custom prefix,
+// plus GetRoleByName and PatchRole for each of its three generated roles. The new scheme's role
+// names are registered with testutil so a channel repointed at it resolves them through
+// GetSchemeRolesForChannel, the way core does.
+//
+// Returns the scheme id CreateScheme resolves to, so the caller can assert against it (e.g. the
+// channel's post-repoint SchemeId, or a later DeleteScheme call retiring it).
+func stubSpaceCustomSchemeCreate(t *testing.T, mockAPI *plugintest.API) string {
+	t.Helper()
+	customSchemeID := mmmodel.NewId()
+	userRole, adminRole, guestRole := "custom_scheme_user_role", "custom_scheme_admin_role", "custom_scheme_guest_role"
+	customScheme := &mmmodel.Scheme{
+		Id:                      customSchemeID,
+		Name:                    spaceCustomSchemeNamePrefix + mmmodel.NewId(),
+		Scope:                   mmmodel.SchemeScopeChannel,
+		DefaultChannelUserRole:  userRole,
+		DefaultChannelAdminRole: adminRole,
+		DefaultChannelGuestRole: guestRole,
+	}
+	mockAPI.On("CreateScheme", mock.AnythingOfType("*model.Scheme")).Return(customScheme, nil)
+	testutil.RegisterSchemeRoles(customSchemeID, guestRole, userRole, adminRole)
+	// The generated roles start empty, the way core's CreateScheme leaves them before the plugin
+	// patches in the exact sets. StubRole hands back one shared *Role per name so StubPatchRole's
+	// mutation is visible to a later getRolePermissionsByName read of the same role.
+	testutil.StubRole(mockAPI, userRole, nil)
+	testutil.StubRole(mockAPI, adminRole, nil)
+	testutil.StubRole(mockAPI, guestRole, nil)
+	testutil.StubPatchRole(mockAPI)
+	return customSchemeID
+}
+
+// assertCustomSchemeRolePermissions pins which permission set each generated role received, so a
+// regression that sent the space-admin set to the guest or user role fails instead of passing on a
+// single catch-all PatchRole expectation. capabilities is the requested default set.
+func assertCustomSchemeRolePermissions(t *testing.T, mockAPI *plugintest.API, capabilities []string) {
+	t.Helper()
+	expected := map[string][]string{
+		"custom_scheme_user_role":  append([]string{model.CapabilityReadPage}, capabilities...),
+		"custom_scheme_admin_role": mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions),
+		"custom_scheme_guest_role": {model.CapabilityReadPage},
+	}
+	for roleName, perms := range expected {
+		mockAPI.AssertCalled(t, "PatchRole",
+			mock.MatchedBy(func(r *mmmodel.Role) bool { return r.Name == roleName }),
+			mock.MatchedBy(func(p *mmmodel.RolePatch) bool {
+				return p != nil && p.Permissions != nil && slices.Equal(
+					model.NormalizeCapabilitySet(*p.Permissions), model.NormalizeCapabilitySet(perms))
+			}))
+	}
 }
 
 // TestHandler_SetSpaceDefaultCapabilities_Forbidden verifies a manage-only caller (team
@@ -2099,11 +2149,10 @@ func TestHandler_SetSpaceDefaultCapabilities_Allowed(t *testing.T) {
 		channelID := mmmodel.NewId()
 		userID := mmmodel.NewId()
 
-		var h *apiTestHarness
 		mockAPI := newEnabledMockAPI()
 		grantSpaceAdmin(mockAPI, channelID, userID)
-		stubSpaceSchemeRepoint(t, mockAPI, &h, channelID)
-		h = openTestPlugin(t, mockAPI)
+		stubSpaceSchemeRepoint(t, mockAPI, channelID)
+		h := openTestPlugin(t, mockAPI)
 		space := seedSpace(t, h.store, h.db, channelID)
 
 		rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
@@ -2116,11 +2165,10 @@ func TestHandler_SetSpaceDefaultCapabilities_Allowed(t *testing.T) {
 		channelID := mmmodel.NewId()
 		userID := mmmodel.NewId()
 
-		var h *apiTestHarness
 		mockAPI := newEnabledMockAPI()
 		grantSysadmin(mockAPI, userID)
-		stubSpaceSchemeRepoint(t, mockAPI, &h, channelID)
-		h = openTestPlugin(t, mockAPI)
+		stubSpaceSchemeRepoint(t, mockAPI, channelID)
+		h := openTestPlugin(t, mockAPI)
 		space := seedSpace(t, h.store, h.db, channelID)
 
 		rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
@@ -2167,11 +2215,11 @@ func TestHandler_SetSpaceDefaultCapabilities_CreatesCustomScheme(t *testing.T) {
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
 
-	var h *apiTestHarness
 	mockAPI := newEnabledMockAPI()
 	grantSpaceAdmin(mockAPI, channelID, userID)
-	stubSpaceSchemeRepoint(t, mockAPI, &h, channelID)
-	h = openTestPlugin(t, mockAPI)
+	channel := stubSpaceSchemeRepoint(t, mockAPI, channelID)
+	customSchemeID := stubSpaceCustomSchemeCreate(t, mockAPI)
+	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, h.db, channelID)
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
@@ -2183,12 +2231,15 @@ func TestHandler_SetSpaceDefaultCapabilities_CreatesCustomScheme(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updated))
 	require.Equal(t, []string{"create_page"}, updated.DefaultCapabilities)
 
-	var schemeName string
-	require.NoError(t, h.db.QueryRow(
-		`SELECT s.Name FROM Channels c JOIN Schemes s ON s.Id = c.SchemeId WHERE c.Id = $1`, channelID,
-	).Scan(&schemeName))
-	require.NotEmpty(t, schemeName)
-	require.False(t, mmmodel.IsSpaceSchemeName(schemeName), "expected a space-custom scheme, not a seeded preset, got %q", schemeName)
+	mockAPI.AssertCalled(t, "CreateScheme", mock.MatchedBy(func(s *mmmodel.Scheme) bool {
+		return strings.HasPrefix(s.Name, spaceCustomSchemeNamePrefix)
+	}))
+	require.NotNil(t, channel.SchemeId)
+	require.Equal(t, customSchemeID, *channel.SchemeId, "the channel must be repointed at the newly created custom scheme")
+	assertCustomSchemeRolePermissions(t, mockAPI, []string{"create_page"})
+	// Exactly the three generated roles (user/admin/guest) are patched — no role skipped, none
+	// double-patched. assertCustomSchemeRolePermissions pins the per-role content; this pins the count.
+	mockAPI.AssertNumberOfCalls(t, "PatchRole", 3)
 }
 
 // TestHandler_SetSpaceDefaultCapabilities_SwitchBackToPresetRetiresCustomScheme verifies that
@@ -2199,38 +2250,35 @@ func TestHandler_SetSpaceDefaultCapabilities_SwitchBackToPresetRetiresCustomSche
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
 
-	var h *apiTestHarness
 	mockAPI := newEnabledMockAPI()
 	grantSpaceAdmin(mockAPI, channelID, userID)
-	stubSpaceSchemeRepoint(t, mockAPI, &h, channelID)
-	h = openTestPlugin(t, mockAPI)
+	channel := stubSpaceSchemeRepoint(t, mockAPI, channelID)
+	customSchemeID := stubSpaceCustomSchemeCreate(t, mockAPI)
+	mockAPI.On("DeleteScheme", customSchemeID).Return(&mmmodel.Scheme{Id: customSchemeID}, nil)
+	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, h.db, channelID)
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
 		"default_capabilities": []string{"create_page"},
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
-
-	var customSchemeID string
-	require.NoError(t, h.db.QueryRow(`SELECT SchemeId FROM Channels WHERE Id = $1`, channelID).Scan(&customSchemeID))
+	require.NotNil(t, channel.SchemeId)
+	require.Equal(t, customSchemeID, *channel.SchemeId)
 
 	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
 		"default_capabilities": []string{"comment_page", "create_page", "edit_page", "delete_own_page"},
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	var contributeID string
-	require.NoError(t, h.db.QueryRow(`SELECT Id FROM Schemes WHERE Name = $1`, mmmodel.SchemeNameSpaceContribute).Scan(&contributeID))
-
-	var liveSchemeID string
-	require.NoError(t, h.db.QueryRow(`SELECT SchemeId FROM Channels WHERE Id = $1`, channelID).Scan(&liveSchemeID))
-	require.Equal(t, contributeID, liveSchemeID)
-
-	var schemeCount, roleCount int
-	require.NoError(t, h.db.QueryRow(`SELECT COUNT(*) FROM Schemes WHERE Id = $1`, customSchemeID).Scan(&schemeCount))
-	require.Zero(t, schemeCount, "the retired custom scheme must be gone")
-	require.NoError(t, h.db.QueryRow(`SELECT COUNT(*) FROM Roles WHERE SchemeId = $1`, customSchemeID).Scan(&roleCount))
-	require.Zero(t, roleCount, "the retired custom scheme's roles must be gone")
+	require.NotNil(t, channel.SchemeId)
+	require.Equal(t, testutil.PresetSchemeID(mmmodel.SchemeNameSpaceContribute), *channel.SchemeId,
+		"the channel must be repointed at the shared contribute preset scheme")
+	mockAPI.AssertCalled(t, "DeleteScheme", customSchemeID)
+	// The custom scheme is minted once (first PATCH) and retired once (switch back). A regression
+	// that re-minted a scheme on the preset switch, or retired more than the one superseded scheme,
+	// would change these counts while still passing the AssertCalled checks above.
+	mockAPI.AssertNumberOfCalls(t, "CreateScheme", 1)
+	mockAPI.AssertNumberOfCalls(t, "DeleteScheme", 1)
 }
 
 // TestHandler_SetSpaceDefaultCapabilities_ResubmitCurrentSetIsNoOp verifies that resubmitting the
@@ -2240,19 +2288,15 @@ func TestHandler_SetSpaceDefaultCapabilities_ResubmitCurrentSetIsNoOp(t *testing
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
 
-	var h *apiTestHarness
 	mockAPI := newEnabledMockAPI()
 	grantSpaceAdmin(mockAPI, channelID, userID)
-	channel := stubSpaceSchemeRepoint(t, mockAPI, &h, channelID)
-	h = openTestPlugin(t, mockAPI)
+	// stubSpaceSchemeRepoint's channel already starts pointed at the contribute preset scheme,
+	// the same default seedSpace/MustCreateSpaceWithScheme use, so the requested set — which
+	// normalizes to that same preset — already matches the live scheme with no further setup.
+	channel := stubSpaceSchemeRepoint(t, mockAPI, channelID)
+	contributeID := testutil.PresetSchemeID(mmmodel.SchemeNameSpaceContribute)
+	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, h.db, channelID)
-
-	// seedSpace already points the channel at the real contribute preset scheme (in the test DB);
-	// point the mocked channel at that same real id so the requested set — which normalizes to the
-	// same preset — resolves to a target matching the current scheme.
-	var contributeID string
-	require.NoError(t, h.db.QueryRow(`SELECT Id FROM Schemes WHERE Name = $1`, mmmodel.SchemeNameSpaceContribute).Scan(&contributeID))
-	channel.SchemeId = mmmodel.NewPointer(contributeID)
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
 		"default_capabilities": []string{"edit_page", "comment_page", "comment_page", "create_page", "delete_own_page"},
@@ -2260,10 +2304,8 @@ func TestHandler_SetSpaceDefaultCapabilities_ResubmitCurrentSetIsNoOp(t *testing
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	mockAPI.AssertNotCalled(t, "UpdateChannel", mock.Anything)
-
-	var afterSchemeID string
-	require.NoError(t, h.db.QueryRow(`SELECT SchemeId FROM Channels WHERE Id = $1`, channelID).Scan(&afterSchemeID))
-	require.Equal(t, contributeID, afterSchemeID, "resubmitting the current set must not repoint the channel")
+	require.NotNil(t, channel.SchemeId)
+	require.Equal(t, contributeID, *channel.SchemeId, "resubmitting the current set must not repoint the channel")
 }
 
 // TestHandler_UpdateSpace_ViewAccessRequiresAdmin verifies that a manage-only caller (no channel

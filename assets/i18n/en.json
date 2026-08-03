@@ -448,6 +448,10 @@
     "translation": "You must be a member of the team to create a space in it."
   },
   {
+    "id": "app.space.create.scheme_configure_failed.app_error",
+    "translation": "Failed to configure the space's permission scheme."
+  },
+  {
     "id": "app.space.create.scheme_lookup_failed.app_error",
     "translation": "Failed to look up the space's permission scheme."
   },
@@ -462,6 +466,10 @@
   {
     "id": "app.space.default_capabilities.repoint_failed.app_error",
     "translation": "Failed to apply the new default capabilities."
+  },
+  {
+    "id": "app.space.default_capabilities.scheme_configure_failed.app_error",
+    "translation": "Failed to configure the space's new permission scheme."
   },
   {
     "id": "app.space.delete.invalid_id.app_error",

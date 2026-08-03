@@ -273,7 +273,7 @@ func (s *Service) RequireSpacePublish(where string, space *model.Space, userID s
 // generated user role) grants perm to a plain member — the auto-join admission test. Channel
 // without a scheme (ErrNotFound) reports false, not an error.
 func (s *Service) DefaultRolesGrantPermission(space *model.Space, perm *mmmodel.Permission) (bool, error) {
-	roles, err := s.store.GetSchemeRolesForChannel(space.ChannelId)
+	roles, err := s.getSchemeRolesForChannel(space.ChannelId)
 	if err != nil {
 		if store.IsErrNotFound(err) {
 			return false, nil

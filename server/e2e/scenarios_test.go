@@ -433,6 +433,64 @@ func TestScenarios(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, status, "control delete")
 	})
 
+	// scenario8 exercises the space-private CUSTOM scheme path — a default-capability set matching
+	// no preset — which the plugin provisions through core's CreateScheme + PatchRole plugin API.
+	// It asserts the whole write→read chain end-to-end against real core: the custom set round-trips
+	// through GET (proving PatchRole set exactly those role permissions and they project back), a
+	// plain member is enforced against it, and switching back to a preset retires the now-unreferenced
+	// custom scheme.
+	t.Run("scenario8_custom_capability_scheme", func(t *testing.T) {
+		customCaps := []string{pluginmodel.CapabilityCreatePage, pluginmodel.CapabilityEditPage}
+
+		var space pluginmodel.Space
+		status, body, err := doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/teams/"+team.Id+"/spaces",
+			map[string]any{"title": "Scenario Custom Capability Scheme", "default_capabilities": customCaps}, &space)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusCreated, status, "createSpace with custom default caps failed: %s", body)
+		spacesToClean = append(spacesToClean, space.Id)
+
+		// The custom set must round-trip: create provisioned a docs_space_custom_* scheme whose user
+		// role PatchRole set to exactly {read_page}+customCaps, and GET projects that back.
+		var withAccess pluginmodel.SpaceWithAccess
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodGet, "/spaces/"+space.Id, nil, &withAccess)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "get space: %s", body)
+		require.ElementsMatch(t, customCaps, withAccess.DefaultCapabilities,
+			"custom default caps did not round-trip (CreateScheme/PatchRole path): %s", body)
+
+		addSpaceMember(t, ctx, spaceAdmin, space.Id, member.id)
+
+		// A plain member holds exactly the custom default: create and edit, but not delete-own.
+		var page pluginmodel.Page
+		status, body, err = doPluginRequest(ctx, member.client, http.MethodPost, "/spaces/"+space.Id+"/pages",
+			createPageReq("Member custom-create"), &page)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusCreated, status, "granted custom create_page: %s", body)
+
+		status, body, err = doPluginRequest(ctx, member.client, http.MethodPatch, "/spaces/"+space.Id+"/pages/"+page.Id,
+			editPageReq(page.EditAt, "member custom-edit"), nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "granted custom edit_page: %s", body)
+
+		status, body, err = doPluginRequest(ctx, member.client, http.MethodDelete, "/spaces/"+space.Id+"/pages/"+page.Id, nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusForbidden, status, "custom default excludes delete_own_page: %s", body)
+
+		// Switching to the read-only preset repoints the backing channel at the shared preset and
+		// retires the now-unreferenced custom scheme (DeleteScheme); the member loses create.
+		var roResp pluginmodel.SpaceWithAccess
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPatch, "/spaces/"+space.Id+"/default-capabilities",
+			map[string][]string{"default_capabilities": {}}, &roResp)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "switch custom→preset failed: %s", body)
+		require.Empty(t, roResp.DefaultCapabilities, "default caps not cleared to read-only: %s", body)
+
+		status, body, err = doPluginRequest(ctx, member.client, http.MethodPost, "/spaces/"+space.Id+"/pages",
+			createPageReq("Should be forbidden now"), nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusForbidden, status, "member create after switch to read-only: %s", body)
+	})
+
 	t.Run("gap_open_space_removal_not_durable", func(t *testing.T) {
 		// Continues from scenario 1's open space, where OUTSIDER is already a member via auto-join.
 		require.NotEmpty(t, s1ID, "scenario1 must have run first")

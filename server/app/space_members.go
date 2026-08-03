@@ -12,7 +12,6 @@ import (
 	"github.com/mattermost/mattermost/server/public/pluginapi"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
-	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
 // GetSpaceMembers returns one page of space's members plus whether more members exist beyond
@@ -154,15 +153,15 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 	var appErr *mmmodel.AppError
 	var newRoles string
 	var newSchemeAdmin bool
-	var schemeRoles *store.SchemeRoles
+	var resolvedRoles *schemeRoles
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
 		var rolesErr error
-		schemeRoles, rolesErr = s.store.GetSchemeRolesForChannel(space.ChannelId)
+		resolvedRoles, rolesErr = s.getSchemeRolesForChannel(space.ChannelId)
 		if rolesErr != nil {
 			appErr = storeAppError("SetSpaceMemberCapabilities", rolesErr)
 			return appErr
 		}
-		newRoles, newSchemeAdmin = model.RolesForCapabilities(capabilities, schemeRoles.UserRoleName)
+		newRoles, newSchemeAdmin = model.RolesForCapabilities(capabilities, resolvedRoles.UserRoleName)
 
 		target, memErr := s.client.Channel.GetMember(space.ChannelId, targetUserID)
 		if memErr != nil {
@@ -200,7 +199,7 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 
 		roles := newRoles
 		if newSchemeAdmin {
-			roles = roles + " " + schemeRoles.AdminRoleName
+			roles = roles + " " + resolvedRoles.AdminRoleName
 		}
 		if _, updErr := s.client.Channel.UpdateChannelMemberRoles(space.ChannelId, targetUserID, roles); updErr != nil {
 			appErr = mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.member.update_capabilities_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(updErr)
@@ -218,7 +217,7 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 	// The scheme roles read under the lock still describe this channel: only
 	// SetSpaceDefaultCapabilities repoints a channel's scheme, and it serializes behind the same
 	// space-keyed lock, so the default capability set is projected from them rather than re-read.
-	defaultCapabilities, defErr := s.defaultCapabilitiesForRoles(schemeRoles)
+	defaultCapabilities, defErr := s.defaultCapabilitiesForRoles(resolvedRoles)
 	if defErr != nil {
 		return nil, storeAppError("SetSpaceMemberCapabilities", defErr)
 	}

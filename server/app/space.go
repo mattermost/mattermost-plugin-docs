@@ -81,11 +81,12 @@ func (s *Service) forEachChannelMember(channelID string, visit func(cm *mmmodel.
 }
 
 // hasOtherAuthorizedMemberMatching reports whether space has at least one backing-channel member
-// other than excludeUserID that satisfies matches and can still reach the space — for a team
-// space, one who is still an active member of the team. Former team members keep their
-// channel-member rows after leaving the team, so counting raw rows would let the last reachable
-// member be removed and leave the space stranded behind members who all fail the team half of the
-// access gate. Iteration stops at the first match.
+// other than excludeUserID that satisfies matches and can still reach the space — one who is also
+// an active member of the space's team. Former team members keep their channel-member rows after
+// leaving the team, so counting raw rows would let the last reachable member be removed and leave
+// the space stranded behind members who all fail the team half of the access gate. Iteration stops
+// at the first match. The no-team branch below is unreachable through CreateSpace, which requires
+// a team id.
 func (s *Service) hasOtherAuthorizedMemberMatching(space *model.Space, excludeUserID string, matches func(cm *mmmodel.ChannelMember) bool) (bool, error) {
 	found := false
 	err := s.forEachChannelMember(space.ChannelId, func(cm *mmmodel.ChannelMember) (bool, error) {
@@ -120,19 +121,15 @@ func (s *Service) hasOtherAuthorizedMember(space *model.Space, excludeUserID str
 
 // archiveOrphanChannel archives a backing channel when a later step in space creation fails,
 // to avoid an orphaned channel. reason describes the step that failed; cause is its error.
-// Reports whether the channel was archived, which decides whether the same failure path may
-// exclude it from the custom scheme's reference count (see cleanupCustomScheme).
-func (s *Service) archiveOrphanChannel(channelID, reason string, cause error) bool {
+func (s *Service) archiveOrphanChannel(channelID, reason string, cause error) {
 	if s.client == nil {
-		return false
+		return
 	}
 	if delErr := s.client.Channel.Delete(channelID); delErr != nil {
 		// The channel now exists with no space row pointing at it and nothing will retry this
 		// archive, so it needs an operator to clean it up: log at Error, not Warn.
 		s.log.Error("compensating channel archive failed; channel is orphaned and must be archived manually", "channel_id", channelID, "failure_reason", reason, "cause_err", cause, "delete_err", delErr)
-		return false
 	}
-	return true
 }
 
 // resolveSpaceScheme picks the backing-channel scheme that gives a space's plain members the
@@ -140,56 +137,51 @@ func (s *Service) archiveOrphanChannel(channelID, reason string, cause error) bo
 // scheme, which is shared by every space using the same preset. Any other set gets a scheme
 // created here and used by this space alone.
 //
-// createdCustom tells those two cases apart, so a caller whose next create step fails knows
-// whether there is a scheme of its own to retire.
-func (s *Service) resolveSpaceScheme(capabilities []string) (schemeID string, createdCustom bool, err error) {
+// A custom scheme is returned with its generated roles still carrying core's default channel
+// baseline; the caller gives them their exact permission sets through configureSpaceCustomScheme
+// once a backing channel points at the scheme, which is what lets core admit the role writes.
+//
+// customRoles is non-nil only in the second case, and names the roles that configure step must
+// write. Its nil-ness also tells the two cases apart when a later step fails: a scheme created here
+// is referenced by nothing else, so the caller must delete it (see cleanupCustomScheme), while a
+// preset scheme is shared with other spaces and must be left alone.
+func (s *Service) resolveSpaceScheme(capabilities []string) (schemeID string, customRoles *schemeRoles, err error) {
 	// Normalize before the permission set is persisted: the validators are dedup-tolerant, so
 	// without this a request repeating one allowlisted token would write that repetition verbatim
 	// into the generated role's Permissions column.
 	capabilities = model.NormalizeCapabilitySet(capabilities)
 	if presetName, ok := model.SchemeNameForDefaultCapabilities(capabilities); ok {
-		id, getErr := s.store.GetSchemeIDByName(presetName)
+		id, getErr := s.getSchemeIDByName(presetName)
 		if getErr != nil {
-			return "", false, getErr
+			return "", nil, getErr
 		}
-		return id, false, nil
+		return id, nil, nil
 	}
-	userPerms := append([]string{model.CapabilityReadPage}, capabilities...)
-	adminPerms := mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions)
-	guestPerms := []string{model.CapabilityReadPage}
-	id, createErr := s.store.CreateSpaceCustomScheme(userPerms, adminPerms, guestPerms)
-	if createErr != nil {
-		return "", false, createErr
-	}
-	return id, true, nil
+	return s.createSpaceCustomScheme()
 }
 
-// cleanupCustomScheme best-effort retires schemeID when createdCustom is true and a later
-// create-step fails. abandonedChannelID, when non-empty, is the backing channel the same failure
-// path just archived: archiving keeps the channel's SchemeId, so it must be excluded from the
-// store's reference count or the retire would find the scheme still referenced and silently skip.
-// It must be left empty when the archive did not succeed — excluding a channel that is still live
-// would retire a scheme that channel still points at, leaving it with a dangling SchemeId.
-func (s *Service) cleanupCustomScheme(schemeID string, createdCustom bool, abandonedChannelID string) {
+// cleanupCustomScheme best-effort retires schemeID when createdCustom is true and a create-step
+// fails before any channel references the scheme (channel create never happened, or the repoint
+// onto it failed), so the scheme is already unreferenced and DeleteScheme accepts it directly.
+func (s *Service) cleanupCustomScheme(schemeID string, createdCustom bool) {
 	if !createdCustom {
 		return
 	}
-	if err := s.store.DeleteSpaceCustomSchemeIfUnreferenced(schemeID, abandonedChannelID); err != nil {
-		s.log.Warn("failed to retire unreferenced space custom scheme after a failed create", "scheme_id", schemeID, "err", err)
+	if err := s.retireSpaceCustomScheme(schemeID); err != nil {
+		s.log.Error("failed to retire space custom scheme after a failed create; it must be deleted manually", "scheme_id", schemeID, "err", err)
 	}
 }
 
 // abandonBackingChannel runs the compensating cleanup shared by every CreateSpace failure that
-// happens after the backing channel exists: archive the channel, then retire the custom scheme it
-// was created for. The scheme is only excluded from the reference count when the archive actually
-// succeeded, so a channel left live by a failed archive still pins its scheme.
+// happens after the backing channel exists: retire the custom scheme it was created for, then
+// archive the channel. The scheme retirement clears the channel's scheme reference first, because
+// archiving alone would not clear it and core still counts an archived space channel as a live
+// reference that blocks the delete (see detachAndDeleteCustomScheme).
 func (s *Service) abandonBackingChannel(channelID, reason string, cause error, schemeID string, createdCustom bool) {
-	archived := s.archiveOrphanChannel(channelID, reason, cause)
-	excluded := ""
-	if archived {
-		excluded = channelID
+	if createdCustom {
+		s.detachAndDeleteCustomScheme(channelID, schemeID)
 	}
-	s.cleanupCustomScheme(schemeID, createdCustom, excluded)
+	s.archiveOrphanChannel(channelID, reason, cause)
 }
 
 // CreateSpace creates a ChannelTypeSpace ("S") backing channel via pluginapi, saves the
@@ -272,10 +264,11 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultCapabili
 		return nil, capErr
 	}
 
-	schemeID, createdCustom, schemeErr := s.resolveSpaceScheme(capabilities)
+	schemeID, customRoles, schemeErr := s.resolveSpaceScheme(capabilities)
 	if schemeErr != nil {
 		return nil, storeAppError("CreateSpace", schemeErr)
 	}
+	createdCustom := customRoles != nil
 
 	s.log.Debug("Creating space", "team_id", space.TeamId, "user_id", userID)
 
@@ -295,9 +288,19 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultCapabili
 			s.abandonBackingChannel(backingChannel.Id, "channel create failed after creation", err, schemeID, createdCustom)
 		} else {
 			// No channel row exists, so nothing references the scheme.
-			s.cleanupCustomScheme(schemeID, createdCustom, "")
+			s.cleanupCustomScheme(schemeID, createdCustom)
 		}
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.backing_channel_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+	}
+
+	// Only now that the backing channel points at the scheme will core admit role writes carrying
+	// space permissions, so a freshly created custom scheme gets its exact permission sets here
+	// rather than at create time.
+	if createdCustom {
+		if cfgErr := s.configureSpaceCustomScheme(customRoles, capabilities); cfgErr != nil {
+			s.abandonBackingChannel(backingChannel.Id, "custom scheme role configuration failed", cfgErr, schemeID, createdCustom)
+			return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.scheme_configure_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(cfgErr)
+		}
 	}
 
 	if _, addErr := s.client.Channel.AddMember(backingChannel.Id, userID); addErr != nil {
@@ -312,12 +315,12 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultCapabili
 	// literals: on a scheme-backed channel core rejects the literal channel_user/channel_admin
 	// tokens. The base user-role token is required, not optional (core resets all scheme flags and
 	// rejects a string that leaves SchemeUser unset).
-	schemeRoles, rolesErr := s.store.GetSchemeRolesForChannel(backingChannel.Id)
+	resolvedRoles, rolesErr := s.getSchemeRolesForChannel(backingChannel.Id)
 	if rolesErr != nil {
 		s.abandonBackingChannel(backingChannel.Id, "scheme role lookup failed", rolesErr, schemeID, createdCustom)
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.scheme_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(rolesErr)
 	}
-	if _, roleErr := s.client.Channel.UpdateChannelMemberRoles(backingChannel.Id, userID, schemeRoles.UserRoleName+" "+schemeRoles.AdminRoleName); roleErr != nil {
+	if _, roleErr := s.client.Channel.UpdateChannelMemberRoles(backingChannel.Id, userID, resolvedRoles.UserRoleName+" "+resolvedRoles.AdminRoleName); roleErr != nil {
 		s.abandonBackingChannel(backingChannel.Id, "creator admin role assignment failed", roleErr, schemeID, createdCustom)
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.admin_role_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(roleErr)
 	}
@@ -360,11 +363,21 @@ func (s *Service) GetSpaceWithDeleted(spaceID string) (*model.Space, *mmmodel.Ap
 }
 
 // spaceDefaultCapabilities returns space's current default capability set in wire form
-// (read_page-free): preset recognition by the backing channel's scheme name, or — for a
-// space-private custom scheme — the generated user role's stored permission set projected onto
-// the capability vocabulary.
+// (read_page-free): the generated user role's stored permission set projected onto the capability
+// vocabulary. The projection covers presets and space-private custom schemes alike, since a
+// preset's generated user role carries exactly that preset's capabilities.
 func (s *Service) spaceDefaultCapabilities(space *model.Space) ([]string, error) {
-	roles, err := s.store.GetSchemeRolesForChannel(space.ChannelId)
+	roles, err := s.getSchemeRolesForChannel(space.ChannelId)
+	if err != nil {
+		return nil, err
+	}
+	return s.defaultCapabilitiesForRoles(roles)
+}
+
+// spaceDefaultCapabilitiesFromChannel is spaceDefaultCapabilities for a caller that already holds
+// the backing channel.
+func (s *Service) spaceDefaultCapabilitiesFromChannel(channelID string, channel *mmmodel.Channel) ([]string, error) {
+	roles, err := s.schemeRolesFromChannel(channelID, channel)
 	if err != nil {
 		return nil, err
 	}
@@ -373,11 +386,8 @@ func (s *Service) spaceDefaultCapabilities(space *model.Space) ([]string, error)
 
 // defaultCapabilitiesForRoles is spaceDefaultCapabilities for a caller that already holds the
 // backing channel's scheme roles.
-func (s *Service) defaultCapabilitiesForRoles(roles *store.SchemeRoles) ([]string, error) {
-	if capabilities, ok := model.DefaultCapabilitiesForSchemeName(roles.SchemeName); ok {
-		return capabilities, nil
-	}
-	perms, err := s.store.GetRolePermissionsByName(roles.UserRoleName)
+func (s *Service) defaultCapabilitiesForRoles(roles *schemeRoles) ([]string, error) {
+	perms, err := s.getRolePermissionsByName(roles.UserRoleName)
 	if err != nil {
 		return nil, err
 	}
@@ -455,26 +465,29 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 			return mmmodel.NewAppError("SetSpaceDefaultCapabilities", "app.space.default_capabilities.channel_scheme_missing.app_error", nil, "", http.StatusInternalServerError)
 		}
 		currentSchemeID := *channel.SchemeId
-		// Read the superseded scheme's name before the repoint below rewrites which scheme the
-		// channel points at. A failure here only costs the retirement step, so it is carried as a
-		// value and handled after the repoint rather than failing the whole operation.
-		currentRoles, currentRolesErr := s.store.GetSchemeRolesForChannel(space.ChannelId)
+		// Project the superseded scheme's capability set from the channel already in hand, before
+		// the repoint below rewrites which scheme the channel points at. A failure here only costs
+		// the no-op shortcut, so it is carried as a value rather than failing the whole operation.
+		liveCapabilities, liveCapabilitiesErr := s.spaceDefaultCapabilitiesFromChannel(space.ChannelId, channel)
 
-		// Compare against the live default before resolving a scheme. resolveSpaceScheme returns a
-		// pre-existing id only for the three presets — a non-preset set always creates a fresh
-		// scheme — so without this an unchanged custom set would create, repoint, and retire on
-		// every save, and the id comparison below could never catch it.
-		if currentRolesErr == nil {
-			if liveCapabilities, capsErr := s.defaultCapabilitiesForRoles(currentRoles); capsErr == nil &&
-				slices.Equal(liveCapabilities, model.NormalizeCapabilitySet(capabilities)) {
-				return nil
-			}
+		requested := model.NormalizeCapabilitySet(capabilities)
+		_, requestedIsPreset := model.SchemeNameForDefaultCapabilities(requested)
+
+		// A non-preset set always mints a fresh scheme, so the id comparison below could never
+		// recognize an unchanged custom set; compare the projected capabilities instead. A preset
+		// request is left to that id comparison, which settles it by scheme identity — the
+		// projection cannot, because a custom scheme whose roles were never configured projects to
+		// the same empty set as the read-only preset, and shortcutting there would strand the space
+		// on that unconfigured scheme with no way to move off it.
+		if !requestedIsPreset && liveCapabilitiesErr == nil && slices.Equal(liveCapabilities, requested) {
+			return nil
 		}
 
-		targetSchemeID, createdCustom, schemeErr := s.resolveSpaceScheme(capabilities)
+		targetSchemeID, customRoles, schemeErr := s.resolveSpaceScheme(capabilities)
 		if schemeErr != nil {
 			return storeAppError("SetSpaceDefaultCapabilities", schemeErr)
 		}
+		createdCustom := customRoles != nil
 		if targetSchemeID == currentSchemeID {
 			// No-op: requested set already matches the live default.
 			return nil
@@ -482,20 +495,40 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 
 		channel.SchemeId = &targetSchemeID
 		if updErr := s.client.Channel.Update(channel); updErr != nil {
-			s.cleanupCustomScheme(targetSchemeID, createdCustom, "")
+			s.cleanupCustomScheme(targetSchemeID, createdCustom)
 			return mmmodel.NewAppError("SetSpaceDefaultCapabilities", "app.space.default_capabilities.repoint_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(updErr)
+		}
+
+		// The repoint above is what lets core admit role writes carrying space permissions, so a
+		// freshly created custom scheme is configured only now. A failure leaves the space on a
+		// scheme whose roles still hold core's default channel baseline, so the repoint is undone
+		// before the unusable scheme is retired.
+		if createdCustom {
+			if cfgErr := s.configureSpaceCustomScheme(customRoles, capabilities); cfgErr != nil {
+				channel.SchemeId = &currentSchemeID
+				if rollbackErr := s.client.Channel.Update(channel); rollbackErr != nil {
+					s.log.Error("failed to restore the previous space scheme after a failed custom-scheme configuration; the space is left on an unconfigured scheme", "channel_id", space.ChannelId, "scheme_id", targetSchemeID, "previous_scheme_id", currentSchemeID, "err", rollbackErr)
+				} else {
+					s.cleanupCustomScheme(targetSchemeID, createdCustom)
+				}
+				return mmmodel.NewAppError("SetSpaceDefaultCapabilities", "app.space.default_capabilities.scheme_configure_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(cfgErr)
+			}
 		}
 
 		// Retire the superseded scheme, but only inside this lock (a concurrent repoint between an
 		// outside-the-lock read and the retire call could otherwise delete a scheme a racing
 		// SetSpaceDefaultCapabilities just repointed away from) and only when it was a
 		// space-private custom one — a routine preset-to-preset switch must neither call the
-		// retire path nor log a spurious failure Warn.
-		if currentRolesErr != nil {
-			s.log.Warn("failed to determine whether the superseded space scheme is a preset; skipping custom-scheme retirement", "scheme_id", currentSchemeID, "err", currentRolesErr)
-		} else if _, isPreset := model.DefaultCapabilitiesForSchemeName(currentRoles.SchemeName); !isPreset {
-			if delErr := s.store.DeleteSpaceCustomSchemeIfUnreferenced(currentSchemeID, ""); delErr != nil {
-				s.log.Warn("failed to retire unreferenced space custom scheme after a default-capabilities change", "scheme_id", currentSchemeID, "err", delErr)
+		// retire path nor log a spurious failure. Preset membership is settled by scheme id rather
+		// than by the projected capability set, which cannot tell a preset apart from a custom
+		// scheme whose roles were never given their permission sets.
+		supersededIsPreset, presetErr := s.isPresetSchemeID(currentSchemeID)
+		switch {
+		case presetErr != nil:
+			s.log.Warn("failed to determine whether the superseded space scheme is a preset; skipping custom-scheme retirement", "scheme_id", currentSchemeID, "err", presetErr)
+		case !supersededIsPreset:
+			if delErr := s.retireSpaceCustomScheme(currentSchemeID); delErr != nil {
+				s.log.Error("failed to retire space custom scheme after a default-capabilities change; it must be deleted manually", "scheme_id", currentSchemeID, "err", delErr)
 			}
 		}
 		return nil

@@ -130,3 +130,7 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 	modernc.org/sqlite v1.50.1 // indirect
 )
+
+// Local dev pin against the paired core branch while its scheme/role plugin-API additions are
+// unmerged. Replace with a pseudo-version bump once those land upstream.
+replace github.com/mattermost/mattermost/server/public => /Users/catalintomai/mattermost/MM-69269-core/server/public
