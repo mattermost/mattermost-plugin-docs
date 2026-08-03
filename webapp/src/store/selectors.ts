@@ -107,6 +107,26 @@ export const getPagesForSpace = createSelector(
 
 export const getPage = (state: GlobalState, id: string): Page | undefined => getPagesById(state)[id];
 
+// A page only if it belongs to `spaceId`. Page ids are globally unique, so a
+// URL can name a real page that lives in another space (or one that has since
+// moved); resolving by id alone would render it inside the wrong space.
+export const getPageInSpace = (state: GlobalState, spaceId: string, id: string): Page | undefined => {
+    const page = getPagesById(state)[id];
+    return page?.space_id === spaceId ? page : undefined;
+};
+
+// Whether a space's member list has been loaded. A space always has at least its
+// creator, so a count of 0 means "not loaded (or the request failed)" rather than
+// "no members" — consumers need to tell those apart before rendering a number.
+export const areMembersLoadedForSpace = (state: GlobalState, spaceId: string): boolean =>
+    spaceId in entities(state).spaceMembers;
+
+// Whether a space's page list has been loaded (fetchPages seeds the index entry
+// even for a space with no pages). Lets consumers tell a page id that is simply
+// still in flight from one that doesn't belong here.
+export const arePagesLoadedForSpace = (state: GlobalState, spaceId: string): boolean =>
+    spaceId in getPagesInSpaceIndex(state);
+
 export type DocsSearchResults = {
     spaces: Space[];
     pages: Page[];

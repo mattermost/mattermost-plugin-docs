@@ -16,6 +16,20 @@
     gap: 8px;
 }
 
+// Available to screen readers only: the tree's key bindings and its move
+// announcements have no visual equivalent.
+.visuallyHidden {
+    position: absolute;
+    overflow: hidden;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+}
+
 .separator {
     flex-shrink: 0;
     height: 1px;

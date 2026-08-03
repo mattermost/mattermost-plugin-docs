@@ -64,6 +64,20 @@ describe('sidebar order', () => {
         expect(parsed.favorites[0]).toBe(many[0]);
     });
 
+    // Trimming takes from the longer list so one huge list can't starve the other
+    // out of the budget entirely.
+    it('trims the longer list when the two are lopsided', () => {
+        const key = (i: number) => `space:${String(i).padStart(26, '0')}`;
+        const many = Array.from({length: 5000}, (_, i) => key(i));
+        const few = [key(9001), key(9002)];
+
+        const parsed = parseSidebarOrder(serializeSidebarOrder({favorites: few, spaces: many}));
+
+        expect(parsed.favorites).toEqual(few);
+        expect(parsed.spaces.length).toBeGreaterThan(0);
+        expect(parsed.spaces.length).toBeLessThan(many.length);
+    });
+
     it('drops non-string entries rather than trusting the payload', () => {
         expect(parseSidebarOrder('{"favorites":["a",5,null],"spaces":"nope"}')).toEqual({
             favorites: ['a'],

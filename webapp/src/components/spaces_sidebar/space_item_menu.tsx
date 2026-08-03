@@ -2,8 +2,8 @@
 // See LICENSE.txt for license information.
 
 import {useSpaceFavoriteState, useToggleFavorite} from 'hooks/favorites';
+import {useLeaveSpace} from 'hooks/leave_space';
 import {useDocsNavigation} from 'hooks/navigation';
-import {useAppDispatch} from 'hooks/redux';
 import React, {useCallback, useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {copyToClipboard} from 'utils/clipboard';
@@ -13,8 +13,6 @@ import ExitToAppIcon from '@mattermost/compass-icons/components/exit-to-app';
 import LinkVariantIcon from '@mattermost/compass-icons/components/link-variant';
 import StarIcon from '@mattermost/compass-icons/components/star';
 import StarOutlineIcon from '@mattermost/compass-icons/components/star-outline';
-
-import {leaveSpace} from 'store/actions';
 
 import ConfirmModal from 'components/confirm_modal/confirm_modal';
 import Menu from 'components/menu/menu';
@@ -29,8 +27,8 @@ type Props = {
 
 const SpaceItemMenu = ({space}: Props) => {
     const {formatMessage} = useIntl();
-    const dispatch = useAppDispatch();
-    const {paths, spaceId, goHome} = useDocsNavigation();
+    const {paths} = useDocsNavigation();
+    const leaveThisSpace = useLeaveSpace(space);
     const favoriteState = useSpaceFavoriteState(space.id);
     const toggleFavorite = useToggleFavorite();
     const favorited = favoriteState === 'on';
@@ -39,21 +37,10 @@ const SpaceItemMenu = ({space}: Props) => {
 
     const copyLink = () => copyToClipboard(`${window.location.origin}${paths.space(space.id)}`);
 
-    // Leaving removes the current user's membership. Navigate home only if we
-    // just left the space being viewed, and only after the server confirms
-    // (a last-authorized-member removal is rejected with 409).
     const confirmLeave = useCallback(async () => {
-        try {
-            await dispatch(leaveSpace(space.id));
-            if (spaceId === space.id) {
-                goHome();
-            }
-        } catch (error) {
-            // eslint-disable-next-line no-console
-            console.error('Docs: failed to leave space', error);
-        }
+        await leaveThisSpace();
         setConfirmLeaveOpen(false);
-    }, [dispatch, space.id, spaceId, goHome]);
+    }, [leaveThisSpace]);
 
     const menuLabel = formatMessage({id: 'docs.sidebar.space.menu', defaultMessage: 'Space options for {name}'}, {name: space.title});
 

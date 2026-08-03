@@ -22,7 +22,7 @@ type Stat = {
 type Props = {
     space: Space;
     pageCount: number;
-    memberCount: number;
+    memberCount?: number;
 };
 
 // Space front-door banner: icon + title, description, and a stats row. Page and

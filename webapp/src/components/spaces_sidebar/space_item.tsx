@@ -66,4 +66,7 @@ const SpaceItem = ({space, category, active, dndEnabled, onSelect}: Props) => {
     );
 };
 
-export default SpaceItem;
+// Memoized because the sidebar re-renders on every navigation and nav-tab change,
+// which would otherwise re-run every row (each of which registers a drag listener
+// and reads its own favorite state) for a change affecting one or two of them.
+export default React.memo(SpaceItem);

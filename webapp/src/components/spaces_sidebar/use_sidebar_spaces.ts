@@ -2,19 +2,24 @@
 // See LICENSE.txt for license information.
 
 import {favoriteKey} from 'data/favorites';
-import type {FavoriteType, SidebarOrder} from 'data/favorites';
+import type {SidebarOrder} from 'data/favorites';
 import {useSidebarOrder, useToggleFavorite} from 'hooks/favorites';
 import {useAppSelector} from 'hooks/redux';
 import {useSpaces} from 'hooks/spaces';
 import {useTeamContext} from 'hooks/team';
 import {useCallback, useMemo, useState} from 'react';
 
-import {getDocsFavoriteSpaceIds, getDocsFavoriteTypes} from 'store/favorites';
+import {getDocsFavoriteSpaceIds} from 'store/favorites';
 
 import type {Space} from 'types/docs';
 
 import type {DndCategory} from './dnd/types';
 import {useSpacesDnd} from './dnd/use_spaces_dnd';
+
+// Both stored lists hold prefixed favorite keys ("space:<id>"), never bare ids:
+// moveBetween writes a prefixed key into whichever list receives the move, so a
+// list read back as bare ids would silently lose every reordered entry.
+const SPACE_KEY_PREFIX = favoriteKey({type: 'space', id: ''});
 
 // Applies a move of `key` into `to` at `index`, dropping it from both lists first
 // so a cross-category move can't leave a duplicate behind.
@@ -78,7 +83,7 @@ export function useSidebarSpaces(dndEnabled: boolean): SidebarSpacesModel {
     // out-of-team favorite has no row to render, so counting it would leave the
     // favorites category looking populated while showing nothing.
     const favoriteSpaceIds = useMemo(
-        () => applyStoredOrder(allFavoriteSpaceIds.filter((id) => spacesById.has(id)), order.favorites, 'space:'),
+        () => applyStoredOrder(allFavoriteSpaceIds.filter((id) => spacesById.has(id)), order.favorites, SPACE_KEY_PREFIX),
         [allFavoriteSpaceIds, spacesById, order.favorites, applyStoredOrder],
     );
 
@@ -86,32 +91,21 @@ export function useSidebarSpaces(dndEnabled: boolean): SidebarSpacesModel {
     const spacesOrder = useMemo(() => {
         const shownInFavorites = new Set(favoriteSpaceIds);
         const eligible = spaces.map((s) => s.id).filter((id) => !shownInFavorites.has(id));
-        const eligibleSet = new Set(eligible);
-        const ordered = order.spaces.filter((id) => eligibleSet.has(id));
-        const seen = new Set(ordered);
-        return [...ordered, ...eligible.filter((id) => !seen.has(id))];
-    }, [spaces, favoriteSpaceIds, order.spaces]);
+        return applyStoredOrder(eligible, order.spaces, SPACE_KEY_PREFIX);
+    }, [spaces, favoriteSpaceIds, order.spaces, applyStoredOrder]);
 
-    // Map lookup, not a scan: this runs per drag over a list that can be large.
-    const favoriteTypes = useAppSelector(getDocsFavoriteTypes);
-    const typeOf = useCallback(
-        (id: string): FavoriteType => favoriteTypes.get(id) ?? 'space',
-        [favoriteTypes],
-    );
-
-    // The drag layer works in plain ids (only spaces are draggable), so the id is
-    // mapped back to its stored key here. A cross-category move also flips
+    // The drag layer works in plain ids (only spaces are draggable), so ids are
+    // mapped back to their stored keys here. A cross-category move also flips
     // favorite membership — in core, favoriting *is* a move between categories.
     const applyMove = useCallback((id: string, from: DndCategory, to: DndCategory, index: number) => {
-        // Only spaces are ordered here, so only space keys are persisted.
-        const favoriteKeys = favoriteSpaceIds.map((spaceId) => favoriteKey({type: 'space', id: spaceId}));
-        const stored: SidebarOrder = {favorites: favoriteKeys, spaces: spacesOrder};
-        setOrder(moveBetween(stored, favoriteKey({type: typeOf(id), id}), to, index));
+        const toKeys = (ids: string[]) => ids.map((spaceId) => favoriteKey({type: 'space', id: spaceId}));
+        const stored: SidebarOrder = {favorites: toKeys(favoriteSpaceIds), spaces: toKeys(spacesOrder)};
+        setOrder(moveBetween(stored, favoriteKey({type: 'space', id}), to, index));
 
         if (from !== to) {
-            toggleFavoritePreference(typeOf(id), id);
+            toggleFavoritePreference('space', id);
         }
-    }, [setOrder, favoriteSpaceIds, spacesOrder, typeOf, toggleFavoritePreference]);
+    }, [setOrder, favoriteSpaceIds, spacesOrder, toggleFavoritePreference]);
 
     const toggleFavorite = useCallback((id: string) => toggleFavoritePreference('space', id), [toggleFavoritePreference]);
 

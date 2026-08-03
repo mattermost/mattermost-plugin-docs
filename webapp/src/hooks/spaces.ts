@@ -10,7 +10,7 @@ import {createSpaceFormSchema} from 'validation/space_schema';
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
 import {createSpace, fetchPages, fetchSpaceMembers} from 'store/actions';
-import {getAllSpaces, getPagesForSpace, getSpace, getSpaceMemberIds, getSpacesForCurrentTeam} from 'store/selectors';
+import {areMembersLoadedForSpace, getAllSpaces, getPagesForSpace, getSpace, getSpaceMemberIds, getSpacesForCurrentTeam} from 'store/selectors';
 
 import type {Space, SpaceSummary, SpaceVisibility} from 'types/docs';
 
@@ -45,7 +45,10 @@ export function useRecentSpaceSummaries(): SpaceSummary[] {
 
 export type SpaceStats = {
     pageCount: number;
-    memberCount: number;
+
+    // Undefined until the member list arrives (or if it failed): a real space is
+    // never memberless, so rendering 0 would state something untrue.
+    memberCount?: number;
 };
 
 // Loads and returns a space's page and member counts. Fetches on mount into the
@@ -61,8 +64,9 @@ export function useSpaceStats(spaceId: string): SpaceStats {
 
     const pages = useAppSelector((state) => getPagesForSpace(state, spaceId));
     const memberIds = useAppSelector((state) => getSpaceMemberIds(state, spaceId));
+    const membersLoaded = useAppSelector((state) => areMembersLoadedForSpace(state, spaceId));
 
-    return {pageCount: pages.length, memberCount: memberIds.length};
+    return {pageCount: pages.length, memberCount: membersLoaded ? memberIds.length : undefined};
 }
 
 // Records that the current user viewed a space, feeding the recently-viewed

@@ -61,7 +61,7 @@ const SpaceInfoMenuItem = ({icon, text, badge, opensPanel, onClick}: ItemProps) 
 
 type Props = {
     space: Space;
-    memberCount: number;
+    memberCount?: number;
 
     /** Drills the panel into its members view. */
     onShowMembers: () => void;

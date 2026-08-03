@@ -29,6 +29,13 @@ import {DEFAULT_SIDEBAR_WIDTH} from './sidebar/sidebar';
 // the tree references it via aria-labelledby.
 export const PAGES_SECTION_LABEL_ID = 'docsPagesToggle';
 
+// The page tree's keyboard instructions live in the tree panel but are referenced
+// from the toggle too: `aria-describedby` is only announced when the described
+// element takes focus, and the tree container never does — focus always lands on a
+// row. The toggle is the focusable thing right before the tree, so describing it
+// is what actually reaches a screen reader on the way in.
+export const PAGES_KEYBOARD_HELP_ID = 'docsPageTreeHelp';
+
 // Mirrors `.bar`'s inline-start padding, which the pages cluster has to discount
 // from the sidebar width to land on the sidebar's right edge.
 const BAR_INLINE_START_PADDING = 8;
@@ -92,6 +99,7 @@ const PageHeader = ({space, page, treeOpen, onTogglePages}: Props) => {
             >
                 <Button
                     id={PAGES_SECTION_LABEL_ID}
+                    aria-describedby={treeOpen ? PAGES_KEYBOARD_HELP_ID : undefined}
                     emphasis='quaternary'
                     size='sm'
                     className={classNames('docs-btn-neutral', styles.iconLabel, {active: treeOpen})}

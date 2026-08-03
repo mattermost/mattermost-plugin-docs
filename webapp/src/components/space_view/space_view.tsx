@@ -8,7 +8,7 @@ import {useSpaceStats} from 'hooks/spaces';
 import React, {useCallback, useState} from 'react';
 import {Redirect} from 'react-router-dom';
 
-import {getPage} from 'store/selectors';
+import {arePagesLoadedForSpace, getPageInSpace} from 'store/selectors';
 
 import SpaceInfoPanel from 'components/space_info/space_info_panel';
 import type {SpaceInfoView} from 'components/space_info/space_info_panel';
@@ -32,8 +32,9 @@ import styles from './space_view.module.scss';
 // (hero) until a page is routed, at which point it shows that page instead.
 // Page bodies are a placeholder until the editor is mounted.
 const SpaceView = ({space}: {space: Space}) => {
-    const {pageId} = useDocsNavigation();
-    const page = useAppSelector((state) => (pageId ? getPage(state, pageId) : undefined));
+    const {pageId, paths} = useDocsNavigation();
+    const page = useAppSelector((state) => (pageId ? getPageInSpace(state, space.id, pageId) : undefined));
+    const pagesLoaded = useAppSelector((state) => arePagesLoadedForSpace(state, space.id));
     const {pageCount, memberCount} = useSpaceStats(space.id);
     const defaultPagePath = useDefaultPagePath(space);
     const [treeOpen, setTreeOpen] = useState(true);
@@ -48,6 +49,14 @@ const SpaceView = ({space}: {space: Space}) => {
     // space-home entry rather than pushing one.
     if (defaultPagePath) {
         return <Redirect to={defaultPagePath}/>;
+    }
+
+    // Once the space's pages are loaded, a routed id that isn't among them names
+    // a page in another space or one that's gone, so fall back to the front door
+    // rather than rendering a page shell that can never fill in. /overview is
+    // explicit, so it won't bounce back through the default-page redirect above.
+    if (pageId && pagesLoaded && !page) {
+        return <Redirect to={paths.overview(space.id)}/>;
     }
 
     return (
@@ -73,7 +82,7 @@ const SpaceView = ({space}: {space: Space}) => {
                     <div className={styles.main}>
                         <div className={styles.scroll}>
                             {pageId ? (
-                                <PageContent pageId={pageId}/>
+                                <PageContent page={page}/>
                             ) : (
                                 <div className={styles.content}>
                                     <PageHero

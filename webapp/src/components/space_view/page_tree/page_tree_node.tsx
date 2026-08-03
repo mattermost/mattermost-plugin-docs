@@ -41,14 +41,21 @@ type Props = {
     subtreeHeights: Map<string, number>;
     draggingId: string | null;
     dndEnabled: boolean;
+
+    // The one row in the whole tree that is tabbable (roving tabindex).
+    tabStopId?: string;
     onSelect: (pageId: string) => void;
     onToggle: (pageId: string) => void;
     onSetCollapsed: (ids: string[], collapsed: boolean) => void;
+    onFocusRow: (pageId: string) => void;
+    onRowKeyDown: (event: React.KeyboardEvent, pageId: string) => void;
+    registerRow: (pageId: string, element: HTMLElement | null) => void;
 };
 
-const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeights, draggingId, dndEnabled, onSelect, onToggle, onSetCollapsed}: Props) => {
+const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeights, draggingId, dndEnabled, tabStopId, onSelect, onToggle, onSetCollapsed, onFocusRow, onRowKeyDown, registerRow}: Props) => {
     const {formatMessage} = useIntl();
     const [element, setElement] = useState<HTMLDivElement | null>(null);
+    const [menuOpen, setMenuOpen] = useState(false);
     const [titleOverflowing, titleRef] = useTextOverflow();
 
     // Narrow subscription: only this page's own favorite state re-renders the row.
@@ -107,22 +114,38 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
         onToggle(page.id);
     };
 
-    const onRowKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            onSelect(page.id);
+    // Treeitems nest, so key and focus events from a descendant row bubble through
+    // every ancestor treeitem. Only the row the event actually targeted may act on
+    // it, or one keypress would be handled once per level.
+    const isOwnEvent = (event: React.SyntheticEvent) => event.target === event.currentTarget;
+
+    // Shift+F10 and the Menu key are the platform conventions for "open this
+    // row's context menu"; the trigger button itself stays out of the tab order
+    // so the tree keeps a single tab stop.
+    const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+        if (!isOwnEvent(event)) {
             return;
         }
 
-        if (!hasChildren) {
+        if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+            event.preventDefault();
+            setMenuOpen(true);
             return;
         }
+        onRowKeyDown(event, page.id);
+    };
 
-        if ((event.key === 'ArrowRight' && isCollapsed) || (event.key === 'ArrowLeft' && !isCollapsed)) {
-            event.preventDefault();
-            onToggle(page.id);
+    const onFocus = (event: React.FocusEvent<HTMLDivElement>) => {
+        if (isOwnEvent(event)) {
+            onFocusRow(page.id);
         }
     };
+
+    // Two elements, two jobs: the row is the drag/drop target (its box is what the
+    // pointer hit-tests against), while the outer treeitem is what takes focus.
+    const setRowElement = (next: HTMLDivElement | null) => setElement(next);
+
+    const setNodeElement = (next: HTMLDivElement | null) => registerRow(page.id, next);
 
     const PageGlyph = page.type === 'page_folder' ? FolderOutlineIcon : FileTextOutlineIcon;
 
@@ -143,12 +166,24 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
     );
 
     return (
+
+        // The treeitem is this outer element, not the visible row, so the child
+        // `role="group"` below is a real descendant of it — the tree pattern needs
+        // that ownership, and an intervening `role="none"` wrapper would flatten
+        // both into siblings in the accessibility tree.
         <div
+            ref={setNodeElement}
             className={styles.node}
-            role='none'
+            role='treeitem'
+            tabIndex={tabStopId === page.id ? 0 : -1}
+            aria-level={depth + 1}
+            aria-selected={isActive}
+            aria-expanded={hasChildren ? !isCollapsed : undefined}
+            onKeyDown={onKeyDown}
+            onFocus={onFocus}
         >
             <div
-                ref={setElement}
+                ref={setRowElement}
                 className={classNames(styles.row, {
                     [styles.active]: isActive,
                     [styles.dragging]: dragging,
@@ -157,13 +192,7 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
                     [styles.invalidZone]: inDraggedSubtree,
                 })}
                 style={{marginInlineStart: depth * INDENT_STEP}}
-                role='treeitem'
-                tabIndex={0}
-                aria-level={depth + 1}
-                aria-selected={isActive}
-                aria-expanded={hasChildren ? !isCollapsed : undefined}
                 onClick={onRowClick}
-                onKeyDown={onRowKeyDown}
             >
                 {hasChildren ? (
                     <button
@@ -204,6 +233,8 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
                     pageId={page.id}
                     pageTitle={page.title}
                     align='right'
+                    open={menuOpen}
+                    onOpenChange={setMenuOpen}
                     trigger={(
                         <button
                             type='button'
@@ -234,7 +265,7 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
             {hasChildren && !isCollapsed && (
                 <div
                     className={styles.children}
-                    role='none'
+                    role='group'
                 >
                     {children.map((child) => (
                         <PageTreeNode
@@ -246,9 +277,13 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
                             subtreeHeights={subtreeHeights}
                             draggingId={draggingId}
                             dndEnabled={dndEnabled}
+                            tabStopId={tabStopId}
                             onSelect={onSelect}
                             onToggle={onToggle}
                             onSetCollapsed={onSetCollapsed}
+                            onFocusRow={onFocusRow}
+                            onRowKeyDown={onRowKeyDown}
+                            registerRow={registerRow}
                         />
                     ))}
                 </div>

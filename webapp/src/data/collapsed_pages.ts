@@ -33,10 +33,6 @@ export function getCollapsed(userId: string): Set<string> {
     return new Set(read(userId));
 }
 
-export function isCollapsed(userId: string, pageId: string): boolean {
-    return read(userId).includes(pageId);
-}
-
 export function toggleCollapsed(userId: string, pageId: string): Set<string> {
     const next = getCollapsed(userId);
     if (next.has(pageId)) {

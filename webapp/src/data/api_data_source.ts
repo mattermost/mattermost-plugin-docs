@@ -7,6 +7,10 @@ import type {CreatePageInput, CreateSpaceInput, Page, Space, SpaceMember, Update
 
 import type {DocsDataSource} from './docs_data_source';
 
+// Ids are server-generated and URL-safe today, so this is defense in depth: an id
+// that ever arrives malformed (or user-influenced) can't reshape the request path.
+const seg = encodeURIComponent;
+
 // The server's page list returns summaries (no body/delete_at); fill the fields
 // the store's Page type needs so a summary is a valid, body-less Page.
 const toPage = (summary: Page): Page => ({
@@ -20,17 +24,17 @@ const toPage = (summary: Page): Page => ({
 // Docs data over the plugin REST API (server/api.go). Ids are opaque; lists are
 // paginated ({items, has_more}) and followed to completion by listAll.
 export const apiDataSource: DocsDataSource = {
-    listSpaces: (teamId) => listAll<Space>((query) => `${apiUrl()}/teams/${teamId}/spaces?${query}`),
+    listSpaces: (teamId) => listAll<Space>((query) => `${apiUrl()}/teams/${seg(teamId)}/spaces?${query}`),
 
-    getSpace: (spaceId) => restGet<Space>(`${apiUrl()}/spaces/${spaceId}`),
+    getSpace: (spaceId) => restGet<Space>(`${apiUrl()}/spaces/${seg(spaceId)}`),
 
-    createSpace: (teamId, input: CreateSpaceInput) => restPost<Space>(`${apiUrl()}/teams/${teamId}/spaces`, {
+    createSpace: (teamId, input: CreateSpaceInput) => restPost<Space>(`${apiUrl()}/teams/${seg(teamId)}/spaces`, {
         title: input.title.trim(),
         description: input.description?.trim() || undefined,
         icon: input.icon || undefined,
     }),
 
-    updateSpace: (spaceId, patch: UpdateSpacePatch, expectedUpdateAt) => restPatch<Space>(`${apiUrl()}/spaces/${spaceId}`, {
+    updateSpace: (spaceId, patch: UpdateSpacePatch, expectedUpdateAt) => restPatch<Space>(`${apiUrl()}/spaces/${seg(spaceId)}`, {
         title: patch.title?.trim(),
         description: patch.description?.trim(),
         icon: patch.icon,
@@ -38,19 +42,19 @@ export const apiDataSource: DocsDataSource = {
         expected_update_at: expectedUpdateAt,
     }),
 
-    deleteSpace: (spaceId) => restDelete<void>(`${apiUrl()}/spaces/${spaceId}`),
+    deleteSpace: (spaceId) => restDelete<void>(`${apiUrl()}/spaces/${seg(spaceId)}`),
 
-    removeSpaceMember: (spaceId, userId) => restDelete<void>(`${apiUrl()}/spaces/${spaceId}/members/${userId}`),
+    removeSpaceMember: (spaceId, userId) => restDelete<void>(`${apiUrl()}/spaces/${seg(spaceId)}/members/${seg(userId)}`),
 
-    listSpaceMembers: (spaceId) => listAll<SpaceMember>((query) => `${apiUrl()}/spaces/${spaceId}/members?${query}`),
+    listSpaceMembers: (spaceId) => listAll<SpaceMember>((query) => `${apiUrl()}/spaces/${seg(spaceId)}/members?${query}`),
 
     listPages: async (spaceId) => {
-        const summaries = await listAll<Page>((query) => `${apiUrl()}/spaces/${spaceId}/pages?${query}`);
+        const summaries = await listAll<Page>((query) => `${apiUrl()}/spaces/${seg(spaceId)}/pages?${query}`);
         return summaries.map(toPage);
     },
 
     movePage: async (spaceId, pageId, parentId, siblingIndex, expectedUpdateAt) => {
-        const moved = await restPatch<Page>(`${apiUrl()}/spaces/${spaceId}/pages/${pageId}/move`, {
+        const moved = await restPatch<Page>(`${apiUrl()}/spaces/${seg(spaceId)}/pages/${seg(pageId)}/move`, {
             parent_id: parentId,
             sibling_index: siblingIndex,
             expected_update_at: expectedUpdateAt,
@@ -59,7 +63,7 @@ export const apiDataSource: DocsDataSource = {
     },
 
     createPage: async (spaceId, input: CreatePageInput) => {
-        const created = await restPost<Page>(`${apiUrl()}/spaces/${spaceId}/pages`, {
+        const created = await restPost<Page>(`${apiUrl()}/spaces/${seg(spaceId)}/pages`, {
             title: input.title.trim(),
             parent_id: input.parentId || undefined,
         });
@@ -67,7 +71,7 @@ export const apiDataSource: DocsDataSource = {
     },
 
     updatePage: async (spaceId, pageId, patch: UpdatePagePatch, baseEditAt) => {
-        const updated = await restPatch<Page>(`${apiUrl()}/spaces/${spaceId}/pages/${pageId}`, {
+        const updated = await restPatch<Page>(`${apiUrl()}/spaces/${seg(spaceId)}/pages/${seg(pageId)}`, {
             title: patch.title?.trim(),
             body: patch.body,
             base_edit_at: baseEditAt,
@@ -75,5 +79,5 @@ export const apiDataSource: DocsDataSource = {
         return toPage(updated);
     },
 
-    deletePage: (spaceId, pageId) => restDelete<void>(`${apiUrl()}/spaces/${spaceId}/pages/${pageId}`),
+    deletePage: (spaceId, pageId) => restDelete<void>(`${apiUrl()}/spaces/${seg(spaceId)}/pages/${seg(pageId)}`),
 };

@@ -58,12 +58,20 @@ export function fetchAllSpaces(): DocsThunkAction<Promise<void>> {
 export function fetchPages(spaceId: string): DocsThunkAction<Promise<void>> {
     return async (dispatch) => {
         try {
-            const pages = await docsDataSource.listPages(spaceId);
-            dispatch({type: PageTypes.RECEIVED_PAGES, pages});
+            await dispatch(loadPages(spaceId));
         } catch (error) {
             // eslint-disable-next-line no-console
             console.error('Docs: failed to load pages', error);
         }
+    };
+}
+
+// Same load, but rejecting — for callers that have to react to a failure rather
+// than tolerate a stale list.
+export function loadPages(spaceId: string): DocsThunkAction<Promise<void>> {
+    return async (dispatch) => {
+        const pages = await docsDataSource.listPages(spaceId);
+        dispatch({type: PageTypes.RECEIVED_PAGES, pages, spaceId});
     };
 }
 
@@ -87,7 +95,11 @@ export function movePage(spaceId: string, pageId: string, parentId: string, sibl
         } catch (error) {
             // eslint-disable-next-line no-console
             console.error('Docs: failed to move page', error);
-            dispatch(fetchPages(spaceId));
+
+            // The optimistic reindex is now wrong, so pull server truth back in
+            // before rejecting — the caller surfaces the failure to the user.
+            await dispatch(fetchPages(spaceId));
+            throw error;
         }
     };
 }

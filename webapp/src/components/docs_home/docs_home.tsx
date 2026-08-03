@@ -2,6 +2,7 @@
 // See LICENSE.txt for license information.
 
 import {useDocsNavigation} from 'hooks/navigation';
+import {useAppSelector} from 'hooks/redux';
 import {useRecentSpaceSummaries} from 'hooks/spaces';
 import {useCurrentUser} from 'hooks/user';
 import React from 'react';
@@ -14,6 +15,8 @@ import CreationOutlineIcon from '@mattermost/compass-icons/components/creation-o
 import NotebookOutlineIcon from '@mattermost/compass-icons/components/notebook-outline';
 import PlusIcon from '@mattermost/compass-icons/components/plus';
 import SearchListIcon from '@mattermost/compass-icons/components/search-list';
+
+import {areSpacesLoadedForCurrentTeam} from 'store/selectors';
 
 import {PrimaryButton, TertiaryButton} from 'components/form_controls/button';
 import Header from 'components/header/header';
@@ -36,6 +39,7 @@ const DocsHome = ({onCreateSpace, onBrowseSpaces}: Props) => {
     const {name} = useCurrentUser();
     const {goToSpace} = useDocsNavigation();
     const summaries = useRecentSpaceSummaries();
+    const spacesLoaded = useAppSelector(areSpacesLoadedForCurrentTeam);
 
     const header = (
         <Header
@@ -55,6 +59,17 @@ const DocsHome = ({onCreateSpace, onBrowseSpaces}: Props) => {
             }
         />
     );
+
+    // Only an empty list that's actually settled means "no spaces". Until the
+    // team's spaces arrive the list is empty for a different reason, and showing
+    // the welcome hero would flash it at every returning user.
+    if (!spacesLoaded) {
+        return (
+            <div className={styles.root}>
+                {header}
+            </div>
+        );
+    }
 
     if (summaries.length === 0) {
         return (

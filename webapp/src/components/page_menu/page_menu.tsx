@@ -40,13 +40,18 @@ type Props = {
     trigger: React.ReactElement;
     align?: 'left' | 'right';
     tooltip?: string;
+
+    // Controlled open state, for callers that open the menu from a keyboard
+    // shortcut rather than the trigger (see the page tree's rows).
+    open?: boolean;
+    onOpenChange?: (open: boolean) => void;
 };
 
 /**
  * The page actions menu, shared by the page tree rows and the page header.
  * Items without a handler are scaffolding for features that have no API yet.
  */
-const PageMenu = ({spaceId, pageId, pageTitle, trigger, align = 'left', tooltip}: Props) => {
+const PageMenu = ({spaceId, pageId, pageTitle, trigger, align = 'left', tooltip, open, onOpenChange}: Props) => {
     const {formatMessage} = useIntl();
     const {paths} = useDocsNavigation();
     const dispatch = useAppDispatch();
@@ -91,6 +96,8 @@ const PageMenu = ({spaceId, pageId, pageTitle, trigger, align = 'left', tooltip}
             align={align}
             tooltip={tooltip}
             trigger={trigger}
+            open={open}
+            onOpenChange={onOpenChange}
         >
             <Menu.Item
                 leadingIcon={favorited ? <StarIcon size={18}/> : <StarOutlineIcon size={18}/>}

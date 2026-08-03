@@ -7,6 +7,8 @@ import {useIntl} from 'react-intl';
 import {createPage} from 'store/actions';
 import {getPage} from 'store/selectors';
 
+import {toast} from 'components/toast';
+
 import {SPACE_PROP_DEFAULT_PAGE_ID} from 'types/docs';
 import type {Space} from 'types/docs';
 
@@ -28,10 +30,13 @@ export function useCreateRootPage(spaceId: string) {
             const page = await dispatch(createPage(spaceId, {title: untitled}));
             goToPage(spaceId, page.id);
         } catch (error) {
+            // Without this the add-page buttons look inert on failure.
+            toast.error(formatMessage({id: 'docs.pageTree.addFailed', defaultMessage: 'Could not create the page. Please try again.'}));
+
             // eslint-disable-next-line no-console
             console.error('Docs: failed to create page', error);
         }
-    }, [dispatch, spaceId, untitled, goToPage]);
+    }, [dispatch, spaceId, untitled, goToPage, formatMessage]);
 }
 
 /**

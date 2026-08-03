@@ -3,15 +3,12 @@
 
 import classNames from 'classnames';
 import {useUserProfile} from 'hooks/members';
-import {useAppSelector} from 'hooks/redux';
 import React from 'react';
 import {useIntl} from 'react-intl';
 import {Avatar} from 'webapp_globals';
 
 import EmoticonPlusOutlineIcon from '@mattermost/compass-icons/components/emoticon-plus-outline';
 import ImageOutlineIcon from '@mattermost/compass-icons/components/image-outline';
-
-import {getPage} from 'store/selectors';
 
 import {Button} from 'components/form_controls/button';
 
@@ -21,15 +18,17 @@ import styles from './page_content.module.scss';
 import PageContentPlaceholder from './page_content_placeholder';
 
 type Props = {
-    pageId: string;
+
+    // Resolved and space-validated by the caller; undefined only while the
+    // space's pages are still loading (an id that doesn't belong to the space
+    // redirects instead of rendering here).
+    page?: Page;
 };
 
 // The selected page's content column: a title area over the page body. The body
 // is a skeleton until the editor is mounted, which also covers the window where
 // the routed page hasn't arrived in the store yet (no title to show).
-const PageContent = ({pageId}: Props) => {
-    const page = useAppSelector((state) => getPage(state, pageId));
-
+const PageContent = ({page}: Props) => {
     return (
         <div className={styles.frame}>
             <article className={styles.article}>

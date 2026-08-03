@@ -10,6 +10,7 @@ import {useHotkeys} from 'react-hotkeys-hook';
 import CreateSpaceModal from 'components/create_space_modal/create_space_modal';
 import DocsSwitcher from 'components/docs_switcher/docs_switcher';
 import {DocsModalController, openDocsModal} from 'components/modals';
+import {Readout} from 'components/readout';
 import SpacesSidebar from 'components/spaces_sidebar/spaces_sidebar';
 import {DocsToaster} from 'components/toast';
 
@@ -54,6 +55,7 @@ const DocsRoot = () => {
             {switcherOpen && <DocsSwitcher onClose={closeSwitcher}/>}
             <DocsModalController/>
             <DocsToaster/>
+            <Readout/>
         </div>
     );
 };

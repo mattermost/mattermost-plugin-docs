@@ -13,7 +13,7 @@ import {PageTypes, SpaceTypes} from './action_types';
 type ReceivedSpacesAction = {spaces: Space[]; teamId?: string};
 type CreatedSpaceAction = {space: Space};
 type DeletedSpaceAction = {spaceId: string};
-type ReceivedPagesAction = {pages: Page[]};
+type ReceivedPagesAction = {pages: Page[]; spaceId?: string};
 type MovedPageAction = {pageId: string; spaceId: string; parentId: string; siblingIndex: number};
 
 // `pageIds` is the deleted page plus its descendants: the byId map and the
@@ -214,11 +214,17 @@ function pages(state: Record<string, Page> = {}, action: UnknownAction): Record<
 function pagesInSpace(state: Record<string, Set<string>> = {}, action: UnknownAction): Record<string, Set<string>> {
     switch (action.type) {
     case PageTypes.RECEIVED_PAGES: {
-        const {pages: received} = action as unknown as ReceivedPagesAction;
-        if (received.length === 0) {
+        const {pages: received, spaceId} = action as unknown as ReceivedPagesAction;
+        if (received.length === 0 && (spaceId === undefined || spaceId in state)) {
             return state;
         }
         const next = {...state};
+
+        // A listed space always gets an entry, so its presence means "this
+        // space's pages are loaded" even when the space has none.
+        if (spaceId !== undefined && !(spaceId in next)) {
+            next[spaceId] = new Set();
+        }
         for (const page of received) {
             const set = new Set(next[page.space_id]);
             set.add(page.id);

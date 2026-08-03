@@ -3,6 +3,7 @@
 
 import classNames from 'classnames';
 import {useSpaceFavoriteState, useToggleFavorite} from 'hooks/favorites';
+import {useLeaveSpace} from 'hooks/leave_space';
 import {useDocsNavigation} from 'hooks/navigation';
 import {useAppDispatch} from 'hooks/redux';
 import React, {useCallback} from 'react';
@@ -21,7 +22,7 @@ import ShareVariantOutlineIcon from '@mattermost/compass-icons/components/share-
 import StarIcon from '@mattermost/compass-icons/components/star';
 import StarOutlineIcon from '@mattermost/compass-icons/components/star-outline';
 
-import {deleteSpace, isLastSpaceMemberError, leaveSpace} from 'store/actions';
+import {deleteSpace} from 'store/actions';
 import {useSpacePermissions} from 'store/permissions';
 
 import ConfirmModal from 'components/confirm_modal/confirm_modal';
@@ -39,7 +40,7 @@ import styles from './space_header.module.scss';
 
 type Props = {
     space: Space;
-    memberCount: number;
+    memberCount?: number;
     infoOpen: boolean;
     onToggleInfo: () => void;
 
@@ -52,6 +53,7 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}
     const dispatch = useAppDispatch();
     const {paths, spaceId, goHome} = useDocsNavigation();
     const {canManageMembers} = useSpacePermissions(space.id);
+    const leaveThisSpace = useLeaveSpace(space);
     const favoriteState = useSpaceFavoriteState(space.id);
     const toggleFavorite = useToggleFavorite();
     const favorited = favoriteState === 'on';
@@ -89,9 +91,6 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}
         ));
     }, [space]);
 
-    // Leaving the last authorized member is rejected server-side; keep the user
-    // in the space and surface the reason. Navigate home only when we just left
-    // the space being viewed.
     const openLeaveConfirm = useCallback(() => {
         openDocsModal((modal) => (
             <ConfirmModal
@@ -110,27 +109,7 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}
                 )}
                 isConfirmDestructive={true}
                 onConfirm={async () => {
-                    try {
-                        await dispatch(leaveSpace(space.id));
-                        if (spaceId === space.id) {
-                            goHome();
-                        }
-                    } catch (error) {
-                        const description = isLastSpaceMemberError(error) ? formatMessage({
-                            id: 'docs.leaveSpace.error.lastMember',
-                            defaultMessage: 'A space must keep at least one member with access. Add another member before you leave.',
-                        }) : formatMessage({
-                            id: 'docs.leaveSpace.error.generic',
-                            defaultMessage: 'Something went wrong. Please try again.',
-                        });
-                        toast.error(
-                            formatMessage({
-                                id: 'docs.leaveSpace.error.title',
-                                defaultMessage: 'Unable to leave {name}',
-                            }, {name: space.title}),
-                            {description},
-                        );
-                    }
+                    await leaveThisSpace();
                     modal.close();
                 }}
                 onCancel={modal.close}
@@ -145,7 +124,7 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}
                 />
             </ConfirmModal>
         ));
-    }, [dispatch, space.id, space.title, spaceId, goHome, formatMessage]);
+    }, [space.title, leaveThisSpace]);
 
     const openArchiveConfirm = useCallback(() => {
         openDocsModal((modal) => (
@@ -171,6 +150,21 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}
                             goHome();
                         }
                     } catch (error) {
+                        // Without this, a failed archive looks exactly like a
+                        // successful one: the modal just closes.
+                        toast.error(
+                            formatMessage({
+                                id: 'docs.archiveSpace.error.title',
+                                defaultMessage: 'Unable to archive {name}',
+                            }, {name: space.title}),
+                            {
+                                description: formatMessage({
+                                    id: 'docs.archiveSpace.error.generic',
+                                    defaultMessage: 'Something went wrong. Please try again.',
+                                }),
+                            },
+                        );
+
                         // eslint-disable-next-line no-console
                         console.error('Docs: failed to archive space', error);
                     }
@@ -188,7 +182,7 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}
                 />
             </ConfirmModal>
         ));
-    }, [dispatch, space.id, space.title, spaceId, goHome]);
+    }, [dispatch, space.id, space.title, spaceId, goHome, formatMessage]);
 
     // The space title names the trigger, so it carries no aria-label; the menu
     // itself is named by `ariaLabel` on the popup.
@@ -225,6 +219,7 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}
                         <ChevronDownIcon
                             className={styles.chevron}
                             size={16}
+                            aria-hidden={true}
                         />
                     </Button>
                 )}
@@ -299,7 +294,7 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}
                 onClick={onShowMembers}
             >
                 <AccountMultipleOutlineIcon size={16}/>
-                <span>{memberCount}</span>
+                {memberCount !== undefined && <span>{memberCount}</span>}
             </Button>
         </div>
     );

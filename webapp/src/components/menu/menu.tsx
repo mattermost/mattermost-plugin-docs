@@ -17,6 +17,11 @@ type MenuProps = {
 
     // Base UI merges its own open/aria/ref props onto the trigger element.
     trigger: React.ReactElement;
+
+    // Controlled open state. Only needed when something other than the trigger
+    // opens the menu (e.g. a keyboard shortcut on the surrounding row).
+    open?: boolean;
+    onOpenChange?: (open: boolean) => void;
     children: React.ReactNode;
 };
 
@@ -46,12 +51,26 @@ type SubmenuProps = {
 
 const ItemBody = ({leadingIcon, trailingIcon, secondaryLabel, children}: Pick<ItemProps, 'leadingIcon' | 'trailingIcon' | 'secondaryLabel' | 'children'>) => (
     <>
-        {leadingIcon && <span className={styles.itemIcon}>{leadingIcon}</span>}
+        {leadingIcon && (
+            <span
+                className={styles.itemIcon}
+                aria-hidden={true}
+            >
+                {leadingIcon}
+            </span>
+        )}
         <span className={styles.itemText}>
             <span className={styles.itemLabel}>{children}</span>
             {secondaryLabel && <span className={styles.itemSecondary}>{secondaryLabel}</span>}
         </span>
-        {trailingIcon && <span className={styles.itemTrailing}>{trailingIcon}</span>}
+        {trailingIcon && (
+            <span
+                className={styles.itemTrailing}
+                aria-hidden={true}
+            >
+                {trailingIcon}
+            </span>
+        )}
     </>
 );
 
@@ -147,8 +166,11 @@ const MenuSubmenu = ({label, leadingIcon, ariaLabel, disabled, children}: Submen
  * `Menu.Submenu` children. Portals to the body so it is never clipped by an
  * ancestor's overflow.
  */
-const Menu = ({ariaLabel, align = 'left', tooltip, trigger, children}: MenuProps) => (
-    <BaseMenu.Root>
+const Menu = ({ariaLabel, align = 'left', tooltip, trigger, open, onOpenChange, children}: MenuProps) => (
+    <BaseMenu.Root
+        open={open}
+        onOpenChange={onOpenChange}
+    >
         {tooltip ? (
             <WithTooltip title={tooltip}>
                 <BaseMenu.Trigger render={trigger}/>

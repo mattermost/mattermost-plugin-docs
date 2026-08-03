@@ -36,12 +36,15 @@ export type TestStateOptions = {
     // the current team.
     teams?: TestTeam[];
     currentUser?: TestUser;
+
+    // Host user preferences, which is where Docs favorites and sidebar order live.
+    preferences?: Array<{category: string; name: string; value: string}>;
 };
 
 // Builds a host-shaped GlobalState with the Docs plugin subtree under
 // `plugins-<id>` (where the plugin's registered reducer mounts) plus the minimal
 // entities the Docs hooks read (current team + membership + current user).
-export function makeTestState({docs, currentTeam, teams, currentUser}: TestStateOptions = {}): GlobalState {
+export function makeTestState({docs, currentTeam, teams, currentUser, preferences}: TestStateOptions = {}): GlobalState {
     const teamId = currentTeam?.id ?? '';
     const userId = currentUser?.id ?? '';
     const allTeams = teams ?? (currentTeam ? [currentTeam] : []);
@@ -59,6 +62,14 @@ export function makeTestState({docs, currentTeam, teams, currentUser}: TestState
             users: {
                 currentUserId: userId,
                 profiles: currentUser ? {[userId]: currentUser} : {},
+            },
+
+            // Keyed `category--name`, as mattermost-redux's preference selectors expect.
+            preferences: {
+                myPreferences: Object.fromEntries((preferences ?? []).map((preference) => [
+                    `${preference.category}--${preference.name}`,
+                    {user_id: userId, ...preference},
+                ])),
             },
         },
     } as unknown as GlobalState;

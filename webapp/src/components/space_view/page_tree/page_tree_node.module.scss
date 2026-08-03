@@ -1,8 +1,22 @@
+// The treeitem: it wraps the row and (when expanded) the child group, so focus
+// lands here while the row stays the thing that's painted.
 .node {
     display: flex;
     flex-direction: column;
     gap: 8px;
     min-width: 0;
+    outline: none;
+}
+
+// Focus is on the node, but the ring belongs around the row — the node's box
+// spans the whole subtree.
+.node:focus-visible > .row {
+    outline: 2px solid var(--button-bg);
+    outline-offset: -2px;
+}
+
+.node:focus-visible > .row .menuTrigger {
+    opacity: 1;
 }
 
 // The whole row is the click target, so it owns the only hover/selected state
@@ -27,11 +41,6 @@
 
     &:hover {
         background: rgba(var(--center-channel-color-rgb), 0.08);
-    }
-
-    &:focus-visible {
-        outline: 2px solid var(--button-bg);
-        outline-offset: -2px;
     }
 
     &.active,
