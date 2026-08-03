@@ -44,16 +44,16 @@ func (p *Plugin) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SearchText is not accepted: it is derived server-side from Body.
 	var req struct {
-		Title      string  `json:"title"`
-		ParentId   *string `json:"parent_id,omitempty"`
-		Body       string  `json:"body,omitempty"`
-		SearchText string  `json:"search_text,omitempty"`
+		Title    string  `json:"title"`
+		ParentId *string `json:"parent_id,omitempty"`
+		Body     string  `json:"body,omitempty"`
 	}
 	if !p.decodeJSONBody(w, r, maxPageBodyBytes, &req, "handleCreatePage", false) {
 		return
 	}
-	page, appErr := p.service.CreatePage(vars["space_id"], mmmodel.SafeDereference(req.ParentId), req.Title, req.Body, req.SearchText, userID)
+	page, appErr := p.service.CreatePage(vars["space_id"], mmmodel.SafeDereference(req.ParentId), req.Title, req.Body, userID)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return
@@ -85,10 +85,10 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SearchText is not accepted: it is derived server-side from Body (matches the create path).
 	var req struct {
 		Title      *string                  `json:"title"`
 		Body       *string                  `json:"body"`
-		SearchText *string                  `json:"search_text"`
 		Props      *mmmodel.StringInterface `json:"props"`
 		BaseEditAt *int64                   `json:"base_edit_at"`
 		Force      bool                     `json:"force"`
@@ -96,10 +96,14 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 	if !p.decodeJSONBody(w, r, maxPageBodyBytes, &req, "handleUpdatePage", false) {
 		return
 	}
-	patch := &model.PagePatch{Title: req.Title, Body: req.Body, SearchText: req.SearchText, Props: req.Props}
+	patch := &model.PagePatch{Title: req.Title, Body: req.Body, Props: req.Props}
 
 	updated, appErr := p.service.UpdatePage(vars["page_id"], vars["space_id"], patch, req.BaseEditAt, req.Force, userID)
 	if appErr != nil {
+		if updated != nil {
+			p.writeConflictWithPage(w, appErr, updated)
+			return
+		}
 		p.writeAppError(w, appErr)
 		return
 	}

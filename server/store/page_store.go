@@ -72,26 +72,32 @@ func (s *Store) CreatePage(page *model.Page, maxDepth int) (_ *model.Page, err e
 	}
 	defer s.finalizeTransaction(tx, &err)
 
-	// Lock the space row for the lifetime of this insert so it serializes with
-	// DeleteSpace: a racing delete blocks here and then cascades the new page, while
-	// a space already gone causes an immediate abort.
-	spaceLockQuery := s.getQueryBuilder().
-		Select("ChannelId").
-		From("DOCS_Space").
-		Where(sq.Eq{"Id": page.SpaceId, "DeleteAt": 0}).
-		Suffix("FOR UPDATE")
-	var spaceChannelID string
-	if spErr := s.getBuilder(tx, &spaceChannelID, spaceLockQuery); spErr != nil {
-		if errors.Is(spErr, sql.ErrNoRows) {
-			return nil, &ErrNotFound{EntityName: "Space", ID: page.SpaceId}
-		}
-		return nil, errors.Wrap(spErr, "failed to lock space for page create")
+	created, insErr := s.insertPageTx(tx, page, maxDepth, "create depth")
+	if insErr != nil {
+		return nil, insErr
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, errors.Wrap(err, "commit_transaction")
+	}
+
+	return created, nil
+}
+
+// insertPageTx inserts a new page inside the caller's transaction, applying the invariants shared
+// by CreatePage and the draft-publish path: it locks the space row (serializing with DeleteSpace /
+// RestoreSpace) and derives ChannelId from it, re-verifies the parent is still live and enforces
+// maxDepth against the parent's locked current depth, assigns the next sibling sort order, and
+// inserts. depthContext labels the depth-cap error with the originating operation. A PK collision
+// returns ErrConflict so a publish caller can adopt the concurrent winner.
+func (s *Store) insertPageTx(tx *sqlx.Tx, page *model.Page, maxDepth int, depthContext string) (*model.Page, error) {
+	spaceChannelID, spErr := s.lockLiveSpaceChannel(tx, page.SpaceId)
+	if spErr != nil {
+		return nil, spErr
 	}
 	// Derive ChannelId from the locked space row (single source of truth) rather than trusting the caller-supplied value.
 	page.ChannelId = spaceChannelID
 
-	// Re-verify the parent is still live under the same transaction, and enforce maxDepth against
-	// its locked, current depth — atomic with the insert, unlike a pre-transaction read.
 	if page.ParentId != "" {
 		if pErr := s.lockLiveParent(tx, page.ParentId, page.SpaceId, "Page"); pErr != nil {
 			return nil, pErr
@@ -100,7 +106,7 @@ func (s *Store) CreatePage(page *model.Page, maxDepth int) (_ *model.Page, err e
 		if depthErr != nil {
 			return nil, depthErr
 		}
-		if capErr := depthCapError("Page parent_id="+page.ParentId+" (create depth)", parentDepth, 0, maxDepth); capErr != nil {
+		if capErr := depthCapError("Page parent_id="+page.ParentId+" ("+depthContext+")", parentDepth, 0, maxDepth); capErr != nil {
 			return nil, capErr
 		}
 	}
@@ -126,13 +132,8 @@ func (s *Store) CreatePage(page *model.Page, maxDepth int) (_ *model.Page, err e
 		if isUniqueViolation(execErr) {
 			return nil, &ErrConflict{Resource: "Page id=" + page.Id}
 		}
-		return nil, errors.Wrap(execErr, "failed to save Page")
+		return nil, errors.Wrap(execErr, "failed to insert page")
 	}
-
-	if err = tx.Commit(); err != nil {
-		return nil, errors.Wrap(err, "commit_transaction")
-	}
-
 	return page, nil
 }
 
@@ -187,6 +188,24 @@ func (s *Store) UpdatePage(pageID, spaceID string, patch *model.PagePatch, baseE
 	}
 	defer s.finalizeTransaction(tx, &err)
 
+	page, patchErr := s.applyPagePatchTx(tx, pageID, spaceID, patch, baseEditAt, force, lastModifiedBy)
+	if patchErr != nil {
+		return nil, patchErr
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, errors.Wrap(err, "commit_transaction")
+	}
+
+	return page, nil
+}
+
+// applyPagePatchTx merges patch into the live page inside the caller's transaction, applying the
+// invariants shared by UpdatePage and the draft-publish edit path: it locks the live row, CASes on
+// EditAt (baseEditAt is the value the caller last saw; force skips the CAS but still merges into
+// the current row so untouched fields keep any concurrent edit), validates the merged row, and
+// writes it with strictly-monotonic EditAt/UpdateAt.
+func (s *Store) applyPagePatchTx(tx *sqlx.Tx, pageID, spaceID string, patch *model.PagePatch, baseEditAt int64, force bool, lastModifiedBy string) (*model.Page, error) {
 	// Lock the live row so the read-modify-write is atomic. The lock (not an EditAt
 	// predicate) is what makes the write safe, so both paths merge the patch into the value
 	// read here; no concurrent writer can slip between this read and the UPDATE below. Scoped to
@@ -209,7 +228,7 @@ func (s *Store) UpdatePage(pageID, spaceID string, patch *model.PagePatch, baseE
 	}
 
 	if !force && page.EditAt != baseEditAt {
-		return nil, &ErrConflict{Resource: "Page id=" + pageID + " (concurrent edit)"}
+		return nil, &ErrConflict{Resource: "Page id=" + pageID, Reason: ReasonConcurrentEdit}
 	}
 
 	page.Patch(patch)
@@ -250,11 +269,6 @@ func (s *Store) UpdatePage(pageID, spaceID string, patch *model.PagePatch, baseE
 
 	page.UpdateAt = now
 	page.EditAt = now
-
-	if err = tx.Commit(); err != nil {
-		return nil, errors.Wrap(err, "commit_transaction")
-	}
-
 	return &page, nil
 }
 
@@ -423,10 +437,10 @@ func (s *Store) DeletePage(pageID, spaceID, userID string) (_ string, err error)
 	// A draft is unpublished work on the page, so deleting the page ends its life; a new-page
 	// draft parented under this page is a pending child of it, so it is reparented rather than
 	// deleted (see reparentDraftsForPage). Both cascades run inside this transaction.
-	if draftErr := s.deleteDraftsForPage(tx, pageID); draftErr != nil {
+	if draftErr := s.deleteDraftsForPage(tx, pageID, spaceID); draftErr != nil {
 		return "", draftErr
 	}
-	if draftErr := s.reparentDraftsForPage(tx, pageID, deleted.ParentID, now); draftErr != nil {
+	if draftErr := s.reparentDraftsForPage(tx, pageID, deleted.ParentID, spaceID, now); draftErr != nil {
 		return "", draftErr
 	}
 
@@ -536,13 +550,12 @@ func (s *Store) RestorePage(pageID, spaceID, userID string, maxDepth int) (_ *mo
 		Set("EditAt", page.EditAt).
 		Set("LastModifiedBy", page.LastModifiedBy).
 		Set("ParentId", page.ParentId).
-		Set("SortOrder", page.SortOrder)
-
-	restoreQuery = restoreQuery.Where(sq.And{
-		sq.Eq{"Id": pageID},
-		sq.Eq{"OriginalId": ""},
-		sq.NotEq{"DeleteAt": 0},
-	})
+		Set("SortOrder", page.SortOrder).
+		Where(sq.And{
+			sq.Eq{"Id": pageID},
+			sq.Eq{"OriginalId": ""},
+			sq.NotEq{"DeleteAt": 0},
+		})
 	result, txErr := s.execBuilder(tx, restoreQuery)
 	if txErr != nil {
 		return nil, errors.Wrap(txErr, "failed to restore page")
@@ -560,6 +573,13 @@ func (s *Store) RestorePage(pageID, spaceID, userID string, maxDepth int) (_ *mo
 // PageExistsInSpace reports whether pageID is a live page in spaceID, without fetching the
 // row — callers that only need to 404 on a missing page avoid hauling the page body.
 func (s *Store) PageExistsInSpace(pageID, spaceID string) (bool, error) {
+	return s.pageExistsInSpace(s.db, pageID, spaceID)
+}
+
+// pageExistsInSpace is PageExistsInSpace against an explicit executor, so callers inside a
+// transaction observe that transaction's own view (e.g. its uncommitted writes and row locks)
+// rather than reading through a separate pooled connection.
+func (s *Store) pageExistsInSpace(e sqlx.ExtContext, pageID, spaceID string) (bool, error) {
 	if pageID == "" {
 		return false, &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
 	}
@@ -572,7 +592,7 @@ func (s *Store) PageExistsInSpace(pageID, spaceID string) (bool, error) {
 		Where(sq.Eq{"Id": pageID, "SpaceId": spaceID}).
 		Where(liveNonSnapshotFilter(""))
 	var exists int
-	if err := s.getBuilder(s.db, &exists, query); err != nil {
+	if err := s.getBuilder(e, &exists, query); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
 		}
@@ -703,4 +723,123 @@ func (s *Store) GetSpacePages(spaceID string, offset, limit int) ([]*model.PageS
 	}
 
 	return pages, nil
+}
+
+// PublishNewPageDraft atomically inserts page and deletes the user's draft for it in a single
+// transaction. A PK collision returns ErrConflict so the caller can adopt the concurrent winner
+// without a half-state; the whole transaction is rolled back.
+//
+// draftUpdateAt pins the draft delete to the version the caller read (see deletePublishedDraftTx
+// for how a version mismatch rolls the whole publish back).
+func (s *Store) PublishNewPageDraft(page *model.Page, userID, spaceID string, maxDepth int, draftUpdateAt int64) (_ *model.Page, err error) {
+	if page == nil {
+		return nil, &ErrInvalidInput{Entity: "Page", Field: "page", Value: nil}
+	}
+	if userID == "" {
+		return nil, &ErrInvalidInput{Entity: "Draft", Field: "userID", Value: userID}
+	}
+	if spaceID == "" {
+		return nil, &ErrInvalidInput{Entity: "Draft", Field: "spaceID", Value: spaceID}
+	}
+	// spaceID is the space from the caller's request; the page must live in it. A mismatch means
+	// the caller built the page for the wrong space — reject rather than write under it.
+	if page.SpaceId != spaceID {
+		return nil, &ErrInvalidInput{Entity: "Page", Field: "SpaceId", Value: page.SpaceId}
+	}
+
+	tx, err := s.db.Beginx()
+	if err != nil {
+		return nil, errors.Wrap(err, "begin_transaction")
+	}
+	defer s.finalizeTransaction(tx, &err)
+
+	result, err := s.insertPageTx(tx, page, maxDepth, "publish depth")
+	if err != nil {
+		return nil, err
+	}
+
+	if err = s.deletePublishedDraftTx(tx, userID, page.Id, spaceID, draftUpdateAt); err != nil {
+		return nil, err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, errors.Wrap(err, "commit_transaction")
+	}
+
+	return result, nil
+}
+
+// PublishPageEditDraft atomically applies patch to the live page (pageID, spaceID) and deletes the
+// user's draft for it in a single transaction, via the shared applyPagePatchTx (the same row-lock,
+// EditAt CAS, and merge invariants UpdatePage applies). baseEditAt is the optimistic-lock baseline
+// the caller last saw; a mismatch returns ErrConflict and rolls the whole transaction back. force
+// skips the CAS, but the patch still merges into the current row, so fields it leaves untouched
+// keep any concurrent edit. userID records the editor.
+//
+// draftUpdateAt pins the draft delete to the version the caller read (see deletePublishedDraftTx
+// for how a version mismatch rolls the whole publish back).
+func (s *Store) PublishPageEditDraft(pageID, spaceID string, patch *model.PagePatch, baseEditAt int64, force bool, userID string, draftUpdateAt int64) (_ *model.Page, err error) {
+	if pageID == "" {
+		return nil, &ErrInvalidInput{Entity: "Page", Field: "Id", Value: pageID}
+	}
+	if spaceID == "" {
+		return nil, &ErrInvalidInput{Entity: "Page", Field: "SpaceId", Value: spaceID}
+	}
+	if userID == "" {
+		return nil, &ErrInvalidInput{Entity: "Draft", Field: "userID", Value: userID}
+	}
+	// Validate the patch before opening the transaction (matching UpdatePage), so an invalid or
+	// empty patch never locks the row or bumps UpdateAt/EditAt/LastModifiedBy.
+	if validErr := patch.IsValid(); validErr != nil {
+		return nil, &ErrInvalidInput{Entity: "Page", Field: "Patch", Value: validErr.Error(), Reason: validErr.Id}
+	}
+
+	tx, err := s.db.Beginx()
+	if err != nil {
+		return nil, errors.Wrap(err, "begin_transaction")
+	}
+	defer s.finalizeTransaction(tx, &err)
+
+	result, err := s.applyPagePatchTx(tx, pageID, spaceID, patch, baseEditAt, force, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = s.deletePublishedDraftTx(tx, userID, pageID, spaceID, draftUpdateAt); err != nil {
+		return nil, err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, errors.Wrap(err, "commit_transaction")
+	}
+
+	return result, nil
+}
+
+// deletePublishedDraftTx deletes the just-published draft atomically with the page write in the
+// caller's transaction, but only if it still holds the content the caller published. A concurrent
+// autosave bumps UpdateAt, so it matches no row and the publish is rolled back — the newer draft
+// survives and the client can publish it.
+//
+// UpdateAt is the only version token, so a bulk maintenance write that moves it without changing
+// content (a page delete reparenting a pending child draft, a move-to-space re-homing it) also
+// trips this CAS and surfaces a ReasonConcurrentAutosave conflict when no autosave occurred. The
+// failure is safe — clean rollback, no data loss, self-heals when the client republishes — so we
+// accept it rather than add a separate content-only version column for this narrow race.
+func (s *Store) deletePublishedDraftTx(tx *sqlx.Tx, userID, pageID, spaceID string, draftUpdateAt int64) error {
+	deleteDraftQ := s.getQueryBuilder().
+		Delete("DOCS_Draft").
+		Where(sq.Eq{"UserId": userID, "PageId": pageID, "SpaceId": spaceID, "UpdateAt": draftUpdateAt})
+	dRes, dErr := s.execBuilder(tx, deleteDraftQ)
+	if dErr != nil {
+		return errors.Wrap(dErr, "failed to delete draft on publish")
+	}
+	dRows, dRowsErr := dRes.RowsAffected()
+	if dRowsErr != nil {
+		return errors.Wrap(dRowsErr, "failed to read rows affected deleting draft on publish")
+	}
+	if dRows == 0 {
+		return &ErrConflict{Resource: "Draft page_id=" + pageID, Reason: ReasonConcurrentAutosave}
+	}
+	return nil
 }

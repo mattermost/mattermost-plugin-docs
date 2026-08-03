@@ -5,6 +5,7 @@ package store_test
 
 import (
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -120,7 +121,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		spaceB, err := s.CreateSpace(newSpace(chB))
 		require.NoError(t, err)
 
-		movedRoot, _, err := s.MovePageToSpace(root.Id, spaceA.Id, spaceB.Id, nil, root.UpdateAt, false, store.MaxPageHierarchyDepth)
+		movedRoot, _, err := s.MovePageToSpace(root.Id, spaceA.Id, spaceB.Id, mmmodel.NewId(), nil, root.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.NoError(t, err)
 		require.Equal(t, spaceB.Id, movedRoot.SpaceId, "returned page reflects the committed move")
 		require.Equal(t, chB, movedRoot.ChannelId)
@@ -158,34 +159,148 @@ func TestMovePageToSpace_Store(t *testing.T) {
 
 		// An in-progress edit draft on the page, and a pending new-page draft parented under it
 		// (its own PageId has no page row yet).
-		_, err = s.UpsertDraft(newDraft(user, spaceA.Id, page.Id, ""))
+		dEdit := newDraft(user, spaceA.Id, page.Id, "")
+		dEdit.BaseEditAt = page.EditAt
+		_, _, err = s.UpsertDraft(dEdit, nil, nil, nil)
 		require.NoError(t, err)
-		_, err = s.UpsertDraft(newDraft(user, spaceA.Id, mmmodel.NewId(), page.Id))
+		parentPageID := page.Id
+		_, _, err = s.UpsertDraft(newDraft(user, spaceA.Id, mmmodel.NewId(), parentPageID), &parentPageID, nil, nil)
 		require.NoError(t, err)
 
-		sourceBefore, err := s.GetDraftsForSpace(user, spaceA.Id)
+		sourceBefore, err := s.GetDraftsForSpace(user, spaceA.Id, 0, testDraftListLimit)
 		require.NoError(t, err)
 		require.Len(t, sourceBefore, 2, "both drafts are readable in the source space before the move")
 
-		_, _, err = s.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, err = s.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, user, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.NoError(t, err)
 
 		movedDraft, err := s.GetDraft(user, page.Id)
 		require.NoError(t, err)
 		require.Equal(t, spaceB.Id, movedDraft.SpaceId, "the edit draft follows the page and stays readable")
 
-		targetDrafts, err := s.GetDraftsForSpace(user, spaceB.Id)
+		targetDrafts, err := s.GetDraftsForSpace(user, spaceB.Id, 0, testDraftListLimit)
 		require.NoError(t, err)
 		require.Len(t, targetDrafts, 2, "both drafts now live in the target space")
 
-		sourceAfter, err := s.GetDraftsForSpace(user, spaceA.Id)
+		sourceAfter, err := s.GetDraftsForSpace(user, spaceA.Id, 0, testDraftListLimit)
 		require.NoError(t, err)
 		require.Empty(t, sourceAfter, "no draft remains stranded in the source space")
 	})
 
+	// A cross-space move re-homes every owner's draft for the moved pages, not just the mover's:
+	// a draft is unpublished work its owner never consented to lose, so the move preserves it and
+	// lets the space-membership read gate hide it from an owner who cannot reach the target space.
+	t.Run("re-homes another user's draft instead of deleting it", func(t *testing.T) {
+		s := openTestDB(t)
+		chA := mmmodel.NewId()
+		spaceA, err := s.CreateSpace(newSpace(chA))
+		require.NoError(t, err)
+		mover := mmmodel.NewId()
+		other := mmmodel.NewId()
+		page, err := s.CreatePage(newPage(spaceA.Id, chA, mover, ""), testDefaultMaxDepth)
+		require.NoError(t, err)
+
+		chB := mmmodel.NewId()
+		spaceB, err := s.CreateSpace(newSpace(chB))
+		require.NoError(t, err)
+
+		// A second user holds an in-progress edit draft on the same page.
+		otherDraft := newDraft(other, spaceA.Id, page.Id, "")
+		otherDraft.BaseEditAt = page.EditAt
+		_, _, err = s.UpsertDraft(otherDraft, nil, nil, nil)
+		require.NoError(t, err)
+
+		_, _, err = s.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, mover, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		require.NoError(t, err)
+
+		moved, err := s.GetDraft(other, page.Id)
+		require.NoError(t, err, "the other user's draft survives the move")
+		require.Equal(t, spaceB.Id, moved.SpaceId, "and is re-homed to the target space, not deleted")
+
+		targetDrafts, err := s.GetDraftsForSpace(other, spaceB.Id, 0, testDraftListLimit)
+		require.NoError(t, err)
+		require.Len(t, targetDrafts, 1, "the draft is readable in the target space")
+
+		sourceDrafts, err := s.GetDraftsForSpace(other, spaceA.Id, 0, testDraftListLimit)
+		require.NoError(t, err)
+		require.Empty(t, sourceDrafts, "nothing is stranded in the source space")
+	})
+
+	// The mover's re-homed drafts are quota-checked against the target space; other users' are not.
+	t.Run("rejects the move when re-homing exceeds the mover's target-space quota", func(t *testing.T) {
+		s := openTestDB(t)
+		chA := mmmodel.NewId()
+		spaceA, err := s.CreateSpace(newSpace(chA))
+		require.NoError(t, err)
+		mover := mmmodel.NewId()
+		page, err := s.CreatePage(newPage(spaceA.Id, chA, mover, ""), testDefaultMaxDepth)
+		require.NoError(t, err)
+		// One mover draft on the page to be moved.
+		editDraft := newDraft(mover, spaceA.Id, page.Id, "")
+		editDraft.BaseEditAt = page.EditAt
+		_, _, err = s.UpsertDraft(editDraft, nil, nil, nil)
+		require.NoError(t, err)
+
+		chB := mmmodel.NewId()
+		spaceB, err := s.CreateSpace(newSpace(chB))
+		require.NoError(t, err)
+		// Fill the mover's quota in the target space, so re-homing even one more trips the cap.
+		for range model.MaxDraftsPerUserPerSpace {
+			_, _, err = s.UpsertDraft(newDraft(mover, spaceB.Id, mmmodel.NewId(), ""), nil, nil, nil)
+			require.NoError(t, err)
+		}
+
+		_, _, err = s.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, mover, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		require.Error(t, err)
+		require.True(t, store.IsErrLimitExceeded(err), "expected ErrLimitExceeded, got %T: %v", err, err)
+
+		// The move rolled back: the page stays in the source space.
+		stillA, err := s.GetPage(page.Id, false)
+		require.NoError(t, err)
+		require.Equal(t, spaceA.Id, stillA.SpaceId, "a rejected move leaves the page in the source space")
+	})
+
+	// A cross-space move must not leak presence: rewriteSubtreeSpace resets a re-homed draft's
+	// LastActiveAt to 0, so an owner who was an active editor in the source space is not reported
+	// as one in the target space until they edit the draft there again.
+	t.Run("re-homed draft's presence does not leak into the target space", func(t *testing.T) {
+		s := openTestDB(t)
+		chA := mmmodel.NewId()
+		spaceA, err := s.CreateSpace(newSpace(chA))
+		require.NoError(t, err)
+		user := mmmodel.NewId()
+		page, err := s.CreatePage(newPage(spaceA.Id, chA, user, ""), testDefaultMaxDepth)
+		require.NoError(t, err)
+
+		chB := mmmodel.NewId()
+		spaceB, err := s.CreateSpace(newSpace(chB))
+		require.NoError(t, err)
+
+		editDraft := newDraft(user, spaceA.Id, page.Id, "")
+		editDraft.BaseEditAt = page.EditAt
+		_, _, err = s.UpsertDraft(editDraft, nil, nil, nil)
+		require.NoError(t, err)
+
+		windowStart := mmmodel.GetMillis() - 60*1000
+		editorsBefore, err := s.GetPageActiveEditors(page.Id, spaceA.Id, windowStart)
+		require.NoError(t, err)
+		require.Equal(t, []string{user}, editorsBefore, "the user is an active editor in the source space before the move")
+
+		_, _, err = s.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, user, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		require.NoError(t, err)
+
+		movedDraft, err := s.GetDraft(user, page.Id)
+		require.NoError(t, err)
+		require.Equal(t, spaceB.Id, movedDraft.SpaceId, "the draft is re-homed to the target space")
+
+		editorsAfter, err := s.GetPageActiveEditors(page.Id, spaceB.Id, windowStart)
+		require.NoError(t, err)
+		require.Empty(t, editorsAfter, "presence must not leak across the move: LastActiveAt was reset")
+	})
+
 	t.Run("empty pageID returns invalid-input", func(t *testing.T) {
 		s := openTestDB(t)
-		_, _, err := s.MovePageToSpace("", mmmodel.NewId(), mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err := s.MovePageToSpace("", mmmodel.NewId(), mmmodel.NewId(), mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		var inv *store.ErrInvalidInput
 		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
@@ -193,7 +308,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 
 	t.Run("empty sourceSpaceID returns invalid-input", func(t *testing.T) {
 		s := openTestDB(t)
-		_, _, err := s.MovePageToSpace(mmmodel.NewId(), "", mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err := s.MovePageToSpace(mmmodel.NewId(), "", mmmodel.NewId(), mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		var inv *store.ErrInvalidInput
 		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
@@ -201,7 +316,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 
 	t.Run("empty targetSpaceID returns invalid-input", func(t *testing.T) {
 		s := openTestDB(t)
-		_, _, err := s.MovePageToSpace(mmmodel.NewId(), mmmodel.NewId(), "", nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err := s.MovePageToSpace(mmmodel.NewId(), mmmodel.NewId(), "", mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		var inv *store.ErrInvalidInput
 		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
@@ -213,7 +328,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		spaceB, err := s.CreateSpace(newSpace(chB))
 		require.NoError(t, err)
 
-		_, _, err = s.MovePageToSpace(mmmodel.NewId(), mmmodel.NewId(), spaceB.Id, nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err = s.MovePageToSpace(mmmodel.NewId(), mmmodel.NewId(), spaceB.Id, mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
 		require.Error(t, err)
 		require.True(t, store.IsErrNotFound(err), "expected ErrNotFound, got %T: %v", err, err)
 	})
@@ -414,7 +529,7 @@ func TestPageMutations_ScopedToSpace(t *testing.T) {
 	})
 
 	t.Run("move-to-space with wrong source space is not found", func(t *testing.T) {
-		_, _, mErr := s.MovePageToSpace(page.Id, spaceB.Id, page.SpaceId, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, mErr := s.MovePageToSpace(page.Id, spaceB.Id, page.SpaceId, user, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
 		require.True(t, store.IsErrNotFound(mErr))
 	})
 
@@ -449,4 +564,83 @@ func TestPageMutations_ScopedToSpace(t *testing.T) {
 		require.Len(t, descendants, 1)
 		require.Equal(t, child.Id, descendants[0].Id)
 	})
+}
+
+// TestMovePageToSpace_ConcurrentAutosaveInvariants exercises the space-row FOR UPDATE
+// serialization that guards a cross-space move against a simultaneous autosave on a draft of the
+// moving page. MovePageToSpace and UpsertDraft both take lockLiveSpace on the source space, so the
+// two transactions serialize on the same row. The
+// test does not assert which one wins — it asserts that whichever ordering the lock produces, the
+// committed state is one of the legal outcomes: the page reaches the target space, and its draft is
+// re-homed there exactly once, never duplicated across spaces, orphaned in the source, or left
+// pointing at the wrong space. Both orderings satisfy these invariants, so the test never flakes; a
+// broken lock (a lost move, a torn or duplicated draft) would fail an invariant on some interleaving.
+func TestMovePageToSpace_ConcurrentAutosaveInvariants(t *testing.T) {
+	s := openTestDB(t)
+
+	// Repeat so scheduling exercises both commit orderings (move-first and autosave-first) across runs.
+	const iterations = 12
+	for i := range iterations {
+		chA := mmmodel.NewId()
+		spaceA, err := s.CreateSpace(newSpace(chA))
+		require.NoError(t, err)
+		chB := mmmodel.NewId()
+		spaceB, err := s.CreateSpace(newSpace(chB))
+		require.NoError(t, err)
+
+		user := mmmodel.NewId()
+		page, err := s.CreatePage(newPage(spaceA.Id, chA, user, ""), testDefaultMaxDepth)
+		require.NoError(t, err)
+
+		// An in-progress edit draft on the page, baselined at the page's current EditAt.
+		seed := newDraft(user, spaceA.Id, page.Id, "")
+		seed.BaseEditAt = page.EditAt
+		_, _, err = s.UpsertDraft(seed, nil, nil, nil)
+		require.NoError(t, err)
+
+		// Race the move against an autosave on the same draft, released together. Both calls open
+		// their own transactions and contend on the source-space row. Errors are ignored here: an
+		// autosave that loses to the move is rejected (its page no longer lives in the source space),
+		// which is a legal outcome — the invariants below hold either way. Assertions run only on the
+		// main goroutine, after both finish.
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _, _ = s.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, user, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			autosave := newDraft(user, spaceA.Id, page.Id, "")
+			autosave.BaseEditAt = page.EditAt
+			_, _, _ = s.UpsertDraft(autosave, nil, nil, nil)
+		}()
+		close(start)
+		wg.Wait()
+
+		// The move always commits: the autosave never touches the page row's UpdateAt, so the move's
+		// optimistic-lock CAS holds regardless of ordering.
+		gotPage, err := s.GetPage(page.Id, false)
+		require.NoError(t, err)
+		require.Equal(t, spaceB.Id, gotPage.SpaceId, "iter %d: the move must commit the page to the target space", i)
+
+		// The draft is re-homed to the target space exactly once — never duplicated and never orphaned
+		// in the source.
+		targetDrafts, err := s.GetDraftsForSpace(user, spaceB.Id, 0, testDraftListLimit)
+		require.NoError(t, err)
+		require.Len(t, targetDrafts, 1, "iter %d: the draft must be re-homed to the target exactly once", i)
+		require.Equal(t, page.Id, targetDrafts[0].PageId, "iter %d: the re-homed draft is the page's draft", i)
+
+		sourceDrafts, err := s.GetDraftsForSpace(user, spaceA.Id, 0, testDraftListLimit)
+		require.NoError(t, err)
+		require.Empty(t, sourceDrafts, "iter %d: no draft may be left behind in the source space", i)
+
+		// The re-homed draft's SpaceId matches its page's space, so it stays readable rather than orphaned.
+		moved, err := s.GetDraft(user, page.Id)
+		require.NoError(t, err)
+		require.Equal(t, spaceB.Id, moved.SpaceId, "iter %d: the draft SpaceId must match the moved page", i)
+	}
 }

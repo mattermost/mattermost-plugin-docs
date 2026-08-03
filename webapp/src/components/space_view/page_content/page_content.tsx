@@ -3,6 +3,7 @@
 
 import classNames from 'classnames';
 import {useUserProfile} from 'hooks/members';
+import {useDocsNavigation} from 'hooks/navigation';
 import React from 'react';
 import {useIntl} from 'react-intl';
 import {Avatar} from 'webapp_globals';
@@ -11,6 +12,7 @@ import EmoticonPlusOutlineIcon from '@mattermost/compass-icons/components/emotic
 import ImageOutlineIcon from '@mattermost/compass-icons/components/image-outline';
 
 import {Button} from 'components/form_controls/button';
+import PageEditor from 'components/page_editor/page_editor';
 
 import type {Page} from 'types/docs';
 
@@ -25,15 +27,27 @@ type Props = {
     page?: Page;
 };
 
-// The selected page's content column: a title area over the page body. The body
-// is a skeleton until the editor is mounted, which also covers the window where
-// the routed page hasn't arrived in the store yet (no title to show).
+// The selected page's content column: a title area over the page body, which is
+// the editor. Until the routed page arrives in the store there is no title and no
+// id to open the editor on, so that window stays a skeleton.
 const PageContent = ({page}: Props) => {
+    const {isDraft} = useDocsNavigation();
+
     return (
         <div className={styles.frame}>
             <article className={styles.article}>
-                {page && <PageTitleArea page={page}/>}
-                <PageContentPlaceholder/>
+                {page ? (
+                    <>
+                        <PageTitleArea page={page}/>
+                        <PageEditor
+                            spaceId={page.space_id}
+                            pageId={page.id}
+                            isDraft={isDraft}
+                        />
+                    </>
+                ) : (
+                    <PageContentPlaceholder/>
+                )}
             </article>
         </div>
     );

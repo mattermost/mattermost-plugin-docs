@@ -140,7 +140,7 @@ func (s *Service) MovePage(pageID, spaceID string, newParentID *string, newIndex
 // committed in between (surviving here via force) would make the earlier-read parent stale and
 // point clients at the wrong subtree to invalidate.
 func (s *Service) reparentWithinSpace(where, pageID, spaceID string, newParentID *string, newIndex *int64, expectedUpdateAt *int64, force bool) (*model.Page, *mmmodel.AppError) {
-	moved, priorParentID, didMove, storeErr := s.store.MovePage(pageID, spaceID, newParentID, newIndex, mmmodel.SafeDereference(expectedUpdateAt), force, MaxPageDepth)
+	moved, priorParentID, didMove, storeErr := s.store.MovePage(pageID, spaceID, newParentID, newIndex, mmmodel.SafeDereference(expectedUpdateAt), force, model.MaxPageDepth)
 	if storeErr != nil {
 		return nil, storeAppError(where, storeErr)
 	}
@@ -161,9 +161,9 @@ func (s *Service) reparentWithinSpace(where, pageID, spaceID string, newParentID
 // store.MovePageToSpace and surface through storeAppError's shared message keys.
 // A nil expectedUpdateAt without force is rejected: the mutation must supply a baseline.
 // sourceSpace and targetSpace are the caller's already-fetched records (from its membership
-// gates), so no re-read happens here. userID is the acting user, recorded in logs only — a
-// move does not change the page's LastModifiedBy. Per-page restrictions and redirects are not
-// handled yet.
+// gates), so no re-read happens here. userID is the acting user and must be a valid ID: the store
+// scopes the target-space draft quota to the drafts it owns. It does not change the page's
+// LastModifiedBy. Per-page restrictions and redirects are not handled yet.
 func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model.Space, parentPageID *string, expectedUpdateAt *int64, force bool, userID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -231,7 +231,7 @@ func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model
 
 	s.log.Debug("Moving page to space", "page_id", pageID, "source_space_id", sourceSpace.Id, "target_space_id", targetSpace.Id, "user_id", userID)
 
-	moved, priorParentID, storeErr := s.store.MovePageToSpace(pageID, sourceSpace.Id, targetSpace.Id, parentPageID, mmmodel.SafeDereference(expectedUpdateAt), force, MaxPageDepth)
+	moved, priorParentID, storeErr := s.store.MovePageToSpace(pageID, sourceSpace.Id, targetSpace.Id, userID, parentPageID, mmmodel.SafeDereference(expectedUpdateAt), force, model.MaxPageDepth)
 	if storeErr != nil {
 		return nil, storeAppError("MovePageToSpace", storeErr)
 	}

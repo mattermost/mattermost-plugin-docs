@@ -381,6 +381,8 @@ func (s *Store) withSpaceMembershipLock(spaceID string, acquireTimeout time.Dura
 	}()
 
 	key := "space_members:" + spaceID
+	// The pg_try_advisory_lock / pg_advisory_unlock calls here are bare function-call SELECTs that
+	// squirrel does not model, so they are issued raw.
 	// Poll with pg_try_advisory_lock rather than blocking in pg_advisory_lock: a blocking wait
 	// canceled by the deadline races against the server granting the lock in the same instant,
 	// which would strand a granted lock on a connection headed back to the pool. Each try

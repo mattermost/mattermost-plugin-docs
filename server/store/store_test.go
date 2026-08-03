@@ -40,6 +40,10 @@ func restorePageErr(s *store.Store, pageID, spaceID, userID string, maxDepth int
 // depth cap itself (see testutil.UncappedMaxDepth).
 const testDefaultMaxDepth = testutil.UncappedMaxDepth
 
+// testDraftListLimit is a limit large enough that a draft listing in these tests is never a
+// partial page, so a test can assert on the whole set.
+const testDraftListLimit = 100
+
 // openTestDB opens an isolated Postgres schema for this test run, runs migrations into it, and
 // returns the Store. The schema is dropped in t.Cleanup so parallel package runs never share
 // tables.
@@ -481,7 +485,7 @@ func TestFetchDescendantRows(t *testing.T) {
 }
 
 func TestDepthBoundaryExact(t *testing.T) {
-	const maxDepth = 10 // mirrors app.MaxPageDepth; the store CTE uses 50
+	const maxDepth = model.MaxPageDepth // the store CTE uses the larger MaxPageHierarchyDepth (50)
 
 	s := openTestDB(t)
 
@@ -1010,10 +1014,16 @@ func TestDeletePage(t *testing.T) {
 		require.NoError(t, err)
 
 		// Two users hold drafts for this page; both must be hard-deleted when the page is.
+		// UpsertDraft requires the EditAt baseline when the page row already exists.
 		otherUserID := mmmodel.NewId()
-		_, err = s.UpsertDraft(newDraft(userID, space.Id, created.Id, ""))
+		withBaseline := func(uid string) *model.Draft {
+			d := newDraft(uid, space.Id, created.Id, "")
+			d.BaseEditAt = created.EditAt
+			return d
+		}
+		_, _, err = s.UpsertDraft(withBaseline(userID), nil, nil, nil)
 		require.NoError(t, err)
-		_, err = s.UpsertDraft(newDraft(otherUserID, space.Id, created.Id, ""))
+		_, _, err = s.UpsertDraft(withBaseline(otherUserID), nil, nil, nil)
 		require.NoError(t, err)
 
 		require.NoError(t, deletePageErr(s, created.Id, created.SpaceId, userID))
@@ -1043,6 +1053,38 @@ func TestDeletePage(t *testing.T) {
 		gotChild, err := s.GetPage(child.Id, false)
 		require.NoError(t, err)
 		require.Equal(t, parent.ParentId, gotChild.ParentId, "child must be reparented to the deleted page's parent")
+	})
+
+	t.Run("reparents draft UpdateAt monotonically", func(t *testing.T) {
+		// reparentDraftsForPage uses GREATEST(now, UpdateAt+1) rather than a plain SET UpdateAt=now.
+		// Without GREATEST, a reparent whose `now` was captured before a concurrent autosave could
+		// move UpdateAt backward, letting a stale publish CAS-delete match a row it should not touch.
+		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+		require.NoError(t, err)
+
+		// New-page draft whose pending parent is the published page.
+		draftPageID := mmmodel.NewId()
+		parentID := parent.Id
+		_, _, err = s.UpsertDraft(newDraft(userID, space.Id, draftPageID, ""), &parentID, nil, nil)
+		require.NoError(t, err)
+
+		// Force the draft's stored UpdateAt ahead of wall clock, so a plain SET UpdateAt=now would move
+		// it backward. Only the GREATEST(now, UpdateAt+1) bump keeps it strictly advancing — a
+		// wall-clock-only reparent would fail the assertion below, which is what makes this a real guard.
+		future := mmmodel.GetMillis() + 60*60*1000
+		_, err = s.ExecBuilderForTest(s.QueryBuilderForTest().
+			Update("DOCS_Draft").
+			Set("UpdateAt", future).
+			Where(sq.Eq{"UserId": userID, "PageId": draftPageID}))
+		require.NoError(t, err)
+
+		// Deleting the parent triggers reparentDraftsForPage on this draft.
+		require.NoError(t, deletePageErr(s, parent.Id, space.Id, userID))
+
+		after, err := s.GetDraft(userID, draftPageID)
+		require.NoError(t, err)
+		require.Equal(t, future+1, after.UpdateAt,
+			"reparent must strictly advance UpdateAt to stored+1 so a stale publish CAS cannot match the reparented token")
 	})
 
 	t.Run("missing page returns not-found", func(t *testing.T) {
@@ -1595,515 +1637,6 @@ func TestUpdatePageRejectsNilAndEmptyPatch(t *testing.T) {
 	after, err := s.GetPage(created.Id, false)
 	require.NoError(t, err)
 	require.Equal(t, created.EditAt, after.EditAt, "a rejected patch must not bump EditAt")
-}
-
-// --- Draft tests ---
-
-func newDraft(userID, spaceID, pageID, parentID string) *model.Draft {
-	return &model.Draft{
-		UserId:   userID,
-		SpaceId:  spaceID,
-		PageId:   pageID,
-		ParentId: parentID,
-		Title:    "Test Draft",
-		Body:     `{"type":"doc","content":[]}`,
-	}
-}
-
-func TestDraft(t *testing.T) {
-	t.Run("upsert then get returns the stored draft", func(t *testing.T) {
-		s := openTestDB(t)
-		userID, pageID := mmmodel.NewId(), mmmodel.NewId()
-		space, spaceErr := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, spaceErr)
-		spaceID := space.Id
-
-		saved, err := s.UpsertDraft(newDraft(userID, spaceID, pageID, ""))
-		require.NoError(t, err)
-		require.NotZero(t, saved.CreateAt)
-
-		got, err := s.GetDraft(userID, pageID)
-		require.NoError(t, err)
-		require.Equal(t, pageID, got.PageId)
-		require.Equal(t, "Test Draft", got.Title)
-		require.Equal(t, spaceID, got.SpaceId)
-	})
-
-	t.Run("upsert replaces existing row and preserves CreateAt", func(t *testing.T) {
-		s := openTestDB(t)
-		userID, pageID := mmmodel.NewId(), mmmodel.NewId()
-		space, spaceErr := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, spaceErr)
-		spaceID := space.Id
-
-		first, err := s.UpsertDraft(newDraft(userID, spaceID, pageID, ""))
-		require.NoError(t, err)
-
-		second := newDraft(userID, spaceID, pageID, "")
-		second.CreateAt = first.CreateAt
-		second.Title = "Updated"
-		_, err = s.UpsertDraft(second)
-		require.NoError(t, err)
-
-		got, err := s.GetDraft(userID, pageID)
-		require.NoError(t, err)
-		require.Equal(t, "Updated", got.Title)
-		require.Equal(t, first.CreateAt, got.CreateAt, "CreateAt preserved across upsert")
-	})
-
-	t.Run("two users can draft the same page id", func(t *testing.T) {
-		s := openTestDB(t)
-		pageID := mmmodel.NewId()
-		space, spaceErr := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, spaceErr)
-		spaceID := space.Id
-		userA, userB := mmmodel.NewId(), mmmodel.NewId()
-
-		_, err := s.UpsertDraft(newDraft(userA, spaceID, pageID, ""))
-		require.NoError(t, err)
-		_, err = s.UpsertDraft(newDraft(userB, spaceID, pageID, ""))
-		require.NoError(t, err)
-
-		gotA, err := s.GetDraft(userA, pageID)
-		require.NoError(t, err)
-		require.Equal(t, userA, gotA.UserId)
-		gotB, err := s.GetDraft(userB, pageID)
-		require.NoError(t, err)
-		require.Equal(t, userB, gotB.UserId)
-	})
-
-	t.Run("delete makes draft not found", func(t *testing.T) {
-		s := openTestDB(t)
-		userID, pageID := mmmodel.NewId(), mmmodel.NewId()
-		space, spaceErr := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, spaceErr)
-		spaceID := space.Id
-
-		_, err := s.UpsertDraft(newDraft(userID, spaceID, pageID, ""))
-		require.NoError(t, err)
-
-		require.NoError(t, s.DeleteDraft(userID, pageID))
-
-		_, err = s.GetDraft(userID, pageID)
-		require.True(t, store.IsErrNotFound(err))
-	})
-
-	t.Run("delete nonexistent draft returns not-found", func(t *testing.T) {
-		s := openTestDB(t)
-		err := s.DeleteDraft(mmmodel.NewId(), mmmodel.NewId())
-		require.True(t, store.IsErrNotFound(err))
-	})
-
-	t.Run("get nonexistent draft returns not-found", func(t *testing.T) {
-		s := openTestDB(t)
-		_, err := s.GetDraft(mmmodel.NewId(), mmmodel.NewId())
-		require.True(t, store.IsErrNotFound(err))
-	})
-
-	t.Run("drafts for space lists new-page drafts most-recent-first", func(t *testing.T) {
-		s := openTestDB(t)
-		userID := mmmodel.NewId()
-		space, err := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, err)
-
-		_, err = s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), ""))
-		require.NoError(t, err)
-		second, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), ""))
-		require.NoError(t, err)
-
-		drafts, err := s.GetDraftsForSpace(userID, space.Id)
-		require.NoError(t, err)
-		require.Len(t, drafts, 2)
-		require.Equal(t, second.PageId, drafts[0].PageId, "most-recently-updated first")
-	})
-
-	t.Run("drafts for soft-deleted space are not listed but survive for restore", func(t *testing.T) {
-		s := openTestDB(t)
-		userID := mmmodel.NewId()
-		space, err := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, err)
-
-		draft, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), ""))
-		require.NoError(t, err)
-
-		require.NoError(t, s.DeleteSpace(space.Id))
-
-		// While the space is soft-deleted both reads are gated to nothing...
-		drafts, err := s.GetDraftsForSpace(userID, space.Id)
-		require.NoError(t, err)
-		require.Empty(t, drafts, "a soft-deleted space lists no drafts")
-
-		_, err = s.GetDraft(userID, draft.PageId)
-		require.True(t, store.IsErrNotFound(err), "a soft-deleted space gates GetDraft too")
-
-		// ...but the draft row is kept (not purged), so it reappears once the space is restored.
-		require.NoError(t, s.RestoreSpace(space.Id))
-		drafts, err = s.GetDraftsForSpace(userID, space.Id)
-		require.NoError(t, err)
-		require.Len(t, drafts, 1, "restoring the space brings its drafts back")
-
-		kept, err := s.GetDraft(userID, draft.PageId)
-		require.NoError(t, err, "draft is readable again after restore")
-		require.Equal(t, draft.PageId, kept.PageId)
-	})
-
-	t.Run("drafts for space excludes a draft whose page lives in another space", func(t *testing.T) {
-		s := openTestDB(t)
-		userID := mmmodel.NewId()
-
-		spaceA, err := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, err)
-		spaceB, err := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, err)
-
-		// A live page in space B. UpsertDraft refuses to attach a space-A draft to it (see the
-		// write-path test below), so insert the cross-space row directly to exercise the
-		// read-path guard against a corrupt or legacy row.
-		pageInB, err := s.CreatePage(newPage(spaceB.Id, spaceB.ChannelId, userID, ""), testDefaultMaxDepth)
-		require.NoError(t, err)
-		now := mmmodel.GetMillis()
-		_, rawErr := s.RawExecForTest(
-			"INSERT INTO DOCS_Draft (UserId, SpaceId, PageId, ParentId, Title, Body, FileIds, Props, CreateAt, UpdateAt) VALUES ($1, $2, $3, '', '', '', '[]', '{}', $4, $4)",
-			userID, spaceA.Id, pageInB.Id, now)
-		require.NoError(t, rawErr)
-
-		drafts, err := s.GetDraftsForSpace(userID, spaceA.Id)
-		require.NoError(t, err)
-		require.Empty(t, drafts, "a draft whose page belongs to another space must not be listed")
-	})
-
-	t.Run("upsert rejects a draft whose page lives in another space", func(t *testing.T) {
-		s := openTestDB(t)
-		userID := mmmodel.NewId()
-
-		spaceA, err := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, err)
-		spaceB, err := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, err)
-
-		pageInB, err := s.CreatePage(newPage(spaceB.Id, spaceB.ChannelId, userID, ""), testDefaultMaxDepth)
-		require.NoError(t, err)
-
-		_, err = s.UpsertDraft(newDraft(userID, spaceA.Id, pageInB.Id, ""))
-		require.True(t, store.IsErrInvalidInput(err), "expected invalid input for a cross-space page, got %v", err)
-	})
-
-	t.Run("drafts for space excludes drafts on soft-deleted pages", func(t *testing.T) {
-		s := openTestDB(t)
-		channelID := mmmodel.NewId()
-		space, err := s.CreateSpace(newSpace(channelID))
-		require.NoError(t, err)
-		userID := mmmodel.NewId()
-
-		// A draft editing a live page is included.
-		live, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
-		require.NoError(t, err)
-		_, err = s.UpsertDraft(newDraft(userID, space.Id, live.Id, ""))
-		require.NoError(t, err)
-
-		// A draft whose page is soft-deleted is excluded.
-		deleted, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
-		require.NoError(t, err)
-		_, err = s.UpsertDraft(newDraft(userID, space.Id, deleted.Id, ""))
-		require.NoError(t, err)
-		require.NoError(t, deletePageErr(s, deleted.Id, deleted.SpaceId, userID))
-
-		drafts, err := s.GetDraftsForSpace(userID, space.Id)
-		require.NoError(t, err)
-		require.Len(t, drafts, 1)
-		require.Equal(t, live.Id, drafts[0].PageId)
-	})
-
-	t.Run("drafts for space excludes drafts on version snapshots", func(t *testing.T) {
-		s := openTestDB(t)
-		channelID := mmmodel.NewId()
-		space, err := s.CreateSpace(newSpace(channelID))
-		require.NoError(t, err)
-		userID := mmmodel.NewId()
-
-		// Draft a live page, then turn that page into a version snapshot (OriginalId set,
-		// soft-deleted) directly. UpsertDraft refuses to attach to a snapshot, so the draft is
-		// written while the page is still live; the read path must then exclude it: the LEFT
-		// JOIN matches the snapshot row, OriginalId != '' fails the live-page predicate, and
-		// p.Id IS NULL is false.
-		snap, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
-		require.NoError(t, err)
-		_, err = s.UpsertDraft(newDraft(userID, space.Id, snap.Id, ""))
-		require.NoError(t, err)
-		_, rawErr := s.ExecBuilderForTest(s.QueryBuilderForTest().
-			Update("DOCS_Page").
-			Set("OriginalId", mmmodel.NewId()).
-			Set("DeleteAt", mmmodel.GetMillis()).
-			Where(sq.Eq{"Id": snap.Id}))
-		require.NoError(t, rawErr)
-
-		drafts, err := s.GetDraftsForSpace(userID, space.Id)
-		require.NoError(t, err)
-		require.Empty(t, drafts, "a draft on a version snapshot must be excluded")
-	})
-
-	t.Run("upsert rejects a draft for a soft-deleted page", func(t *testing.T) {
-		s := openTestDB(t)
-		channelID := mmmodel.NewId()
-		space, err := s.CreateSpace(newSpace(channelID))
-		require.NoError(t, err)
-		userID := mmmodel.NewId()
-
-		page, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
-		require.NoError(t, err)
-		require.NoError(t, deletePageErr(s, page.Id, page.SpaceId, userID))
-
-		// An autosave landing after the page was deleted must not recreate a draft for it.
-		_, err = s.UpsertDraft(newDraft(userID, space.Id, page.Id, ""))
-		require.True(t, store.IsErrInvalidInput(err), "expected invalid input for a deleted page, got %v", err)
-	})
-
-	t.Run("upsert rejects a draft in a soft-deleted space", func(t *testing.T) {
-		s := openTestDB(t)
-		space, err := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, err)
-		require.NoError(t, s.DeleteSpace(space.Id))
-
-		_, err = s.UpsertDraft(newDraft(mmmodel.NewId(), space.Id, mmmodel.NewId(), ""))
-		require.True(t, store.IsErrNotFound(err), "expected not-found for a deleted space, got %v", err)
-	})
-
-	t.Run("upsert accepts a new-page draft under a live parent", func(t *testing.T) {
-		s := openTestDB(t)
-		channelID := mmmodel.NewId()
-		space, err := s.CreateSpace(newSpace(channelID))
-		require.NoError(t, err)
-		userID := mmmodel.NewId()
-
-		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
-		require.NoError(t, err)
-
-		saved, err := s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), parent.Id))
-		require.NoError(t, err)
-		require.Equal(t, parent.Id, saved.ParentId)
-	})
-
-	t.Run("upsert rejects a draft whose parent does not exist", func(t *testing.T) {
-		s := openTestDB(t)
-		space, err := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, err)
-
-		_, err = s.UpsertDraft(newDraft(mmmodel.NewId(), space.Id, mmmodel.NewId(), mmmodel.NewId()))
-		require.True(t, store.IsErrInvalidInput(err), "expected invalid input for a missing parent, got %v", err)
-	})
-
-	t.Run("upsert rejects a draft whose parent is soft-deleted", func(t *testing.T) {
-		s := openTestDB(t)
-		channelID := mmmodel.NewId()
-		space, err := s.CreateSpace(newSpace(channelID))
-		require.NoError(t, err)
-		userID := mmmodel.NewId()
-
-		parent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
-		require.NoError(t, err)
-		require.NoError(t, deletePageErr(s, parent.Id, parent.SpaceId, userID))
-
-		_, err = s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), parent.Id))
-		require.True(t, store.IsErrInvalidInput(err), "expected invalid input for a deleted parent, got %v", err)
-	})
-
-	t.Run("upsert rejects a draft whose parent lives in another space", func(t *testing.T) {
-		s := openTestDB(t)
-		userID := mmmodel.NewId()
-
-		spaceA, err := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, err)
-		spaceB, err := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, err)
-
-		parentInB, err := s.CreatePage(newPage(spaceB.Id, spaceB.ChannelId, userID, ""), testDefaultMaxDepth)
-		require.NoError(t, err)
-
-		_, err = s.UpsertDraft(newDraft(userID, spaceA.Id, mmmodel.NewId(), parentInB.Id))
-		require.True(t, store.IsErrInvalidInput(err), "expected invalid input for a cross-space parent, got %v", err)
-	})
-
-	t.Run("drafts for space is scoped to the user", func(t *testing.T) {
-		s := openTestDB(t)
-		space, err := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, err)
-		userA, userB := mmmodel.NewId(), mmmodel.NewId()
-
-		_, err = s.UpsertDraft(newDraft(userA, space.Id, mmmodel.NewId(), ""))
-		require.NoError(t, err)
-		_, err = s.UpsertDraft(newDraft(userB, space.Id, mmmodel.NewId(), ""))
-		require.NoError(t, err)
-
-		drafts, err := s.GetDraftsForSpace(userA, space.Id)
-		require.NoError(t, err)
-		require.Len(t, drafts, 1)
-		require.Equal(t, userA, drafts[0].UserId)
-	})
-
-	t.Run("body, file_ids and props round-trip through the database", func(t *testing.T) {
-		s := openTestDB(t)
-		userID, pageID := mmmodel.NewId(), mmmodel.NewId()
-		space, spaceErr := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, spaceErr)
-		spaceID := space.Id
-
-		d := newDraft(userID, spaceID, pageID, "")
-		d.Body = `{"type":"doc","content":[{"type":"paragraph"}]}`
-		d.FileIds = mmmodel.StringArray{mmmodel.NewId(), mmmodel.NewId()}
-		d.Props = mmmodel.StringInterface{"k": float64(1700000000123)}
-		_, err := s.UpsertDraft(d)
-		require.NoError(t, err)
-
-		got, err := s.GetDraft(userID, pageID)
-		require.NoError(t, err)
-		require.Equal(t, d.Body, got.Body)
-		require.Equal(t, d.FileIds, got.FileIds, "StringArray must round-trip through the TEXT column")
-		require.Equal(t, float64(1700000000123), got.Props["k"], "Props must round-trip through the jsonb column")
-	})
-
-	t.Run("empty props default to an empty map on read", func(t *testing.T) {
-		s := openTestDB(t)
-		userID, pageID := mmmodel.NewId(), mmmodel.NewId()
-		space, spaceErr := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, spaceErr)
-		spaceID := space.Id
-
-		_, err := s.UpsertDraft(newDraft(userID, spaceID, pageID, ""))
-		require.NoError(t, err)
-
-		got, err := s.GetDraft(userID, pageID)
-		require.NoError(t, err)
-		require.NotNil(t, got.Props)
-		require.Empty(t, got.Props)
-	})
-
-	t.Run("upsert overwrites parent id", func(t *testing.T) {
-		s := openTestDB(t)
-		userID, pageID := mmmodel.NewId(), mmmodel.NewId()
-		space, spaceErr := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, spaceErr)
-		spaceID := space.Id
-
-		// Parents must be live pages in the space (UpsertDraft validates ParentId liveness).
-		firstPage, err := s.CreatePage(newPage(spaceID, space.ChannelId, userID, ""), testDefaultMaxDepth)
-		require.NoError(t, err)
-		secondPage, err := s.CreatePage(newPage(spaceID, space.ChannelId, userID, ""), testDefaultMaxDepth)
-		require.NoError(t, err)
-		firstParent, secondParent := firstPage.Id, secondPage.Id
-
-		_, err = s.UpsertDraft(newDraft(userID, spaceID, pageID, firstParent))
-		require.NoError(t, err)
-		got, err := s.GetDraft(userID, pageID)
-		require.NoError(t, err)
-		require.Equal(t, firstParent, got.ParentId)
-
-		_, err = s.UpsertDraft(newDraft(userID, spaceID, pageID, secondParent))
-		require.NoError(t, err)
-		got, err = s.GetDraft(userID, pageID)
-		require.NoError(t, err)
-		require.Equal(t, secondParent, got.ParentId, "second upsert must overwrite ParentId")
-	})
-
-	t.Run("title-only empty body round-trips", func(t *testing.T) {
-		s := openTestDB(t)
-		userID, pageID := mmmodel.NewId(), mmmodel.NewId()
-		space, spaceErr := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, spaceErr)
-		spaceID := space.Id
-
-		d := newDraft(userID, spaceID, pageID, "")
-		d.Title = "Title Only"
-		d.Body = ""
-		_, err := s.UpsertDraft(d)
-		require.NoError(t, err)
-
-		got, err := s.GetDraft(userID, pageID)
-		require.NoError(t, err)
-		require.Equal(t, "Title Only", got.Title)
-		require.Equal(t, "", got.Body, "empty body must round-trip as empty string")
-	})
-
-	t.Run("drafts for space excludes other spaces for the same user", func(t *testing.T) {
-		s := openTestDB(t)
-		userID := mmmodel.NewId()
-		spaceA, err := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, err)
-		spaceB, err := s.CreateSpace(newSpace(mmmodel.NewId()))
-		require.NoError(t, err)
-
-		_, err = s.UpsertDraft(newDraft(userID, spaceA.Id, mmmodel.NewId(), ""))
-		require.NoError(t, err)
-		_, err = s.UpsertDraft(newDraft(userID, spaceA.Id, mmmodel.NewId(), ""))
-		require.NoError(t, err)
-		_, err = s.UpsertDraft(newDraft(userID, spaceB.Id, mmmodel.NewId(), ""))
-		require.NoError(t, err)
-
-		drafts, err := s.GetDraftsForSpace(userID, spaceA.Id)
-		require.NoError(t, err)
-		require.Len(t, drafts, 2)
-		for _, d := range drafts {
-			require.Equal(t, spaceA.Id, d.SpaceId)
-		}
-	})
-
-	t.Run("drafts for space returns empty when user has none", func(t *testing.T) {
-		s := openTestDB(t)
-		drafts, err := s.GetDraftsForSpace(mmmodel.NewId(), mmmodel.NewId())
-		require.NoError(t, err)
-		require.Empty(t, drafts)
-	})
-
-	t.Run("store rejects invalid ids", func(t *testing.T) {
-		s := openTestDB(t)
-		valid := mmmodel.NewId()
-
-		// Upsert runs the full model IsValid, so a malformed (non-empty) id is rejected as
-		// invalid input.
-		_, err := s.UpsertDraft(newDraft("bad", valid, valid, ""))
-		require.True(t, store.IsErrInvalidInput(err), "upsert with bad user id, got %v", err)
-
-		// Get/Delete guard only against empty ids (matching the page/space store convention);
-		// a non-empty but unknown id falls through to the query and returns not-found.
-		_, err = s.GetDraft("", valid)
-		require.True(t, store.IsErrInvalidInput(err), "get with empty user id, got %v", err)
-
-		err = s.DeleteDraft(valid, "")
-		require.True(t, store.IsErrInvalidInput(err), "delete with empty page id, got %v", err)
-	})
-}
-
-// TestDeletePageReparentsPendingDrafts verifies that deleting a page reparents the new-page
-// drafts pending under it to the deleted page's parent — mirroring live-child promotion — so a
-// draft never dangles under a soft-deleted parent and stays publishable.
-func TestDeletePageReparentsPendingDrafts(t *testing.T) {
-	s := openTestDB(t)
-
-	channelID := mmmodel.NewId()
-	userID := mmmodel.NewId()
-	space, err := s.CreateSpace(newSpace(channelID))
-	require.NoError(t, err)
-
-	grandparent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
-	require.NoError(t, err)
-	parent, err := s.CreatePage(newPage(space.Id, channelID, userID, grandparent.Id), testDefaultMaxDepth)
-	require.NoError(t, err)
-
-	// A new-page draft (its own page not yet created) pending as a child of parent.
-	newPageID := mmmodel.NewId()
-	_, err = s.UpsertDraft(newDraft(userID, space.Id, newPageID, parent.Id))
-	require.NoError(t, err)
-
-	require.NoError(t, deletePageErr(s, parent.Id, parent.SpaceId, userID))
-
-	// The draft survives and is reparented to the deleted page's parent (the grandparent),
-	// which the invariant guarantees is live.
-	got, err := s.GetDraft(userID, newPageID)
-	require.NoError(t, err, "pending draft must survive its parent's deletion")
-	require.Equal(t, grandparent.Id, got.ParentId, "draft must be reparented to the deleted page's parent")
-
-	// The reparented draft is publishable: CreatePage with its parent now succeeds.
-	_, err = s.CreatePage(newPage(space.Id, channelID, userID, got.ParentId), testDefaultMaxDepth)
-	require.NoError(t, err, "draft's reparented parent must be a valid live parent")
 }
 
 // TestCreatePageSubtreeMissingParent verifies CreatePageSubtree rejects a root whose ParentId does

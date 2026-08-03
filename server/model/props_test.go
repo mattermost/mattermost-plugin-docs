@@ -13,7 +13,8 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-// validatePropsSize is unexported; exercise it through Page.IsValid which delegates to it.
+// TestValidatePropsSize exercises model.ValidatePropsSize indirectly through Page.IsValid,
+// which delegates to it.
 func TestValidatePropsSize(t *testing.T) {
 	t.Run("nil props passes", func(t *testing.T) {
 		p := validPage()
@@ -38,6 +39,24 @@ func TestValidatePropsSize(t *testing.T) {
 		// Build a value larger than PagePropsMaxBytes.
 		p.Props = mmmodel.StringInterface{"key": strings.Repeat("x", model.PagePropsMaxBytes+1)}
 		err := p.IsValid()
+		require.NotNil(t, err)
+		require.Equal(t, "model.shared.props_too_large.app_error", err.Id)
+	})
+}
+
+func TestValidatePropsSizeDirect(t *testing.T) {
+	t.Run("nil props passes", func(t *testing.T) {
+		require.Nil(t, model.ValidatePropsSize("where", "details", nil, model.PagePropsMaxBytes))
+	})
+
+	t.Run("props within limit passes", func(t *testing.T) {
+		props := mmmodel.StringInterface{"key": "value"}
+		require.Nil(t, model.ValidatePropsSize("where", "details", props, model.PagePropsMaxBytes))
+	})
+
+	t.Run("props over limit fails", func(t *testing.T) {
+		props := mmmodel.StringInterface{"key": strings.Repeat("x", model.PagePropsMaxBytes+1)}
+		err := model.ValidatePropsSize("where", "details", props, model.PagePropsMaxBytes)
 		require.NotNil(t, err)
 		require.Equal(t, "model.shared.props_too_large.app_error", err.Id)
 	})

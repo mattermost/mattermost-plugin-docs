@@ -9,13 +9,7 @@ const PageMaximum = 1 << 20
 
 // ClampPage normalizes a requested page index into [0, PageMaximum].
 func ClampPage(page int) int {
-	if page < 0 {
-		return 0
-	}
-	if page > PageMaximum {
-		return PageMaximum
-	}
-	return page
+	return min(max(page, 0), PageMaximum)
 }
 
 // PerPageDefault is the page size used when perPage is not a positive value, matching

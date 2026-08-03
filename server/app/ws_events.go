@@ -34,6 +34,11 @@ const (
 	wsEventPageMoved        = "page_moved"
 	wsEventPageDuplicated   = "page_duplicated"
 	wsEventPageMovedToSpace = "page_moved_to_space"
+	// Unlike the page_* events above — refetch signals carrying only the ids the client needs to
+	// refetch — wsEventPagePresenceUpdated carries the full presence snapshot inline
+	// ({page_id, space_id, active_editors, snapshot_at, active_timeout_ms}), so clients need no
+	// follow-up fetch.
+	wsEventPagePresenceUpdated = "page_presence_updated"
 
 	wsEventSpaceCreated       = "space_created"
 	wsEventSpaceUpdated       = "space_updated"
@@ -50,12 +55,12 @@ func (s *Service) publishToChannels(event string, payload map[string]any, channe
 	if s.client == nil {
 		return
 	}
-	seen := make(map[string]bool, len(channelIDs))
+	seen := make(map[string]struct{}, len(channelIDs))
 	for _, chID := range channelIDs {
-		if chID == "" || seen[chID] {
+		if _, ok := seen[chID]; chID == "" || ok {
 			continue
 		}
-		seen[chID] = true
+		seen[chID] = struct{}{}
 		s.client.Frontend.PublishWebSocketEvent(event, payload, &mmmodel.WebsocketBroadcast{ChannelId: chID})
 	}
 }

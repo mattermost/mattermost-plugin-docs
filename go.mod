@@ -2,19 +2,19 @@ module github.com/mattermost/mattermost-plugin-docs
 
 go 1.26.4
 
-// Dev-only pins: server/public is pinned to the head of the paired core branch that adds the
-// Space backing-channel type — ChannelTypeSpace ("S"), pluginapi Channel.GetChannelOfType, and
-// pluginapi Channel.Restore are not yet in a released server/public.
+// Dev-only pins: server/public is pinned to the master commit that merged the Space
+// backing-channel type — ChannelTypeSpace ("S"), pluginapi Channel.GetChannelOfType, and
+// pluginapi Channel.Restore — which is not yet in a released server/public.
 // server/v8 is the test harness only (storetest helpers); it does not contribute any runtime
 // symbols and is pinned independently to an older commit. The two modules live in the same
 // monorepo but are versioned independently, so their pseudo-version timestamps will always
 // differ; what matters is that server/public has the APIs this plugin calls.
-// Bump both to a release tag once the core space-channel changes merge and ship.
+// Bump both to a release tag once the core space-channel changes ship.
 require (
 	github.com/gorilla/mux v1.8.1
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.12.3
-	github.com/mattermost/mattermost/server/public v0.4.4-0.20260713131524-80d5b7966dc5
+	github.com/mattermost/mattermost/server/public v0.4.4-0.20260716203457-5f7f967a7dbf
 	github.com/mattermost/mattermost/server/v8 v8.0.0-20260623200446-ba033eae4704
 	github.com/mattermost/morph v1.1.0
 	github.com/mattermost/squirrel v0.5.0

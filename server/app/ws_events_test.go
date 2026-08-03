@@ -8,6 +8,7 @@
 package app_test
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -171,6 +172,300 @@ func TestServiceMovePageToSpace_NoOpPublishesNothing(t *testing.T) {
 	require.Equal(t, page.Id, same.Id)
 
 	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "page_moved_to_space", mock.Anything, mock.Anything)
+}
+
+// TestServiceUpdatePageDraft_PublishesPresenceEvent pins page_presence_updated: the presence-snapshot
+// payload ({page_id, space_id, active_editors, snapshot_at}) — unlike the other page_* events, which carry
+// only {page_id, space_id} as a change signal — broadcast to the space's backing channel. An autosave
+// is the heartbeat, so the saving user appears in active_editors.
+func TestServiceUpdatePageDraft_PublishesPresenceEvent(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+
+	// Use a published page so UpdatePageDraft takes the channel-broadcast path.
+	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+
+	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
+		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc",
+		BaseEditAt: page.EditAt,
+	}, nil, nil, nil, channelID)
+	require.Nil(t, appErr)
+
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_presence_updated",
+		mock.MatchedBy(func(payload map[string]any) bool {
+			editors, ok := payload["active_editors"].([]string)
+			return ok &&
+				payload["page_id"] == page.Id &&
+				payload["space_id"] == space.Id &&
+				payload["snapshot_at"] != nil &&
+				payload["active_timeout_ms"] == app.ActiveEditorTimeoutMs &&
+				slices.Contains(editors, userID)
+		}),
+		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
+}
+
+// TestServiceUpdatePageDraft_PresenceBroadcastThrottled pins the autosave presence rate limit
+// end-to-end: repeated autosaves for the same (page, user) inside presenceBroadcastMinIntervalMs
+// broadcast page_presence_updated exactly once — the first autosave claims the throttle slot and
+// the rest are suppressed. (Discard and publish bypass the throttle; they are pinned elsewhere.)
+func TestServiceUpdatePageDraft_PresenceBroadcastThrottled(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+
+	presenceBroadcasts := func() int {
+		n := 0
+		for _, c := range mockAPI.Calls {
+			if c.Method == "PublishWebSocketEvent" && len(c.Arguments) > 0 && c.Arguments[0] == "page_presence_updated" {
+				n++
+			}
+		}
+		return n
+	}
+
+	// publishNewPage ends the draft session (broadcasting presence and clearing the throttle), so
+	// count deltas from here rather than absolute totals.
+	before := presenceBroadcasts()
+	for range 3 {
+		_, appErr := h.svc.UpdatePageDraft(&model.Draft{
+			UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc",
+			BaseEditAt: page.EditAt,
+		}, nil, nil, nil, channelID)
+		require.Nil(t, appErr)
+	}
+	require.Equal(t, before+1, presenceBroadcasts(),
+		"autosaves within the throttle window must broadcast presence exactly once")
+}
+
+// TestServicePublishPageDraft_PublishesCreatedEvent pins that publishing a brand-new page's draft
+// reuses page_created (not a draft-specific event): {page_id, space_id, parent_id} payload,
+// broadcast to the new page's backing channel. Also pins the accompanying presence-clear broadcast.
+func TestServicePublishPageDraft_PublishesCreatedEvent(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+
+	page := publishNewPage(t, h, space.Id, userID, "Doc", "hello")
+
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_created",
+		map[string]any{"page_id": page.Id, "space_id": space.Id, "parent_id": page.ParentId},
+		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
+
+	// The store publish transaction deletes the draft itself, bypassing DeletePageDraft, so PublishPageDraft broadcasts presence directly.
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_presence_updated",
+		mock.MatchedBy(func(payload map[string]any) bool {
+			editors, ok := payload["active_editors"].([]string)
+			return ok &&
+				payload["page_id"] == page.Id &&
+				payload["space_id"] == space.Id &&
+				payload["snapshot_at"] != nil &&
+				len(editors) == 0
+		}),
+		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
+}
+
+// TestServicePublishPageDraft_PublishesUpdatedEvent pins that publishing an edit to an existing page
+// reuses page_updated: {page_id, space_id} payload, broadcast to the page's backing channel.
+// Also pins the accompanying presence-clear broadcast.
+func TestServicePublishPageDraft_PublishesUpdatedEvent(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+	page := publishNewPage(t, h, space.Id, userID, "Doc", "original")
+
+	// Start an edit session against the live page's baseline, then publish it.
+	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
+		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc", Body: docWith("edited"),
+		BaseEditAt: page.EditAt,
+	}, nil, nil, nil, "")
+	require.Nil(t, appErr)
+
+	republished, wasCreated, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
+	require.Nil(t, appErr)
+	require.False(t, wasCreated, "publishing an edit to an existing page must report wasCreated=false")
+
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_updated",
+		map[string]any{"page_id": republished.Id, "space_id": space.Id},
+		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
+
+	// The store publish transaction deletes the draft itself, bypassing DeletePageDraft, so PublishPageDraft broadcasts presence directly.
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_presence_updated",
+		mock.MatchedBy(func(payload map[string]any) bool {
+			editors, ok := payload["active_editors"].([]string)
+			return ok &&
+				payload["page_id"] == republished.Id &&
+				payload["space_id"] == space.Id &&
+				payload["snapshot_at"] != nil &&
+				payload["active_timeout_ms"] == app.ActiveEditorTimeoutMs &&
+				len(editors) == 0
+		}),
+		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
+}
+
+// TestServiceDeletePageDraft_PublishesPresenceEvent pins that discarding a draft broadcasts
+// page_presence_updated so the active-editors indicator drops the user; after the discard the
+// snapshot is the empty set ([] not null).
+func TestServiceDeletePageDraft_PublishesPresenceEvent(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+
+	// Use a published page so the edit-draft delete takes the channel-broadcast path.
+	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+
+	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
+		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc",
+		BaseEditAt: page.EditAt,
+	}, nil, nil, nil, channelID)
+	require.Nil(t, appErr)
+
+	require.Nil(t, h.svc.DeletePageDraft(userID, space.Id, page.Id, channelID))
+
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_presence_updated",
+		mock.MatchedBy(func(payload map[string]any) bool {
+			editors, ok := payload["active_editors"].([]string)
+			return ok &&
+				payload["page_id"] == page.Id &&
+				payload["space_id"] == space.Id &&
+				payload["snapshot_at"] != nil &&
+				payload["active_timeout_ms"] == app.ActiveEditorTimeoutMs &&
+				len(editors) == 0
+		}),
+		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
+}
+
+// TestServiceUpdatePageDraft_NewPageDraftPublishesToUserOnly pins that a draft for a not-yet-published
+// page broadcasts presence only to the author — never to the space channel, which would leak the
+// reserved page ID and author identity before the page exists.
+func TestServiceUpdatePageDraft_NewPageDraftPublishesToUserOnly(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+
+	// Create a new-page draft — no published page row exists yet.
+	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Unpublished", "")
+	require.Nil(t, appErr)
+
+	// Reset call log so only the following UpdatePageDraft broadcast is observed.
+	mockAPI.Calls = nil
+
+	_, appErr = h.svc.UpdatePageDraft(&model.Draft{
+		UserId: userID, SpaceId: space.Id, PageId: draft.PageId, Title: "Unpublished",
+	}, nil, nil, nil, channelID)
+	require.Nil(t, appErr)
+
+	// The broadcast must be user-scoped: only the author learns about their own unreleased page.
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_presence_updated",
+		mock.MatchedBy(func(payload map[string]any) bool {
+			return payload["page_id"] == draft.PageId && payload["space_id"] == space.Id &&
+				payload["active_timeout_ms"] == app.ActiveEditorTimeoutMs
+		}),
+		&mmmodel.WebsocketBroadcast{UserId: userID})
+
+	// Must not broadcast to the channel, which would expose the reserved page ID.
+	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "page_presence_updated",
+		mock.Anything,
+		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
+}
+
+// TestServiceDeletePageDraft_NewPageDraftClearsSelfPresenceOnly pins that discarding a draft for a
+// not-yet-published page clears presence the same way the session was announced: an empty snapshot
+// sent to the author only, never to the space channel (the session was never visible there).
+func TestServiceDeletePageDraft_NewPageDraftClearsSelfPresenceOnly(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+
+	// Create a new-page draft — no published page row exists yet.
+	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Unpublished", "")
+	require.Nil(t, appErr)
+
+	// Reset call log so only the discard's broadcast is observed.
+	mockAPI.Calls = nil
+
+	require.Nil(t, h.svc.DeletePageDraft(userID, space.Id, draft.PageId, channelID))
+
+	// The clear must be user-scoped and carry the empty editor set ([] not null).
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_presence_updated",
+		mock.MatchedBy(func(payload map[string]any) bool {
+			editors, ok := payload["active_editors"].([]string)
+			return ok &&
+				payload["page_id"] == draft.PageId &&
+				payload["space_id"] == space.Id &&
+				payload["snapshot_at"] != nil &&
+				payload["active_timeout_ms"] == app.ActiveEditorTimeoutMs &&
+				len(editors) == 0
+		}),
+		&mmmodel.WebsocketBroadcast{UserId: userID})
+
+	// Must not broadcast to the channel: the draft was never visible there.
+	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "page_presence_updated",
+		mock.Anything,
+		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
+}
+
+// TestServiceUpdatePageDraft_PresenceRateLimitSuppressesSecondBroadcast verifies that a second
+// autosave within presenceBroadcastMinIntervalMs does not trigger a second channel broadcast.
+// The rate-limit prevents flooding the channel on every keystroke.
+func TestServiceUpdatePageDraft_PresenceRateLimitSuppressesSecondBroadcast(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+
+	// Reset call log so only the two autosaves below are counted.
+	mockAPI.Calls = nil
+
+	autosave := func() {
+		_, appErr := h.svc.UpdatePageDraft(&model.Draft{
+			UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc",
+			BaseEditAt: page.EditAt,
+		}, nil, nil, nil, channelID)
+		require.Nil(t, appErr)
+	}
+	autosave() // first: should broadcast
+	autosave() // second: rate-limited, must not broadcast again
+
+	// Count channel-scoped page_presence_updated calls.
+	n := 0
+	for _, call := range mockAPI.Calls {
+		if call.Method != "PublishWebSocketEvent" || len(call.Arguments) < 3 {
+			continue
+		}
+		if call.Arguments[0] != "page_presence_updated" {
+			continue
+		}
+		if bc, ok := call.Arguments[2].(*mmmodel.WebsocketBroadcast); ok && bc.ChannelId != "" {
+			n++
+		}
+	}
+	require.Equal(t, 1, n, "second autosave within rate-limit window must not broadcast presence to channel again")
 }
 
 // TestServiceCreateSpace_PublishesCreatedEvent pins space_created: space-id payload, broadcast

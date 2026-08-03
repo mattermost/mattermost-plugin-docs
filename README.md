@@ -31,4 +31,5 @@ make check-style
 
 ## Documentation
 
+
 See the [Mattermost plugin development guide](https://developers.mattermost.com/integrate/plugins/) for plugin structure, server/webapp hooks, and the release process.
