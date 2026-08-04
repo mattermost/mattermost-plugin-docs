@@ -4,7 +4,7 @@
 import {useUserProfile} from 'hooks/members';
 import {useDocsNavigation} from 'hooks/navigation';
 import {useAppDispatch} from 'hooks/redux';
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import {useIntl} from 'react-intl';
 import {Avatar} from 'webapp_globals';
 
@@ -70,6 +70,13 @@ const PageTitleArea = ({page, editing}: {page: Page; editing: boolean}) => {
     const [title, setTitle] = useState(page.title);
     const dispatch = useAppDispatch();
 
+    // Enter and blur are independent triggers (Enter doesn't blur the field), so
+    // both can fire commit before a prior write resolves and the store's page.title
+    // catches up. Without this guard a second write goes out on the same stale
+    // baseline — wasted at best, a spurious failure toast at worst if the first
+    // write's edit_at bump turns the second into a conflict.
+    const commitInFlight = useRef(false);
+
     // A title edited elsewhere (the rename modal, another client) replaces the
     // buffer; the routed page changing does too, since the component is reused.
     useEffect(() => setTitle(page.title), [page.id, page.title]);
@@ -79,19 +86,23 @@ const PageTitleArea = ({page, editing}: {page: Page; editing: boolean}) => {
     const commit = async () => {
         const next = title.trim();
         setTitle(next);
-        if (next === page.title) {
+        if (next === page.title || commitInFlight.current) {
             return;
         }
 
+        commitInFlight.current = true;
         try {
             await dispatch(updatePage(page.space_id, page.id, {title: next}));
         } catch {
             // Keep the typed title: reverting would look like the edit was taken
-            // and then silently lost.
+            // and then silently lost. The rejection reason itself isn't
+            // actionable here, so it's deliberately dropped rather than logged.
             toast.error(formatMessage({
                 id: 'docs.page.titleSaveFailed',
                 defaultMessage: 'Could not rename the page. Please try again.',
             }));
+        } finally {
+            commitInFlight.current = false;
         }
     };
 

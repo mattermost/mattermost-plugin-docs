@@ -102,4 +102,21 @@ describe('PageContent title commit', () => {
         await waitFor(() => expect(mockToastError).toHaveBeenCalled());
         expect(field()).toHaveValue('Runbooks');
     });
+
+    it('does not fire a second write while the first is still in flight', async () => {
+        let resolveWrite: (value: typeof PAGE) => void = () => {};
+        mockUpdatePage.mockReturnValue(new Promise((resolve) => {
+            resolveWrite = resolve;
+        }));
+        renderContent();
+
+        fireEvent.change(field(), {target: {value: 'Runbooks'}});
+        fireEvent.keyDown(field(), {key: 'Enter'});
+        fireEvent.blur(field());
+
+        expect(mockUpdatePage).toHaveBeenCalledTimes(1);
+
+        resolveWrite(PAGE);
+        await waitFor(() => expect(mockUpdatePage).toHaveBeenCalledTimes(1));
+    });
 });
