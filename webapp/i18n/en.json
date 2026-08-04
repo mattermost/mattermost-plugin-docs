@@ -134,6 +134,7 @@
   "docs.sidebar.label": "Spaces",
   "docs.sidebar.nav.home": "Home",
   "docs.sidebar.resize": "Resize pages sidebar",
+  "docs.sidebar.resizeSpaces": "Resize spaces sidebar",
   "docs.sidebar.search.placeholder": "Find docs",
   "docs.sidebar.space.copyLink": "Copy link",
   "docs.sidebar.space.favorite": "Add to favorites",
