@@ -62,14 +62,26 @@ const Select = ({id, label, value, options, onChange, disabled}: Props) => {
                 </BaseSelect.Icon>
             </BaseSelect.Trigger>
             <BaseSelect.Portal>
-                {/* Viewport coordinates, not document. Base UI defaults to
-                    `absolute`, which places the popup in the document while the
-                    trigger can sit inside a `position: fixed` container — a modal —
-                    so the two drift apart the moment anything scrolls. `fixed`
-                    matches the coordinate space the trigger is actually in, and is
-                    equally correct outside a modal. */}
+                {/* alignItemWithTrigger is Base UI's default and is why this popup
+                    would not stay with its trigger. In that mode the popup overlaps
+                    the trigger so the selected item's text lines up with the trigger's
+                    value — macOS-style — and to do it Base UI gives the positioner a
+                    static style, sets `disableAnchorTracking`, reports side 'none' and
+                    locks scrolling (SelectPositioner lines 96, 110, 114-115). floating-
+                    ui's computed position is not used at all, side/align/sideOffset are
+                    ignored, and nothing follows the trigger — so inside a scrollable
+                    modal pane the popup sits where it first landed while the field
+                    scrolls away from it.
+
+                    Off, it is an ordinary anchored popup: tracking on, our side and
+                    offsets honoured, and positionMethod below actually applied.
+
+                    Viewport coordinates rather than document: the trigger can sit in a
+                    modal, which is `position: fixed`, and matching that space keeps the
+                    two from drifting apart on scroll. Equally correct outside a modal. */}
                 <BaseSelect.Positioner
                     className={styles.positioner}
+                    alignItemWithTrigger={false}
                     positionMethod='fixed'
                     side='bottom'
                     align='start'
