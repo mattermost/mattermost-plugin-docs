@@ -34,9 +34,15 @@ const PageTreeAppendZone = ({parentId, indent, canDrop, enabled}: Props) => {
         <div
             ref={setElement}
             className={classNames(styles.zone, {[styles.blocked]: blocked})}
-            style={{marginInlineStart: indent}}
         >
-            {active && <DropIndicator edge='top'/>}
+            {/* The strip stays full width so it's easy to hit at any depth; only
+                the line is indented, to the level the page would land at. */}
+            {active && (
+                <DropIndicator
+                    edge='top'
+                    indent={`${indent}px`}
+                />
+            )}
         </div>
     );
 };

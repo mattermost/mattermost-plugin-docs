@@ -156,11 +156,13 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
     const PageGlyph = page.type === 'page_folder' ? FolderOutlineIcon : FileTextOutlineIcon;
 
     // Only a clipped title gets a tooltip; a fully visible one would just repeat
-    // the text under the pointer.
+    // the text under the pointer. Suppressed for the whole tree during a drag: the
+    // pointer is crossing rows to aim at a drop position, and a tooltip popping up
+    // over the drop indicator hides the thing the user is aiming with.
     const title = (
         <WithTooltip
             title={page.title}
-            disabled={!titleOverflowing}
+            disabled={!titleOverflowing || draggingId !== null}
         >
             <span
                 ref={titleRef}
@@ -257,7 +259,15 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
                         )}
                     />
                 </div>
-                {dropTarget?.mode === 'reorder' && <DropIndicator edge={dropTarget.edge}/>}
+                {/* Indented to the destination's level: the line spans the hit
+                    wrapper, which is full width, but the page would land as this
+                    row's sibling — so the line starts where those rows start. */}
+                {dropTarget?.mode === 'reorder' && (
+                    <DropIndicator
+                        edge={dropTarget.edge}
+                        indent={`${depth * INDENT_STEP}px`}
+                    />
+                )}
             </div>
             {previewContainer && createPortal(
                 <PageDragPreview
