@@ -105,9 +105,41 @@ describe('pages', () => {
             siblingIndex: 0,
         });
 
-        expect(afterMove.pages.c.sort_order).toBe(0);
-        expect(afterMove.pages.a.sort_order).toBe(1);
-        expect(afterMove.pages.b.sort_order).toBe(2);
+        expect(afterMove.pages.c.sort_order).toBe(1);
+        expect(afterMove.pages.a.sort_order).toBe(2);
+        expect(afterMove.pages.b.sort_order).toBe(3);
+    });
+
+    // The move response upserts only the moved page, carrying the server's
+    // sort_order. Numbered on a different base from its siblings it tied with the
+    // one below it, and the title tiebreak put it back a slot — a drop between two
+    // roots landed one position too low.
+    it('MOVED_PAGE survives the server echoing the moved page back', () => {
+        const a = withParent('a', '', 'A', 1);
+        const b = withParent('b', '', 'B', 2);
+        const c = withParent('c', '', 'C', 3);
+
+        const afterReceive = reducer(initialState, {type: PageTypes.RECEIVED_PAGES, pages: [a, b, c]});
+
+        // Drop C between A and B.
+        const afterMove = reducer(afterReceive, {
+            type: PageTypes.MOVED_PAGE,
+            pageId: 'c',
+            spaceId: 'space-a',
+            parentId: '',
+            siblingIndex: 1,
+        });
+
+        // What the server's reindex assigns C for that position, 1-based.
+        const echoed = {...afterMove.pages.c, sort_order: 2};
+        const afterEcho = reducer(afterMove, {type: PageTypes.RECEIVED_PAGES, pages: [echoed]});
+
+        const rootOrder = ['a', 'b', 'c'].
+            map((id) => afterEcho.pages[id]).
+            sort((x, y) => x.sort_order - y.sort_order || x.title.localeCompare(y.title)).
+            map((page) => page.id);
+
+        expect(rootOrder).toEqual(['a', 'c', 'b']);
     });
 
     it('DELETED_PAGE prunes the page and its subtree from byId and the space index', () => {
@@ -144,39 +176,40 @@ describe('collectSubtreeIds', () => {
 });
 
 describe('reindexAfterMove', () => {
-    it('reorders siblings within the same parent (0-based)', () => {
+    it('reorders siblings within the same parent, numbered 1-based like the server', () => {
         const byId = {
-            a: withParent('a', '', 'A', 0),
-            b: withParent('b', '', 'B', 1),
-            c: withParent('c', '', 'C', 2),
+            a: withParent('a', '', 'A', 1),
+            b: withParent('b', '', 'B', 2),
+            c: withParent('c', '', 'C', 3),
         };
 
         // Move A to the end.
         const next = reindexAfterMove(byId, 'a', 'space-a', '', 2);
 
-        expect(next.b.sort_order).toBe(0);
-        expect(next.c.sort_order).toBe(1);
-        expect(next.a.sort_order).toBe(2);
+        expect(next.b.sort_order).toBe(1);
+        expect(next.c.sort_order).toBe(2);
+        expect(next.a.sort_order).toBe(3);
         expect(next.a.parent_id).toBe('');
     });
 
-    it('reparents a page and reindexes both the old and new sibling groups', () => {
+    it('reparents a page and reindexes the destination group only', () => {
         const byId = {
-            p: withParent('p', '', 'Parent', 0),
-            a: withParent('a', '', 'A', 1),
-            b: withParent('b', '', 'B', 2),
-            x: withParent('x', 'p', 'X', 0),
+            p: withParent('p', '', 'Parent', 1),
+            a: withParent('a', '', 'A', 2),
+            b: withParent('b', '', 'B', 3),
+            x: withParent('x', 'p', 'X', 1),
         };
 
         // Move B under P as its first child.
         const next = reindexAfterMove(byId, 'b', 'space-a', 'p', 0);
 
         expect(next.b.parent_id).toBe('p');
-        expect(next.b.sort_order).toBe(0);
-        expect(next.x.sort_order).toBe(1);
+        expect(next.b.sort_order).toBe(1);
+        expect(next.x.sort_order).toBe(2);
 
-        // Old root group renumbers to fill the gap.
-        expect(next.p.sort_order).toBe(0);
-        expect(next.a.sort_order).toBe(1);
+        // The old group keeps its numbering, gap included, as the server does —
+        // closing it up here would disagree with any page later refetched from it.
+        expect(next.p.sort_order).toBe(1);
+        expect(next.a.sort_order).toBe(2);
     });
 });

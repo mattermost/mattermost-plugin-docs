@@ -25,10 +25,21 @@ type ReceivedSpaceMembersAction = {spaceId: string; userIds: string[]};
 const bySortOrder = (a: Page, b: Page): number =>
     a.sort_order - b.sort_order || a.title.localeCompare(b.title);
 
-// Moves a page under `newParentId` at `siblingIndex` and renumbers the affected
-// sibling groups' sort_order 0-based, mirroring the server's reindex. Returns a
-// new byId map (untouched pages are shared by reference). Only pages in
-// `spaceId` are considered; a pure reorder (same parent) skips the old group.
+// Moves a page under `newParentId` at `siblingIndex` and renumbers the destination
+// sibling group's sort_order, mirroring the server's reindex. Returns a new byId
+// map (untouched pages are shared by reference). Only pages in `spaceId` are
+// considered.
+//
+// Two details exist to match the server exactly, because the move's response
+// upserts only the moved page: whatever this function writes has to survive that
+// merge sitting next to it. Diverge and the merged page ties with a sibling, where
+// the title tiebreak silently drops it a slot.
+//
+//  - Numbering is 1-based, as the server's is: store.reindexSiblingGroup writes
+//    i+1 and nextSortOrder appends MAX+1.
+//  - The page's old group is left alone rather than closed up, because
+//    store.MovePage reindexes the destination group only. The gap the page leaves
+//    behind is what the server has, and order doesn't depend on contiguity.
 export function reindexAfterMove(
     byId: Record<string, Page>,
     pageId: string,
@@ -40,25 +51,17 @@ export function reindexAfterMove(
     if (!moved) {
         return byId;
     }
-    const oldParentId = moved.parent_id;
     const next = {...byId};
 
-    const groupOf = (parentId: string): Page[] => Object.values(byId).
-        filter((page) => page.space_id === spaceId && page.parent_id === parentId && page.id !== pageId).
+    const newGroup = Object.values(byId).
+        filter((page) => page.space_id === spaceId && page.parent_id === newParentId && page.id !== pageId).
         sort(bySortOrder);
 
-    const newGroup = groupOf(newParentId);
     const index = Math.max(0, Math.min(siblingIndex, newGroup.length));
     newGroup.splice(index, 0, moved);
     newGroup.forEach((page, i) => {
-        next[page.id] = {...page, parent_id: newParentId, sort_order: i};
+        next[page.id] = {...page, parent_id: newParentId, sort_order: i + 1};
     });
-
-    if (oldParentId !== newParentId) {
-        groupOf(oldParentId).forEach((page, i) => {
-            next[page.id] = {...page, sort_order: i};
-        });
-    }
 
     return next;
 }
