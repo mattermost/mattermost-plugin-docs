@@ -21,7 +21,11 @@ import (
 // source space's half (source space and old parent), the target channel only the target's half —
 // rather than one payload naming both spaces. A member removal is additionally sent to the removed
 // user directly, who has already left the channel when the channel-scoped broadcast fires and
-// would otherwise never learn of it. space_deleted is likewise delivered to each member
+// would otherwise never learn of it. space_member_added and space_member_capabilities_updated are
+// sent to the affected user directly for the mirror-image reason: the channel-scoped broadcast
+// resolves recipients on a space ("S") channel, which may not yet include a member added moments
+// earlier, and that user has no other signal that their access changed.
+// space_deleted is likewise delivered to each member
 // directly, from a snapshot taken before the backing channel is archived — channel-scoped
 // delivery resolves recipients from live channels only, so a broadcast to the just-archived
 // channel would reach nobody. A space delete or restore cascades to every live page in

@@ -251,8 +251,15 @@ func (s *Service) requirePageWriteFrom(where string, space *model.Space, userID 
 // state other users can see. Checking the looser pair here also keeps autosave off the page-liveness
 // lookup that the precise choice would require.
 func (s *Service) RequireSpaceDraftWrite(where string, space *model.Space, userID string, admittedVia ReadResolution) *mmmodel.AppError {
-	if appErr := s.requirePageWriteFrom(where, space, userID, mmmodel.PermissionCreatePage, admittedVia); appErr == nil {
+	createErr := s.requirePageWriteFrom(where, space, userID, mmmodel.PermissionCreatePage, admittedVia)
+	if createErr == nil {
 		return nil
+	}
+	// Only a denial falls through to the second attempt: a failure of the check itself must not be
+	// retried into a 403, which would present a backend outage to the user as "not authorized".
+	// Mirrors ResolveSpacePageOwnOrAny's handling of the same two-attempt shape.
+	if createErr.StatusCode != http.StatusForbidden {
+		return createErr
 	}
 	return s.requirePageWriteFrom(where, space, userID, mmmodel.PermissionEditPage, admittedVia)
 }
@@ -361,7 +368,11 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 	// Published after the lock is released: the membership lock holds a dedicated connection, so a
 	// slow publish inside it would push concurrent membership mutations into a lock timeout.
 	if joined {
-		s.publishToChannels(wsEventSpaceMemberAdded, map[string]any{"space_id": space.Id, "user_id": joinedUserID}, joinedChannelID)
+		payload := map[string]any{"space_id": space.Id, "user_id": joinedUserID}
+		s.publishToChannels(wsEventSpaceMemberAdded, payload, joinedChannelID)
+		// Also delivered directly, matching AddSpaceMember: the channel-scoped broadcast may not
+		// resolve the just-joined member, who has no other signal that the auto-join happened.
+		s.publishToUser(wsEventSpaceMemberAdded, payload, joinedUserID)
 	}
 	return joined, nil
 }

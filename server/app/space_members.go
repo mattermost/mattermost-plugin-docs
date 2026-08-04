@@ -108,7 +108,11 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 		}
 		return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.add_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
-	s.publishToChannels(wsEventSpaceMemberAdded, map[string]any{"space_id": space.Id, "user_id": member.UserId}, space.ChannelId)
+	payload := map[string]any{"space_id": space.Id, "user_id": member.UserId}
+	s.publishToChannels(wsEventSpaceMemberAdded, payload, space.ChannelId)
+	// Also delivered directly: the channel-scoped broadcast may not resolve a member added moments
+	// earlier, and the new member has no other signal that they now have the space.
+	s.publishToUser(wsEventSpaceMemberAdded, payload, member.UserId)
 	return toSpaceMember(member, defaultCapabilities), nil
 }
 
@@ -118,6 +122,21 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 // the answer describes what would remain after that user is demoted or removed.
 func (s *Service) hasOtherAuthorizedAdmin(space *model.Space, excludeUserID string) (bool, error) {
 	return s.hasOtherAuthorizedMemberMatching(space, excludeUserID, func(cm *mmmodel.ChannelMember) bool { return cm.SchemeAdmin })
+}
+
+// requireNotLastAdmin rejects an operation that would leave space without an admin who can still
+// reach it, disregarding excludeUserID (the member being demoted or removed). Callers run it inside
+// the space-keyed membership lock, alongside the mutation it guards. where attributes both the
+// lookup failure and the rejection to the calling operation.
+func (s *Service) requireNotLastAdmin(where string, space *model.Space, excludeUserID string) *mmmodel.AppError {
+	otherAdmin, err := s.hasOtherAuthorizedAdmin(space, excludeUserID)
+	if err != nil {
+		return mmmodel.NewAppError(where, "app.space.member.admin_count_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+	}
+	if !otherAdmin {
+		return mmmodel.NewAppError(where, "app.space.member.last_admin.app_error", nil, "", http.StatusConflict)
+	}
+	return nil
 }
 
 // SetSpaceMemberCapabilities replaces targetUserID's per-member granted capability set. Callers
@@ -186,14 +205,9 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 		}
 
 		if target.SchemeAdmin && !newSchemeAdmin {
-			otherAdmin, cntErr := s.hasOtherAuthorizedAdmin(space, targetUserID)
-			if cntErr != nil {
-				appErr = mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.member.admin_count_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(cntErr)
-				return appErr
-			}
-			if !otherAdmin {
-				appErr = mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.member.last_admin.app_error", nil, "", http.StatusConflict)
-				return appErr
+			if e := s.requireNotLastAdmin("SetSpaceMemberCapabilities", space, targetUserID); e != nil {
+				appErr = e
+				return e
 			}
 		}
 
@@ -296,14 +310,9 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 				appErr = e
 				return e
 			}
-			otherAdmin, cntErr := s.hasOtherAuthorizedAdmin(space, userID)
-			if cntErr != nil {
-				appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.admin_count_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(cntErr)
-				return appErr
-			}
-			if !otherAdmin {
-				appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.last_admin.app_error", nil, "", http.StatusConflict)
-				return appErr
+			if e := s.requireNotLastAdmin("RemoveSpaceMember", space, userID); e != nil {
+				appErr = e
+				return e
 			}
 		}
 		hasOther, guardErr := s.hasOtherAuthorizedMember(space, userID)

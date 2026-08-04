@@ -126,7 +126,7 @@ func writeSearchTextPart(b *strings.Builder, part string) {
 	b.WriteString(part)
 }
 
-// maxTipTapDepth bounds recursion over client-supplied content. encoding/json already capabilities nesting,
+// maxTipTapDepth bounds recursion over client-supplied content. encoding/json already caps nesting,
 // but this rejects a pathologically deep document before the recursive walk and keeps stored content
 // within a sane depth.
 const maxTipTapDepth = 100

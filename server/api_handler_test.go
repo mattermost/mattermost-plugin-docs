@@ -205,10 +205,17 @@ func TestHandler_CreateSpace(t *testing.T) {
 	})
 	require.Equal(t, http.StatusCreated, rec.Code)
 
-	var created model.Space
+	var created model.SpaceWithAccess
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
 	require.NotEmpty(t, created.Id)
 	require.Equal(t, "My Space", created.Title)
+	// Create establishes the space's access state, so the response carries it and the caller needs
+	// no follow-up read: the seeded contribute default, and the creator's own admin set.
+	contribute, ok := model.DefaultCapabilitiesForSchemeName(mmmodel.SchemeNameSpaceContribute)
+	require.True(t, ok)
+	require.Equal(t, contribute, created.DefaultCapabilities)
+	require.Equal(t, model.AdminEffectiveCapabilities(), created.Capabilities)
+	require.Contains(t, created.Capabilities, model.CapabilityAdminSpace)
 }
 
 // TestHandler_CreateSpace_IgnoresServerOwnedFields ensures the create handler does not trust
@@ -2066,12 +2073,6 @@ func stubSpaceSchemeRepoint(t *testing.T, mockAPI *plugintest.API, channelID str
 	return testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
 }
 
-// spaceCustomSchemeNamePrefix mirrors the plugin-internal prefix app.createSpaceCustomScheme labels
-// its schemes with. It is restated here rather than imported because it is unexported, and it is
-// only a label: core proves a scheme's space scope by the backing channel pointing at it, never by
-// the name.
-const spaceCustomSchemeNamePrefix = "docs_space_custom_"
-
 // stubSpaceCustomSchemeCreate wires the mock calls the custom-scheme path needs for a non-preset
 // default-capability set: CreateScheme returning a scheme whose Name carries the custom prefix,
 // plus GetRoleByName and PatchRole for each of its three generated roles. The new scheme's role
@@ -2082,11 +2083,12 @@ const spaceCustomSchemeNamePrefix = "docs_space_custom_"
 // channel's post-repoint SchemeId, or a later DeleteScheme call retiring it).
 func stubSpaceCustomSchemeCreate(t *testing.T, mockAPI *plugintest.API) string {
 	t.Helper()
+	testutil.StubPooledSchemeMiss(mockAPI)
 	customSchemeID := mmmodel.NewId()
 	userRole, adminRole, guestRole := "custom_scheme_user_role", "custom_scheme_admin_role", "custom_scheme_guest_role"
 	customScheme := &mmmodel.Scheme{
 		Id:                      customSchemeID,
-		Name:                    spaceCustomSchemeNamePrefix + mmmodel.NewId(),
+		Name:                    model.SharedSchemeNameForCapabilities([]string{"create_page"}),
 		Scope:                   mmmodel.SchemeScopeChannel,
 		DefaultChannelUserRole:  userRole,
 		DefaultChannelAdminRole: adminRole,
@@ -2116,7 +2118,10 @@ func assertCustomSchemeRolePermissions(t *testing.T, mockAPI *plugintest.API, ca
 	}
 	for roleName, perms := range expected {
 		mockAPI.AssertCalled(t, "PatchRole",
-			mock.MatchedBy(func(r *mmmodel.Role) bool { return r.Name == roleName }),
+			mock.MatchedBy(func(roleID string) bool {
+				patchedName, ok := testutil.StubbedRoleName(roleID)
+				return ok && patchedName == roleName
+			}),
 			mock.MatchedBy(func(p *mmmodel.RolePatch) bool {
 				return p != nil && p.Permissions != nil && slices.Equal(
 					model.NormalizeCapabilitySet(*p.Permissions), model.NormalizeCapabilitySet(perms))
@@ -2208,10 +2213,11 @@ func TestHandler_SetSpaceDefaultCapabilities_InvalidCapability(t *testing.T) {
 	}
 }
 
-// TestHandler_SetSpaceDefaultCapabilities_CreatesCustomScheme verifies a non-preset default
-// capability set repoints the backing channel at a newly created space-private custom scheme
-// (named with the docs_space_custom_ prefix), and the response echoes exactly the requested set.
-func TestHandler_SetSpaceDefaultCapabilities_CreatesCustomScheme(t *testing.T) {
+// TestHandler_SetSpaceDefaultCapabilities_CreatesPooledScheme verifies a non-preset default
+// capability set repoints the backing channel at a scheme from the shared pool, minted on first
+// use under the name that capability set resolves to, and that the response echoes exactly the
+// requested set.
+func TestHandler_SetSpaceDefaultCapabilities_CreatesPooledScheme(t *testing.T) {
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
 
@@ -2231,11 +2237,13 @@ func TestHandler_SetSpaceDefaultCapabilities_CreatesCustomScheme(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updated))
 	require.Equal(t, []string{"create_page"}, updated.DefaultCapabilities)
 
+	// The pool key is a pure function of the capability set, so the minted scheme's name is exactly
+	// the one any other space requesting this set would resolve to.
 	mockAPI.AssertCalled(t, "CreateScheme", mock.MatchedBy(func(s *mmmodel.Scheme) bool {
-		return strings.HasPrefix(s.Name, spaceCustomSchemeNamePrefix)
+		return s.Name == model.SharedSchemeNameForCapabilities([]string{"create_page"})
 	}))
 	require.NotNil(t, channel.SchemeId)
-	require.Equal(t, customSchemeID, *channel.SchemeId, "the channel must be repointed at the newly created custom scheme")
+	require.Equal(t, customSchemeID, *channel.SchemeId, "the channel must be repointed at the pooled scheme")
 	assertCustomSchemeRolePermissions(t, mockAPI, []string{"create_page"})
 	// Exactly the three generated roles (user/admin/guest) are patched — no role skipped, none
 	// double-patched. assertCustomSchemeRolePermissions pins the per-role content; this pins the count.
@@ -2243,42 +2251,48 @@ func TestHandler_SetSpaceDefaultCapabilities_CreatesCustomScheme(t *testing.T) {
 }
 
 // TestHandler_SetSpaceDefaultCapabilities_SwitchBackToPresetRetiresCustomScheme verifies that
-// switching a space back to a preset default capability set repoints the channel at the shared
-// preset scheme and retires the previously created custom scheme (and its roles) with no orphans
-// left behind.
-func TestHandler_SetSpaceDefaultCapabilities_SwitchBackToPresetRetiresCustomScheme(t *testing.T) {
+// TestHandler_SetSpaceDefaultCapabilities_ReusesPooledScheme pins the property the shared pool
+// exists for: a capability set resolves to one scheme forever. Switching a space to a non-preset
+// set mints a pooled scheme, switching away to a preset leaves it in place, and switching back
+// resolves to that same scheme rather than minting a second one carrying identical permissions.
+func TestHandler_SetSpaceDefaultCapabilities_ReusesPooledScheme(t *testing.T) {
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
 
 	mockAPI := newEnabledMockAPI()
 	grantSpaceAdmin(mockAPI, channelID, userID)
 	channel := stubSpaceSchemeRepoint(t, mockAPI, channelID)
-	customSchemeID := stubSpaceCustomSchemeCreate(t, mockAPI)
-	mockAPI.On("DeleteScheme", customSchemeID).Return(&mmmodel.Scheme{Id: customSchemeID}, nil)
+	testutil.StubSchemePool(mockAPI)
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, h.db, channelID)
 
-	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
-		"default_capabilities": []string{"create_page"},
-	})
-	require.Equal(t, http.StatusOK, rec.Code)
+	setDefaults := func(capabilities []string) {
+		t.Helper()
+		rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
+			"default_capabilities": capabilities,
+		})
+		require.Equal(t, http.StatusOK, rec.Code)
+	}
+
+	setDefaults([]string{"create_page"})
 	require.NotNil(t, channel.SchemeId)
-	require.Equal(t, customSchemeID, *channel.SchemeId)
+	pooledSchemeID := *channel.SchemeId
+	require.NotEqual(t, testutil.PresetSchemeID(mmmodel.SchemeNameSpaceContribute), pooledSchemeID)
 
-	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
-		"default_capabilities": []string{"comment_page", "create_page", "edit_page", "delete_own_page"},
-	})
-	require.Equal(t, http.StatusOK, rec.Code)
-
+	setDefaults([]string{"comment_page", "create_page", "edit_page", "delete_own_page"})
 	require.NotNil(t, channel.SchemeId)
 	require.Equal(t, testutil.PresetSchemeID(mmmodel.SchemeNameSpaceContribute), *channel.SchemeId,
-		"the channel must be repointed at the shared contribute preset scheme")
-	mockAPI.AssertCalled(t, "DeleteScheme", customSchemeID)
-	// The custom scheme is minted once (first PATCH) and retired once (switch back). A regression
-	// that re-minted a scheme on the preset switch, or retired more than the one superseded scheme,
-	// would change these counts while still passing the AssertCalled checks above.
+		"a set matching a preset must repoint at the shared preset scheme")
+
+	setDefaults([]string{"create_page"})
+	require.NotNil(t, channel.SchemeId)
+	require.Equal(t, pooledSchemeID, *channel.SchemeId,
+		"returning to a capability set must resolve to the scheme already pooled for it")
+
+	// One scheme minted across all three switches, and none deleted: a pooled scheme is shared, so
+	// no space owns it and no repoint retires it.
 	mockAPI.AssertNumberOfCalls(t, "CreateScheme", 1)
-	mockAPI.AssertNumberOfCalls(t, "DeleteScheme", 1)
+	mockAPI.AssertNotCalled(t, "DeleteScheme", mock.Anything)
 }
 
 // TestHandler_SetSpaceDefaultCapabilities_ResubmitCurrentSetIsNoOp verifies that resubmitting the

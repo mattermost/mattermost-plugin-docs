@@ -227,7 +227,7 @@ func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model
 				return nil, pageErr
 			}
 			if page.UserId != requiredOwnerID {
-				return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.subtree_not_owned.app_error", nil, "", http.StatusBadRequest)
+				return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.subtree_not_owned.app_error", nil, "", http.StatusForbidden)
 			}
 		}
 		if requestedParent != "" && requestedParent != curParentID {

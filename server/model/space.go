@@ -24,9 +24,14 @@ const (
 	// channel members (see the app-layer read resolver). ViewAccessPrivate restricts reads to
 	// backing-channel members. There is no third value; PreSave deliberately does not default
 	// ViewAccess — the caller (app layer) always decides it explicitly.
-	ViewAccessOpen    = "open"
-	ViewAccessPrivate = "private"
+	ViewAccessOpen    ViewAccess = "open"
+	ViewAccessPrivate ViewAccess = "private"
 )
+
+// ViewAccess is a space's non-member read policy, one of ViewAccessOpen/ViewAccessPrivate. The
+// defined type keeps the closed vocabulary visible at every call site, mirroring core's ChannelType;
+// it marshals as a plain JSON string, so the wire format is a bare "open"/"private".
+type ViewAccess string
 
 // Space is stored in the DOCS_Space table. Each space owns a backing MM channel (ChannelId).
 // A soft-deleted space (DeleteAt>0) retains its pages; pages share the same DeleteAt via a
@@ -42,18 +47,30 @@ type Space struct {
 	Props       mmmodel.StringInterface `json:"props"`
 	// ViewAccess is one of ViewAccessOpen/ViewAccessPrivate. It gates non-member reads only —
 	// a member's read is always settled by membership.
-	ViewAccess string `json:"view_access"`
-	CreateAt   int64  `json:"create_at"`
-	UpdateAt   int64  `json:"update_at"`
-	DeleteAt   int64  `json:"delete_at"`
-	SortOrder  int64  `json:"sort_order"`
+	ViewAccess ViewAccess `json:"view_access"`
+	CreateAt   int64      `json:"create_at"`
+	UpdateAt   int64      `json:"update_at"`
+	DeleteAt   int64      `json:"delete_at"`
+	SortOrder  int64      `json:"sort_order"`
 }
 
-// SpaceWithAccess is the response wrapper for GET /spaces/{id} and SetSpaceDefaultCapabilities: it
-// carries the caller-relevant access state alongside the plain Space fields. The anonymous Space
-// embed keeps the JSON flat, mirroring core's ChannelMemberWithTeamData pattern. DefaultCapabilities
-// is the space's default capability set and Capabilities is the caller's own effective set; both are
-// read_page-free (the implicit baseline) and non-nil-on-empty.
+// SpaceWithAccess carries the caller-relevant access state alongside the plain Space fields. The
+// anonymous Space embed keeps the JSON flat, mirroring core's ChannelMemberWithTeamData pattern.
+// DefaultCapabilities is the space's default capability set, read_page-free (the implicit
+// baseline). Capabilities is the caller's own effective set and does include read_page, since an
+// effective set states what the caller may actually do rather than what was granted on top of the
+// baseline. Both are non-nil-on-empty.
+//
+// An endpoint returns this wrapper when it establishes access state (CreateSpace) or changes it
+// (SetSpaceDefaultCapabilities), and when it is read directly (GET /spaces/{id}). The endpoints
+// that return a bare Space do so because they cannot change either field: a space PATCH alters
+// metadata and view_access, neither of which moves the caller's capabilities or the space default,
+// and the team listing omits them because resolving a capability set per space would cost a
+// scheme-and-role lookup per row.
+//
+// Because the embed is flat, a bare Space and this wrapper are indistinguishable to a client that
+// types them alike: a client caching a space must merge a bare-Space response into its cached
+// entry rather than replace it, or it will drop the capability fields an earlier read supplied.
 type SpaceWithAccess struct {
 	Space
 	DefaultCapabilities []string `json:"default_capabilities"`
@@ -78,7 +95,7 @@ type SpacePatch struct {
 	Description *string                  `json:"description"`
 	Icon        *string                  `json:"icon"`
 	Props       *mmmodel.StringInterface `json:"props"`
-	ViewAccess  *string                  `json:"view_access"`
+	ViewAccess  *ViewAccess              `json:"view_access"`
 }
 
 // SpaceMember is the API-facing view of a user's membership in a space. Membership is backed by
@@ -87,9 +104,11 @@ type SpacePatch struct {
 // ExplicitRoles string, notify props) stay internal.
 type SpaceMember struct {
 	UserId string `json:"user_id"`
-	// Capabilities is the member's effective capability set (space default union granted).
+	// Capabilities is the member's effective capability set (space default union granted),
+	// including the read_page baseline.
 	Capabilities []string `json:"capabilities"`
-	// GrantedCapabilities is the member's per-member granted set, beyond the space default.
+	// GrantedCapabilities is the member's per-member granted set beyond the space default,
+	// read_page-free since the baseline is never independently granted.
 	GrantedCapabilities []string `json:"granted_capabilities"`
 	IsAdmin             bool     `json:"is_admin"`
 	IsGuest             bool     `json:"is_guest"`

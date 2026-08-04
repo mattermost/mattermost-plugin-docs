@@ -13,15 +13,14 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
-// spaceCustomSchemeDisplayName is the DisplayName of every space-private custom scheme: one
-// immutable scheme per non-preset default-capability set.
-const spaceCustomSchemeDisplayName = "Space Custom Scheme"
-
-// spaceCustomSchemeNamePrefix labels the Name of every space-private custom scheme this plugin
-// creates. It is an operator-facing label only: core accepts a scheme name as proof of space scope
-// solely for the three reserved preset names, and a per-space custom scheme proves its scope by
-// having a space backing channel point at it instead.
-const spaceCustomSchemeNamePrefix = "docs_space_custom_"
+// A non-preset default-capability set resolves to a scheme in a shared pool keyed by that set, so
+// the number of schemes is bounded by the capability vocabulary rather than by the number of
+// spaces: every space configured the same way points at one scheme. A pooled scheme is never
+// deleted — nothing owns it — so there is no retirement, no reference counting, and no residue
+// from an interrupted create.
+//
+// Core accepts a scheme name as proof of space scope only for the three reserved preset names; a
+// pooled scheme proves its scope by having a space backing channel point at it instead.
 
 // schemeRoles is the generated channel-scheme role names governing one backing channel's scheme.
 // Space capability grants reference these generated names, not the literal
@@ -77,24 +76,6 @@ func (s *Service) schemeRolesFromChannel(channelID string, channel *mmmodel.Chan
 	}, nil
 }
 
-// isPresetSchemeID reports whether schemeID is one of the three seeded preset schemes, by resolving
-// each reserved name to its id. Preset membership is settled by identity rather than by projecting
-// the scheme's capability set, because a custom scheme whose generated roles were never given their
-// permission sets still carries core's default channel baseline, which projects to the same empty
-// set as the read-only preset.
-func (s *Service) isPresetSchemeID(schemeID string) (bool, error) {
-	for _, name := range mmmodel.SpaceSchemeNames {
-		presetID, err := s.getSchemeIDByName(name)
-		if err != nil {
-			return false, err
-		}
-		if presetID == schemeID {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 // getSchemeIDByName returns the id of the scheme with the given name.
 func (s *Service) getSchemeIDByName(name string) (string, error) {
 	scheme, err := s.client.Scheme.GetByName(name)
@@ -119,36 +100,60 @@ func (s *Service) getRolePermissionsByName(roleName string) ([]string, error) {
 	return role.Permissions, nil
 }
 
-// createSpaceCustomScheme creates one space-private channel scheme and returns its id along with
-// the three roles core generated for it. Those roles start on the default channel baseline; they
-// are given their exact permission sets later by configureSpaceCustomScheme, which cannot run until
-// a space backing channel points at the scheme. Until the caller attaches it, the scheme is
-// referenced by nothing, so a caller whose next step fails retires it directly.
-func (s *Service) createSpaceCustomScheme() (string, *schemeRoles, error) {
+// getOrCreateSharedScheme resolves the pooled channel scheme expressing capabilities, creating it
+// on first use. The name is a pure function of the capability set (see
+// model.SharedSchemeNameForCapabilities), so every space configured that way resolves to the same
+// scheme: two schemes carrying one capability set would be indistinguishable in behaviour, since
+// nothing reads a scheme id or a generated role name for meaning.
+//
+// The returned roles start on core's default channel baseline when the scheme is new, and the
+// caller gives them their permission sets through configureSharedScheme once a backing channel
+// points at the scheme. That configure runs on every resolution, not only on creation: a scheme
+// created by a racing caller may still be mid-configuration when this one finds it, and rewriting
+// an already-correct permission set is idempotent.
+func (s *Service) getOrCreateSharedScheme(capabilities []string) (string, *schemeRoles, error) {
+	name := model.SharedSchemeNameForCapabilities(capabilities)
+	if scheme, err := s.client.Scheme.GetByName(name); err == nil {
+		return scheme.Id, rolesFromScheme(scheme), nil
+	} else if !errors.Is(err, pluginapi.ErrNotFound) {
+		return "", nil, err
+	}
+
 	scheme, err := s.client.Scheme.Create(&mmmodel.Scheme{
-		Name:        spaceCustomSchemeNamePrefix + mmmodel.NewId(),
-		DisplayName: spaceCustomSchemeDisplayName,
+		Name:        name,
+		DisplayName: model.SharedSchemeDisplayNameForCapabilities(capabilities),
 		Scope:       mmmodel.SchemeScopeChannel,
 	})
 	if err != nil {
+		// The name is unique, so a concurrent first use of the same capability set loses this
+		// create and adopts the winner's scheme rather than failing the caller.
+		if existing, getErr := s.client.Scheme.GetByName(name); getErr == nil {
+			return existing.Id, rolesFromScheme(existing), nil
+		}
 		return "", nil, err
 	}
-	return scheme.Id, &schemeRoles{
+	return scheme.Id, rolesFromScheme(scheme), nil
+}
+
+// rolesFromScheme names the three roles core generated for scheme.
+func rolesFromScheme(scheme *mmmodel.Scheme) *schemeRoles {
+	return &schemeRoles{
 		UserRoleName:  scheme.DefaultChannelUserRole,
 		AdminRoleName: scheme.DefaultChannelAdminRole,
 		GuestRoleName: scheme.DefaultChannelGuestRole,
-	}, nil
+	}
 }
 
-// configureSpaceCustomScheme replaces the permission sets of the three roles generated for a
-// space-private custom scheme, so the space's members hold exactly capabilities plus the baseline
-// read. roles are the names createSpaceCustomScheme returned, so the writes land on the scheme that
-// was created rather than on whatever a channel currently resolves to.
+// configureSharedScheme writes the permission sets of the three roles generated for a pooled
+// scheme, so members of a space pointing at it hold exactly capabilities plus the baseline read.
+// roles are the names getOrCreateSharedScheme returned, so the writes land on the resolved scheme
+// rather than on whatever a channel currently points at.
 //
 // It must run only once a space backing channel already points at that scheme: core admits a role
 // write carrying space permissions for a seeded preset's roles, or for a scheme a space backing
 // channel already references, and it does not accept a caller-chosen scheme name as proof.
-func (s *Service) configureSpaceCustomScheme(roles *schemeRoles, capabilities []string) error {
+// Idempotent, so re-running it against an already-configured pooled scheme is a no-op in effect.
+func (s *Service) configureSharedScheme(roles *schemeRoles, capabilities []string) error {
 	capabilities = model.NormalizeCapabilitySet(capabilities)
 	roleSets := []struct {
 		name  string
@@ -177,53 +182,13 @@ func (s *Service) setRolePermissions(roleName string, permissions []string) erro
 		}
 		return err
 	}
-	if _, err = s.client.Role.Patch(role, &mmmodel.RolePatch{Permissions: &permissions}); err != nil {
+	// Patched by id rather than by handing back the role just read: core re-reads the stored role
+	// so its scope guard judges a SchemeId the caller cannot influence.
+	if _, err = s.client.Role.Patch(role.Id, &mmmodel.RolePatch{Permissions: &permissions}); err != nil {
 		if errors.Is(err, pluginapi.ErrNotFound) {
 			return &store.ErrNotFound{EntityName: "Role", ID: roleName}
 		}
 		return err
 	}
 	return nil
-}
-
-// retireSpaceCustomScheme deletes a space-private custom scheme once its space no longer uses it.
-// Core refuses to delete a seeded preset, and refuses any scheme a space backing channel still
-// references, so a caller must have repointed the channel to another scheme first; the abandon path
-// uses detachAndDeleteCustomScheme instead. A scheme already gone is a no-op.
-func (s *Service) retireSpaceCustomScheme(schemeID string) error {
-	if _, err := s.client.Scheme.Delete(schemeID); err != nil {
-		if errors.Is(err, pluginapi.ErrNotFound) {
-			return nil
-		}
-		return err
-	}
-	return nil
-}
-
-// detachAndDeleteCustomScheme retires the custom scheme a failed CreateSpace left behind. The
-// doomed backing channel still points at the scheme, and core counts even a soon-to-be-archived
-// space channel as a live reference that blocks the delete, so the channel's scheme reference is
-// cleared first through Channel.Update and only then is the now-unreferenced scheme deleted.
-//
-// Best-effort: any failure is logged, since the caller is already unwinding an earlier error.
-func (s *Service) detachAndDeleteCustomScheme(channelID, schemeID string) {
-	channel, err := s.client.Channel.GetChannelOfType(channelID, mmmodel.ChannelTypeSpace)
-	switch {
-	case errors.Is(err, pluginapi.ErrNotFound):
-		// No channel row exists, so nothing references the scheme and the delete below succeeds
-		// without a detach.
-	case err != nil:
-		s.log.Error("failed to load abandoned backing channel to detach its custom scheme; the scheme may leak and must be deleted manually", "channel_id", channelID, "scheme_id", schemeID, "err", err)
-		return
-	case channel != nil && channel.SchemeId != nil && *channel.SchemeId == schemeID:
-		channel.SchemeId = nil
-		if updErr := s.client.Channel.Update(channel); updErr != nil {
-			s.log.Error("failed to detach custom scheme from abandoned backing channel; the scheme may leak and must be deleted manually", "channel_id", channelID, "scheme_id", schemeID, "err", updErr)
-			return
-		}
-	}
-
-	if err := s.retireSpaceCustomScheme(schemeID); err != nil {
-		s.log.Error("failed to retire space custom scheme after a failed create; it must be deleted manually", "scheme_id", schemeID, "err", err)
-	}
 }

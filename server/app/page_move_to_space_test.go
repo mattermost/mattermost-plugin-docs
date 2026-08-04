@@ -5,6 +5,7 @@ package app_test
 
 import (
 	"database/sql"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -375,7 +376,9 @@ func TestServiceMovePageToSpace_SameSpaceRequiredOwnerID(t *testing.T) {
 	foreign := mustCreatePage(t, h.store, space.Id, ch, mmmodel.NewId(), "")
 	_, appErr := h.svc.MovePageToSpace(foreign.Id, space, space, &parentID, new(foreign.UpdateAt), false, owner, owner)
 	require.NotNil(t, appErr)
-	require.Equal(t, 400, appErr.StatusCode)
+	// An authorization denial, so it carries 403 like every other own/any denial in the feature —
+	// not the 400 a malformed request would get.
+	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
 	require.Equal(t, "app.page.move_to_space.subtree_not_owned.app_error", appErr.Id)
 
 	stillRoot, getErr := h.svc.GetPage(foreign.Id)

@@ -194,9 +194,10 @@ func invalidInputAppError(where string, err error) *mmmodel.AppError {
 			return mmmodel.NewAppError(where, "app.page_draft.update.parent_cycle.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 		case store.ReasonDraftTooDeep:
 			return mmmodel.NewAppError(where, "app.page_draft.update.parent_too_deep.app_error", nil, "", http.StatusBadRequest).Wrap(err)
-		}
-		if invErr.Reason == store.ReasonSubtreeNotOwned {
-			return mmmodel.NewAppError(where, "app.page.move_to_space.subtree_not_owned.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+		case store.ReasonSubtreeNotOwned:
+			// An authorization denial, not a malformed request: the caller holds only
+			// delete_own_page and the moved subtree contains a page they do not own.
+			return mmmodel.NewAppError(where, "app.page.move_to_space.subtree_not_owned.app_error", nil, "", http.StatusForbidden).Wrap(err)
 		}
 		return mmmodel.NewAppError(where, invErr.Reason, nil, "", http.StatusBadRequest).Wrap(err)
 	}

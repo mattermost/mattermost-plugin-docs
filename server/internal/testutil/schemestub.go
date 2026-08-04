@@ -4,6 +4,8 @@
 package testutil
 
 import (
+	"net/http"
+	"strings"
 	"sync"
 	"testing"
 
@@ -129,20 +131,145 @@ func StubPresetSchemes(mockAPI *plugintest.API) {
 	}
 }
 
+// roleRegistry maps a stubbed role's id to the shared *Role object, so a PatchRole stub keyed by
+// id (the shape core's PatchRole takes) reaches the same object a GetRoleByName stub hands out.
+// Keyed by generated ids, so entries never collide across tests. Guarded because a test binary may
+// run packages in parallel.
+var roleRegistry = struct {
+	sync.RWMutex
+	byID   map[string]*mmmodel.Role
+	byName map[string]*mmmodel.Role
+}{byID: map[string]*mmmodel.Role{}, byName: map[string]*mmmodel.Role{}}
+
+func roleByID(roleID string) (*mmmodel.Role, bool) {
+	roleRegistry.RLock()
+	defer roleRegistry.RUnlock()
+	role, ok := roleRegistry.byID[roleID]
+	return role, ok
+}
+
+// roleByNameOrCreate returns the shared *Role for roleName, minting an empty one on first ask. Used
+// for roles a test never names directly because the pool generates them from a scheme name.
+func roleByNameOrCreate(roleName string) *mmmodel.Role {
+	roleRegistry.Lock()
+	defer roleRegistry.Unlock()
+	if role, ok := roleRegistry.byName[roleName]; ok {
+		return role
+	}
+	role := &mmmodel.Role{Id: mmmodel.NewId(), Name: roleName}
+	roleRegistry.byName[roleName] = role
+	roleRegistry.byID[role.Id] = role
+	return role
+}
+
+// StubbedRoleName resolves a stubbed role's id back to its name, so a test asserting on PatchRole —
+// which core takes by id — can still express its expectation in role names.
+func StubbedRoleName(roleID string) (string, bool) {
+	role, ok := roleByID(roleID)
+	if !ok {
+		return "", false
+	}
+	return role.Name, true
+}
+
+// pooledSchemeNamePrefix mirrors the plugin-internal prefix every shared default-capability scheme
+// carries. Restated here rather than imported because the plugin's copy is unexported.
+const pooledSchemeNamePrefix = "docs_space_default_"
+
+func isPooledSchemeName(name string) bool { return strings.HasPrefix(name, pooledSchemeNamePrefix) }
+
+// StubPooledSchemeMiss answers the shared-pool lookup with not-found for any pooled scheme name, so
+// a test exercising a non-preset default-capability set reaches the create path. Register it after
+// StubPresetSchemes, whose per-name stubs must keep matching first, and before any stub that
+// answers a specific pooled name. Use StubSchemePool instead when the test needs the pool to
+// actually accumulate.
+func StubPooledSchemeMiss(mockAPI *plugintest.API) {
+	mockAPI.On("GetSchemeByName", mock.MatchedBy(isPooledSchemeName)).
+		Return(nil, &mmmodel.AppError{Id: "app.scheme.get.app_error", StatusCode: http.StatusNotFound}).Maybe()
+}
+
+// StubSchemePool simulates the shared default-capability pool with state: a pooled scheme name
+// resolves to not-found until CreateScheme mints it and to that same scheme afterwards. This is
+// what lets a test assert the property the pool exists for — that two spaces configured alike, or
+// one space returning to a set it used before, resolve to a single scheme instead of minting a
+// second identical one.
+//
+// The generated role names are derived from the scheme name so they can be answered by a standing
+// stub; registering new expectations from inside a running mock call would race the mock's own lock.
+func StubSchemePool(mockAPI *plugintest.API) {
+	var mu sync.Mutex
+	byName := map[string]*mmmodel.Scheme{}
+
+	mockAPI.On("GetSchemeByName", mock.MatchedBy(isPooledSchemeName)).
+		Return(func(name string) (*mmmodel.Scheme, *mmmodel.AppError) {
+			mu.Lock()
+			defer mu.Unlock()
+			if scheme, ok := byName[name]; ok {
+				return scheme, nil
+			}
+			return nil, &mmmodel.AppError{Id: "app.scheme.get.app_error", StatusCode: http.StatusNotFound}
+		}).Maybe()
+
+	mockAPI.On("CreateScheme", mock.MatchedBy(func(scheme *mmmodel.Scheme) bool {
+		return scheme != nil && isPooledSchemeName(scheme.Name)
+	})).Return(func(in *mmmodel.Scheme) (*mmmodel.Scheme, *mmmodel.AppError) {
+		mu.Lock()
+		defer mu.Unlock()
+		if existing, ok := byName[in.Name]; ok {
+			return existing, nil
+		}
+		scheme := &mmmodel.Scheme{
+			Id:                      mmmodel.NewId(),
+			Name:                    in.Name,
+			DisplayName:             in.DisplayName,
+			Scope:                   mmmodel.SchemeScopeChannel,
+			DefaultChannelUserRole:  in.Name + "_user",
+			DefaultChannelAdminRole: in.Name + "_admin",
+			DefaultChannelGuestRole: in.Name + "_guest",
+		}
+		byName[in.Name] = scheme
+		RegisterSchemeRoles(scheme.Id, scheme.DefaultChannelGuestRole, scheme.DefaultChannelUserRole, scheme.DefaultChannelAdminRole)
+		return scheme, nil
+	}).Maybe()
+
+	stubPooledRoles(mockAPI)
+	StubPatchRole(mockAPI)
+}
+
+// stubPooledRoles answers GetRoleByName for any role generated for a pooled scheme, minting the
+// shared *Role on first read so a later PatchRole mutation is visible to a subsequent read.
+func stubPooledRoles(mockAPI *plugintest.API) {
+	mockAPI.On("GetRoleByName", mock.MatchedBy(isPooledSchemeName)).
+		Return(func(roleName string) (*mmmodel.Role, *mmmodel.AppError) {
+			return roleByNameOrCreate(roleName), nil
+		}).Maybe()
+}
+
 // StubRole registers a GetRoleByName stub returning one shared *Role carrying permissions, so a
 // PatchRole stub that mutates it (see StubPatchRole) is visible to a later read of the same role —
-// the mock does not track state on its own. Returns the shared Role.
+// the mock does not track state on its own. The role is given an id and registered under it, since
+// production patches by id. Returns the shared Role.
 func StubRole(mockAPI *plugintest.API, roleName string, permissions []string) *mmmodel.Role {
-	role := &mmmodel.Role{Name: roleName, Permissions: permissions}
+	role := &mmmodel.Role{Id: mmmodel.NewId(), Name: roleName, Permissions: permissions}
+	roleRegistry.Lock()
+	roleRegistry.byID[role.Id] = role
+	roleRegistry.byName[role.Name] = role
+	roleRegistry.Unlock()
 	mockAPI.On("GetRoleByName", roleName).Return(role, nil).Maybe()
 	return role
 }
 
 // StubPatchRole registers a PatchRole stub applying the patch's permission set to the shared *Role
-// the matching GetRoleByName stub returns, so the write is observable to a later read.
+// the matching GetRoleByName stub returns, so the write is observable to a later read. Roles are
+// looked up by id, mirroring core's own PatchRole, which re-reads the stored role rather than
+// trusting one supplied by the caller.
 func StubPatchRole(mockAPI *plugintest.API) {
-	mockAPI.On("PatchRole", mock.AnythingOfType("*model.Role"), mock.AnythingOfType("*model.RolePatch")).
-		Return(func(role *mmmodel.Role, patch *mmmodel.RolePatch) (*mmmodel.Role, *mmmodel.AppError) {
+	mockAPI.On("PatchRole", mock.AnythingOfType("string"), mock.AnythingOfType("*model.RolePatch")).
+		Return(func(roleID string, patch *mmmodel.RolePatch) (*mmmodel.Role, *mmmodel.AppError) {
+			role, ok := roleByID(roleID)
+			if !ok {
+				return nil, &mmmodel.AppError{Id: "app.role.get.app_error", StatusCode: http.StatusNotFound}
+			}
 			if patch != nil && patch.Permissions != nil {
 				role.Permissions = *patch.Permissions
 			}

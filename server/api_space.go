@@ -38,11 +38,11 @@ func (p *Plugin) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 	teamID := mux.Vars(r)["team_id"]
 
 	var req struct {
-		Title               string    `json:"title"`
-		Description         string    `json:"description,omitempty"`
-		Icon                string    `json:"icon,omitempty"`
-		DefaultCapabilities *[]string `json:"default_capabilities,omitempty"`
-		ViewAccess          *string   `json:"view_access,omitempty"`
+		Title               string            `json:"title"`
+		Description         string            `json:"description,omitempty"`
+		Icon                string            `json:"icon,omitempty"`
+		DefaultCapabilities *[]string         `json:"default_capabilities,omitempty"`
+		ViewAccess          *model.ViewAccess `json:"view_access,omitempty"`
 	}
 	if !p.decodeJSONBody(w, r, maxSpaceBodyBytes, &req, "handleCreateSpace", false) {
 		return
@@ -102,7 +102,7 @@ func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 		Description      *string                  `json:"description"`
 		Icon             *string                  `json:"icon"`
 		Props            *mmmodel.StringInterface `json:"props"`
-		ViewAccess       *string                  `json:"view_access"`
+		ViewAccess       *model.ViewAccess        `json:"view_access"`
 		ExpectedUpdateAt *int64                   `json:"expected_update_at"`
 		Force            bool                     `json:"force"`
 	}

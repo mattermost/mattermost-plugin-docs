@@ -476,8 +476,9 @@ func TestScenarios(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusForbidden, status, "custom default excludes delete_own_page: %s", body)
 
-		// Switching to the read-only preset repoints the backing channel at the shared preset and
-		// retires the now-unreferenced custom scheme (DeleteScheme); the member loses create.
+		// Switching to the read-only preset repoints the backing channel at that preset's scheme;
+		// the pooled scheme it leaves behind stays for the next space to request the same set. The
+		// member loses create.
 		var roResp pluginmodel.SpaceWithAccess
 		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPatch, "/spaces/"+space.Id+"/default-capabilities",
 			map[string][]string{"default_capabilities": {}}, &roResp)

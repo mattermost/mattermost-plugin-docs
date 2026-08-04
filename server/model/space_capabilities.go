@@ -4,6 +4,8 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"maps"
 	"net/http"
 	"slices"
@@ -87,11 +89,12 @@ var spaceAdminEffectiveCapabilities = mmmodel.PermissionIDs(mmmodel.SpaceAdminRo
 
 // presetCapabilitySets are the three seeded default-capability presets in wire form (read_page-
 // free — the baseline is implicit and never listed), single-sourced from core's canonical
-// permission slices.
+// permission slices. Stored already normalized so the lookups below compare and copy without
+// re-deriving the canonical form on every call.
 var presetCapabilitySets = map[string][]string{
-	mmmodel.SchemeNameSpaceContribute: stripReadPage(mmmodel.SpaceDefaultContributePermissions),
-	mmmodel.SchemeNameSpaceComment:    stripReadPage(mmmodel.SpaceDefaultCommentPermissions),
-	mmmodel.SchemeNameSpaceReadOnly:   stripReadPage(mmmodel.SpaceDefaultReadOnlyPermissions),
+	mmmodel.SchemeNameSpaceContribute: NormalizeCapabilitySet(stripReadPage(mmmodel.SpaceDefaultContributePermissions)),
+	mmmodel.SchemeNameSpaceComment:    NormalizeCapabilitySet(stripReadPage(mmmodel.SpaceDefaultCommentPermissions)),
+	mmmodel.SchemeNameSpaceReadOnly:   NormalizeCapabilitySet(stripReadPage(mmmodel.SpaceDefaultReadOnlyPermissions)),
 }
 
 // validateCapabilities validates capabilities against allowed, rejecting read_page as the non-grantable
@@ -229,7 +232,39 @@ func DefaultCapabilitiesForSchemeName(name string) ([]string, bool) {
 	if !ok {
 		return nil, false
 	}
-	return NormalizeCapabilitySet(capabilities), true
+	// Cloned, not returned directly: the presets are package state a caller must not be able to
+	// mutate through the returned slice.
+	return slices.Clone(capabilities), true
+}
+
+// sharedSchemeNamePrefix labels every scheme in the shared default-capability pool. The suffix is
+// derived from the capability set, so one scheme serves every space configured that way.
+const sharedSchemeNamePrefix = "docs_space_default_"
+
+// sharedSchemeDisplayNamePrefix opens the operator-facing name of a pooled scheme, which then lists
+// the capability set the scheme grants.
+const sharedSchemeDisplayNamePrefix = "Space defaults: "
+
+// SharedSchemeNameForCapabilities returns the pool scheme name expressing capabilities: a
+// deterministic function of the capability set, so two spaces configured the same way resolve to
+// one shared scheme rather than each owning an identical private copy. The suffix is a digest
+// rather than the tokens themselves, which keeps the name inside core's 64-character
+// [a-z0-9_] limit and — unlike a positional encoding — leaves existing names meaning what they
+// always meant when the capability vocabulary grows.
+func SharedSchemeNameForCapabilities(capabilities []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(NormalizeCapabilitySet(capabilities), " ")))
+	return sharedSchemeNamePrefix + hex.EncodeToString(sum[:])[:16]
+}
+
+// SharedSchemeDisplayNameForCapabilities returns the operator-facing name of the pooled scheme for
+// capabilities, listing the set so the digest in the scheme name is legible in the System Console.
+// Truncated to core's DisplayName limit, which the current vocabulary is far short of.
+func SharedSchemeDisplayNameForCapabilities(capabilities []string) string {
+	name := sharedSchemeDisplayNamePrefix + strings.Join(NormalizeCapabilitySet(capabilities), ", ")
+	if len(name) > mmmodel.SchemeDisplayNameMaxLength {
+		name = name[:mmmodel.SchemeDisplayNameMaxLength]
+	}
+	return name
 }
 
 // SchemeNameForDefaultCapabilities returns the seeded preset scheme name matching capabilities, or false
@@ -238,7 +273,7 @@ func DefaultCapabilitiesForSchemeName(name string) ([]string, bool) {
 func SchemeNameForDefaultCapabilities(capabilities []string) (string, bool) {
 	normalized := NormalizeCapabilitySet(capabilities)
 	for name, preset := range presetCapabilitySets {
-		if slices.Equal(NormalizeCapabilitySet(preset), normalized) {
+		if slices.Equal(preset, normalized) {
 			return name, true
 		}
 	}

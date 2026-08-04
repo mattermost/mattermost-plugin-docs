@@ -638,3 +638,51 @@ func TestServiceRemoveSpaceMember_PublishesMemberRemovedEvent(t *testing.T) {
 		map[string]any{"space_id": space.Id, "user_id": targetID},
 		&mmmodel.WebsocketBroadcast{UserId: targetID})
 }
+
+// TestServiceAddSpaceMember_PublishesToChannelAndUser pins space_member_added's two delivery
+// targets: the channel-scoped broadcast for observers, and the direct publish that reaches the
+// added user, whom the channel-scoped resolution may not yet include.
+func TestServiceAddSpaceMember_PublishesToChannelAndUser(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+	space, _ := createSpaceForMemberTests(t, h, mockAPI)
+	targetUserID := mmmodel.NewId()
+
+	mockAPI.On("AddChannelMember", space.ChannelId, targetUserID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: targetUserID}, nil)
+
+	_, appErr := h.svc.AddSpaceMember(space, targetUserID)
+	require.Nil(t, appErr)
+
+	payload := map[string]any{"space_id": space.Id, "user_id": targetUserID}
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_added", payload,
+		&mmmodel.WebsocketBroadcast{ChannelId: space.ChannelId})
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_added", payload,
+		&mmmodel.WebsocketBroadcast{UserId: targetUserID})
+}
+
+// TestServiceSetSpaceMemberCapabilities_PublishesToChannelAndUser pins
+// space_member_capabilities_updated's two delivery targets. The direct publish is what guarantees
+// the target learns its own capabilities changed, so a regression to channel-only delivery would
+// leave exactly the affected user uninformed.
+func TestServiceSetSpaceMemberCapabilities_PublishesToChannelAndUser(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+	space, actingUserID := createSpaceForMemberTests(t, h, mockAPI)
+	targetUserID := mmmodel.NewId()
+
+	// The acting user must clear the admin-affecting escalation guard.
+	mockAPI.On("HasPermissionToChannel", actingUserID, space.ChannelId, mmmodel.PermissionAdminSpace).Return(true)
+	mockAPI.On("GetChannelMember", space.ChannelId, targetUserID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: targetUserID}, nil)
+
+	_, appErr := h.svc.SetSpaceMemberCapabilities(space, targetUserID,
+		[]string{model.CapabilityEditPage}, actingUserID)
+	require.Nil(t, appErr)
+
+	payload := map[string]any{"space_id": space.Id, "user_id": targetUserID}
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_capabilities_updated", payload,
+		&mmmodel.WebsocketBroadcast{UserId: targetUserID})
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_capabilities_updated", payload,
+		&mmmodel.WebsocketBroadcast{ChannelId: space.ChannelId})
+}
