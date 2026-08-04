@@ -17,6 +17,7 @@ import {Button} from 'components/form_controls/button';
 import PageEditor from 'components/page_editor/page_editor';
 import {toast} from 'components/toast';
 
+import {UNTITLED_PAGE_TITLE} from 'types/docs';
 import type {Page} from 'types/docs';
 
 import styles from './page_content.module.scss';
@@ -72,8 +73,18 @@ const PageContent = ({page, editing}: Props) => {
 const PageTitleArea = ({page, editing}: {page: Page; editing: boolean}) => {
     const {formatMessage} = useIntl();
     const author = useUserProfile(page.user_id);
-    const [title, setTitle] = useState(page.title);
     const dispatch = useAppDispatch();
+
+    const untitled = formatMessage(UNTITLED_PAGE_TITLE);
+
+    // An unnamed page stores the untitled placeholder as its title, because the
+    // server has no empty-title representation. The field shows that as nothing at
+    // all, so typing a name replaces it without selecting it first; `stored` maps
+    // back for the write.
+    const asBuffer = useCallback((stored: string) => (stored === untitled ? '' : stored), [untitled]);
+    const asStored = (buffer: string) => buffer.trim() || untitled;
+
+    const [title, setTitle] = useState(() => asBuffer(page.title));
 
     // Commit runs from an effect cleanup and from a settled write, neither of which
     // can see the render they were created in; the ref is the buffer as it is now.
@@ -94,26 +105,29 @@ const PageTitleArea = ({page, editing}: {page: Page; editing: boolean}) => {
     // else means there is unsaved input, which an incoming title must not replace —
     // including the title our own write just put in the store, since the user may
     // have typed on while it was in flight.
-    const observedTitle = useRef(page.title);
+    const observedTitle = useRef(asBuffer(page.title));
     useEffect(() => {
         const previous = observedTitle.current;
-        observedTitle.current = page.title;
+        observedTitle.current = asBuffer(page.title);
         if (titleRef.current === previous) {
-            setBuffer(page.title);
+            setBuffer(observedTitle.current);
         }
-    }, [page.title, setBuffer]);
+    }, [page.title, asBuffer, setBuffer]);
 
     // Deferred callers reach commit through the ref so they run the current one,
     // which reads today's page.title rather than the one their closure captured.
     const commitRef = useRef<() => Promise<void>>();
 
     // Trailing whitespace is never intentional in a title, and a title that only
-    // changed by whitespace is not a change worth a write.
+    // changed by whitespace is not a change worth a write. Clearing the field is a
+    // return to unnamed rather than an error: it stores the placeholder, and the
+    // field stays empty because that is how unnamed reads here.
     const commit = async () => {
-        const next = titleRef.current.trim();
-        if (next !== titleRef.current) {
-            setBuffer(next);
+        const typed = titleRef.current.trim();
+        if (typed !== titleRef.current) {
+            setBuffer(typed);
         }
+        const next = asStored(typed);
         if (next === page.title || commitInFlight.current) {
             return;
         }
@@ -136,7 +150,7 @@ const PageTitleArea = ({page, editing}: {page: Page; editing: boolean}) => {
         // Anything typed while that write was in flight was turned away by the
         // guard above and would otherwise be lost. One extra write per round trip
         // at most, and the last thing typed is the one that lands.
-        if (titleRef.current.trim() !== next) {
+        if (titleRef.current.trim() !== typed) {
             await commitRef.current?.();
         }
     };
@@ -184,7 +198,7 @@ const PageTitleArea = ({page, editing}: {page: Page; editing: boolean}) => {
                 editing={editing}
                 onChange={setBuffer}
                 onCommit={commit}
-                onCancel={() => setBuffer(page.title)}
+                onCancel={() => setBuffer(asBuffer(page.title))}
             />
 
             {author?.displayName && (

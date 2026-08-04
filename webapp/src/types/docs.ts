@@ -1,6 +1,8 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {defineMessage} from 'react-intl';
+
 // Whether a space is visible to the whole team or only invited members. Only
 // 'public' is selectable in the initial MVF — space-level permissions (and thus
 // private spaces) are not built yet.
@@ -57,6 +59,17 @@ export type UpdateSpacePatch = {
 // Space prop holding the page the space opens to; absent/empty means the space
 // front door (hero).
 export const SPACE_PROP_DEFAULT_PAGE_ID = 'default_page_id';
+
+// The title a page carries while it has no name of its own. The server rejects an
+// empty title (validateTitle in server/app/service.go, and Page.IsValid), so
+// "unnamed" has to be a real stored string rather than "". One descriptor shared by
+// everything that writes it and everything that recognizes it: the title editor
+// shows it as placeholder text instead of a value, so naming a new page doesn't
+// start with clearing the old name, and a comparison against a different id's
+// translation of the same word would silently stop matching.
+// defineMessage, not a bare object: the extractor only sees a descriptor it can
+// read statically, and a shared one is never written inline at its call sites.
+export const UNTITLED_PAGE_TITLE = defineMessage({id: 'docs.page.untitled', defaultMessage: 'Untitled'});
 
 // Mirrors the server model (server/model/page.go). search_text, original_id, and
 // props exist on the server model too; add them as the editor lands.

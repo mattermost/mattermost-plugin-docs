@@ -104,7 +104,6 @@
   "docs.pageTree.nestBlocked": "Cannot nest {title} deeper than {levels} levels.",
   "docs.pageTree.overview": "Overview",
   "docs.pageTree.topLevel": "top level",
-  "docs.pageTree.untitled": "Untitled",
   "docs.renamePage.confirm": "Save",
   "docs.renamePage.label": "Page name",
   "docs.renamePage.title": "Rename page",

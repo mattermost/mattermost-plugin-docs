@@ -6,6 +6,8 @@ import classNames from 'classnames';
 import React from 'react';
 import {useIntl} from 'react-intl';
 
+import {UNTITLED_PAGE_TITLE} from 'types/docs';
+
 import styles from './page_title.module.scss';
 
 // The server's model.PageTitleMaxRunes.
@@ -30,7 +32,7 @@ type Props = {
  */
 const PageTitle = ({value, editing, onChange, onCommit, onCancel}: Props) => {
     const {formatMessage} = useIntl();
-    const untitled = formatMessage({id: 'docs.page.untitled', defaultMessage: 'Untitled'});
+    const untitled = formatMessage(UNTITLED_PAGE_TITLE);
 
     if (!editing) {
         return (

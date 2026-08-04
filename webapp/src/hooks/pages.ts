@@ -9,7 +9,7 @@ import {getPage} from 'store/selectors';
 
 import {toast} from 'components/toast';
 
-import {SPACE_PROP_DEFAULT_PAGE_ID} from 'types/docs';
+import {SPACE_PROP_DEFAULT_PAGE_ID, UNTITLED_PAGE_TITLE} from 'types/docs';
 import type {Space} from 'types/docs';
 
 import {useDocsNavigation} from './navigation';
@@ -26,7 +26,7 @@ export function useCreateRootPage(spaceId: string) {
     const dispatch = useAppDispatch();
     const {goToEditPage} = useDocsNavigation();
     const {formatMessage} = useIntl();
-    const untitled = formatMessage({id: 'docs.pageTree.untitled', defaultMessage: 'Untitled'});
+    const untitled = formatMessage(UNTITLED_PAGE_TITLE);
 
     return useCallback(async () => {
         try {

@@ -24,6 +24,9 @@ jest.mock('hooks/members', () => ({useUserProfile: () => undefined}));
 
 const PAGE = makePage('runbook', 'eng', 'Runbook');
 
+// What creating a page stores, since the server has no empty-title representation.
+const UNNAMED_PAGE = makePage('fresh', 'eng', 'Untitled');
+
 const content = (props: Partial<React.ComponentProps<typeof PageContent>> = {}) => (
     <PageContent
         page={PAGE}
@@ -40,6 +43,34 @@ describe('PageContent title commit', () => {
     beforeEach(() => {
         mockUpdatePage.mockReset().mockReturnValue(Promise.resolve(PAGE));
         mockToastError.mockReset();
+    });
+
+    // The whole point of the placeholder treatment: a page nobody has named yet
+    // opens with an empty field, so typing a name doesn't start with clearing one.
+    it('presents an unnamed page as an empty field, not the literal placeholder', () => {
+        renderWithContext(content({page: UNNAMED_PAGE}));
+
+        expect(field()).toHaveValue('');
+        expect(field()).toHaveAttribute('placeholder', 'Untitled');
+    });
+
+    it('writes a name typed over the placeholder', async () => {
+        renderWithContext(content({page: UNNAMED_PAGE}));
+
+        fireEvent.change(field(), {target: {value: 'Runbooks'}});
+        fireEvent.keyDown(field(), {key: 'Enter'});
+
+        await waitFor(() => expect(mockUpdatePage).toHaveBeenCalledWith('eng', 'fresh', {title: 'Runbooks'}));
+    });
+
+    // Leaving a fresh page untouched must not look like a rename back to the same
+    // value; the buffer is empty while the stored title isn't.
+    it('does not write when an unnamed page is left unnamed', () => {
+        renderWithContext(content({page: UNNAMED_PAGE}));
+
+        fireEvent.keyDown(field(), {key: 'Enter'});
+
+        expect(mockUpdatePage).not.toHaveBeenCalled();
     });
 
     it('does not write while typing', () => {
@@ -76,13 +107,17 @@ describe('PageContent title commit', () => {
         expect(mockUpdatePage).not.toHaveBeenCalled();
     });
 
-    it('writes an emptied title, which the server accepts', async () => {
+    // The server rejects an empty title, so clearing the field returns the page to
+    // unnamed by storing the placeholder — and the field stays empty, since that is
+    // how unnamed is presented.
+    it('stores the untitled placeholder when the field is emptied', async () => {
         renderContent();
 
         fireEvent.change(field(), {target: {value: ''}});
         fireEvent.keyDown(field(), {key: 'Enter'});
 
-        await waitFor(() => expect(mockUpdatePage).toHaveBeenCalledWith('eng', 'runbook', {title: ''}));
+        await waitFor(() => expect(mockUpdatePage).toHaveBeenCalledWith('eng', 'runbook', {title: 'Untitled'}));
+        expect(field()).toHaveValue('');
     });
 
     it('reverts on Escape without writing', () => {
