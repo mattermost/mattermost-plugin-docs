@@ -348,7 +348,7 @@ func TestHandleGetImportIssues(t *testing.T) {
 
 	codes := map[string]bool{}
 	for _, i := range page.Items {
-		require.Equal(t, model.ImportStageInspection, i.Stage)
+		require.Equal(t, string(model.ImportStageInspection), i.Stage)
 		codes[i.Code] = true
 	}
 	require.True(t, codes["manifest_warning"], "expected the producer warning to be recorded")
@@ -414,12 +414,24 @@ func TestHandleCreateImport_StagesPagesForWorker(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, pageCount, staged)
 
+	// Manifest users are persisted at upload so author resolution never depends on request memory.
+	users, err := h.store.GetImportManifestUsers(jobID)
+	require.NoError(t, err)
+	require.NotEmpty(t, users)
+
+	// Admission reserved this job's staged bytes on the shared capacity row.
+	capacity, err := h.store.GetImportCapacity()
+	require.NoError(t, err)
+	require.Greater(t, capacity.ReservedStagedBytes, int64(0))
+	require.Greater(t, capacity.ReservedRetainedBytes, int64(0))
+
 	job, err := h.store.GetImportJob(jobID)
 	require.NoError(t, err)
 	require.Equal(t, int64(pageCount), job.ProgressTotal)
 	require.Len(t, job.BundleSha256, 64)
-	// The confirmation is empty until the user confirms, and persists as an empty JSON object.
-	require.JSONEq(t, "{}", string(job.Confirmation))
+	// The confirmation is empty until the user confirms.
+	require.Empty(t, job.Confirmation.PreflightRevision)
+	require.Empty(t, job.Confirmation.OverwriteConflicts)
 	// Retention gives the user a review window rather than expiring immediately.
 	require.Greater(t, job.RetainUntil, job.CreateAt)
 }

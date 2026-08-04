@@ -38,6 +38,29 @@ type Plugin struct {
 	// enableDocs mirrors FeatureFlags.EnableDocs, refreshed by snapshotFeatureFlags on every
 	// configuration change. Per-request reads use it instead of fetching the full config.
 	enableDocs atomic.Bool
+
+	// Import upload admission. Only one bundle inspection runs per process, which bounds temporary
+	// disk use as well as parser and database work.
+	//
+	// inspectionMu guards inspectionClosed and serializes it with inspectionWG.Add: checking "closed"
+	// and registering the in-flight inspection must be one atomic step, or a deactivation could slip
+	// between them and close the store while a new inspection was starting.
+	inspectionMu        sync.Mutex
+	inspectionClosed    bool
+	inspectionWG        sync.WaitGroup
+	inspectionSemaphore chan struct{}
+}
+
+// importInspectionSlots is the number of concurrent bundle inspections allowed per process.
+const importInspectionSlots = 1
+
+// initImportAdmission opens the import inspection gate. It must run before the router serves any
+// request: with a nil semaphore every upload would be rejected as busy.
+func (p *Plugin) initImportAdmission() {
+	p.inspectionMu.Lock()
+	defer p.inspectionMu.Unlock()
+	p.inspectionClosed = false
+	p.inspectionSemaphore = make(chan struct{}, importInspectionSlots)
 }
 
 // OnActivate initializes the store, runs migrations, and wires up the service and router.
@@ -90,6 +113,9 @@ func (p *Plugin) OnActivate() error {
 	p.store = s
 	p.service = app.New(p.store, &p.client.Log, p.client)
 
+	// The inspection gate must exist before the router accepts requests.
+	p.initImportAdmission()
+
 	p.router = p.initRouter()
 
 	return nil
@@ -99,6 +125,14 @@ func (p *Plugin) OnActivate() error {
 // store/service/router: those fields are read without synchronization by ServeHTTP and handlers,
 // so niling them here would race an in-flight request against deactivation.
 func (p *Plugin) OnDeactivate() error {
+	// Close the import inspection gate first, then wait for every already-admitted inspection and its
+	// staging transaction to finish. Closing the store while one is still running would fail an
+	// upload that had already been accepted.
+	p.inspectionMu.Lock()
+	p.inspectionClosed = true
+	p.inspectionMu.Unlock()
+	p.inspectionWG.Wait()
+
 	if p.store != nil {
 		if err := p.store.Close(); err != nil {
 			p.API.LogError("Failed to close store", "err", err)

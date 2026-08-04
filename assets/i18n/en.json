@@ -4,28 +4,36 @@
     "translation": "Docs is not enabled."
   },
   {
-    "id": "api.import.duplicate_part.app_error",
-    "translation": "The import upload must contain exactly one request part and one bundle part."
+    "id": "api.import.bundle_part_not_second.app_error",
+    "translation": "The import upload must send the bundle part immediately after the request part."
   },
   {
     "id": "api.import.empty_bundle.app_error",
     "translation": "The uploaded import bundle is empty."
   },
   {
-    "id": "api.import.invalid_multipart.app_error",
-    "translation": "The import upload could not be read as a multipart request."
+    "id": "api.import.inspection_busy.app_error",
+    "translation": "Another import bundle is being inspected. Try again shortly."
   },
   {
-    "id": "api.import.missing_bundle_part.app_error",
-    "translation": "The import upload is missing its bundle part."
+    "id": "api.import.invalid_multipart.app_error",
+    "translation": "The import upload could not be read as a multipart request."
   },
   {
     "id": "api.import.missing_request_part.app_error",
     "translation": "The import upload is missing its request part."
   },
   {
+    "id": "api.import.request_part_not_first.app_error",
+    "translation": "The import upload must send the request part before the bundle part."
+  },
+  {
     "id": "api.import.request_part_too_large.app_error",
     "translation": "The import request part must be {{.MaxBytes}} bytes or smaller."
+  },
+  {
+    "id": "api.import.shutting_down.app_error",
+    "translation": "The Docs plugin is shutting down and cannot accept new imports."
   },
   {
     "id": "api.import.temp_storage_failed.app_error",
@@ -64,6 +72,10 @@
     "translation": "The request body exceeds the maximum allowed size of {{.MaxBytes}} bytes."
   },
   {
+    "id": "app.import.admission_exhausted.app_error",
+    "translation": "Import capacity is temporarily exhausted ({{.Limit}}). Try again shortly."
+  },
+  {
     "id": "app.import.bundle_content_not_processable.app_error",
     "translation": "The import bundle is valid but its content exceeds a Docs limit ({{.Code}})."
   },
@@ -86,10 +98,6 @@
   {
     "id": "app.import.create.nil_request.app_error",
     "translation": "The import request is missing."
-  },
-  {
-    "id": "app.import.create.summary_encode_failed.app_error",
-    "translation": "The inspected bundle summary could not be stored."
   },
   {
     "id": "app.import.get.invalid_id.app_error",
@@ -680,8 +688,32 @@
     "translation": "Invalid user ID for the draft."
   },
   {
+    "id": "model.import_confirmation.is_valid.duplicate_overwrite.app_error",
+    "translation": "The confirmation lists the same page twice for overwrite."
+  },
+  {
+    "id": "model.import_confirmation.is_valid.external_id.app_error",
+    "translation": "The confirmation contains an invalid source page identifier."
+  },
+  {
+    "id": "model.import_confirmation.is_valid.revision.app_error",
+    "translation": "The confirmation is missing a valid preflight revision."
+  },
+  {
+    "id": "model.import_confirmation.is_valid.space_title.app_error",
+    "translation": "The Space title must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_confirmation.is_valid.too_many_overwrites.app_error",
+    "translation": "The confirmation approves more than {{.Max}} pages for overwrite."
+  },
+  {
     "id": "model.import_issue.is_valid.code.app_error",
     "translation": "The import issue code is required and must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_issue.is_valid.external_id.app_error",
+    "translation": "The import issue source identifier is not valid."
   },
   {
     "id": "model.import_issue.is_valid.message.app_error",
@@ -704,8 +736,8 @@
     "translation": "The import job bundle checksum must be a 64-character hexadecimal digest."
   },
   {
-    "id": "model.import_job.is_valid.confirmation_too_large.app_error",
-    "translation": "The import confirmation must be {{.MaxBytes}} bytes or smaller."
+    "id": "model.import_job.is_valid.byte_accounting.app_error",
+    "translation": "The import job byte accounting is not valid."
   },
   {
     "id": "model.import_job.is_valid.error_code_length.app_error",
@@ -748,8 +780,48 @@
     "translation": "The import job team id is not valid."
   },
   {
+    "id": "model.import_job.is_valid.terminal_intent.app_error",
+    "translation": "The import job terminal intent is not valid."
+  },
+  {
+    "id": "model.import_job.is_valid.terminalizing_without_intent.app_error",
+    "translation": "An import job being finalized must record which outcome to publish."
+  },
+  {
     "id": "model.import_job.is_valid.timestamps.app_error",
     "translation": "The import job timestamps are not set."
+  },
+  {
+    "id": "model.import_manifest_user.is_valid.account_id.app_error",
+    "translation": "The manifest user account identifier is not valid."
+  },
+  {
+    "id": "model.import_manifest_user.is_valid.job_id.app_error",
+    "translation": "The manifest user import job id is not valid."
+  },
+  {
+    "id": "model.import_manifest_user.is_valid.ordinal.app_error",
+    "translation": "The manifest user ordinal is not valid."
+  },
+  {
+    "id": "model.import_result.is_valid.action.app_error",
+    "translation": "The import result action is not valid."
+  },
+  {
+    "id": "model.import_result.is_valid.external_id.app_error",
+    "translation": "The import result source identifier is not valid."
+  },
+  {
+    "id": "model.import_result.is_valid.ordinal.app_error",
+    "translation": "The import result ordinal is not valid."
+  },
+  {
+    "id": "model.import_result.is_valid.outcome.app_error",
+    "translation": "The import result outcome is not valid."
+  },
+  {
+    "id": "model.import_result.is_valid.stage.app_error",
+    "translation": "The import result stage is not valid."
   },
   {
     "id": "model.import_source.is_valid.created_by.app_error",
@@ -762,6 +834,14 @@
   {
     "id": "model.import_source.is_valid.id.app_error",
     "translation": "The import source id is not valid."
+  },
+  {
+    "id": "model.import_source.is_valid.mapping_revision.app_error",
+    "translation": "The import source mapping revision is not valid."
+  },
+  {
+    "id": "model.import_source.is_valid.organization_id.app_error",
+    "translation": "The import source organization identifier is not valid."
   },
   {
     "id": "model.import_source.is_valid.source_type.app_error",
@@ -778,6 +858,46 @@
   {
     "id": "model.import_source.is_valid.timestamps.app_error",
     "translation": "The import source timestamps are not set."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.author_account_id.app_error",
+    "translation": "The staged page author account identifier is not valid."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.external_id.app_error",
+    "translation": "The staged page source identifier is not valid."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.incoming_hash.app_error",
+    "translation": "The staged page source content hash is not valid."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.job_id.app_error",
+    "translation": "The staged page import job id is not valid."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.ordinal.app_error",
+    "translation": "The staged page ordinal must be below {{.Max}}."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.parent_external_id.app_error",
+    "translation": "The staged page parent source identifier is not valid."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.planned_action.app_error",
+    "translation": "The staged page planned action is not valid."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.preflight_hash.app_error",
+    "translation": "A staged page preflight baseline hash is not valid."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.source_line.app_error",
+    "translation": "The staged page source line number is not valid."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.title.app_error",
+    "translation": "The staged page title is required and must be {{.MaxLength}} characters or fewer."
   },
   {
     "id": "model.import_target.is_valid.kind.app_error",

@@ -11,43 +11,59 @@ import (
 )
 
 // HashFormatVersion versions the hash input shapes so a later deliberate change can migrate
-// baselines rather than silently invalidating every mapping.
-const HashFormatVersion = 1
+// baselines rather than silently invalidating every mapping. Version 2 split content from structure:
+// parent and sibling ordinal left the content hashes and became separate baseline columns, so a
+// preserved local move no longer reads as a content conflict.
+const HashFormatVersion = 2
 
-// SourceStateHashInput is the canonical shape hashed to detect whether a page's source content
-// changed between imports. It deliberately excludes bundle team, job ID, target IDs,
-// attachment/comment counts, and source ordinal — none of which are page content.
-type SourceStateHashInput struct {
-	Version          int            `json:"version"`
-	Title            string         `json:"title"`
-	CanonicalBody    string         `json:"canonical_body"`
-	ParentExternalID string         `json:"parent_external_id"`
-	AuthorAccountID  string         `json:"author_account_id"`
-	AuthorProposal   string         `json:"author_proposal"`
-	SourceCreateAt   int64          `json:"source_create_at"`
-	SourceUpdateAt   int64          `json:"source_update_at"`
-	SourceProps      map[string]any `json:"source_props"`
+// Body format markers recorded in the applied-content hash. Interactive Docs permits opaque page
+// bodies, so a stored body that cannot be canonicalized as TipTap is still hashed deterministically —
+// tagged as opaque so it compares unequal to the importer's last canonical baseline and is therefore
+// treated as a definite local edit rather than a fatal preflight error.
+const (
+	BodyFormatCanonicalTipTap = "canonical_tiptap"
+	BodyFormatOpaqueRaw       = "opaque_raw"
+)
+
+// SourceContentHashInput is the canonical shape hashed to detect whether a page's source *content*
+// changed between imports. It deliberately excludes the parent external ID, source ordinal, bundle
+// team, job ID, target IDs, and attachment/comment counts: parent and order are structural metadata
+// compared through their own baselines.
+type SourceContentHashInput struct {
+	Version         int            `json:"version"`
+	Title           string         `json:"title"`
+	CanonicalBody   string         `json:"canonical_body"`
+	AuthorAccountID string         `json:"author_account_id"`
+	AuthorProposal  string         `json:"author_proposal"`
+	SourceCreateAt  int64          `json:"source_create_at"`
+	SourceUpdateAt  int64          `json:"source_update_at"`
+	SourceProps     map[string]any `json:"source_props"`
 }
 
-// AppliedStateHashInput is the canonical shape hashed to detect whether the local page was edited
-// after the last import. It excludes SearchText (derived from Body), numeric SortOrder, timestamps,
-// and modifier identity — all of which change through normal editing unrelated to content.
-type AppliedStateHashInput struct {
-	Version                int            `json:"version"`
-	Title                  string         `json:"title"`
-	CanonicalBody          string         `json:"canonical_body"`
-	ParentID               string         `json:"parent_id"`
+// AppliedContentHashInput is the canonical shape hashed to detect whether the local page's *content*
+// was edited after the last import. It excludes ParentId (structural), SearchText (derived from the
+// body), numeric SortOrder, all local timestamps, modifier identity, operational props, and unrelated
+// top-level props — every one of which changes through normal editing or legitimate recomputation.
+type AppliedContentHashInput struct {
+	Version    int    `json:"version"`
+	Title      string `json:"title"`
+	BodyFormat string `json:"body_format"`
+	Body       string `json:"body"`
+	// DocsImportSourceFields is the canonical subset of importer-owned props mirroring source
+	// content. It must exclude last_job_id, resolved/fallback user IDs, and other operational fields.
 	DocsImportSourceFields map[string]any `json:"docs_import_source_fields"`
 }
 
-// HashSourceState returns the lowercase-hex SHA-256 of the canonical source-state input.
-func HashSourceState(in SourceStateHashInput) (string, error) {
+// HashSourceContent returns the lowercase-hex SHA-256 of the canonical source-content input.
+func HashSourceContent(in SourceContentHashInput) (string, error) {
 	in.Version = HashFormatVersion
 	return canonicalHashHex(in)
 }
 
-// HashAppliedState returns the lowercase-hex SHA-256 of the canonical applied-state input.
-func HashAppliedState(in AppliedStateHashInput) (string, error) {
+// HashAppliedContent returns the lowercase-hex SHA-256 of the canonical applied-content input. The
+// caller sets BodyFormat: BodyFormatCanonicalTipTap for a body it canonicalized, or
+// BodyFormatOpaqueRaw with the exact stored bytes when canonicalization failed.
+func HashAppliedContent(in AppliedContentHashInput) (string, error) {
 	in.Version = HashFormatVersion
 	return canonicalHashHex(in)
 }

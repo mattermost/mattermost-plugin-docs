@@ -43,7 +43,7 @@ func validBundle(t *testing.T) *bundleBuilder {
 		spaceLine(),
 		pageLine(t, "100", "", "Home", docString("Welcome home")),
 		pageLine(t, "101", "100", "Child", docString("A child page")),
-		`{"type":"page_comment","page_comment":{"page_import_source_id":"100","user":"jdoe","content":"hi","create_at":1704625200000}}`,
+		`{"type":"page_comment","page_comment":{"page_import_source_id":"100","user":"jdoe","content":"hi","create_at":1704625200000,"props":{"import_source_id":"201"}}}`,
 		resolveLine(),
 	)
 	return newBundle(jsonl, baseManifest(2, 1, 0))
@@ -54,20 +54,20 @@ func TestInspect_ValidBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if res.Version != 2 {
-		t.Errorf("version = %d, want 2", res.Version)
+	if res.Version() != 2 {
+		t.Errorf("version = %d, want 2", res.Version())
 	}
 	if len(res.Pages) != 2 {
 		t.Fatalf("pages = %d, want 2", len(res.Pages))
 	}
-	if res.CommentCount != 1 {
-		t.Errorf("comments = %d, want 1", res.CommentCount)
+	if res.CommentCount() != 1 {
+		t.Errorf("comments = %d, want 1", res.CommentCount())
 	}
-	if res.SpaceKey != "DOCS" {
-		t.Errorf("space key = %q, want DOCS", res.SpaceKey)
+	if res.SpaceKey() != "DOCS" {
+		t.Errorf("space key = %q, want DOCS", res.SpaceKey())
 	}
-	if res.SpaceTitle != "Docs" {
-		t.Errorf("space title = %q, want Docs", res.SpaceTitle)
+	if res.SpaceTitle() != "Docs" {
+		t.Errorf("space title = %q, want Docs", res.SpaceTitle())
 	}
 	// Root then child; child's parent + sibling ordinals.
 	if res.Pages[0].ExternalID != "100" || res.Pages[1].ExternalID != "101" {
@@ -76,8 +76,8 @@ func TestInspect_ValidBundle(t *testing.T) {
 	if res.Pages[1].ParentExternalID != "100" {
 		t.Errorf("child parent = %q, want 100", res.Pages[1].ParentExternalID)
 	}
-	if res.Pages[0].IncomingSourceHash == "" || !IsValidSHA256Hex(res.Pages[0].IncomingSourceHash) {
-		t.Errorf("incoming hash invalid: %q", res.Pages[0].IncomingSourceHash)
+	if res.Pages[0].IncomingSourceContentHash == "" || !IsValidSHA256Hex(res.Pages[0].IncomingSourceContentHash) {
+		t.Errorf("incoming hash invalid: %q", res.Pages[0].IncomingSourceContentHash)
 	}
 }
 
@@ -257,8 +257,8 @@ func TestInspect_CountsAndAttachments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
-	if res.AttachmentCount != 2 {
-		t.Errorf("attachments = %d, want 2", res.AttachmentCount)
+	if res.AttachmentCount() != 2 {
+		t.Errorf("attachments = %d, want 2", res.AttachmentCount())
 	}
 	if !hasIssue(res, IssueAttachmentsNotImported) {
 		t.Errorf("expected attachments_not_imported issue")
@@ -293,8 +293,8 @@ func TestInspect_RestrictedPages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
-	if res.Restricted.ManifestTotal != 2 || res.Restricted.EmittedPages != 1 || res.Restricted.ManifestOnly != 1 {
-		t.Errorf("restricted summary = %+v", res.Restricted)
+	if res.Restricted().ManifestTotal != 2 || res.Restricted().EmittedPages != 1 || res.Restricted().ManifestOnly != 1 {
+		t.Errorf("restricted summary = %+v", res.Restricted())
 	}
 }
 
@@ -364,11 +364,11 @@ func TestInspect_ManifestTrailingJSON(t *testing.T) {
 	// A trailing "]" after the manifest object is the case json.Decoder.More() misses (it returns
 	// false before a closing delimiter); the io.EOF check must still reject it.
 	raw := b.bytesZipWithManifestSuffix(t, "]")
-	contents, err := InspectArchive(bytes.NewReader(raw), int64(len(raw)))
+	archive, err := OpenArchive(bytes.NewReader(raw), int64(len(raw)))
 	if err != nil {
-		t.Fatalf("archive inspect failed: %v", err)
+		t.Fatalf("archive open failed: %v", err)
 	}
-	_, err = Inspect(contents, InspectOptions{})
+	_, err = collectInspect(archive, InspectOptions{})
 	if got := inspectErrCode(err); got != InspectErrManifestInvalid {
 		t.Fatalf("code = %q, want %q", got, InspectErrManifestInvalid)
 	}
@@ -465,7 +465,7 @@ func TestInspect_TitleSanitizedLikePreSave(t *testing.T) {
 		t.Errorf("staged title still contains the stripped control rune")
 	}
 	// The hash must be built on the sanitized title, so it equals a recompute using that title.
-	wantHash, herr := HashSourceState(SourceStateHashInput{
+	wantHash, herr := HashSourceContent(SourceContentHashInput{
 		Title:          want,
 		CanonicalBody:  res.Pages[0].CanonicalBody,
 		AuthorProposal: "j",
@@ -474,66 +474,55 @@ func TestInspect_TitleSanitizedLikePreSave(t *testing.T) {
 	if herr != nil {
 		t.Fatalf("hash: %v", herr)
 	}
-	if res.Pages[0].IncomingSourceHash != wantHash {
+	if res.Pages[0].IncomingSourceContentHash != wantHash {
 		t.Errorf("incoming hash not based on sanitized title")
 	}
 }
 
-func TestInspect_StripsNULFromPersistedFields(t *testing.T) {
-	// A NUL (U+0000) in the title, TipTap text, and an import_labels prop must be stripped during
-	// inspection so the staging insert into TEXT/JSONB columns cannot fail on an unstorable byte.
-	// The producer emits NUL as a JSON \u escape, which json.Unmarshal decodes to a real NUL byte —
-	// build the line via json.Marshal so the escaping is exactly what a real bundle carries.
+func TestInspect_RejectsNULInPersistedFields(t *testing.T) {
+	// A NUL (U+0000) cannot be stored in a TEXT column and JSONB rejects its escape, and invalid UTF-8
+	// would be silently mutated. Both are refused outright rather than sanitized: quietly altering a
+	// page body is worse than telling the user the bundle is unusable. The producer emits NUL as a
+	// JSON \u escape, so build the line via json.Marshal to mirror a real bundle.
 	nul := string(rune(0))
 	docJSON := `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":` +
 		mustQuote("hel"+nul+"lo") + `}]}]}`
-	pageObj := map[string]any{
-		"type": "page",
-		"page": map[string]any{
-			"space_import_source_id": "DOCS",
-			"user":                   "j" + nul + "doe",
-			"title":                  "Ti" + nul + "tle",
-			"content":                docJSON,
+
+	cases := map[string]map[string]any{
+		"title": {
+			"space_import_source_id": "DOCS", "user": "j", "title": "Ti" + nul + "tle",
+			"content": docString("x"), "props": map[string]any{"import_source_id": "100"},
+		},
+		"content": {
+			"space_import_source_id": "DOCS", "user": "j", "title": "T",
+			"content": docJSON, "props": map[string]any{"import_source_id": "100"},
+		},
+		"user proposal": {
+			"space_import_source_id": "DOCS", "user": "j" + nul + "doe", "title": "T",
+			"content": docString("x"), "props": map[string]any{"import_source_id": "100"},
+		},
+		"source prop": {
+			"space_import_source_id": "DOCS", "user": "j", "title": "T",
+			"content": docString("x"),
 			"props": map[string]any{
-				"import_source_id":             "100",
-				"confluence_author_account_id": "aa" + nul + "id",
-				"import_labels":                []any{"la" + nul + "bel"},
+				"import_source_id": "100",
+				"import_labels":    []any{"la" + nul + "bel"},
 			},
 		},
 	}
-	pageBytes, err := json.Marshal(pageObj)
-	if err != nil {
-		t.Fatalf("marshal page: %v", err)
-	}
-	jsonl := joinLines(versionLine(), spaceLine(), string(pageBytes), resolveLine())
-	res, err := newBundle(jsonl, baseManifest(1, 0, 0)).inspect(t, InspectOptions{})
-	if err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	p := res.Pages[0]
-	fields := map[string]string{
-		"title":         p.Title,
-		"search_text":   p.SearchText,
-		"user_proposal": p.SourceUserProposal,
-		"author_id":     p.SourceAuthorAccountID,
-	}
-	for name, v := range fields {
-		if strings.ContainsRune(v, 0) {
-			t.Errorf("%s still contains a NUL: %q", name, v)
-		}
-	}
-	if labels, ok := p.SourceProps["import_labels"].([]any); ok {
-		for _, l := range labels {
-			if s, _ := l.(string); strings.ContainsRune(s, 0) {
-				t.Errorf("import_labels entry still contains a NUL: %q", s)
+	for name, page := range cases {
+		t.Run(name, func(t *testing.T) {
+			pageBytes, err := json.Marshal(map[string]any{"type": "page", "page": page})
+			if err != nil {
+				t.Fatalf("marshal page: %v", err)
 			}
-		}
-	} else {
-		t.Errorf("expected import_labels in source props, got %+v", p.SourceProps)
-	}
-	// Sanity: the surrounding characters survived (only the NUL was removed).
-	if p.Title != "Title" || p.SourceUserProposal != "jdoe" {
-		t.Errorf("stripping removed more than the NUL: title=%q user=%q", p.Title, p.SourceUserProposal)
+			jsonl := joinLines(versionLine(), spaceLine(), string(pageBytes), resolveLine())
+			_, err = newBundle(jsonl, baseManifest(1, 0, 0)).inspect(t, InspectOptions{})
+			code := inspectErrCode(err)
+			if code != InspectErrUnstorableText && code != InspectErrTipTap {
+				t.Fatalf("code = %q, want an unstorable-text rejection", code)
+			}
+		})
 	}
 }
 
@@ -568,7 +557,7 @@ func TestInspectArchive_MissingJSONL(t *testing.T) {
 	_, _ = w.Write([]byte(`{"version":"2"}`))
 	_ = zw.Close()
 	raw := buf.Bytes()
-	_, err := InspectArchive(bytes.NewReader(raw), int64(len(raw)))
+	_, err := OpenArchive(bytes.NewReader(raw), int64(len(raw)))
 	if got := inspectErrCode(err); got != ArchiveErrMissingJSONL {
 		t.Fatalf("code = %q, want %q", got, ArchiveErrMissingJSONL)
 	}
@@ -581,7 +570,7 @@ func TestInspectArchive_MissingManifest(t *testing.T) {
 	_, _ = w.Write([]byte("x"))
 	_ = zw.Close()
 	raw := buf.Bytes()
-	_, err := InspectArchive(bytes.NewReader(raw), int64(len(raw)))
+	_, err := OpenArchive(bytes.NewReader(raw), int64(len(raw)))
 	if got := inspectErrCode(err); got != ArchiveErrMissingManifest {
 		t.Fatalf("code = %q, want %q", got, ArchiveErrMissingManifest)
 	}
@@ -596,7 +585,7 @@ func TestInspectArchive_UnexpectedEntry(t *testing.T) {
 	}
 	_ = zw.Close()
 	raw := buf.Bytes()
-	_, err := InspectArchive(bytes.NewReader(raw), int64(len(raw)))
+	_, err := OpenArchive(bytes.NewReader(raw), int64(len(raw)))
 	if got := inspectErrCode(err); got != ArchiveErrUnexpectedEntry {
 		t.Fatalf("code = %q, want %q", got, ArchiveErrUnexpectedEntry)
 	}
@@ -637,7 +626,7 @@ func TestInspectArchive_Traversal(t *testing.T) {
 			_, _ = hw.Write([]byte("x"))
 			_ = zw.Close()
 			raw := buf.Bytes()
-			_, err = InspectArchive(bytes.NewReader(raw), int64(len(raw)))
+			_, err = OpenArchive(bytes.NewReader(raw), int64(len(raw)))
 			if err == nil {
 				t.Fatalf("expected rejection of entry %q", entry)
 			}
@@ -659,7 +648,7 @@ func TestInspectArchive_DuplicateNormalizedEntry(t *testing.T) {
 	}
 	_ = zw.Close()
 	raw := buf.Bytes()
-	_, err := InspectArchive(bytes.NewReader(raw), int64(len(raw)))
+	_, err := OpenArchive(bytes.NewReader(raw), int64(len(raw)))
 	if got := inspectErrCode(err); got != ArchiveErrDuplicateEntry {
 		t.Fatalf("code = %q, want %q", got, ArchiveErrDuplicateEntry)
 	}
@@ -686,7 +675,7 @@ func TestInspectArchive_DataEntryUnsupportedMethod(t *testing.T) {
 	_, _ = hw.Write([]byte("x"))
 	_ = zw.Close()
 	raw := buf.Bytes()
-	_, err = InspectArchive(bytes.NewReader(raw), int64(len(raw)))
+	_, err = OpenArchive(bytes.NewReader(raw), int64(len(raw)))
 	if got := inspectErrCode(err); got != ArchiveErrUnsupportedMethod {
 		t.Fatalf("code = %q, want %q", got, ArchiveErrUnsupportedMethod)
 	}
@@ -710,7 +699,7 @@ func TestInspectArchive_SymlinkDirEntryRejected(t *testing.T) {
 	_, _ = hw.Write([]byte("/etc"))
 	_ = zw.Close()
 	raw := buf.Bytes()
-	_, err = InspectArchive(bytes.NewReader(raw), int64(len(raw)))
+	_, err = OpenArchive(bytes.NewReader(raw), int64(len(raw)))
 	if got := inspectErrCode(err); got != ArchiveErrUnsafeEntry {
 		t.Fatalf("code = %q, want %q", got, ArchiveErrUnsafeEntry)
 	}
@@ -725,7 +714,7 @@ func TestInspectArchive_DuplicateEntry(t *testing.T) {
 	}
 	_ = zw.Close()
 	raw := buf.Bytes()
-	_, err := InspectArchive(bytes.NewReader(raw), int64(len(raw)))
+	_, err := OpenArchive(bytes.NewReader(raw), int64(len(raw)))
 	if got := inspectErrCode(err); got != ArchiveErrDuplicateEntry {
 		t.Fatalf("code = %q, want %q", got, ArchiveErrDuplicateEntry)
 	}
@@ -733,7 +722,7 @@ func TestInspectArchive_DuplicateEntry(t *testing.T) {
 
 // helpers
 
-func hasIssue(res *InspectionResult, code string) bool {
+func hasIssue(res *collected, code string) bool {
 	for _, i := range res.Issues {
 		if i.Code == code {
 			return true

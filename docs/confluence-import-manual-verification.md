@@ -8,6 +8,9 @@ back.
 > accepted job stops at `awaiting_source` (existing-Space target) or `queued_preflight` (new-Space
 > target) and stays there. That is the expected end state for now — see
 > `implementation-plans/confluence-page-import.md`, phases 4 and 5.
+>
+> **Single node only.** V1 runs one importer worker on one application node and is explicitly
+> unsupported on clustered deployments until the HA follow-up lands.
 
 ## Prerequisites
 
@@ -172,6 +175,18 @@ Expected statuses, and the stable code carried in the response body's message pa
 | `bad-tiptap` | 400 | Page content is not a TipTap `doc` |
 | `deep-hierarchy` | 422 | Structurally valid, but deeper than the Docs depth limit of 10 |
 
+Two more rejection classes worth trying by hand, both refusals rather than silent repairs:
+
+- **A NUL or invalid UTF-8** anywhere persisted (title, body text, user proposal, `import_labels`)
+  is rejected with `unstorable_text`/`tiptap_unstorable_text`. PostgreSQL cannot store a NUL, and
+  quietly stripping it would alter the user's content behind their back.
+- **An out-of-contract identifier** — a page id, account id, or space key that is empty, longer than
+  512 bytes (255 for space/organization keys), or contains anything outside `[A-Za-z0-9._:@-]` — is
+  rejected so index sizing stays deterministic.
+
+A second concurrent upload receives `429` with `Retry-After: 30`: only one bundle inspection runs per
+process. Exceeding the per-user, per-target, or global staged-byte budget also returns `429`.
+
 A rejected upload creates **no** job — confirm with `GET /imports`. Other things worth trying: a
 non-ZIP file, a raw Confluence export, omitting the `request` or `bundle` part, adding an extra
 part, and uploading to a Space you are not a member of (`403`).
@@ -211,9 +226,16 @@ server hashed are the bytes you sent.
   received the upload:
 
 ```sql
-SELECT State, TargetKind, ProgressTotal, LENGTH(BundleSha256) AS sha_len FROM DOCS_ImportJob;
+SELECT State, TerminalIntent, TargetKind, ProgressTotal, StagedBytes, RetainedReservedBytes
+  FROM DOCS_ImportJob;
 SELECT COUNT(*) FROM DOCS_ImportStagedPage WHERE JobId = '<job id>';
+SELECT Ordinal, SourceLine, ExternalId, Restricted FROM DOCS_ImportStagedPage
+  WHERE JobId = '<job id>' ORDER BY Ordinal;
+-- Manifest users are worker input and must survive the request that uploaded them.
+SELECT Ordinal, AccountId, MattermostUsername FROM DOCS_ImportManifestUser WHERE JobId = '<job id>';
 SELECT Stage, Severity, Code FROM DOCS_ImportIssue WHERE JobId = '<job id>' ORDER BY Ordinal;
+-- Admission reserved this job's bytes on the shared singleton row.
+SELECT * FROM DOCS_ImportCapacity;
 ```
 
 ## Automated equivalents

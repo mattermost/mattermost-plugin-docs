@@ -5,7 +5,6 @@ package app
 
 import (
 	"cmp"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -16,106 +15,40 @@ import (
 
 	"github.com/mattermost/mattermost-plugin-docs/server/importer"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
+	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
-// unconfirmedJobRetention is how long a job that has not yet been confirmed is kept before cleanup
-// reclaims it (plan §21). Promotion out of the source queue resets this window so time spent waiting
-// does not consume the user's review time.
+// unconfirmedJobRetentionMillis is how long a job that has not yet been confirmed is kept before
+// cleanup expires it. Terminal jobs get a much longer retention set at terminalization.
 const unconfirmedJobRetentionMillis = int64(7 * 24 * 60 * 60 * 1000)
 
-// CreateImportFromBundle synchronously inspects an uploaded mmetl bundle and, on success, persists a
-// new import job together with its normalized staged pages and inspection issues. No page is written
-// and no Space is provisioned here: this is the upload/inspection half of the flow, and the returned
-// job is left in the state its target kind implies (awaiting_source for an existing Space, whose
-// ImportSource the user must still choose; queued_preflight for a new Space, which has exactly one
-// possible source).
+// ImportTarget is an authorized, resolved import destination. The HTTP layer obtains one *before*
+// reading any bundle bytes, so an unauthorized upload is rejected without spending disk or parser
+// work on it, then passes it back when staging the bundle.
 //
-// bundle/size address the already-uploaded archive (the HTTP layer streams it to a temp file and
-// owns its lifetime); bundleSha256 is the digest computed over those bytes during the upload.
-func (s *Service) CreateImportFromBundle(actorID string, req *model.ImportUploadRequest, bundle io.ReaderAt, size int64, bundleSha256 string) (*model.ImportJobView, *mmmodel.AppError) {
-	if req == nil {
-		return nil, mmmodel.NewAppError("CreateImportFromBundle", "app.import.create.nil_request.app_error", nil, "", http.StatusBadRequest)
-	}
-	if !mmmodel.IsValidId(actorID) {
-		return nil, mmmodel.NewAppError("CreateImportFromBundle", "app.import.create.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
-	}
-	if appErr := req.Target.IsValid(); appErr != nil {
-		return nil, appErr
-	}
-	if !importer.IsValidSHA256Hex(bundleSha256) {
-		return nil, mmmodel.NewAppError("CreateImportFromBundle", "app.import.create.invalid_bundle_digest.app_error", nil, "", http.StatusInternalServerError)
-	}
-
-	target, appErr := s.authorizeImportTarget(actorID, req.Target)
-	if appErr != nil {
-		s.log.Warn("Import upload rejected: target authorization failed",
-			"actor_id", actorID, "target_kind", string(req.Target.Kind), "error_id", appErr.Id, "status", appErr.StatusCode)
-		return nil, appErr
-	}
-
-	inspection, appErr := s.inspectImportBundle(bundle, size, target)
-	if appErr != nil {
-		s.log.Warn("Import upload rejected: bundle inspection failed",
-			"actor_id", actorID, "team_id", target.teamID, "target_space_id", target.spaceID,
-			"bundle_sha256", bundleSha256, "error_id", appErr.Id, "status", appErr.StatusCode)
-		return nil, appErr
-	}
-
-	job, appErr := buildImportJob(actorID, target, inspection, bundleSha256)
-	if appErr != nil {
-		return nil, appErr
-	}
-	staged := buildStagedPages(job.Id, inspection)
-	issues := buildInspectionIssues(job.Id, inspection)
-
-	if _, err := s.store.CreateImportJobWithStaging(job, staged, issues); err != nil {
-		s.log.Error("Import upload rejected: failed to persist job and staging",
-			"actor_id", actorID, "job_id", job.Id, "team_id", target.teamID, "err", err)
-		return nil, storeAppError("CreateImportFromBundle", err)
-	}
-
-	// Operator-facing audit line (plan §24). Deliberately carries counts and identifiers only —
-	// never page bodies or archive bytes.
-	s.log.Info("Import upload inspection accepted",
-		"job_id", job.Id,
-		"actor_id", actorID,
-		"team_id", job.TeamId,
-		"target_kind", string(job.TargetKind),
-		"target_space_id", job.TargetSpaceId,
-		"target_space_existed", job.TargetSpaceExisted,
-		"state", string(job.State),
-		"bundle_sha256", job.BundleSha256,
-		"source_space_key", inspection.SpaceKey,
-		"source_organization_id", inspection.OrganizationID,
-		"pages", len(inspection.Pages),
-		"comments", inspection.CommentCount,
-		"attachments", inspection.AttachmentCount,
-		"restricted_emitted_pages", inspection.Restricted.EmittedPages,
-		"restricted_manifest_only", inspection.Restricted.ManifestOnly,
-		"inspection_issues", len(issues),
-	)
-
-	return s.BuildImportJobView(job)
+// TeamID always comes from the server's own view — for an existing Space, from the Space itself —
+// never from the request body.
+type ImportTarget struct {
+	Kind      model.ImportTargetKind
+	SpaceID   string
+	TeamID    string
+	TeamName  string
+	Existed   bool
+	SpaceName string
 }
 
-// importTarget is the authorized, resolved destination of an import: the ids the job is created with
-// after the request has been checked. teamID always comes from the server's own view (the Space's
-// team for an existing target), never from the request body for an existing Space.
-type importTarget struct {
-	kind      model.ImportTargetKind
-	spaceID   string
-	teamID    string
-	teamName  string
-	existed   bool
-	spaceName string
-}
-
-// authorizeImportTarget validates that the actor may import into the requested target and resolves
+// AuthorizeImportTarget validates that the actor may import into the requested target and resolves
 // the ids the job will carry. Authorization is re-checked at source selection, confirmation, and
 // immediately before execution: passing here grants nothing later.
-func (s *Service) authorizeImportTarget(actorID string, req model.ImportTargetRequest) (importTarget, *mmmodel.AppError) {
-	if appErr := s.requireClient("authorizeImportTarget", "actor_id", actorID); appErr != nil {
-		return importTarget{}, appErr
+func (s *Service) AuthorizeImportTarget(actorID string, req model.ImportTargetRequest) (*ImportTarget, *mmmodel.AppError) {
+	if !mmmodel.IsValidId(actorID) {
+		return nil, mmmodel.NewAppError("AuthorizeImportTarget", "app.import.create.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	if appErr := req.IsValid(); appErr != nil {
+		return nil, appErr
+	}
+	if appErr := s.requireClient("AuthorizeImportTarget", "actor_id", actorID); appErr != nil {
+		return nil, appErr
 	}
 
 	switch req.Kind {
@@ -124,45 +57,45 @@ func (s *Service) authorizeImportTarget(actorID string, req model.ImportTargetRe
 		// current authorization boundary; CheckSpaceMembership enforces both.
 		space, appErr := s.CheckSpaceMembership(req.SpaceId, actorID, false)
 		if appErr != nil {
-			return importTarget{}, appErr
+			return nil, appErr
 		}
 		// The job's TeamId must be a real id (model validation requires it) and every later team
 		// re-check compares against it, so a Space with no team cannot be an import target.
 		if !mmmodel.IsValidId(space.TeamId) {
-			return importTarget{}, mmmodel.NewAppError("authorizeImportTarget", "app.import.target.space_without_team.app_error", nil, "", http.StatusBadRequest)
+			return nil, mmmodel.NewAppError("AuthorizeImportTarget", "app.import.target.space_without_team.app_error", nil, "", http.StatusBadRequest)
 		}
-		return importTarget{
-			kind:      model.ImportTargetExisting,
-			spaceID:   space.Id,
-			teamID:    space.TeamId,
-			teamName:  s.lookupTeamName(space.TeamId),
-			existed:   true,
-			spaceName: space.Title,
+		return &ImportTarget{
+			Kind:      model.ImportTargetExisting,
+			SpaceID:   space.Id,
+			TeamID:    space.TeamId,
+			TeamName:  s.lookupTeamName(space.TeamId),
+			Existed:   true,
+			SpaceName: space.Title,
 		}, nil
 
 	case model.ImportTargetNew:
 		active, memberErr := s.isActiveTeamMember(req.TeamId, actorID)
 		if memberErr != nil {
-			return importTarget{}, mmmodel.NewAppError("authorizeImportTarget", "app.import.target.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memberErr)
+			return nil, mmmodel.NewAppError("AuthorizeImportTarget", "app.import.target.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memberErr)
 		}
 		if !active {
-			return importTarget{}, mmmodel.NewAppError("authorizeImportTarget", "app.import.target.not_team_member.app_error", nil, "", http.StatusForbidden)
+			return nil, mmmodel.NewAppError("AuthorizeImportTarget", "app.import.target.not_team_member.app_error", nil, "", http.StatusForbidden)
 		}
 		if !s.client.User.HasPermissionToTeam(actorID, req.TeamId, mmmodel.PermissionCreatePublicChannel) {
-			return importTarget{}, mmmodel.NewAppError("authorizeImportTarget", "app.import.target.cannot_create_space.app_error", nil, "", http.StatusForbidden)
+			return nil, mmmodel.NewAppError("AuthorizeImportTarget", "app.import.target.cannot_create_space.app_error", nil, "", http.StatusForbidden)
 		}
-		// The target Space id is generated up front, before the Space exists, so execution can
-		// serialize per target without a nullable key (plan §8.2).
-		return importTarget{
-			kind:     model.ImportTargetNew,
-			spaceID:  mmmodel.NewId(),
-			teamID:   req.TeamId,
-			teamName: s.lookupTeamName(req.TeamId),
-			existed:  false,
+		// The target Space id is generated up front, before the Space exists, so the job has a stable
+		// planned id from the moment it is created.
+		return &ImportTarget{
+			Kind:     model.ImportTargetNew,
+			SpaceID:  mmmodel.NewId(),
+			TeamID:   req.TeamId,
+			TeamName: s.lookupTeamName(req.TeamId),
+			Existed:  false,
 		}, nil
 
 	default:
-		return importTarget{}, mmmodel.NewAppError("authorizeImportTarget", "model.import_target.is_valid.kind.app_error", nil, "", http.StatusBadRequest)
+		return nil, mmmodel.NewAppError("AuthorizeImportTarget", "model.import_target.is_valid.kind.app_error", nil, "", http.StatusBadRequest)
 	}
 }
 
@@ -178,26 +111,226 @@ func (s *Service) lookupTeamName(teamID string) string {
 	return team.Name
 }
 
-// inspectImportBundle runs the pure archive/JSONL inspection and maps its stable failure codes onto
-// HTTP statuses.
-func (s *Service) inspectImportBundle(bundle io.ReaderAt, size int64, target importTarget) (*importer.InspectionResult, *mmmodel.AppError) {
-	contents, err := importer.InspectArchive(bundle, size)
-	if err != nil {
-		return nil, importFailureAppError("inspectImportBundle", err)
+// CreateImportFromBundle inspects an uploaded mmetl bundle and persists a new import job together
+// with its normalized staged pages, manifest users, and inspection issues. The target must already
+// have been authorized by AuthorizeImportTarget.
+//
+// Inspection is synchronous but memory-bounded: the archive is streamed, each page is canonicalized
+// and written into the open staging transaction one at a time, and no page body is retained. No page
+// is written to the tree and no Space is provisioned here — the job is left in the state its target
+// kind implies (awaiting_source for an existing Space, whose ImportSource the user must still choose;
+// queued_preflight for a new Space, which has exactly one possible source).
+func (s *Service) CreateImportFromBundle(actorID string, target *ImportTarget, bundle io.ReaderAt, size int64, bundleSha256 string) (*model.ImportJobView, *mmmodel.AppError) {
+	if target == nil {
+		return nil, mmmodel.NewAppError("CreateImportFromBundle", "app.import.create.nil_request.app_error", nil, "", http.StatusBadRequest)
 	}
-	inspection, err := importer.Inspect(contents, importer.InspectOptions{
-		RequestedTeamName: target.teamName,
-		Now:               mmmodel.GetMillis(),
-	})
-	if err != nil {
-		return nil, importFailureAppError("inspectImportBundle", err)
+	if !importer.IsValidSHA256Hex(bundleSha256) {
+		return nil, mmmodel.NewAppError("CreateImportFromBundle", "app.import.create.invalid_bundle_digest.app_error", nil, "", http.StatusInternalServerError)
 	}
-	return inspection, nil
+
+	archive, err := importer.OpenArchive(bundle, size)
+	if err != nil {
+		s.logImportRejected(actorID, target, bundleSha256, err)
+		return nil, importFailureAppError("CreateImportFromBundle", err)
+	}
+
+	job := s.newImportJob(actorID, target, bundleSha256)
+
+	// The inspector streams into the store's writer while the staging transaction is open. Issue
+	// ordinals are assigned in emission order, which the inspector keeps deterministic.
+	var summary *importer.InspectionSummary
+	issueOrdinal := 0
+	saved, staging, storeErr := s.store.CreateImportJobStreaming(job, store.DefaultImportAdmissionLimits(),
+		func(w store.ImportStagingWriter) (model.ImportBundleSummary, error) {
+			sink := importer.StreamSink{
+				Page: func(p *importer.StagedPage) error {
+					return w.AddPage(stagedPageRecord(job.Id, p))
+				},
+				ManifestUser: func(u *importer.StagedManifestUser) error {
+					return w.AddManifestUser(&model.ImportManifestUser{
+						JobId:              job.Id,
+						Ordinal:            u.Ordinal,
+						AccountId:          u.AccountID,
+						ConfluenceUsername: u.ConfluenceUsername,
+						MattermostUsername: u.MattermostUsername,
+					})
+				},
+				Issue: func(i *importer.InspectionIssue) error {
+					record := inspectionIssueRecord(job.Id, issueOrdinal, i)
+					issueOrdinal++
+					return w.AddIssue(record)
+				},
+			}
+			var inspectErr error
+			summary, inspectErr = importer.Inspect(archive, importer.InspectOptions{
+				RequestedTeamName: target.TeamName,
+				Now:               mmmodel.GetMillis(),
+			}, sink)
+			if inspectErr != nil {
+				return model.ImportBundleSummary{}, inspectErr
+			}
+			return bundleSummaryOf(summary), nil
+		})
+	if storeErr != nil {
+		return nil, s.importStagingAppError(actorID, target, bundleSha256, storeErr)
+	}
+
+	// Operator-facing audit line. Deliberately carries counts and identifiers only — never page
+	// bodies or archive bytes.
+	s.log.Info("Import upload inspection accepted",
+		"job_id", saved.Id,
+		"actor_id", actorID,
+		"team_id", saved.TeamId,
+		"target_kind", string(saved.TargetKind),
+		"target_space_id", saved.TargetSpaceId,
+		"target_space_existed", saved.TargetSpaceExisted,
+		"state", string(saved.State),
+		"bundle_sha256", saved.BundleSha256,
+		"source_space_key", summary.SpaceKey,
+		"source_organization_id", summary.OrganizationID,
+		"pages", staging.Pages,
+		"comments", summary.CommentCount,
+		"attachments", summary.AttachmentCount,
+		"restricted_emitted_pages", summary.Restricted.EmittedPages,
+		"restricted_manifest_only", summary.Restricted.ManifestOnly,
+		"manifest_users", staging.ManifestUsers,
+		"inspection_issues", staging.Issues,
+		"staged_bytes", staging.StagedBytes,
+	)
+
+	return s.BuildImportJobView(saved)
+}
+
+// newImportJob assembles the job row inserted at the start of the staging transaction. Counts and the
+// bundle summary are filled in by the store once streaming settles them.
+func (s *Service) newImportJob(actorID string, target *ImportTarget, bundleSha256 string) *model.ImportJob {
+	now := mmmodel.GetMillis()
+	job := &model.ImportJob{
+		Id:                 mmmodel.NewId(),
+		ActorId:            actorID,
+		TeamId:             target.TeamID,
+		TargetKind:         target.Kind,
+		TargetSpaceId:      target.SpaceID,
+		TargetSpaceExisted: target.Existed,
+		BundleSha256:       bundleSha256,
+		CreateAt:           now,
+		UpdateAt:           now,
+		RetainUntil:        now + unconfirmedJobRetentionMillis,
+	}
+	if target.Kind == model.ImportTargetNew {
+		// A new Space has exactly one possible source identity, so there is nothing for the user to
+		// choose: the source is created during execution and the job goes straight to preflight.
+		job.SourceSelectionMode = model.ImportSourceModeNew
+		job.SelectedImportSourceId = mmmodel.NewId()
+		job.State = model.ImportStateQueuedPreflight
+	} else {
+		// An existing Space may already hold several import sources, so the user must pick one (or
+		// ask for a new identity) before mappings can be consulted.
+		job.State = model.ImportStateAwaitingSource
+	}
+	return job
+}
+
+// stagedPageRecord converts one streamed page into its staging row.
+func stagedPageRecord(jobID string, p *importer.StagedPage) *model.ImportStagedPage {
+	return &model.ImportStagedPage{
+		JobId:                     jobID,
+		Ordinal:                   p.Ordinal,
+		SourceLine:                p.SourceLine,
+		ExternalId:                p.ExternalID,
+		ParentExternalId:          p.ParentExternalID,
+		SourceOrdinal:             p.SourceOrdinal,
+		Restricted:                p.Restricted,
+		Title:                     p.Title,
+		CanonicalBody:             p.CanonicalBody,
+		SearchText:                p.SearchText,
+		SourceUserProposal:        p.SourceUserProposal,
+		SourceAuthorAccountId:     p.SourceAuthorAccountID,
+		SourceCreateAt:            p.SourceCreateAt,
+		SourceUpdateAt:            p.SourceUpdateAt,
+		SourceProps:               mmmodel.StringInterface(p.SourceProps),
+		IncomingSourceContentHash: p.IncomingSourceContentHash,
+	}
+}
+
+// inspectionIssueRecord converts one streamed inspection finding into its issue row. Ordinals follow
+// the inspector's deterministic emission order within the independent inspection stage.
+func inspectionIssueRecord(jobID string, ordinal int, i *importer.InspectionIssue) *model.ImportIssueRecord {
+	entityType := ""
+	if i.ExternalID != "" {
+		entityType = model.ImportEntityTypePage
+	}
+	return &model.ImportIssueRecord{
+		JobId:       jobID,
+		Stage:       model.ImportStageInspection,
+		Ordinal:     ordinal,
+		Severity:    model.ImportIssueSeverity(i.Severity),
+		Code:        i.Code,
+		EntityType:  entityType,
+		ExternalId:  i.ExternalID,
+		Title:       i.Title,
+		Message:     i.Message,
+		Remediation: i.Remediation,
+		Details:     mmmodel.StringInterface(i.Details),
+	}
+}
+
+// bundleSummaryOf projects the inspection summary onto the API-safe bundle summary persisted on the
+// job, so it survives staged-body cleanup and can be rebuilt without re-reading the archive.
+func bundleSummaryOf(summary *importer.InspectionSummary) model.ImportBundleSummary {
+	return model.ImportBundleSummary{
+		Version: summary.Version,
+		Source: model.ImportReportSource{
+			OrganizationId: summary.OrganizationID,
+			SpaceKey:       summary.SpaceKey,
+			SpaceName:      summary.SpaceName,
+		},
+		SpaceDefaults: model.ImportSpaceDefaults{
+			Title:       summary.SpaceTitle,
+			Description: summary.SpaceDescription,
+		},
+		Counts: model.ImportBundleCounts{
+			Pages:                   summary.PageCount,
+			Comments:                summary.CommentCount,
+			Attachments:             summary.AttachmentCount,
+			RestrictedManifestTotal: summary.Restricted.ManifestTotal,
+			RestrictedEmittedPages:  summary.Restricted.EmittedPages,
+			RestrictedManifestOnly:  summary.Restricted.ManifestOnly,
+		},
+	}
+}
+
+// importStagingAppError maps a staging failure onto its HTTP contract. An inspection rejection that
+// surfaced through the transaction keeps its stable importer code; an admission failure becomes 429.
+func (s *Service) importStagingAppError(actorID string, target *ImportTarget, bundleSha256 string, err error) *mmmodel.AppError {
+	if importFailureCode(err) != "" {
+		s.logImportRejected(actorID, target, bundleSha256, err)
+		return importFailureAppError("CreateImportFromBundle", err)
+	}
+	if store.IsErrAdmissionExhausted(err) {
+		var admission *store.ErrAdmissionExhausted
+		_ = errors.As(err, &admission)
+		s.log.Warn("Import upload rejected: admission exhausted",
+			"actor_id", actorID, "team_id", target.TeamID, "target_space_id", target.SpaceID,
+			"bundle_sha256", bundleSha256, "limit", admission.Limit)
+		return mmmodel.NewAppError("CreateImportFromBundle", "app.import.admission_exhausted.app_error",
+			map[string]any{"Limit": admission.Limit}, "", http.StatusTooManyRequests).Wrap(err)
+	}
+	s.log.Error("Import upload rejected: failed to persist job and staging",
+		"actor_id", actorID, "team_id", target.TeamID, "target_space_id", target.SpaceID, "err", err)
+	return storeAppError("CreateImportFromBundle", err)
+}
+
+// logImportRejected writes the operator-facing rejection line, without any bundle content.
+func (s *Service) logImportRejected(actorID string, target *ImportTarget, bundleSha256 string, err error) {
+	s.log.Warn("Import upload rejected: bundle inspection failed",
+		"actor_id", actorID, "team_id", target.TeamID, "target_space_id", target.SpaceID,
+		"bundle_sha256", bundleSha256, "code", importFailureCode(err))
 }
 
 // importContentLimitCodes are the inspection/archive failure codes that mean "this is a structurally
-// valid bundle whose content exceeds a Docs limit". They map to 422 rather than 400, matching the
-// plan's error contract (§23), so a client can distinguish a malformed bundle from an oversized one.
+// valid bundle whose content exceeds a Docs limit". They map to 422 rather than 400 so a client can
+// distinguish a malformed bundle from an oversized one.
 var importContentLimitCodes = map[string]struct{}{
 	importer.InspectErrTooManyPages:     {},
 	importer.InspectErrDepthExceeded:    {},
@@ -208,18 +341,16 @@ var importContentLimitCodes = map[string]struct{}{
 	importer.TipTapErrSearchTooLarge:    {},
 }
 
-// importArchiveSizeCodes are the archive failure codes that mean "the upload itself is too large",
-// which the plan maps to 413.
+// importArchiveSizeCodes are the failure codes that mean "the upload itself is too large", which the
+// error contract maps to 413.
 var importArchiveSizeCodes = map[string]struct{}{
+	importer.ArchiveErrTooLarge:         {},
 	importer.ArchiveErrManifestTooLarge: {},
 	importer.ArchiveErrJSONLTooLarge:    {},
 	importer.ArchiveErrTooManyEntries:   {},
 	importer.InspectErrLineTooLong:      {},
 }
 
-// importFailureAppError converts an importer rejection into an *AppError carrying the importer's
-// stable code as a parameter, so the client sees a machine-readable reason without any internal
-// detail (paths, SQL, page bodies) leaking into the response.
 // The stable importer code is carried as a message parameter rather than as DetailedError, because
 // writeAppError scrubs DetailedError before responding and the code is the one detail that makes the
 // failure actionable. Each branch constructs its AppError with a string-literal id so the i18n
@@ -251,123 +382,6 @@ func importFailureCode(err error) string {
 		return tiptapErr.Code
 	}
 	return ""
-}
-
-// buildImportJob assembles the job row from the authorized target and the inspection result.
-func buildImportJob(actorID string, target importTarget, inspection *importer.InspectionResult, bundleSha256 string) (*model.ImportJob, *mmmodel.AppError) {
-	now := mmmodel.GetMillis()
-	job := &model.ImportJob{
-		Id:                 mmmodel.NewId(),
-		ActorId:            actorID,
-		TeamId:             target.teamID,
-		TargetKind:         target.kind,
-		TargetSpaceId:      target.spaceID,
-		TargetSpaceExisted: target.existed,
-		BundleSha256:       bundleSha256,
-		ProgressTotal:      int64(len(inspection.Pages)),
-		CreateAt:           now,
-		UpdateAt:           now,
-		RetainUntil:        now + unconfirmedJobRetentionMillis,
-	}
-
-	if target.kind == model.ImportTargetNew {
-		// A new Space has exactly one possible source identity, so there is nothing for the user to
-		// choose: the source is created as part of execution and the job goes straight to preflight.
-		job.SourceSelectionMode = model.ImportSourceModeNew
-		job.SelectedImportSourceId = mmmodel.NewId()
-		job.State = model.ImportStateQueuedPreflight
-	} else {
-		// An existing Space may already hold several import sources, so the user must pick one (or
-		// ask for a new identity) before mappings can be consulted.
-		job.State = model.ImportStateAwaitingSource
-	}
-
-	summary, err := toStringInterface(bundleSummaryOf(inspection))
-	if err != nil {
-		return nil, mmmodel.NewAppError("buildImportJob", "app.import.create.summary_encode_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
-	}
-	job.BundleSummary = summary
-
-	return job, nil
-}
-
-// bundleSummaryOf projects the inspection result onto the API-safe bundle summary persisted on the
-// job, so the summary survives staged-body cleanup and can be rebuilt without re-reading the archive.
-func bundleSummaryOf(inspection *importer.InspectionResult) model.ImportBundleSummary {
-	return model.ImportBundleSummary{
-		Version: inspection.Version,
-		Source: model.ImportReportSource{
-			OrganizationId: inspection.OrganizationID,
-			SpaceKey:       inspection.SpaceKey,
-			SpaceName:      inspection.SpaceName,
-		},
-		SpaceDefaults: model.ImportSpaceDefaults{
-			Title:       inspection.SpaceTitle,
-			Description: inspection.SpaceDescription,
-		},
-		Counts: model.ImportBundleCounts{
-			Pages:                   len(inspection.Pages),
-			Comments:                inspection.CommentCount,
-			Attachments:             inspection.AttachmentCount,
-			RestrictedManifestTotal: inspection.Restricted.ManifestTotal,
-			RestrictedEmittedPages:  inspection.Restricted.EmittedPages,
-			RestrictedManifestOnly:  inspection.Restricted.ManifestOnly,
-		},
-	}
-}
-
-// buildStagedPages converts the inspector's normalized pages into staging rows. Bodies and search
-// text are carried as-is; the importer has already canonicalized and size-checked them.
-func buildStagedPages(jobID string, inspection *importer.InspectionResult) []*model.ImportStagedPage {
-	staged := make([]*model.ImportStagedPage, 0, len(inspection.Pages))
-	for i := range inspection.Pages {
-		p := &inspection.Pages[i]
-		staged = append(staged, &model.ImportStagedPage{
-			JobId:                 jobID,
-			Ordinal:               p.Ordinal,
-			ExternalId:            p.ExternalID,
-			ParentExternalId:      p.ParentExternalID,
-			SourceOrdinal:         p.SourceOrdinal,
-			Title:                 p.Title,
-			CanonicalBody:         p.CanonicalBody,
-			SearchText:            p.SearchText,
-			SourceUserProposal:    p.SourceUserProposal,
-			SourceAuthorAccountId: p.SourceAuthorAccountID,
-			SourceCreateAt:        p.SourceCreateAt,
-			SourceUpdateAt:        p.SourceUpdateAt,
-			SourceProps:           mmmodel.StringInterface(p.SourceProps),
-			IncomingSourceHash:    p.IncomingSourceHash,
-		})
-	}
-	return staged
-}
-
-// buildInspectionIssues converts inspection findings into issue rows with deterministic ordinals
-// (the finding's index), so a replay of the same bundle produces the same rows. The count is bounded
-// by the importer: manifest warnings are capped, and per-page findings are a small constant times
-// the page cap.
-func buildInspectionIssues(jobID string, inspection *importer.InspectionResult) []*model.ImportIssueRecord {
-	issues := make([]*model.ImportIssueRecord, 0, len(inspection.Issues))
-	for i, is := range inspection.Issues {
-		entityType := ""
-		if is.ExternalID != "" {
-			entityType = model.ImportEntityTypePage
-		}
-		issues = append(issues, &model.ImportIssueRecord{
-			JobId:       jobID,
-			Stage:       model.ImportStageInspection,
-			Ordinal:     i,
-			Severity:    is.Severity,
-			Code:        is.Code,
-			EntityType:  entityType,
-			ExternalId:  is.ExternalID,
-			Title:       is.Title,
-			Message:     is.Message,
-			Remediation: is.Remediation,
-			Details:     mmmodel.StringInterface(is.Details),
-		})
-	}
-	return issues
 }
 
 // GetImportJob returns the actor's own job. Job visibility is actor-only in V1, and another user's
@@ -449,14 +463,10 @@ func (s *Service) GetImportIssues(jobID, actorID, stage, severity string, page, 
 // validateIssueFilters rejects a stage/severity filter outside the persisted enumerations, so a typo
 // silently returning an empty page is not mistaken for "no issues".
 func validateIssueFilters(stage, severity string) *mmmodel.AppError {
-	switch stage {
-	case "", model.ImportStageInspection, model.ImportStagePreflight, model.ImportStageExecution:
-	default:
+	if stage != "" && !model.ImportIssueStage(stage).IsValid() {
 		return mmmodel.NewAppError("validateIssueFilters", "app.import.issues.invalid_stage.app_error", nil, "", http.StatusBadRequest)
 	}
-	switch severity {
-	case "", model.ImportSeverityInfo, model.ImportSeverityWarning, model.ImportSeverityError:
-	default:
+	if severity != "" && !model.ImportIssueSeverity(severity).IsValid() {
 		return mmmodel.NewAppError("validateIssueFilters", "app.import.issues.invalid_severity.app_error", nil, "", http.StatusBadRequest)
 	}
 	return nil
@@ -465,8 +475,8 @@ func validateIssueFilters(stage, severity string) *mmmodel.AppError {
 // importIssueViewOf projects a persisted issue row onto the report-facing issue shape.
 func importIssueViewOf(r *model.ImportIssueRecord) *model.ImportIssue {
 	issue := &model.ImportIssue{
-		Stage:       r.Stage,
-		Severity:    r.Severity,
+		Stage:       string(r.Stage),
+		Severity:    string(r.Severity),
 		Code:        r.Code,
 		Message:     r.Message,
 		Remediation: r.Remediation,
@@ -501,8 +511,8 @@ func (s *Service) BuildImportJobView(job *model.ImportJob) (*model.ImportJobView
 }
 
 // buildImportJobViewWithoutCandidates projects the fields that need no extra queries. It deliberately
-// omits claim tokens, lease owners, the provisioned channel id, raw confirmation, and internal error
-// messages: only the stable error code is exposed.
+// omits the provisioned channel id, lease/accounting internals, raw confirmation, persisted
+// baselines, and internal error messages: only the stable error code is exposed.
 func buildImportJobViewWithoutCandidates(job *model.ImportJob) *model.ImportJobView {
 	view := &model.ImportJobView{
 		Id:    job.Id,
@@ -519,7 +529,7 @@ func buildImportJobViewWithoutCandidates(job *model.ImportJob) *model.ImportJobV
 			TeamId:  job.TeamId,
 			Existed: job.TargetSpaceExisted,
 		},
-		Bundle:           bundleSummaryFromJob(job),
+		Bundle:           job.BundleSummary,
 		SourceCandidates: []model.ImportSourceCandidate{},
 		CreateAt:         job.CreateAt,
 		UpdateAt:         job.UpdateAt,
@@ -535,51 +545,34 @@ func buildImportJobViewWithoutCandidates(job *model.ImportJob) *model.ImportJobV
 	if job.ErrorCode != "" {
 		view.Error = &model.ImportPublicError{Code: job.ErrorCode}
 	}
-	view.RequiredAcknowledgements = requiredAcknowledgements(job, view.Bundle)
+	view.RequiredAcknowledgements = requiredAcknowledgements(job)
 	return view
-}
-
-// bundleSummaryFromJob decodes the summary persisted on the job. A summary that cannot be decoded
-// yields the zero value rather than failing the read: the job and its issues remain inspectable,
-// which matters more than the counts block on a status call.
-func bundleSummaryFromJob(job *model.ImportJob) model.ImportBundleSummary {
-	var summary model.ImportBundleSummary
-	if len(job.BundleSummary) == 0 {
-		return summary
-	}
-	raw, err := json.Marshal(job.BundleSummary)
-	if err != nil {
-		return summary
-	}
-	if err := json.Unmarshal(raw, &summary); err != nil {
-		return model.ImportBundleSummary{}
-	}
-	return summary
 }
 
 // requiredAcknowledgements lists the confirmation acknowledgements already implied by the bundle and
 // target. reimport_existing_pages is deliberately absent until preflight has compared the bundle
 // against existing mappings — only then is it known whether any page is a reimport.
-func requiredAcknowledgements(job *model.ImportJob, bundle model.ImportBundleSummary) []string {
+func requiredAcknowledgements(job *model.ImportJob) []string {
+	counts := job.BundleSummary.Counts
 	acks := []string{}
 	if job.TargetKind == model.ImportTargetNew {
 		acks = append(acks, model.ImportAckNewSpaceMetadata)
 	}
-	if bundle.Counts.Comments > 0 || bundle.Counts.Attachments > 0 {
+	if counts.Comments > 0 || counts.Attachments > 0 {
 		acks = append(acks, model.ImportAckPageOnlyPartial)
 	}
-	// Only restricted entries that intersect emitted pages widen real access; manifest-only entries
-	// are reported instead, so they must not demand an acknowledgement.
-	if bundle.Counts.RestrictedEmittedPages > 0 {
+	// Only restricted entries that intersect emitted pages can widen real access; manifest-only
+	// entries are reported instead, so they must not demand an acknowledgement.
+	if counts.RestrictedEmittedPages > 0 {
 		acks = append(acks, model.ImportAckWidenRestricted)
 	}
 	return acks
 }
 
 // importSourceCandidates suggests existing ImportSources in the job's target Space that may be the
-// same Confluence Space as the uploaded bundle, each with the reasons it matched. Scoring only
-// orders the suggestions: selection is always explicit, because two Confluence instances can share
-// an organization id, a space key, and a display name while being genuinely different sources.
+// same Confluence Space as the uploaded bundle, each with the reasons it matched. Scoring only orders
+// the suggestions: selection is always explicit, because two Confluence instances can share an
+// organization id, a space key, and a display name while being genuinely different sources.
 func (s *Service) importSourceCandidates(job *model.ImportJob, bundle model.ImportBundleSummary) ([]model.ImportSourceCandidate, *mmmodel.AppError) {
 	sources, err := s.store.GetImportSourcesForSpace(job.TargetSpaceId)
 	if err != nil {
@@ -600,7 +593,6 @@ func (s *Service) importSourceCandidates(job *model.ImportJob, bundle model.Impo
 
 	candidates := make([]model.ImportSourceCandidate, 0, len(sources))
 	for _, src := range sources {
-		reasons := candidateMatchReasons(src, bundle)
 		candidates = append(candidates, model.ImportSourceCandidate{
 			ImportSourceId:   src.Id,
 			DisplayName:      src.DisplayName,
@@ -608,11 +600,11 @@ func (s *Service) importSourceCandidates(job *model.ImportJob, bundle model.Impo
 			ExternalSpaceKey: src.ExternalSpaceKey,
 			MappedPageCount:  mapped[src.Id],
 			LastImportAt:     src.LastImportAt,
-			MatchReasons:     reasons,
+			MatchReasons:     candidateMatchReasons(src, bundle),
 		})
 	}
 
-	// Strongest match first, then most recently imported, then oldest — a stable order so the UI
+	// Strongest match first, then most recently imported, then id — a stable total order so the UI
 	// does not reshuffle between polls.
 	sortImportSourceCandidates(candidates)
 	return candidates, nil
@@ -643,9 +635,9 @@ func candidateMatchReasons(src *model.ImportSource, bundle model.ImportBundleSum
 	return reasons
 }
 
-// displayNameSuggestsSource reports whether a source's user-chosen display name mentions the
-// bundle's space key or name. This is a deliberately simple containment check: the display name is
-// free text a user typed, so it is a hint for ordering, never evidence of identity.
+// displayNameSuggestsSource reports whether a source's user-chosen display name mentions the bundle's
+// space key or name. This is a deliberately simple containment check: the display name is free text a
+// user typed, so it is a hint for ordering, never evidence of identity.
 func displayNameSuggestsSource(displayName string, bundle model.ImportBundleSummary) bool {
 	name := strings.ToLower(strings.TrimSpace(displayName))
 	if name == "" {
@@ -688,18 +680,4 @@ func sortImportSourceCandidates(candidates []model.ImportSourceCandidate) {
 		}
 		return cmp.Compare(a.ImportSourceId, b.ImportSourceId)
 	})
-}
-
-// toStringInterface round-trips a typed value through JSON into the opaque props map the jsonb
-// columns are modelled with, so the persisted shape always matches the Go type's JSON tags.
-func toStringInterface(v any) (mmmodel.StringInterface, error) {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return nil, err
-	}
-	out := mmmodel.StringInterface{}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
 }

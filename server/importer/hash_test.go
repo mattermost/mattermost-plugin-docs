@@ -6,7 +6,7 @@ package importer
 import "testing"
 
 func TestHashSourceState_StableAcrossMapKeyOrder(t *testing.T) {
-	a := SourceStateHashInput{
+	a := SourceContentHashInput{
 		Title:         "Title",
 		CanonicalBody: `{"type":"doc"}`,
 		SourceProps: map[string]any{
@@ -15,7 +15,7 @@ func TestHashSourceState_StableAcrossMapKeyOrder(t *testing.T) {
 			"aaa":           "first",
 		},
 	}
-	b := SourceStateHashInput{
+	b := SourceContentHashInput{
 		Title:         "Title",
 		CanonicalBody: `{"type":"doc"}`,
 		SourceProps: map[string]any{
@@ -24,11 +24,11 @@ func TestHashSourceState_StableAcrossMapKeyOrder(t *testing.T) {
 			"import_labels": []any{"x", "y"},
 		},
 	}
-	ha, err := HashSourceState(a)
+	ha, err := HashSourceContent(a)
 	if err != nil {
 		t.Fatal(err)
 	}
-	hb, err := HashSourceState(b)
+	hb, err := HashSourceContent(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,20 +41,20 @@ func TestHashSourceState_StableAcrossMapKeyOrder(t *testing.T) {
 }
 
 func TestHashSourceState_ChangesWithContent(t *testing.T) {
-	base := SourceStateHashInput{Title: "A", CanonicalBody: `{"type":"doc"}`}
+	base := SourceContentHashInput{Title: "A", CanonicalBody: `{"type":"doc"}`}
 	changed := base
 	changed.CanonicalBody = `{"type":"doc","content":[]}`
-	h1, _ := HashSourceState(base)
-	h2, _ := HashSourceState(changed)
+	h1, _ := HashSourceContent(base)
+	h2, _ := HashSourceContent(changed)
 	if h1 == h2 {
 		t.Errorf("expected different hashes for different bodies")
 	}
 }
 
 func TestHashAppliedState_Deterministic(t *testing.T) {
-	in := AppliedStateHashInput{Title: "T", CanonicalBody: `{"type":"doc"}`, ParentID: "abc"}
-	h1, _ := HashAppliedState(in)
-	h2, _ := HashAppliedState(in)
+	in := AppliedContentHashInput{Title: "T", BodyFormat: BodyFormatCanonicalTipTap, Body: `{"type":"doc"}`}
+	h1, _ := HashAppliedContent(in)
+	h2, _ := HashAppliedContent(in)
 	if h1 != h2 || !IsValidSHA256Hex(h1) {
 		t.Errorf("applied hash not deterministic/valid: %s %s", h1, h2)
 	}

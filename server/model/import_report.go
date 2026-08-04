@@ -54,9 +54,13 @@ type ImportReportTarget struct {
 // Fidelity string constants. Every report advertises exactly these values so no client can mistake
 // a page-only import for a full-fidelity one.
 const (
-	FidelityScopePagesOnly                = "pages_only"
-	FidelityCountedNotImported            = "counted_not_imported"
-	FidelityRestrictedWidened             = "imported_with_widened_access"
+	FidelityScopePagesOnly     = "pages_only"
+	FidelityCountedNotImported = "counted_not_imported"
+	// FidelityRestrictedSpaceLevel states the importer's *policy* for restricted pages: any that are
+	// actually imported get Space-level access. It deliberately does not assert that every restricted
+	// page was imported — a restricted page may equally end up blocked or not attempted. Actual
+	// per-page outcomes come from result rows, never from this fixed block.
+	FidelityRestrictedSpaceLevel          = "space_level_access_if_present"
 	FidelityRestrictedReportedNotImported = "reported_not_imported"
 )
 
@@ -76,22 +80,45 @@ func NewImportFidelity() ImportFidelity {
 		Scope:                         FidelityScopePagesOnly,
 		Comments:                      FidelityCountedNotImported,
 		Attachments:                   FidelityCountedNotImported,
-		RestrictedEmittedPages:        FidelityRestrictedWidened,
+		RestrictedEmittedPages:        FidelityRestrictedSpaceLevel,
 		RestrictedManifestOnlyEntries: FidelityRestrictedReportedNotImported,
 		FullFidelity:                  false,
 	}
 }
 
-// ImportReportCounts aggregates action and entity counts for a report.
+// ImportReportCounts aggregates the manifest, restriction, action, author, link, and issue counts a
+// report carries. The restriction counts sit alongside the manifest counts because the fixed fidelity
+// block describes policy only and can never stand in for actual restricted-page outcomes.
 type ImportReportCounts struct {
-	Pages            int            `json:"pages"`
-	Comments         int            `json:"comments"`
-	Attachments      int            `json:"attachments"`
-	Actions          map[string]int `json:"actions"`
-	Authors          map[string]int `json:"authors,omitempty"`
-	Links            map[string]int `json:"links,omitempty"`
-	IssuesBySeverity map[string]int `json:"issues_by_severity,omitempty"`
+	Pages                   int            `json:"pages"`
+	Comments                int            `json:"comments"`
+	Attachments             int            `json:"attachments"`
+	RestrictedManifestTotal int            `json:"restricted_manifest_total"`
+	RestrictedEmittedPages  int            `json:"restricted_emitted_pages"`
+	RestrictedManifestOnly  int            `json:"restricted_manifest_only"`
+	Actions                 map[string]int `json:"actions"`
+	Outcomes                map[string]int `json:"outcomes,omitempty"`
+	Authors                 map[string]int `json:"authors,omitempty"`
+	Links                   map[string]int `json:"links,omitempty"`
+	IssuesBySeverity        map[string]int `json:"issues_by_severity,omitempty"`
 }
+
+// ImportStaleOrdinalBase is the first result ordinal reserved for stale entries. Page results occupy
+// ordinals 0..ImportMaxPages-1, so stale results always start here — including for a zero-page
+// bundle — which keeps the two ranges from ever colliding.
+const ImportStaleOrdinalBase = ImportMaxPages
+
+// ImportJobIssueOrdinalBase is the first issue ordinal reserved for stale/job-level issues. Per-page
+// issue ordinals are Ordinal*ImportIssuesPerPage + issueIndex, so they stay below this value.
+const ImportJobIssueOrdinalBase = 500000
+
+// ImportIssuesPerPage is the per-page issue ordinal stride: at most this many distinct issue codes
+// are recorded per page, with repeats aggregated by stable code.
+const ImportIssuesPerPage = 100
+
+// ImportMaxIssueCodesPerPage bounds how many distinct codes one page may contribute, keeping each
+// page's issue ordinals inside its stride.
+const ImportMaxIssueCodesPerPage = 32
 
 // ImportReportSummary is the compact report projection embedded in ImportJobView (no per-entity
 // results or issues; those stream from the report/issues endpoints).

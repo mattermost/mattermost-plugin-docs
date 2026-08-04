@@ -8,7 +8,11 @@
 // in isolation; the app/store layers orchestrate it.
 package importer
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+	"unicode/utf8"
+)
 
 // ContractVersion is the only JSONL contract version this importer accepts.
 const ContractVersion = 2
@@ -146,37 +150,63 @@ func derefProps(p *map[string]any) map[string]any {
 	return *p
 }
 
-// stripNUL removes NUL (U+0000) bytes from s. PostgreSQL cannot store a NUL in a TEXT/VARCHAR value
-// and rejects the escaped-NUL code point inside a JSONB string, so any NUL in producer content
-// would fail the staging insert with an opaque DB error even though the bundle inspected cleanly.
-// Dropping it during inspection keeps an otherwise valid bundle importable — mirroring how
-// mmmodel.SanitizeUnicode silently drops other disallowed runes — and, because it runs before
-// hashing, keeps the source hash consistent with the value actually stored.
-func stripNUL(s string) string {
-	if !strings.ContainsRune(s, 0) {
-		return s
-	}
-	return strings.ReplaceAll(s, "\x00", "")
+// IsStorableText reports whether s is safe to persist: valid UTF-8 with no NUL (U+0000). PostgreSQL
+// cannot store a NUL in a TEXT/VARCHAR value and rejects the escaped-NUL code point inside a JSONB
+// string, and invalid UTF-8 would be silently replaced or mutated. Both are rejected during
+// inspection rather than sanitized away, so the bundle the user uploaded is either imported exactly
+// or refused with a clear reason — a silently altered page body is worse than a rejected bundle.
+func IsStorableText(s string) bool {
+	return utf8.ValidString(s) && !strings.ContainsRune(s, 0)
 }
 
-// stripNULFromValue recursively removes NUL bytes from every string in a decoded JSON value
-// (strings, array elements, and nested object values), so a NUL cannot survive inside a
-// JSONB-persisted source-props map. It mutates maps/slices in place and returns v for convenience.
-func stripNULFromValue(v any) any {
+// findUnstorableValue walks a decoded JSON value and returns the first string it finds that is not
+// storable (see IsStorableText), plus false. It is used to reject a source-props map before it can
+// reach a JSONB column.
+func findUnstorableValue(v any) (string, bool) {
 	switch t := v.(type) {
 	case string:
-		return stripNUL(t)
-	case []any:
-		for i := range t {
-			t[i] = stripNULFromValue(t[i])
+		if !IsStorableText(t) {
+			return t, false
 		}
-		return t
+	case []any:
+		for _, item := range t {
+			if bad, ok := findUnstorableValue(item); !ok {
+				return bad, false
+			}
+		}
 	case map[string]any:
 		for k, val := range t {
-			t[k] = stripNULFromValue(val)
+			if !IsStorableText(k) {
+				return k, false
+			}
+			if bad, ok := findUnstorableValue(val); !ok {
+				return bad, false
+			}
 		}
-		return t
-	default:
-		return v
 	}
+	return "", true
+}
+
+// Bounded-identifier limits for values that participate in a B-tree index. They mirror the migration's
+// column widths; identifiers are additionally required to match IdentifierPattern.
+const (
+	// ExternalIDMaxBytes bounds Confluence page IDs and Atlassian account IDs.
+	ExternalIDMaxBytes = 512
+	// SpaceKeyMaxBytes bounds source organization IDs and Space keys.
+	SpaceKeyMaxBytes = 255
+)
+
+// IdentifierPattern is the ASCII contract every non-empty external identifier must match. Every
+// identifier the authoritative producer emits fits this set, so bounding it keeps index sizing
+// deterministic and rejects incompatible future producer identifiers until the contract is
+// deliberately revised.
+var IdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9._:@-]+$`)
+
+// IsValidIdentifier reports whether id is non-empty, no longer than maxBytes, and matches the
+// contract pattern. Callers that allow absence check for "" themselves.
+func IsValidIdentifier(id string, maxBytes int) bool {
+	if id == "" || len(id) > maxBytes {
+		return false
+	}
+	return IdentifierPattern.MatchString(id)
 }
