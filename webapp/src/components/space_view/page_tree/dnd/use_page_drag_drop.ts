@@ -20,21 +20,31 @@ type Args = {
     // re-register the drag listeners.
     canDrop: (sourcePageId: string, mode: PageDropTarget['mode']) => boolean;
     enabled: boolean;
+
+    // True when this row's children are showing. Such a row has no bottom edge to
+    // offer: the pixels below it hold its children, so an indicator drawn there
+    // would sit above the very subtree the drop lands after. "Last in this group"
+    // is expressed by the group's trailing strip instead, and "first child" by the
+    // first child's own top edge.
+    expanded: boolean;
 };
 
 // A row's vertical hitbox: the top and bottom quarters reorder above/below the
 // row; the middle half reparents (drop onto center → become a child).
 const REORDER_BAND = 0.25;
 
-function computeDropTarget(element: Element, clientY: number): PageDropTarget {
+function computeDropTarget(element: Element, clientY: number, expanded: boolean): PageDropTarget {
     const rect = element.getBoundingClientRect();
     const ratio = (clientY - rect.top) / rect.height;
     if (ratio <= REORDER_BAND) {
         return {mode: 'reorder', edge: 'top'};
     }
-    if (ratio >= 1 - REORDER_BAND) {
+    if (!expanded && ratio >= 1 - REORDER_BAND) {
         return {mode: 'reorder', edge: 'bottom'};
     }
+
+    // An expanded row's bottom band becomes more reparent surface, so dragging low
+    // over it nests rather than doing nothing.
     return {mode: 'reparent'};
 }
 
@@ -42,7 +52,7 @@ function computeDropTarget(element: Element, clientY: number): PageDropTarget {
 // which is the row the drop indicator is describing.
 const PREVIEW_OFFSET = {x: '12px', y: '8px'};
 
-export function usePageDragDrop({pageId, element, canDrop, enabled}: Args) {
+export function usePageDragDrop({pageId, element, canDrop, enabled, expanded}: Args) {
     const [dragging, setDragging] = useState(false);
     const [dropTarget, setDropTarget] = useState<PageDropTarget | null>(null);
 
@@ -86,7 +96,7 @@ export function usePageDragDrop({pageId, element, canDrop, enabled}: Args) {
                 // travels with the data and suppresses both the indicator and the
                 // move itself (see `usePagesDnd`).
                 getData: ({input, element: el, source}) => {
-                    const target = computeDropTarget(el, input.clientY);
+                    const target = computeDropTarget(el, input.clientY, expanded);
                     return {
                         type: PAGE_DRAG_TYPE,
                         pageId,
@@ -123,7 +133,7 @@ export function usePageDragDrop({pageId, element, canDrop, enabled}: Args) {
                 },
             }),
         );
-    }, [pageId, element, enabled, canDropRef]);
+    }, [pageId, element, enabled, expanded, canDropRef]);
 
     return {dragging, dropTarget, blocked, previewContainer};
 }

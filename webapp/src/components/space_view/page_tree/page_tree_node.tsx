@@ -25,6 +25,7 @@ import Spacer from 'components/spacer/spacer';
 import {MAX_PAGE_DEPTH} from './depth';
 import {usePageDragDrop} from './dnd/use_page_drag_drop';
 import PageDragPreview from './page_drag_preview';
+import PageTreeAppendZone from './page_tree_append_zone';
 import styles from './page_tree_node.module.scss';
 
 const INDENT_STEP = 12;
@@ -60,6 +61,13 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
     const hasChildren = children.length > 0;
     const isCollapsed = collapsed.has(page.id);
 
+    // A group only needs a trailing append strip when its last row is expanded:
+    // that row's own bottom edge would be drawn above its children while meaning
+    // "after them". Any other last row — a leaf, or a collapsed parent — has
+    // nothing below it, so its bottom edge already reads correctly.
+    const lastChild = children[children.length - 1];
+    const lastChildExpanded = Boolean(lastChild) && lastChild.children.length > 0 && !collapsed.has(lastChild.page.id);
+
     // A drag can never drop into its own subtree; those rows aren't drop targets
     // (truthful canDrop), so mark them as an invalid zone for the whole drag.
     const inDraggedSubtree = draggingId !== null && draggingId !== page.id && (descendants.get(draggingId)?.has(page.id) ?? false);
@@ -73,6 +81,7 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
         pageId: page.id,
         element,
         enabled: dndEnabled,
+        expanded: hasChildren && !isCollapsed,
         canDrop: (sourceId, mode) => {
             if (descendants.get(sourceId)?.has(page.id)) {
                 return false;
@@ -282,6 +291,16 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
                             registerRow={registerRow}
                         />
                     ))}
+                    {lastChildExpanded && (
+                        <PageTreeAppendZone
+                            parentId={page.id}
+                            indent={(depth + 1) * INDENT_STEP}
+                            enabled={dndEnabled}
+                            canDrop={(sourceId) => !descendants.get(sourceId)?.has(page.id) &&
+                                sourceId !== page.id &&
+                                depth + 1 + (subtreeHeights.get(sourceId) ?? 0) <= MAX_PAGE_DEPTH}
+                        />
+                    )}
                 </div>
             )}
         </div>

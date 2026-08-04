@@ -7,7 +7,7 @@ import {useEffect, useState} from 'react';
 
 import type {Page} from 'types/docs';
 
-import {PAGE_DRAG_TYPE, type PageDropTarget} from './types';
+import {PAGE_APPEND_TYPE, PAGE_DRAG_TYPE, type PageDropTarget} from './types';
 
 type MoveArgs = {
     pageId: string;
@@ -70,11 +70,26 @@ export function usePagesDnd({pages, onMove, enabled}: Args) {
             setDraggingId(null);
 
             const target = location.current.dropTargets[0];
-            if (!target || target.data.type !== PAGE_DRAG_TYPE || target.data.blocked) {
+            if (!target || target.data.blocked) {
                 return;
             }
 
             const sourceId = source.data.pageId as string;
+
+            // A group's trailing strip appends into that group; it names a parent
+            // rather than a target row, so it resolves without one.
+            if (target.data.type === PAGE_APPEND_TYPE) {
+                const parentId = target.data.parentId as string;
+                const siblingIndex = pagesRef.current.
+                    filter((page) => page.parent_id === parentId && page.id !== sourceId).length;
+                onMoveRef.current({pageId: sourceId, parentId, siblingIndex});
+                return;
+            }
+
+            if (target.data.type !== PAGE_DRAG_TYPE) {
+                return;
+            }
+
             const targetId = target.data.pageId as string;
             const drop = {mode: target.data.mode, edge: target.data.edge} as PageDropTarget;
 

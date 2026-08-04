@@ -20,10 +20,11 @@ import {toast} from 'components/toast';
 
 import type {Space} from 'types/docs';
 
-import {MAX_PAGE_LEVELS, buildSubtreeHeightMap} from './depth';
+import {MAX_PAGE_DEPTH, MAX_PAGE_LEVELS, buildSubtreeHeightMap} from './depth';
 import {usePagesDnd} from './dnd/use_pages_dnd';
 import {flattenVisibleRows, resolveReorder} from './keyboard';
 import type {ReorderIntent} from './keyboard';
+import PageTreeAppendZone from './page_tree_append_zone';
 import PageTreeNode from './page_tree_node';
 import styles from './page_tree_panel.module.scss';
 import SpaceHomeItem from './space_home_item';
@@ -49,6 +50,11 @@ const PageTreePanel = ({space}: {space: Space}) => {
     const descendants = useMemo(() => buildDescendantMap(roots), [roots]);
     const subtreeHeights = useMemo(() => buildSubtreeHeightMap(roots), [roots]);
     const visibleRows = useMemo(() => flattenVisibleRows(roots, collapsed), [roots, collapsed]);
+
+    // See the trailing append strip below: the root group needs one only when its
+    // last row is expanded, and so has children rendered beneath its bottom edge.
+    const lastRoot = roots[roots.length - 1];
+    const lastRootExpanded = Boolean(lastRoot) && lastRoot.children.length > 0 && !collapsed.has(lastRoot.page.id);
 
     // The tree is a single tab stop (roving tabindex), so it tracks which row owns
     // it. Focus itself moves imperatively through the registry below rather than
@@ -270,6 +276,18 @@ const PageTreePanel = ({space}: {space: Space}) => {
                         registerRow={registerRow}
                     />
                 ))}
+                {/* Only when the last root is expanded: otherwise its own bottom
+                    edge already means "last at root" and is drawn in the right
+                    place. Appending at root puts the moved page at depth 0, so
+                    only its own subtree has to fit under the cap. */}
+                {lastRootExpanded && (
+                    <PageTreeAppendZone
+                        parentId=''
+                        indent={0}
+                        enabled={true}
+                        canDrop={(sourceId) => (subtreeHeights.get(sourceId) ?? 0) <= MAX_PAGE_DEPTH}
+                    />
+                )}
             </div>
 
             <p

@@ -11,6 +11,18 @@ export type PageDropTarget =
     | {mode: 'reorder'; edge: Edge}
     | {mode: 'reparent'};
 
+// A group's trailing strip, which appends as the last item of that group. It has
+// no target row — the group's own parent is the target, and '' means the root
+// group — so it can express "last at this level", which a row edge cannot: an
+// expanded row's bottom edge sits above its children, not after them.
+export const PAGE_APPEND_TYPE = 'docs-page-append';
+
+export type PageAppendData = {
+    type: typeof PAGE_APPEND_TYPE;
+    parentId: string;
+    blocked: boolean;
+};
+
 export type PageDragData = {
     type: typeof PAGE_DRAG_TYPE;
     pageId: string;
