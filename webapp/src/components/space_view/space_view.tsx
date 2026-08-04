@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {useDocsNavigation} from 'hooks/navigation';
+import {useDocsNavigation, useTogglePageEditMode} from 'hooks/navigation';
 import {useDefaultPagePath} from 'hooks/pages';
 import {useAppSelector} from 'hooks/redux';
 import {useSpaceStats} from 'hooks/spaces';
@@ -32,7 +32,8 @@ import styles from './space_view.module.scss';
 // (hero) until a page is routed, at which point it shows that page instead.
 // Page bodies are a placeholder until the editor is mounted.
 const SpaceView = ({space}: {space: Space}) => {
-    const {pageId, isEditing, paths, goToPage, goToEditPage} = useDocsNavigation();
+    const {pageId, isEditing, paths} = useDocsNavigation();
+    const toggleEdit = useTogglePageEditMode(space.id);
     const page = useAppSelector((state) => (pageId ? getPageInSpace(state, space.id, pageId) : undefined));
     const pagesLoaded = useAppSelector((state) => arePagesLoadedForSpace(state, space.id));
     const {pageCount, memberCount} = useSpaceStats(space.id);
@@ -44,16 +45,6 @@ const SpaceView = ({space}: {space: Space}) => {
     const toggleInfo = useCallback(() => setInfoView((view) => (view ? null : 'root')), []);
     const closeInfo = useCallback(() => setInfoView(null), []);
     const showMembers = useCallback(() => setInfoView('members'), []);
-    const toggleEdit = useCallback(() => {
-        if (!pageId) {
-            return;
-        }
-        if (isEditing) {
-            goToPage(space.id, pageId);
-        } else {
-            goToEditPage(space.id, pageId);
-        }
-    }, [isEditing, pageId, space.id, goToPage, goToEditPage]);
 
     // A space with a default page opens on that page; `<Redirect>` replaces the
     // space-home entry rather than pushing one.

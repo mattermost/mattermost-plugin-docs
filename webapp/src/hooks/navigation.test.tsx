@@ -4,7 +4,7 @@
 import {fireEvent, screen} from '@testing-library/react';
 import React from 'react';
 
-import {useDocsNavigation} from './navigation';
+import {useDocsNavigation, useTogglePageEditMode} from './navigation';
 
 import {renderWithContext} from '../../tests/react_testing_utils';
 
@@ -101,5 +101,43 @@ describe('useDocsNavigation goToEditPage', () => {
 
         expect(history.location.pathname + history.location.search).toBe('/myteam/spaces/space1/pageX?edit=1');
         expect(history.length).toBe(2);
+    });
+});
+
+function ToggleProbe({spaceId}: {spaceId: string}) {
+    const toggleEdit = useTogglePageEditMode(spaceId);
+    return (
+        <button
+            data-testid='toggle-edit'
+            onClick={toggleEdit}
+        />
+    );
+}
+
+const toggleFrom = (route: string) => {
+    const {history} = renderWithContext(<ToggleProbe spaceId='space1'/>, {
+        route,
+        state: {currentTeam: {id: 't1', name: 'myteam'}},
+    });
+
+    fireEvent.click(screen.getByTestId('toggle-edit'));
+
+    return {history, url: history.location.pathname + history.location.search};
+};
+
+describe('useTogglePageEditMode', () => {
+    it('enters edit mode from a page URL', () => {
+        expect(toggleFrom('/myteam/spaces/space1/pageX').url).toBe('/myteam/spaces/space1/pageX?edit=1');
+    });
+
+    it('leaves edit mode from an edit URL', () => {
+        expect(toggleFrom('/myteam/spaces/space1/pageX?edit=1').url).toBe('/myteam/spaces/space1/pageX');
+    });
+
+    it('does nothing on a space URL, where no page is routed', () => {
+        const {history, url} = toggleFrom('/myteam/spaces/space1');
+
+        expect(url).toBe('/myteam/spaces/space1');
+        expect(history.length).toBe(1);
     });
 });

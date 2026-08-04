@@ -78,3 +78,24 @@ export function useDocsNavigation() {
         },
     };
 }
+
+/**
+ * Returns a handler that moves the routed page in and out of edit mode: into
+ * `?edit=1` while reading, back to the bare page path while editing. Both are
+ * pushes, so Back is an exit. A no-op when no page is routed, since there is
+ * nothing to edit.
+ */
+export function useTogglePageEditMode(spaceId: string) {
+    const {pageId, isEditing, goToPage, goToEditPage} = useDocsNavigation();
+
+    return useCallback(() => {
+        if (!pageId) {
+            return;
+        }
+        if (isEditing) {
+            goToPage(spaceId, pageId);
+        } else {
+            goToEditPage(spaceId, pageId);
+        }
+    }, [isEditing, pageId, spaceId, goToPage, goToEditPage]);
+}
