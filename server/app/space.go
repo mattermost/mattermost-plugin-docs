@@ -160,8 +160,8 @@ func (s *Service) resolveSpaceScheme(capabilities []string) (schemeID string, po
 // space row pointing at it, and adds the creator as a member with SchemeAdmin. space.ChannelId
 // must be empty — it is set from the created channel. defaultCapabilities nil defaults to the
 // contribute preset; viewAccess nil defaults to open. If any step after the backing channel's
-// creation fails, the backing channel is archived to avoid an orphan, and a newly created custom
-// scheme (a non-preset defaultCapabilities) is best-effort retired.
+// creation fails, the backing channel is archived to avoid an orphan. Any scheme resolved along the
+// way is left alone: presets and pooled schemes are shared, so none is this space's to remove.
 //
 // The channel create and the row save are separate systems with no shared transaction: a crash
 // between them leaves a real channel with no space row and no persisted marker to key a retry
@@ -262,7 +262,7 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultCapabili
 	}
 
 	// Only now that the backing channel points at the scheme will core admit role writes carrying
-	// space permissions, so a freshly created custom scheme gets its exact permission sets here
+	// space permissions, so a freshly created pooled scheme gets its exact permission sets here
 	// rather than at create time.
 	if pooledRoles != nil {
 		if cfgErr := s.configureSharedScheme(pooledRoles, capabilities); cfgErr != nil {
@@ -342,8 +342,8 @@ func (s *Service) GetSpaceWithDeleted(spaceID string) (*model.Space, *mmmodel.Ap
 
 // spaceDefaultCapabilities returns space's current default capability set in wire form
 // (read_page-free): the generated user role's stored permission set projected onto the capability
-// vocabulary. The projection covers presets and space-private custom schemes alike, since a
-// preset's generated user role carries exactly that preset's capabilities.
+// vocabulary. The projection covers presets and pooled schemes alike, since a preset's generated
+// user role carries exactly that preset's capabilities.
 func (s *Service) spaceDefaultCapabilities(space *model.Space) ([]string, error) {
 	roles, err := s.getSchemeRolesForChannel(space.ChannelId)
 	if err != nil {
@@ -418,9 +418,10 @@ func (s *Service) BuildSpaceWithAccess(space *model.Space, userID string) (*mode
 }
 
 // SetSpaceDefaultCapabilities changes space's default capability set: a set matching a seeded
-// preset repoints the backing channel at the shared preset scheme; any other set creates a new
-// immutable space-private custom scheme and repoints, retiring the previous custom scheme once
-// unreferenced. The repoint goes through pluginapi Channel.Update (not a store-direct write) so
+// preset repoints the backing channel at that preset's scheme; any other set repoints it at the
+// pooled scheme for that capability set, created on first use and shared by every space configured
+// the same way. The superseded scheme is left in place — no scheme belongs to a single space, so
+// there is nothing to retire. The repoint goes through pluginapi Channel.Update (not a store-direct write) so
 // core's member-cache invalidation runs and the new scheme takes effect on the next permission
 // check, rather than when the cache expires.
 func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities []string, actingUserID string) (*model.SpaceWithAccess, *mmmodel.AppError) {
@@ -451,12 +452,12 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 		requested := model.NormalizeCapabilitySet(capabilities)
 		_, requestedIsPreset := model.SchemeNameForDefaultCapabilities(requested)
 
-		// A non-preset set always mints a fresh scheme, so the id comparison below could never
-		// recognize an unchanged custom set; compare the projected capabilities instead. A preset
-		// request is left to that id comparison, which settles it by scheme identity — the
-		// projection cannot, because a custom scheme whose roles were never configured projects to
-		// the same empty set as the read-only preset, and shortcutting there would strand the space
-		// on that unconfigured scheme with no way to move off it.
+		// An unchanged non-preset set is settled here, on the projected capabilities, so the no-op
+		// costs no scheme resolution at all. A preset request is left to the id comparison below,
+		// which settles it by scheme identity — the projection cannot, because a pooled scheme
+		// whose roles were never configured projects to the same empty set as the read-only preset,
+		// and shortcutting there would strand the space on that unconfigured scheme with no way to
+		// move off it.
 		if !requestedIsPreset && liveCapabilitiesErr == nil && slices.Equal(liveCapabilities, requested) {
 			return nil
 		}

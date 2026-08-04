@@ -800,10 +800,6 @@
     "translation": "The admin_space capability cannot be a space default."
   },
   {
-    "id": "model.space_capabilities.delete_page_not_grantable.app_error",
-    "translation": "The delete_page capability cannot be granted on its own. Grant admin_space instead."
-  },
-  {
     "id": "model.space_capabilities.read_page_not_grantable.app_error",
     "translation": "The read_page capability cannot be granted; every space member holds it."
   },

@@ -302,8 +302,8 @@ func TestHandler_SpaceAndPageRoundTrip(t *testing.T) {
 	t.Run("move then delete page", func(t *testing.T) {
 		parent := seedPage(t, h.store, space.Id, channelID, "")
 		// Owned by the acting user: a contribute-default member holds only delete_own_page, not
-		// delete_page (any) — deleting a page owned by someone else is a different, admin-gated
-		// route, exercised separately.
+		// delete_page (any) — deleting a page owned by someone else needs that separate grant,
+		// exercised separately.
 		page := testutil.MustCreatePage(t, h.store, space.Id, channelID, user, "")
 
 		rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id+"/move", user, map[string]any{

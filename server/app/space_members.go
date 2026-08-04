@@ -166,7 +166,7 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 	// the admin count all read state that a concurrent SetSpaceDefaultCapabilities (repoints the
 	// channel's scheme) or SetSpaceMemberCapabilities/RemoveSpaceMember (the last-admin invariant)
 	// call could change: a stale read taken before the lock lets a concurrent default-capabilities
-	// repoint write a retired scheme's role name, or a concurrent promotion/demotion flip admin
+	// repoint write a superseded scheme's role name, or a concurrent promotion/demotion flip admin
 	// status, under this operation's feet — so every one of them runs inside the space-keyed
 	// advisory lock, alongside the mutation itself.
 	var appErr *mmmodel.AppError

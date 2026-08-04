@@ -553,7 +553,7 @@ func stubCustomSchemeCreate(t *testing.T, mockAPI *plugintest.API) string {
 	userRole, adminRole, guestRole := "custom_user_role", "custom_admin_role", "custom_guest_role"
 	mockAPI.On("CreateScheme", mock.AnythingOfType("*model.Scheme")).Return(&mmmodel.Scheme{
 		Id:                      schemeID,
-		Name:                    "docs_space_custom_" + mmmodel.NewId(),
+		Name:                    "docs_space_default_" + mmmodel.NewId(),
 		Scope:                   mmmodel.SchemeScopeChannel,
 		DefaultChannelUserRole:  userRole,
 		DefaultChannelAdminRole: adminRole,
@@ -695,7 +695,7 @@ func stubCustomSchemeCreateFailingPatch(t *testing.T, mockAPI *plugintest.API) s
 	userRole, adminRole, guestRole := "unconfigurable_user_role", "unconfigurable_admin_role", "unconfigurable_guest_role"
 	mockAPI.On("CreateScheme", mock.AnythingOfType("*model.Scheme")).Return(&mmmodel.Scheme{
 		Id:                      schemeID,
-		Name:                    "docs_space_custom_" + mmmodel.NewId(),
+		Name:                    "docs_space_default_" + mmmodel.NewId(),
 		Scope:                   mmmodel.SchemeScopeChannel,
 		DefaultChannelUserRole:  userRole,
 		DefaultChannelAdminRole: adminRole,

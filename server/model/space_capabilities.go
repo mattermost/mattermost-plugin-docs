@@ -26,8 +26,9 @@ var (
 	CapabilityCommentPage   = mmmodel.PermissionCommentPage.Id
 	CapabilityEditPage      = mmmodel.PermissionEditPage.Id
 	CapabilityDeleteOwnPage = mmmodel.PermissionDeleteOwnPage.Id
-	// CapabilityDeletePage (delete-any) is never independently grantable — it is granted only by
-	// the admin capability (SchemeAdmin), never by an ExplicitRoles atomic role.
+	// CapabilityDeletePage is delete-any: it covers pages the holder does not own, and so
+	// subsumes CapabilityDeleteOwnPage. Grantable independently of the admin capability, matching
+	// Confluence, where Delete is assignable without Admin.
 	CapabilityDeletePage = mmmodel.PermissionDeletePage.Id
 	// CapabilityAdminSpace is the admin capability: a member-grant target (toggles SchemeAdmin),
 	// but never a valid space-default capability.
@@ -35,22 +36,24 @@ var (
 )
 
 // grantableMemberCapabilities is the wire vocabulary a caller may explicitly grant to a member:
-// the four atomic per-page capabilities plus the admin capability.
+// the five atomic per-page capabilities plus the admin capability.
 var grantableMemberCapabilities = map[string]bool{
 	CapabilityCreatePage:    true,
 	CapabilityCommentPage:   true,
 	CapabilityEditPage:      true,
 	CapabilityDeleteOwnPage: true,
+	CapabilityDeletePage:    true,
 	CapabilityAdminSpace:    true,
 }
 
 // grantableDefaultCapabilities is the wire vocabulary a space-default capability set may hold:
-// the four atomic per-page capabilities. admin_space is member-grant-only, never a space default.
+// the five atomic per-page capabilities. admin_space is member-grant-only, never a space default.
 var grantableDefaultCapabilities = map[string]bool{
 	CapabilityCreatePage:    true,
 	CapabilityCommentPage:   true,
 	CapabilityEditPage:      true,
 	CapabilityDeleteOwnPage: true,
+	CapabilityDeletePage:    true,
 }
 
 // capabilityAtomicRole maps each non-admin grantable capability to the core atomic capability
@@ -60,6 +63,7 @@ var capabilityAtomicRole = map[string]string{
 	CapabilityCommentPage:   mmmodel.SpacePageCommenterRoleId,
 	CapabilityEditPage:      mmmodel.SpacePageEditorRoleId,
 	CapabilityDeleteOwnPage: mmmodel.SpacePageDeleterOwnRoleId,
+	CapabilityDeletePage:    mmmodel.SpacePageDeleterRoleId,
 }
 
 // atomicRoleCapability is the reverse of capabilityAtomicRole, used to parse a stored
@@ -97,16 +101,13 @@ var presetCapabilitySets = map[string][]string{
 	mmmodel.SchemeNameSpaceReadOnly:   NormalizeCapabilitySet(stripReadPage(mmmodel.SpaceDefaultReadOnlyPermissions)),
 }
 
-// validateCapabilities validates capabilities against allowed, rejecting read_page as the non-grantable
-// baseline and delete_page as admin-only, plus admin_space when rejectAdmin is set. An unknown
-// token is rejected. Dedup-tolerant. where attributes the rejection to the calling validator.
+// validateCapabilities validates capabilities against allowed, rejecting read_page as the
+// non-grantable baseline, plus admin_space when rejectAdmin is set. An unknown token is rejected.
+// Dedup-tolerant. where attributes the rejection to the calling validator.
 func validateCapabilities(where string, capabilities []string, allowed map[string]bool, rejectAdmin bool) *mmmodel.AppError {
 	for _, c := range capabilities {
 		if c == CapabilityReadPage {
 			return mmmodel.NewAppError(where, "model.space_capabilities.read_page_not_grantable.app_error", nil, "", http.StatusBadRequest)
-		}
-		if c == CapabilityDeletePage {
-			return mmmodel.NewAppError(where, "model.space_capabilities.delete_page_not_grantable.app_error", nil, "", http.StatusBadRequest)
 		}
 		if rejectAdmin && c == CapabilityAdminSpace {
 			return mmmodel.NewAppError(where, "model.space_capabilities.admin_not_a_default.app_error", nil, "", http.StatusBadRequest)
@@ -211,7 +212,7 @@ func AdminEffectiveCapabilities() []string {
 	return NormalizeCapabilitySet(spaceAdminEffectiveCapabilities)
 }
 
-// DefaultCapabilitiesFromPermissions projects a custom scheme's stored user-role permission set
+// DefaultCapabilitiesFromPermissions projects a pooled scheme's stored user-role permission set
 // (raw core permission ids) onto the wire default-capability vocabulary: read_page (the implicit
 // baseline) and any non-default-capability permission are stripped; only the grantable default
 // capability tokens survive.

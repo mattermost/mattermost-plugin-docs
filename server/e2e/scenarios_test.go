@@ -162,7 +162,7 @@ func TestScenarios(t *testing.T) {
 	t.Run("scenario3_private_team_space", func(t *testing.T) {
 		var space pluginmodel.Space
 		status, body, err := doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/teams/"+team.Id+"/spaces",
-			map[string]string{"title": "Scenario Private Team Space", "view_access": pluginmodel.ViewAccessPrivate}, &space)
+			map[string]any{"title": "Scenario Private Team Space", "view_access": pluginmodel.ViewAccessPrivate}, &space)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusCreated, status, "createSpace failed: %s", body)
 		spacesToClean = append(spacesToClean, space.Id)
@@ -433,12 +433,12 @@ func TestScenarios(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, status, "control delete")
 	})
 
-	// scenario8 exercises the space-private CUSTOM scheme path — a default-capability set matching
-	// no preset — which the plugin provisions through core's CreateScheme + PatchRole plugin API.
-	// It asserts the whole write→read chain end-to-end against real core: the custom set round-trips
-	// through GET (proving PatchRole set exactly those role permissions and they project back), a
-	// plain member is enforced against it, and switching back to a preset retires the now-unreferenced
-	// custom scheme.
+	// scenario8 exercises the POOLED scheme path — a default-capability set matching no preset —
+	// which the plugin provisions through core's CreateScheme + PatchRole plugin API. It asserts the
+	// whole write→read chain end-to-end against real core: the custom set round-trips through GET
+	// (proving PatchRole set exactly those role permissions and they project back), a plain member
+	// is enforced against it, and switching back to a preset repoints the channel, leaving the
+	// superseded scheme in place for any other space using it.
 	t.Run("scenario8_custom_capability_scheme", func(t *testing.T) {
 		customCaps := []string{pluginmodel.CapabilityCreatePage, pluginmodel.CapabilityEditPage}
 
@@ -449,8 +449,8 @@ func TestScenarios(t *testing.T) {
 		require.Equal(t, http.StatusCreated, status, "createSpace with custom default caps failed: %s", body)
 		spacesToClean = append(spacesToClean, space.Id)
 
-		// The custom set must round-trip: create provisioned a docs_space_custom_* scheme whose user
-		// role PatchRole set to exactly {read_page}+customCaps, and GET projects that back.
+		// The custom set must round-trip: create resolved a pooled docs_space_default_* scheme whose
+		// user role PatchRole set to exactly {read_page}+customCaps, and GET projects that back.
 		var withAccess pluginmodel.SpaceWithAccess
 		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodGet, "/spaces/"+space.Id, nil, &withAccess)
 		require.NoError(t, err)
@@ -512,12 +512,77 @@ func TestScenarios(t *testing.T) {
 			"OUTSIDER's default-granted write did not re-join them — removal should NOT be durable on an open space")
 	})
 
-	t.Run("gap_delete_page_not_grantable", func(t *testing.T) {
-		require.NotEmpty(t, s1ID, "scenario1 must have run first")
-		status, body, err := doPluginRequest(ctx, spaceAdmin.client, http.MethodPatch, "/spaces/"+s1ID+"/members/"+contrib.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityDeletePage}}, nil)
+	// delete_page (delete-any) is grantable to a plain member without making them a space admin,
+	// matching Confluence, where Delete is assignable independently of Admin. The grant reaches a
+	// page the grantee does not own — that is the whole difference from delete_own_page.
+	t.Run("delete_any_grantable_to_non_admin", func(t *testing.T) {
+		var space pluginmodel.Space
+		status, body, err := doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/teams/"+team.Id+"/spaces",
+			map[string]string{"title": "Scenario Delete Any"}, &space)
 		require.NoError(t, err)
-		require.Equal(t, http.StatusBadRequest, status, "granting delete_page: %s", body)
+		require.Equal(t, http.StatusCreated, status, "createSpace failed: %s", body)
+		spacesToClean = append(spacesToClean, space.Id)
+
+		addSpaceMember(t, ctx, spaceAdmin, space.Id, contrib.id)
+
+		var seed pluginmodel.Page
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/spaces/"+space.Id+"/pages",
+			createPageReq("Admin-owned Page"), &seed)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusCreated, status, "admin seed page failed: %s", body)
+
+		// Before the grant: the contribute default carries delete_own_page only, so a page the
+		// contributor does not own is out of reach.
+		status, body, err = doPluginRequest(ctx, contrib.client, http.MethodDelete, "/spaces/"+space.Id+"/pages/"+seed.Id, nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusForbidden, status, "delete of an unowned page before the grant: %s", body)
+
+		var granted pluginmodel.SpaceMember
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPatch, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
+			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityDeletePage}}, &granted)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "granting delete_page: %s", body)
+		require.Contains(t, granted.GrantedCapabilities, pluginmodel.CapabilityDeletePage,
+			"delete_page did not round-trip through ExplicitRoles: %s", body)
+		require.False(t, granted.IsAdmin, "granting delete_page must not make the member a space admin")
+
+		status, body, err = doPluginRequest(ctx, contrib.client, http.MethodDelete, "/spaces/"+space.Id+"/pages/"+seed.Id, nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "delete of an unowned page after the grant: %s", body)
+	})
+
+	// The same capability as a space default rather than a per-member grant, so every member holds
+	// delete-any. delete_page is in no preset, so this drives the pooled-scheme path end to end:
+	// the scheme is minted, the backing channel is attached to it, and only then does the role
+	// patch carrying delete_page become admissible to core.
+	t.Run("delete_any_as_space_default", func(t *testing.T) {
+		defaultCaps := []string{pluginmodel.CapabilityCreatePage, pluginmodel.CapabilityDeletePage}
+
+		var space pluginmodel.Space
+		status, body, err := doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/teams/"+team.Id+"/spaces",
+			map[string]any{"title": "Scenario Delete Any Default", "default_capabilities": defaultCaps}, &space)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusCreated, status, "createSpace with a delete_page default failed: %s", body)
+		spacesToClean = append(spacesToClean, space.Id)
+
+		var withAccess pluginmodel.SpaceWithAccess
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodGet, "/spaces/"+space.Id, nil, &withAccess)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "get space: %s", body)
+		require.ElementsMatch(t, defaultCaps, withAccess.DefaultCapabilities,
+			"delete_page did not round-trip as a space default: %s", body)
+
+		addSpaceMember(t, ctx, spaceAdmin, space.Id, member.id)
+
+		var seed pluginmodel.Page
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/spaces/"+space.Id+"/pages",
+			createPageReq("Admin-owned Page"), &seed)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusCreated, status, "admin seed page failed: %s", body)
+
+		status, body, err = doPluginRequest(ctx, member.client, http.MethodDelete, "/spaces/"+space.Id+"/pages/"+seed.Id, nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "plain member delete of an unowned page: %s", body)
 	})
 
 	t.Run("gap_anonymous_access_denied_on_open_space", func(t *testing.T) {
