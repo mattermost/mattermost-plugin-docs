@@ -37,10 +37,9 @@
 }
 
 // Arriving and leaving, via the attributes Base UI puts on the popup while it
-// transitions. Same duration and easing as the receding step below, rising from the
-// opposite direction, so the two read as one motion — but with more travel: this
-// one has to carry a surface in from nothing, where receding only has to hint at
-// depth.
+// transitions. Same duration and easing as the receding step below, and the same
+// downward axis, so the two read as one motion — but with more travel: this one has
+// to carry a surface in from nothing, where receding only has to hint at depth.
 //
 // The fade here is about a surface that isn't there yet; a modal that has arrived
 // stays fully opaque even once something covers it.
@@ -63,12 +62,13 @@
 // a translucent one. The dimming comes from the covering modal's backdrop, which
 // paints above this popup's band; fading the popup too would double the effect and
 // let the app show through a modal.
-// Kept deliberately slight — a quarter of what it was — so it reads as a step back
-// rather than as the modal shrinking. The dim from the covering backdrop is doing
-// most of the work; this only has to be enough to notice.
+// Kept deliberately slight so it reads as a step back rather than as the modal
+// shrinking. The dim from the covering backdrop is doing most of the work; this only
+// has to be enough to notice. Sinks down rather than lifting, so the covering modal
+// appears to sit in front of it rather than the two sliding apart.
 .modalCovered,
 .modal[data-nested-dialog-open] {
-    transform: scale(0.99) translateY(-2px);
+    transform: scale(0.99) translateY(6px);
     pointer-events: none;
 }
 
