@@ -16,5 +16,7 @@ CREATE TABLE IF NOT EXISTS DOCS_Draft (
 -- UpdateAt DESC; the trailing column lets the index satisfy the sort, no filesort.
 CREATE INDEX IF NOT EXISTS idx_docs_draft_user_space ON DOCS_Draft (UserId, SpaceId, UpdateAt DESC);
 
--- Purge-by-page: supports DELETE FROM DOCS_Draft WHERE PageId = ?, not covered by the primary key.
+-- Lookups keyed on PageId without a UserId: the page's active-editor presence snapshot, and the
+-- recursive parent-chain walk that rejects draft cycles. The primary key leads with UserId, so it
+-- cannot serve either.
 CREATE INDEX IF NOT EXISTS idx_docs_draft_pageid ON DOCS_Draft (PageId);
