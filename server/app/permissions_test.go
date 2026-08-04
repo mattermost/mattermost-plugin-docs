@@ -210,7 +210,7 @@ func TestRequireSpaceDraftWrite_LookupFailureIsNotADenial(t *testing.T) {
 	h := openTestServiceWithAPI(t, mockAPI)
 	space := testutil.MustCreateSpace(t, h.store, channelID, mmmodel.NewId())
 
-	appErr := h.svc.RequireSpaceDraftWrite("test", space, userID, app.ReadViaOpenFallthrough)
+	_, appErr := h.svc.RequireSpaceDraftWrite("test", space, userID, app.ReadViaOpenFallthrough)
 
 	require.NotNil(t, appErr)
 	require.NotEqual(t, http.StatusForbidden, appErr.StatusCode,
@@ -218,4 +218,59 @@ func TestRequireSpaceDraftWrite_LookupFailureIsNotADenial(t *testing.T) {
 	// One attempt, not two: the create_page failure short-circuits instead of falling through to
 	// the edit_page retry. Each attempt runs the pre-step, which resolves team membership once.
 	mockAPI.AssertNumberOfCalls(t, "GetTeamMember", 1)
+}
+
+// TestRequireSpacePagePermissionFrom_FallthroughAdmitsReadOnly is the escalation guard on the
+// open-space fall-through: it exists to admit reads, and must never admit a write. A non-member
+// whose space default withholds the write permission — so the auto-join pre-step does not join
+// them — reaches the gate still holding only the fall-through, and every write permission has to
+// be refused there. Without the read-permission condition on that branch the fall-through would
+// grant create/edit/delete outright, since the caller already holds the team read_public_channel
+// the branch keys on.
+func TestRequireSpacePagePermissionFrom_FallthroughAdmitsReadOnly(t *testing.T) {
+	for _, perm := range []*mmmodel.Permission{
+		mmmodel.PermissionCreatePage, mmmodel.PermissionEditPage,
+		mmmodel.PermissionDeletePage, mmmodel.PermissionDeleteOwnPage,
+	} {
+		t.Run(perm.Id, func(t *testing.T) {
+			mockAPI := &plugintest.API{}
+			userID := mmmodel.NewId()
+			stubNonMember(mockAPI, userID)
+			mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionDeletePage).Return(false).Maybe()
+			h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+			appErr := h.svc.RequireSpacePagePermissionFrom("test", space, userID, perm, app.ReadViaOpenFallthrough)
+
+			require.NotNil(t, appErr, "%s must not be admitted by the open-space read fall-through", perm.Id)
+			require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+		})
+	}
+}
+
+// TestRequireSpacePagePermissionFrom_FallthroughAdmitsRead is the positive half of the pair above:
+// the very same non-member and resolution do get read_page, so the refusals there come from the
+// permission being a write, not from the fall-through being closed altogether.
+func TestRequireSpacePagePermissionFrom_FallthroughAdmitsRead(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	stubNonMember(mockAPI, userID)
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	appErr := h.svc.RequireSpacePagePermissionFrom("test", space, userID, mmmodel.PermissionReadPage, app.ReadViaOpenFallthrough)
+
+	require.Nil(t, appErr)
+}
+
+// TestResolveSpaceRead_InvalidUserIDIsBadRequest keeps a malformed user id reporting as a caller
+// fault. Collapsing it into the existence-hiding 403 every genuine denial returns would make a
+// plumbing bug indistinguishable from an ordinary authorization failure.
+func TestResolveSpaceRead_InvalidUserIDIsBadRequest(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	resolution, appErr := h.svc.ResolveSpaceRead("test", space, "")
+
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+	require.Equal(t, app.ReadDenied, resolution)
 }

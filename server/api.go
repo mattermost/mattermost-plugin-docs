@@ -194,56 +194,71 @@ func (p *Plugin) requireSpaceDelete(w http.ResponseWriter, spaceID, userID strin
 // space it cannot read — then runs the auto-join pre-step when that read was admitted only via the
 // non-member open-space fall-through, then re-resolves perm as a (possibly just-joined) member.
 // Writes the error response and returns false on any denial.
-func (p *Plugin) requirePageWrite(w http.ResponseWriter, space *model.Space, userID string, perm *mmmodel.Permission) bool {
-	resolution, ok := p.requireSpaceReadFrom(w, "requirePageWrite", space, userID)
-	if !ok {
-		return false
+//
+// joined reports whether the pre-step created a membership; a handler whose write then fails must
+// pass it to the service's UndoAutoJoin.
+func (p *Plugin) requirePageWrite(w http.ResponseWriter, space *model.Space, userID string, perm *mmmodel.Permission) (joined, ok bool) {
+	resolution, readOK := p.requireSpaceReadFrom(w, "requirePageWrite", space, userID)
+	if !readOK {
+		return false, false
 	}
 	return p.requirePageWriteFrom(w, space, userID, perm, resolution)
 }
 
 // requirePageWriteFrom is requirePageWrite for a caller that has already resolved the read gate for the
 // same space and user, so that resolution is not derived a second time.
-func (p *Plugin) requirePageWriteFrom(w http.ResponseWriter, space *model.Space, userID string, perm *mmmodel.Permission, resolution app.ReadResolution) bool {
-	if _, appErr := p.service.AutoJoinIfDefaultGranted(space, userID, resolution, perm, nil); appErr != nil {
+func (p *Plugin) requirePageWriteFrom(w http.ResponseWriter, space *model.Space, userID string, perm *mmmodel.Permission, resolution app.ReadResolution) (joined, ok bool) {
+	joined, appErr := p.service.AutoJoinIfDefaultGranted(space, userID, resolution, perm, nil)
+	if appErr != nil {
 		p.writeAppError(w, appErr)
-		return false
+		return false, false
 	}
-	if appErr := p.service.RequireSpacePagePermissionFrom("api.page.write", space, userID, perm, resolution); appErr != nil {
-		p.writeAppError(w, appErr)
-		return false
+	if permErr := p.service.RequireSpacePagePermissionFrom("api.page.write", space, userID, perm, resolution); permErr != nil {
+		// The gate itself rejected the caller, so the pre-step's membership is undone here rather
+		// than left for the handler, which never sees this path.
+		p.service.UndoAutoJoin(joined, space, userID)
+		p.writeAppError(w, permErr)
+		return false, false
 	}
-	return true
+	return joined, true
 }
 
 // requireDeleteOwnOrAnyFrom gates a delete-class page operation: delete_page (any), or delete_own_page
 // when ownerID == userID. The auto-join pre-step runs against delete_own_page, gated on
 // ownership, since only that path can admit a non-member write. resolution is the read gate the
 // caller has already resolved for the same space and user, so it is not re-derived here.
-func (p *Plugin) requireDeleteOwnOrAnyFrom(w http.ResponseWriter, space *model.Space, userID, ownerID string, resolution app.ReadResolution) bool {
-	if _, appErr := p.service.AutoJoinIfDefaultGranted(space, userID, resolution, mmmodel.PermissionDeleteOwnPage, func() (bool, error) { return ownerID == userID, nil }); appErr != nil {
+func (p *Plugin) requireDeleteOwnOrAnyFrom(w http.ResponseWriter, space *model.Space, userID, ownerID string, resolution app.ReadResolution) (joined, ok bool) {
+	joined, appErr := p.service.AutoJoinIfDefaultGranted(space, userID, resolution, mmmodel.PermissionDeleteOwnPage, func() (bool, error) { return ownerID == userID, nil })
+	if appErr != nil {
 		p.writeAppError(w, appErr)
-		return false
+		return false, false
 	}
-	_, ok := p.requireOwnOrAnyFrom(w, "requireDeleteOwnOrAnyFrom", space, userID,
+	if _, gateOK := p.requireOwnOrAnyFrom(w, "requireDeleteOwnOrAnyFrom", space, userID,
 		"api.page.delete", mmmodel.PermissionDeletePage,
-		"api.page.delete_own", mmmodel.PermissionDeleteOwnPage, ownerID == userID, resolution)
-	return ok
+		"api.page.delete_own", mmmodel.PermissionDeleteOwnPage, ownerID == userID, resolution); !gateOK {
+		p.service.UndoAutoJoin(joined, space, userID)
+		return false, false
+	}
+	return joined, true
 }
 
 // requireDraftWrite gates a draft mutation on create-or-edit authority over the space, resolving
 // the read gate first like every other write. It returns the space so the caller can pass the
 // backing channel on to the service.
-func (p *Plugin) requireDraftWrite(w http.ResponseWriter, spaceID, userID string) (*model.Space, app.ReadResolution, bool) {
-	space, resolution, ok := p.requireSpaceRead(w, spaceID, userID)
-	if !ok {
-		return nil, app.ReadDenied, false
+// joined reports whether the auto-join pre-step created a membership; a handler whose draft write
+// then fails must pass it to the service's UndoAutoJoin.
+func (p *Plugin) requireDraftWrite(w http.ResponseWriter, spaceID, userID string) (space *model.Space, resolution app.ReadResolution, joined, ok bool) {
+	space, resolution, readOK := p.requireSpaceRead(w, spaceID, userID)
+	if !readOK {
+		return nil, app.ReadDenied, false, false
 	}
-	if appErr := p.service.RequireSpaceDraftWrite("api.page_draft.write", space, userID, resolution); appErr != nil {
+	joined, appErr := p.service.RequireSpaceDraftWrite("api.page_draft.write", space, userID, resolution)
+	if appErr != nil {
+		p.service.UndoAutoJoin(joined, space, userID)
 		p.writeAppError(w, appErr)
-		return nil, app.ReadDenied, false
+		return nil, app.ReadDenied, false, false
 	}
-	return space, resolution, true
+	return space, resolution, joined, true
 }
 
 // requireOwnOrAnyFrom resolves a two-tier own/any permission pair against an already-resolved

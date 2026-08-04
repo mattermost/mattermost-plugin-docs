@@ -4,9 +4,11 @@
 package app
 
 import (
+	"errors"
 	"net/http"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/pluginapi"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
@@ -49,8 +51,8 @@ func (s *Service) hasOpenTeamFallthrough(userID, teamID string) bool {
 	return s.client.User.HasPermissionToTeam(userID, teamID, mmmodel.PermissionReadPublicChannel) && !s.isComplianceEnabled()
 }
 
-// readResolutionFrom evaluates the read gate against space for userID, taking sysadmin and active
-// pre-resolved so a caller that already ran requireActiveMemberGate does not derive them twice.
+// readResolutionFrom evaluates the read gate against space for userID, given the caller's
+// already-resolved sysadmin and active-team-membership status.
 func (s *Service) readResolutionFrom(sysadmin, active bool, space *model.Space, userID string) ReadResolution {
 	if sysadmin {
 		return ReadViaSysadmin
@@ -89,6 +91,11 @@ func (s *Service) ResolveSpaceRead(where string, space *model.Space, userID stri
 func (s *Service) requireActiveMemberGate(where string, space *model.Space, userID string) (active, sysadmin bool, appErr *mmmodel.AppError) {
 	if appErr = s.requireClient(where, "space_id", spaceIDOrEmpty(space), "user_id", userID); appErr != nil {
 		return false, false, appErr
+	}
+	// A malformed user id is a caller fault, not a denial: it reports as a 400 so it stays
+	// distinguishable from the existence-hiding 403 every genuine denial returns.
+	if !mmmodel.IsValidId(userID) {
+		return false, false, mmmodel.NewAppError(where, "app.space.access.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	if space == nil {
 		return false, false, existenceHidingForbidden(where)
@@ -236,12 +243,14 @@ func (s *Service) RequireSpaceAdminOrSysadmin(where string, space *model.Space, 
 }
 
 // requirePageWriteFrom runs the auto-join pre-step for perm and then gates on it, the shared tail
-// of every page-write authorization on an already-resolved read.
-func (s *Service) requirePageWriteFrom(where string, space *model.Space, userID string, perm *mmmodel.Permission, admittedVia ReadResolution) *mmmodel.AppError {
-	if _, appErr := s.AutoJoinIfDefaultGranted(space, userID, admittedVia, perm, nil); appErr != nil {
-		return appErr
+// of every page-write authorization on an already-resolved read. joined reports whether the
+// pre-step created a membership, so a caller whose guarded write then fails can undo it.
+func (s *Service) requirePageWriteFrom(where string, space *model.Space, userID string, perm *mmmodel.Permission, admittedVia ReadResolution) (joined bool, appErr *mmmodel.AppError) {
+	joined, appErr = s.AutoJoinIfDefaultGranted(space, userID, admittedVia, perm, nil)
+	if appErr != nil {
+		return false, appErr
 	}
-	return s.RequireSpacePagePermissionFrom(where, space, userID, perm, admittedVia)
+	return joined, s.RequireSpacePagePermissionFrom(where, space, userID, perm, admittedVia)
 }
 
 // RequireSpaceDraftWrite gates a draft mutation on the caller holding either page-creation or
@@ -250,25 +259,32 @@ func (s *Service) requirePageWriteFrom(where string, space *model.Space, userID 
 // content needs is enforced at publish (RequireSpacePublish), the point where the draft becomes
 // state other users can see. Checking the looser pair here also keeps autosave off the page-liveness
 // lookup that the precise choice would require.
-func (s *Service) RequireSpaceDraftWrite(where string, space *model.Space, userID string, admittedVia ReadResolution) *mmmodel.AppError {
-	createErr := s.requirePageWriteFrom(where, space, userID, mmmodel.PermissionCreatePage, admittedVia)
+func (s *Service) RequireSpaceDraftWrite(where string, space *model.Space, userID string, admittedVia ReadResolution) (joined bool, appErr *mmmodel.AppError) {
+	createJoined, createErr := s.requirePageWriteFrom(where, space, userID, mmmodel.PermissionCreatePage, admittedVia)
 	if createErr == nil {
-		return nil
+		return createJoined, nil
 	}
 	// Only a denial falls through to the second attempt: a failure of the check itself must not be
 	// retried into a 403, which would present a backend outage to the user as "not authorized".
 	// Mirrors ResolveSpacePageOwnOrAny's handling of the same two-attempt shape.
 	if createErr.StatusCode != http.StatusForbidden {
-		return createErr
+		return createJoined, createErr
 	}
-	return s.requirePageWriteFrom(where, space, userID, mmmodel.PermissionEditPage, admittedVia)
+	// Either attempt can have joined, so the two results are combined: the caller must be able to
+	// undo a membership the create_page attempt created even when the edit_page attempt is the one
+	// that admitted it.
+	editJoined, editErr := s.requirePageWriteFrom(where, space, userID, mmmodel.PermissionEditPage, admittedVia)
+	return createJoined || editJoined, editErr
 }
 
 // RequireSpacePublish gates publishing a draft on the permission its target actually needs:
 // create_page when the draft becomes a new page, edit_page when it updates a live one. isNewPage
-// comes from the publish path's own classification of the target row, so the decision is made
-// where that fact already exists rather than costing the handler a second lookup.
-func (s *Service) RequireSpacePublish(where string, space *model.Space, userID string, admittedVia ReadResolution, isNewPage bool) *mmmodel.AppError {
+// comes from the publish path's own classification of the target row (a fresh draft versus one
+// updating a live page).
+//
+// joined reports whether the auto-join pre-step created a membership; a caller whose publish then
+// fails must pass it to UndoAutoJoin.
+func (s *Service) RequireSpacePublish(where string, space *model.Space, userID string, admittedVia ReadResolution, isNewPage bool) (joined bool, appErr *mmmodel.AppError) {
 	perm := mmmodel.PermissionEditPage
 	if isNewPage {
 		perm = mmmodel.PermissionCreatePage
@@ -356,6 +372,11 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 		}
 		member, addErr := s.client.Channel.AddMember(fresh.ChannelId, userID)
 		if addErr != nil {
+			// A vanished user is a caller-state condition, not a server fault; AddSpaceMember
+			// classifies the same failure the same way.
+			if errors.Is(addErr, pluginapi.ErrNotFound) {
+				return mmmodel.NewAppError("AutoJoinIfDefaultGranted", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(addErr)
+			}
 			return addErr
 		}
 		joined = true
@@ -365,8 +386,8 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 	if lockErr != nil {
 		return false, membershipLockAppError("AutoJoinIfDefaultGranted", lockErr)
 	}
-	// Published after the lock is released: the membership lock holds a dedicated connection, so a
-	// slow publish inside it would push concurrent membership mutations into a lock timeout.
+	// Published after the lock is released, since the membership lock holds a dedicated connection
+	// for its whole duration.
 	if joined {
 		payload := map[string]any{"space_id": space.Id, "user_id": joinedUserID}
 		s.publishToChannels(wsEventSpaceMemberAdded, payload, joinedChannelID)
@@ -375,4 +396,34 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 		s.publishToUser(wsEventSpaceMemberAdded, payload, joinedUserID)
 	}
 	return joined, nil
+}
+
+// UndoAutoJoin removes a membership AutoJoinIfDefaultGranted created for a write that then failed,
+// so a rejected request leaves no membership behind. Callers pass the joined result of the gate
+// that admitted them; when it is false this does nothing.
+//
+// The pre-step runs ahead of the guarded write, so without this a request rejected after the gate —
+// a cycle or depth breach on a move, a stale optimistic-lock baseline, or the subtree-ownership 403 —
+// would still leave the caller a member of a space it never successfully wrote to.
+//
+// Removal is best-effort and reported only in the log: the caller is already returning the write's
+// own error, and replacing it with a cleanup failure would hide why the request was rejected. A
+// leftover membership grants no more than the space defaults already granted the caller.
+func (s *Service) UndoAutoJoin(joined bool, space *model.Space, userID string) {
+	if !joined || space == nil || s.client == nil {
+		return
+	}
+	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
+		return s.client.Channel.DeleteMember(space.ChannelId, userID)
+	})
+	if lockErr != nil {
+		s.log.Error("failed to remove the membership an auto-join created for a rejected write; the user remains a member of the space",
+			"space_id", space.Id, "user_id", userID, "err", lockErr)
+		return
+	}
+	payload := map[string]any{"space_id": space.Id, "user_id": userID}
+	s.publishToChannels(wsEventSpaceMemberRemoved, payload, space.ChannelId)
+	// The user has already left the backing channel, so the channel-scoped broadcast above never
+	// reaches them; send the event to their own connections directly.
+	s.publishToUser(wsEventSpaceMemberRemoved, payload, userID)
 }

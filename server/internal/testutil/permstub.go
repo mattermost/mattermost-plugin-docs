@@ -23,6 +23,10 @@ import (
 // BEFORE calling the harness constructor that invokes this — mock.Mock matches expectations in
 // registration order, so the more specific, earlier-registered stub takes precedence over these
 // catch-alls.
+//
+// The team grants here are team_user's. A test whose actor is a guest must register
+// StubGuestTeamDefaults for that user first, since core's team_guest holds neither create_space nor
+// read_public_channel and the catch-all below would otherwise admit it to both.
 func StubDefaultSpacePermissions(mockAPI *plugintest.API) {
 	for _, p := range []*mmmodel.Permission{
 		mmmodel.PermissionReadPage, mmmodel.PermissionCreatePage, mmmodel.PermissionCommentPage,
@@ -42,4 +46,15 @@ func StubDefaultSpacePermissions(mockAPI *plugintest.API) {
 		mockAPI.On("HasPermissionToTeam", mock.Anything, mock.Anything, p).Return(false).Maybe()
 	}
 	mockAPI.On("HasPermissionTo", mock.Anything, mmmodel.PermissionManageSystem).Return(false).Maybe()
+}
+
+// StubGuestTeamDefaults narrows guestUserID's team grants to what core's team_guest actually holds:
+// read_space, but neither create_space nor read_public_channel. Register it BEFORE
+// StubDefaultSpacePermissions, whose catch-alls match any user and would otherwise grant a guest
+// the read_public_channel that admits the open-space non-member read fall-through.
+func StubGuestTeamDefaults(mockAPI *plugintest.API, guestUserID string) {
+	for _, p := range []*mmmodel.Permission{mmmodel.PermissionCreateSpace, mmmodel.PermissionReadPublicChannel} {
+		mockAPI.On("HasPermissionToTeam", guestUserID, mock.Anything, p).Return(false).Maybe()
+	}
+	mockAPI.On("HasPermissionToTeam", guestUserID, mock.Anything, mmmodel.PermissionReadSpace).Return(true).Maybe()
 }

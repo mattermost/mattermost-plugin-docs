@@ -392,6 +392,10 @@
     "translation": "You do not have permission to access this space."
   },
   {
+    "id": "app.space.access.invalid_user_id.app_error",
+    "translation": "Invalid user ID."
+  },
+  {
     "id": "app.space.access.team_lookup_failed.app_error",
     "translation": "Failed to verify team membership."
   },
@@ -470,6 +474,10 @@
   {
     "id": "app.space.default_capabilities.scheme_configure_failed.app_error",
     "translation": "Failed to configure the space's new permission scheme."
+  },
+  {
+    "id": "app.space.default_capabilities.scheme_configure_rollback_failed.app_error",
+    "translation": "Failed to configure the space's new permission scheme, and the space could not be returned to its previous one. Contact your system administrator."
   },
   {
     "id": "app.space.delete.invalid_id.app_error",

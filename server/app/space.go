@@ -435,6 +435,9 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 		return nil, appErr
 	}
 
+	// Whether the scheme was actually repointed. Both no-op branches below leave it false, so a
+	// caller resubmitting the set the space already carries produces no space_updated broadcast.
+	var repointed bool
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
 		channel, chanErr := s.client.Channel.GetChannelOfType(space.ChannelId, mmmodel.ChannelTypeSpace)
 		if chanErr != nil {
@@ -475,6 +478,7 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 		if updErr := s.client.Channel.Update(channel); updErr != nil {
 			return mmmodel.NewAppError("SetSpaceDefaultCapabilities", "app.space.default_capabilities.repoint_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(updErr)
 		}
+		repointed = true
 
 		// The repoint above is what lets core admit role writes carrying space permissions, so a
 		// pooled scheme's roles are written only now. A failure leaves the space on a scheme whose
@@ -493,7 +497,13 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 				channel.SchemeId = &currentSchemeID
 				if rollbackErr := s.client.Channel.Update(channel); rollbackErr != nil {
 					s.log.Error("failed to restore the previous space scheme after a failed scheme configuration; the space is left on a scheme whose roles may be unconfigured", "channel_id", space.ChannelId, "scheme_id", targetSchemeID, "previous_scheme_id", currentSchemeID, "err", rollbackErr)
+					// Distinct from the plain configure failure below: the space is left on the new
+					// scheme with roles that may be unconfigured, which an operator has to resolve.
+					// Reporting both as one id makes that state indistinguishable from the recovered
+					// case in monitoring.
+					return mmmodel.NewAppError("SetSpaceDefaultCapabilities", "app.space.default_capabilities.scheme_configure_rollback_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(cfgErr)
 				}
+				repointed = false
 				return mmmodel.NewAppError("SetSpaceDefaultCapabilities", "app.space.default_capabilities.scheme_configure_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(cfgErr)
 			}
 		}
@@ -512,7 +522,9 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 		// success as an error; project the response from the requested set and the pre-update
 		// space instead, still firing the WS event.
 		s.log.Warn("SetSpaceDefaultCapabilities: post-commit re-read failed; responding from the requested set", "space_id", space.Id, "err", getErr)
-		s.publishToChannels(wsEventSpaceUpdated, map[string]any{"space_id": space.Id}, space.ChannelId)
+		if repointed {
+			s.publishToChannels(wsEventSpaceUpdated, map[string]any{"space_id": space.Id}, space.ChannelId)
+		}
 		wrapper, buildErr := s.BuildSpaceWithAccess(space, actingUserID)
 		if buildErr != nil {
 			return nil, buildErr
@@ -520,7 +532,9 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 		wrapper.DefaultCapabilities = model.NormalizeCapabilitySet(capabilities)
 		return wrapper, nil
 	}
-	s.publishToChannels(wsEventSpaceUpdated, map[string]any{"space_id": fresh.Id}, fresh.ChannelId)
+	if repointed {
+		s.publishToChannels(wsEventSpaceUpdated, map[string]any{"space_id": fresh.Id}, fresh.ChannelId)
+	}
 	return s.BuildSpaceWithAccess(fresh, actingUserID)
 }
 

@@ -14,6 +14,8 @@ import (
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
+
+	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
 // presetSchemeFixture is the fixed identity and role/permission shape stubbed for one of the three
@@ -148,18 +150,13 @@ func roleByID(roleID string) (*mmmodel.Role, bool) {
 	return role, ok
 }
 
-// roleByNameOrCreate returns the shared *Role for roleName, minting an empty one on first ask. Used
-// for roles a test never names directly because the pool generates them from a scheme name.
-func roleByNameOrCreate(roleName string) *mmmodel.Role {
+// registerRoleByID records role under its id so a PatchRole stub, which core keys by id, reaches
+// the same object a GetRoleByName stub handed out. Ids are generated per role, so unlike role names
+// they never collide across tests.
+func registerRoleByID(role *mmmodel.Role) {
 	roleRegistry.Lock()
 	defer roleRegistry.Unlock()
-	if role, ok := roleRegistry.byName[roleName]; ok {
-		return role
-	}
-	role := &mmmodel.Role{Id: mmmodel.NewId(), Name: roleName}
-	roleRegistry.byName[roleName] = role
 	roleRegistry.byID[role.Id] = role
-	return role
 }
 
 // StubbedRoleName resolves a stubbed role's id back to its name, so a test asserting on PatchRole —
@@ -172,11 +169,9 @@ func StubbedRoleName(roleID string) (string, bool) {
 	return role.Name, true
 }
 
-// pooledSchemeNamePrefix mirrors the plugin-internal prefix every shared default-capability scheme
-// carries. Restated here rather than imported because the plugin's copy is unexported.
-const pooledSchemeNamePrefix = "docs_space_default_"
-
-func isPooledSchemeName(name string) bool { return strings.HasPrefix(name, pooledSchemeNamePrefix) }
+func isPooledSchemeName(name string) bool {
+	return strings.HasPrefix(name, model.SharedSchemeNamePrefix)
+}
 
 // StubPooledSchemeMiss answers the shared-pool lookup with not-found for any pooled scheme name, so
 // a test exercising a non-preset default-capability set reaches the create path. Register it after
@@ -238,10 +233,25 @@ func StubSchemePool(mockAPI *plugintest.API) {
 
 // stubPooledRoles answers GetRoleByName for any role generated for a pooled scheme, minting the
 // shared *Role on first read so a later PatchRole mutation is visible to a subsequent read.
+//
+// The name-keyed map is per-call rather than package-level: a pooled scheme's name is a digest of
+// its capability set, so two tests asking for the same set generate the same role names, and a
+// shared map would hand the second test the first one's already-patched role.
 func stubPooledRoles(mockAPI *plugintest.API) {
+	var mu sync.Mutex
+	byName := map[string]*mmmodel.Role{}
+
 	mockAPI.On("GetRoleByName", mock.MatchedBy(isPooledSchemeName)).
 		Return(func(roleName string) (*mmmodel.Role, *mmmodel.AppError) {
-			return roleByNameOrCreate(roleName), nil
+			mu.Lock()
+			defer mu.Unlock()
+			if role, ok := byName[roleName]; ok {
+				return role, nil
+			}
+			role := &mmmodel.Role{Id: mmmodel.NewId(), Name: roleName}
+			byName[roleName] = role
+			registerRoleByID(role)
+			return role, nil
 		}).Maybe()
 }
 

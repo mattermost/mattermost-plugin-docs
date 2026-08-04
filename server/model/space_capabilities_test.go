@@ -147,7 +147,8 @@ func TestValidateGrantedCapabilities(t *testing.T) {
 
 	t.Run("every non-admin grantable capability accepted", func(t *testing.T) {
 		require.Nil(t, model.ValidateGrantedCapabilities([]string{
-			model.CapabilityCreatePage, model.CapabilityCommentPage, model.CapabilityEditPage, model.CapabilityDeleteOwnPage,
+			model.CapabilityCreatePage, model.CapabilityCommentPage, model.CapabilityEditPage,
+			model.CapabilityDeleteOwnPage, model.CapabilityDeletePage,
 		}))
 	})
 }
@@ -176,7 +177,8 @@ func TestValidateDefaultCapabilities(t *testing.T) {
 
 	t.Run("every non-admin grantable capability accepted", func(t *testing.T) {
 		require.Nil(t, model.ValidateDefaultCapabilities([]string{
-			model.CapabilityCreatePage, model.CapabilityCommentPage, model.CapabilityEditPage, model.CapabilityDeleteOwnPage,
+			model.CapabilityCreatePage, model.CapabilityCommentPage, model.CapabilityEditPage,
+			model.CapabilityDeleteOwnPage, model.CapabilityDeletePage,
 		}))
 	})
 }

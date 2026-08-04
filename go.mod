@@ -14,7 +14,7 @@ require (
 	github.com/gorilla/mux v1.8.1
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.12.3
-	github.com/mattermost/mattermost/server/public v0.4.4-0.20260727152953-09b1991e5d5d
+	github.com/mattermost/mattermost/server/public v0.4.4-0.20260804125319-416829fe8ff3
 	github.com/mattermost/mattermost/server/v8 v8.0.0-20260623200446-ba033eae4704
 	github.com/mattermost/morph v1.1.0
 	github.com/mattermost/squirrel v0.5.0
@@ -131,6 +131,7 @@ require (
 	modernc.org/sqlite v1.50.1 // indirect
 )
 
-// Local dev pin against the paired core branch while its scheme/role plugin-API additions are
-// unmerged. Replace with a pseudo-version bump once those land upstream.
-replace github.com/mattermost/mattermost/server/public => /Users/catalintomai/mattermost/MM-69269-core/server/public
+// server/public is pinned to the head of the paired core PR (mattermost/mattermost#37685), which
+// carries the scheme/role plugin-API additions this plugin calls. Repin to a released version once
+// that PR merges. The go.sum entries for it were recorded directly from the module, since the
+// checksum database has no record of a commit that is not yet on a released branch.

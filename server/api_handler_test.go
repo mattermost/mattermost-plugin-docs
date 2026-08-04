@@ -1895,11 +1895,17 @@ func TestHandler_SetSpaceMemberCapabilities_Grant(t *testing.T) {
 	grantSpaceManage(mockAPI, adminID)
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil)
-	// A plain (non-admin, non-guest) target whose ExplicitRoles reflects the granted atomic role,
-	// standing in for the post-UpdateChannelMemberRoles state: the mock does not track writes, so
-	// the projection is pinned by the specific role token the requested capability set maps to.
+	// The pre-update target: a plain member, no grant yet. This is the state the guest and
+	// last-admin guards read before the write.
 	mockAPI.On("GetChannelMember", channelID, targetUserID).
-		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: targetUserID, ExplicitRoles: mmmodel.SpacePageCreatorRoleId}, nil)
+		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: targetUserID}, nil)
+	// The post-update target, echoing the roles just written — core returns the updated member from
+	// this call, and the response is projected from it. Registered before openTestPlugin so it wins
+	// over that helper's wildcard catch-all, which matching order would otherwise resolve first.
+	mockAPI.On("UpdateChannelMemberRoles", channelID, targetUserID, mock.Anything).
+		Return(func(chID, uID, newRoles string) (*mmmodel.ChannelMember, *mmmodel.AppError) {
+			return &mmmodel.ChannelMember{ChannelId: chID, UserId: uID, ExplicitRoles: newRoles}, nil
+		})
 	// Registered before openTestPlugin: the read-only preset must win over
 	// StubDefaultChannelScheme's contribute-preset catch-all, and mock matching is by
 	// registration order.

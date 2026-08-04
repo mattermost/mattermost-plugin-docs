@@ -45,7 +45,8 @@ func (p *Plugin) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !p.requirePageWrite(w, space, userID, mmmodel.PermissionCreatePage) {
+	joined, ok := p.requirePageWrite(w, space, userID, mmmodel.PermissionCreatePage)
+	if !ok {
 		return
 	}
 
@@ -56,10 +57,12 @@ func (p *Plugin) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 		Body     string  `json:"body,omitempty"`
 	}
 	if !p.decodeJSONBody(w, r, maxPageBodyBytes, &req, "handleCreatePage", false) {
+		p.service.UndoAutoJoin(joined, space, userID)
 		return
 	}
 	page, appErr := p.service.CreatePage(vars["space_id"], mmmodel.SafeDereference(req.ParentId), req.Title, req.Body, userID)
 	if appErr != nil {
+		p.service.UndoAutoJoin(joined, space, userID)
 		p.writeAppError(w, appErr)
 		return
 	}
@@ -90,7 +93,8 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !p.requirePageWrite(w, space, userID, mmmodel.PermissionEditPage) {
+	joined, ok := p.requirePageWrite(w, space, userID, mmmodel.PermissionEditPage)
+	if !ok {
 		return
 	}
 
@@ -103,12 +107,14 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 		Force      bool                     `json:"force"`
 	}
 	if !p.decodeJSONBody(w, r, maxPageBodyBytes, &req, "handleUpdatePage", false) {
+		p.service.UndoAutoJoin(joined, space, userID)
 		return
 	}
 	patch := &model.PagePatch{Title: req.Title, Body: req.Body, Props: req.Props}
 
 	updated, appErr := p.service.UpdatePage(vars["page_id"], vars["space_id"], patch, req.BaseEditAt, req.Force, userID)
 	if appErr != nil {
+		p.service.UndoAutoJoin(joined, space, userID)
 		if updated != nil {
 			p.writeConflictWithPage(w, appErr, updated)
 			return
@@ -133,10 +139,12 @@ func (p *Plugin) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
-	if !p.requireDeleteOwnOrAnyFrom(w, space, userID, page.UserId, read) {
+	joined, ok := p.requireDeleteOwnOrAnyFrom(w, space, userID, page.UserId, read)
+	if !ok {
 		return
 	}
 	if appErr := p.service.DeletePage(vars["page_id"], vars["space_id"], userID); appErr != nil {
+		p.service.UndoAutoJoin(joined, space, userID)
 		p.writeAppError(w, appErr)
 		return
 	}
@@ -157,11 +165,13 @@ func (p *Plugin) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
-	if !p.requireDeleteOwnOrAnyFrom(w, space, userID, page.UserId, read) {
+	joined, ok := p.requireDeleteOwnOrAnyFrom(w, space, userID, page.UserId, read)
+	if !ok {
 		return
 	}
 	restored, appErr := p.service.RestorePage(vars["page_id"], vars["space_id"], userID)
 	if appErr != nil {
+		p.service.UndoAutoJoin(joined, space, userID)
 		p.writeAppError(w, appErr)
 		return
 	}
@@ -180,7 +190,8 @@ func (p *Plugin) handleMovePage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !p.requirePageWrite(w, space, userID, mmmodel.PermissionEditPage) {
+	joined, ok := p.requirePageWrite(w, space, userID, mmmodel.PermissionEditPage)
+	if !ok {
 		return
 	}
 
@@ -191,10 +202,12 @@ func (p *Plugin) handleMovePage(w http.ResponseWriter, r *http.Request) {
 		Force            bool    `json:"force,omitempty"`
 	}
 	if !p.decodeJSONBody(w, r, maxPageStructBodyBytes, &req, "handleMovePage", false) {
+		p.service.UndoAutoJoin(joined, space, userID)
 		return
 	}
 	moved, appErr := p.service.MovePage(vars["page_id"], vars["space_id"], req.ParentId, req.SiblingIndex, req.ExpectedUpdateAt, req.Force, userID)
 	if appErr != nil {
+		p.service.UndoAutoJoin(joined, space, userID)
 		p.writeAppError(w, appErr)
 		return
 	}
@@ -232,12 +245,14 @@ func (p *Plugin) handleDuplicatePage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if !p.requirePageWriteFrom(w, targetSpace, userID, mmmodel.PermissionCreatePage, targetRead) {
+	joined, ok := p.requirePageWriteFrom(w, targetSpace, userID, mmmodel.PermissionCreatePage, targetRead)
+	if !ok {
 		return
 	}
 
 	duplicated, appErr := p.service.DuplicatePage(vars["page_id"], sourceSpace, userID, req.IncludeChildren, targetSpace, req.ParentId)
 	if appErr != nil {
+		p.service.UndoAutoJoin(joined, targetSpace, userID)
 		p.writeAppError(w, appErr)
 		return
 	}
@@ -314,12 +329,17 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 		requiredOwnerID = userID
 	}
 
-	if !p.requirePageWriteFrom(w, targetSpace, userID, mmmodel.PermissionCreatePage, targetRead) {
+	joined, writeOK := p.requirePageWriteFrom(w, targetSpace, userID, mmmodel.PermissionCreatePage, targetRead)
+	if !writeOK {
 		return
 	}
 
+	// The subtree-ownership rule is enforced inside the move, so a caller admitted by the target
+	// gate can still be rejected here — including with a 403. Undoing the pre-step's membership
+	// extends the source-side ordering above to the rejections the gates cannot see.
 	moved, appErr := p.service.MovePageToSpace(vars["page_id"], sourceSpace, targetSpace, req.ParentId, req.ExpectedUpdateAt, req.Force, userID, requiredOwnerID)
 	if appErr != nil {
+		p.service.UndoAutoJoin(joined, targetSpace, userID)
 		p.writeAppError(w, appErr)
 		return
 	}

@@ -108,7 +108,9 @@ cp -R "$MM_SERVER_REPO/templates" "$MM_ROOT/templates"
 cp -R "$MM_SERVER_REPO/fonts" "$MM_ROOT/fonts"
 
 cat > "$BUILD_CTX/Dockerfile" <<'DOCKEREOF'
-FROM ubuntu:noble
+# Pinned by digest: this image is the server the e2e scenarios assert against, so an upstream
+# repaint of the noble tag would change behaviour between two builds of identical source.
+FROM ubuntu:noble@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \

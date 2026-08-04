@@ -115,7 +115,16 @@ func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	// Answered with the same SpaceWithAccess wrapper the create and single-read routes return.
+	// Returning a bare space here would flatten to a body a client cannot tell apart from the
+	// wrapper, so refreshing a cached record from this response would silently drop the capability
+	// fields the other two routes supplied.
+	wrapper, wrapErr := p.service.BuildSpaceWithAccess(updated, userID)
+	if wrapErr != nil {
+		p.writeAppError(w, wrapErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, wrapper)
 }
 
 // handleDeleteSpace handles DELETE /api/v1/spaces/{space_id}.

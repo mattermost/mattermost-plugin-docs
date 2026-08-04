@@ -238,9 +238,10 @@ func DefaultCapabilitiesForSchemeName(name string) ([]string, bool) {
 	return slices.Clone(capabilities), true
 }
 
-// sharedSchemeNamePrefix labels every scheme in the shared default-capability pool. The suffix is
-// derived from the capability set, so one scheme serves every space configured that way.
-const sharedSchemeNamePrefix = "docs_space_default_"
+// SharedSchemeNamePrefix labels every scheme in the shared default-capability pool. The suffix is
+// derived from the capability set, so one scheme serves every space configured that way. Exported
+// so a caller matching pooled scheme names resolves the prefix from here rather than restating it.
+const SharedSchemeNamePrefix = "docs_space_default_"
 
 // sharedSchemeDisplayNamePrefix opens the operator-facing name of a pooled scheme, which then lists
 // the capability set the scheme grants.
@@ -254,7 +255,7 @@ const sharedSchemeDisplayNamePrefix = "Space defaults: "
 // always meant when the capability vocabulary grows.
 func SharedSchemeNameForCapabilities(capabilities []string) string {
 	sum := sha256.Sum256([]byte(strings.Join(NormalizeCapabilitySet(capabilities), " ")))
-	return sharedSchemeNamePrefix + hex.EncodeToString(sum[:])[:16]
+	return SharedSchemeNamePrefix + hex.EncodeToString(sum[:])[:16]
 }
 
 // SharedSchemeDisplayNameForCapabilities returns the operator-facing name of the pooled scheme for

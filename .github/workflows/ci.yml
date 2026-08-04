@@ -99,6 +99,14 @@ jobs:
   # the CORE_IMAGE repository variable to that tag (or to a release tag once those changes ship).
   # While CORE_IMAGE is unset this job does not run: no available image could satisfy it, and a
   # silent pass would be worse than an absent one.
+  #
+  # DO NOT add this job to the repository's required status checks until CORE_IMAGE is set and the
+  # suite is observed passing. A job skipped by a top-level `if:` reports as "skipped", and branch
+  # protection counts a skipped required check as satisfied — so listing it early would admit every
+  # PR as though the suite had run, which is the outcome the condition above exists to avoid.
+  # For the same reason it is not in delivery/release `needs:` yet: a skipped dependency skips the
+  # dependent job. Add it to both once CORE_IMAGE is populated, so a permission regression blocks
+  # publishing.
   e2e:
     if: ${{ vars.CORE_IMAGE != '' && (github.repository_owner == 'mattermost' || github.event_name != 'schedule') }}
     runs-on: ubuntu-latest
@@ -108,6 +116,9 @@ jobs:
       contents: read
     env:
       CORE_IMAGE: ${{ vars.CORE_IMAGE }}
+      # Lifted to env because the secrets context is not available in a step-level `if`, and the
+      # login below has to be skippable: the repository defines no Docker Hub credentials today.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -128,8 +139,25 @@ jobs:
           name: dist
           path: dist
 
+      # Authenticated so the core image pull is billed to the org's Docker Hub quota rather than the
+      # shared anonymous per-IP limit, which GitHub-hosted runners exhaust as a pull failure that
+      # reads like a test failure. Skipped when no credentials are configured: the pull still works
+      # anonymously, just against the lower limit, so a missing secret must not fail the suite.
+      - name: ci/docker-login
+        if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: ci/e2e
         run: go test -tags e2e -count=1 -v ./server/e2e/...
+
+      # The suite boots the server in a container, so a boot or migration failure leaves its
+      # diagnosis in the container's log rather than in the test output.
+      - name: ci/e2e-logs
+        if: failure()
+        run: docker ps -aq | xargs -r -I{} sh -c 'echo "===== {} ====="; docker logs {} 2>&1 | tail -400'
 
   delivery:
     if: ${{ github.repository_owner == 'mattermost' && github.event_name != 'schedule' && github.ref_name == 'master' }}

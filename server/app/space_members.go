@@ -173,6 +173,7 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 	var newRoles string
 	var newSchemeAdmin bool
 	var resolvedRoles *schemeRoles
+	var updatedMember *mmmodel.ChannelMember
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
 		var rolesErr error
 		resolvedRoles, rolesErr = s.getSchemeRolesForChannel(space.ChannelId)
@@ -215,10 +216,12 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 		if newSchemeAdmin {
 			roles = roles + " " + resolvedRoles.AdminRoleName
 		}
-		if _, updErr := s.client.Channel.UpdateChannelMemberRoles(space.ChannelId, targetUserID, roles); updErr != nil {
+		member, updErr := s.client.Channel.UpdateChannelMemberRoles(space.ChannelId, targetUserID, roles)
+		if updErr != nil {
 			appErr = mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.member.update_capabilities_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(updErr)
 			return appErr
 		}
+		updatedMember = member
 		return nil
 	})
 	if lockErr != nil {
@@ -235,22 +238,10 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 	if defErr != nil {
 		return nil, storeAppError("SetSpaceMemberCapabilities", defErr)
 	}
-	fresh, memErr := s.client.Channel.GetMember(space.ChannelId, targetUserID)
-	var result *model.SpaceMember
-	if memErr != nil {
-		// The role update already committed, so re-reporting this as a failure would misreport
-		// success as an error; project the response from the requested capability set instead
-		// (guests are rejected above, so schemeGuest is always false here), still firing the WS
-		// event.
-		s.log.Warn("SetSpaceMemberCapabilities: post-commit member re-read failed; responding from the requested set", "space_id", space.Id, "user_id", targetUserID, "err", memErr)
-		result = toSpaceMember(&mmmodel.ChannelMember{
-			UserId:        targetUserID,
-			ExplicitRoles: newRoles,
-			SchemeAdmin:   newSchemeAdmin,
-		}, defaultCapabilities)
-	} else {
-		result = toSpaceMember(fresh, defaultCapabilities)
-	}
+	// The response is projected from the member the role update returned. Re-reading it would go to
+	// a replica, which on a lagging one still carries the pre-update roles and would report the
+	// caller's own committed change as not having taken effect.
+	result := toSpaceMember(updatedMember, defaultCapabilities)
 
 	payload := map[string]any{"space_id": space.Id, "user_id": targetUserID}
 	// Delivered both ways deliberately: the channel-scoped broadcast covers observers, and the
@@ -291,13 +282,13 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 				appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memErr)
 				return appErr
 			}
-			// Non-member target: existence-hiding on a private space (matches the read resolver's
-			// convention), a plain 404 on an open space (existence is already public there). That
-			// split only applies to self-removal — a manage-gated caller removing someone else has
-			// already proven manage authority over this space, so there is nothing left to
-			// existence-hide behind; it always gets the plain 404, matching
-			// SetSpaceMemberCapabilities.
-			if userID != actingUserID || space.ViewAccess == model.ViewAccessOpen {
+			// Non-member target: a manage-gated caller removing someone else has already proven
+			// manage authority over this space, so there is nothing left to existence-hide behind
+			// and it gets a plain 404, matching SetSpaceMemberCapabilities. Self-removal returns the
+			// shared existence-hiding 403 whatever the space's ViewAccess — keying the code on
+			// ViewAccess would let a caller read a space's exposure setting off the status alone,
+			// the distinction the rest of the surface exists to deny.
+			if userID != actingUserID {
 				appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(memErr)
 			} else {
 				appErr = existenceHidingForbidden("RemoveSpaceMember")
