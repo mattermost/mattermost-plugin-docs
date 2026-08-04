@@ -1,13 +1,20 @@
+// Each stacked modal gets a two-slot band of its own — backdrop, then popup —
+// starting from the app's modal layer. Depth comes from `--docs-modal-level`,
+// set by the modal stack (see components/modals). Without it every modal shared
+// one z-index and the order fell to whichever portal mounted first, which is why
+// a modal opened from another could end up under it.
+@function layer($slot) {
+    @return calc(var(--z-index-modal) + (var(--docs-modal-level, 0) * 2) + $slot);
+}
+
 // Base UI's Dialog has no positioner, so the consumer positions the popup. This
 // full-viewport flex container centers it and is click-through
 // (pointer-events: none) so clicks on the dimmed area reach the backdrop to
-// dismiss. This and the backdrop sit in the app's modal layer so they cover
-// fixed chrome like the global header; within that layer the popup still paints
-// above the backdrop by DOM order.
+// dismiss. It sits above its own backdrop and below the next level's.
 .viewport {
     position: fixed;
     inset: 0;
-    z-index: var(--z-index-modal);
+    z-index: layer(1);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -26,13 +33,31 @@
     background: var(--center-channel-bg);
     box-shadow: 0 20px 32px rgba(0, 0, 0, 0.12);
     pointer-events: auto;
+    transition: transform 150ms ease, opacity 150ms ease;
+}
+
+// Something opened on top of this one: sink it back a step so the stack reads as
+// layers rather than as one modal replacing another, and stop it taking clicks —
+// the covering backdrop already intercepts them, but a lower popup should never
+// be the thing under the pointer.
+.modalCovered {
+    transform: scale(0.96) translateY(-8px);
+    opacity: 0.6;
+    pointer-events: none;
 }
 
 .backdrop {
     position: fixed;
     inset: 0;
-    z-index: var(--z-index-modal);
+    z-index: layer(0);
     background: rgba(0, 0, 0, 0.5);
+}
+
+// Only the topmost backdrop dims. Stacked 50% blacks would compound toward black
+// (two reads as 75%), so lower ones stay mounted — Base UI dismisses through
+// them — but paint nothing.
+.backdropCovered {
+    background: transparent;
 }
 
 .header {

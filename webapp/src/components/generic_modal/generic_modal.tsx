@@ -9,6 +9,8 @@ import {useIntl} from 'react-intl';
 import CloseIcon from '@mattermost/compass-icons/components/close';
 import {WithTooltip} from '@mattermost/shared/components/tooltip';
 
+import {useDocsModalLayer} from 'components/modals';
+
 import styles from './generic_modal.module.scss';
 
 type Props = {
@@ -40,6 +42,13 @@ const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, in
     const {formatMessage} = useIntl();
     const closeLabel = formatMessage({id: 'docs.genericModal.close', defaultMessage: 'Close'});
 
+    // Each stack level paints in its own band so the order never depends on which
+    // portal happened to mount first: two per level, the backdrop then the popup
+    // above it. A covered modal recedes and stops taking clicks.
+    const {level, covered} = useDocsModalLayer();
+    const layerStyle = {'--docs-modal-level': level} as React.CSSProperties;
+    const isCovered = covered > 0;
+
     return (
         <Dialog.Root
             open={true}
@@ -50,14 +59,20 @@ const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, in
             }}
         >
             <Dialog.Portal>
-                <Dialog.Backdrop className={styles.backdrop}/>
+                <Dialog.Backdrop
+                    className={classNames(styles.backdrop, {[styles.backdropCovered]: isCovered})}
+                    style={layerStyle}
+                />
 
                 {/* Flex centering container rendered after the backdrop, so the
-                    popup paints above it by DOM order — no z-index needed, and
-                    no centering transform on the popup itself. */}
-                <div className={styles.viewport}>
+                    popup paints above it within this level's band — and no
+                    centering transform on the popup itself. */}
+                <div
+                    className={styles.viewport}
+                    style={layerStyle}
+                >
                     <Dialog.Popup
-                        className={classNames(styles.modal, className)}
+                        className={classNames(styles.modal, {[styles.modalCovered]: isCovered}, className)}
                         initialFocus={initialFocus}
                         aria-label={ariaLabel}
                     >

@@ -46,9 +46,13 @@ export const closeDocsModal = (id: string) => {
  * within an open modal stacks on top of it, to any depth.
  *
  * The content owns its own dialog surface (e.g. `GenericModal`/`ConfirmModal`,
- * both Base UI `Dialog`-based), so nesting, focus management and backdrops are
- * handled by Base UI's dialog stacking rather than duplicated here. Pass a
- * render function to receive the handle (wire its `close` to the content's
+ * both Base UI `Dialog`-based), which handles focus management and dismissal.
+ * Layering is this stack's job, not Base UI's: Base UI treats a dialog as nested
+ * only when its `Dialog.Root` renders inside another one's React subtree, and
+ * these are siblings, so it sees unrelated dialogs. The depth each level paints
+ * at comes from `useDocsModalLayer` (see `docs_modal_controller`).
+ *
+ * Pass a render function to receive the handle (wire its `close` to the content's
  * `onClose`), or a ready-made element when the content closes itself.
  *
  * @returns a handle whose `close()` pops this modal off the stack.

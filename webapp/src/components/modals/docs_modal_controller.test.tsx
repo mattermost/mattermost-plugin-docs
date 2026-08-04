@@ -4,7 +4,7 @@
 import {act, screen} from '@testing-library/react';
 import React from 'react';
 
-import DocsModalController, {useDocsModal} from './docs_modal_controller';
+import DocsModalController, {useDocsModal, useDocsModalLayer} from './docs_modal_controller';
 import {closeAllDocsModals, openDocsModal} from './modal_store';
 
 import {renderWithContext} from '../../../tests/react_testing_utils';
@@ -54,6 +54,54 @@ describe('DocsModalController', () => {
 
         expect(screen.getByText('Outer')).toBeInTheDocument();
         expect(screen.queryByText('Inner')).not.toBeInTheDocument();
+    });
+
+    describe('layering', () => {
+        const Layer = ({name}: {name: string}) => {
+            const {level, covered} = useDocsModalLayer();
+            return <div>{`${name}: level ${level}, covered ${covered}`}</div>;
+        };
+
+        it('gives each stacked modal its own level, deepest first', () => {
+            renderWithContext(<DocsModalController/>);
+
+            act(() => {
+                openDocsModal(<Layer name='Settings'/>);
+            });
+            act(() => {
+                openDocsModal(<Layer name='Archive'/>);
+            });
+
+            expect(screen.getByText('Settings: level 0, covered 1')).toBeInTheDocument();
+            expect(screen.getByText('Archive: level 1, covered 0')).toBeInTheDocument();
+        });
+
+        it('uncovers the modal below when the one above it closes', () => {
+            renderWithContext(<DocsModalController/>);
+
+            act(() => {
+                openDocsModal(<Layer name='Settings'/>);
+            });
+
+            let archive = {id: '', close: () => {}};
+            act(() => {
+                archive = openDocsModal(<Layer name='Archive'/>);
+            });
+
+            expect(screen.getByText('Settings: level 0, covered 1')).toBeInTheDocument();
+
+            act(() => {
+                archive.close();
+            });
+
+            expect(screen.getByText('Settings: level 0, covered 0')).toBeInTheDocument();
+        });
+
+        it('reports a lone modal as uncovered, so a dialog outside the stack is unaffected', () => {
+            renderWithContext(<Layer name='Standalone'/>);
+
+            expect(screen.getByText('Standalone: level 0, covered 0')).toBeInTheDocument();
+        });
     });
 
     it('passes the handle to a render function and exposes it through context', () => {
