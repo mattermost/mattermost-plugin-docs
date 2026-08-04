@@ -3,7 +3,7 @@
 
 import {Dialog} from '@base-ui-components/react/dialog';
 import classNames from 'classnames';
-import React, {createContext, useContext} from 'react';
+import React, {createContext, useCallback, useContext, useRef, useState} from 'react';
 import {useIntl} from 'react-intl';
 
 import CloseIcon from '@mattermost/compass-icons/components/close';
@@ -18,6 +18,20 @@ import styles from './generic_modal.module.scss';
 // nesting instead of through the stack, so it needs its own count to land in the
 // right paint band — Base UI's own nesting context isn't exported.
 const ModalNestingContext = createContext(0);
+
+type CloseWith = (after?: () => void) => void;
+
+const ModalCloseContext = createContext<CloseWith | undefined>(undefined);
+
+/**
+ * Dismisses the modal this component is inside, playing the exit transition and
+ * only then running `after`. Buttons that both close the modal and do something —
+ * a confirm, a cancel — should go through this instead of calling their handler
+ * directly, or the modal is unmounted before it can animate out.
+ *
+ * Undefined outside a modal, so a shared control can be used in both places.
+ */
+export const useModalClose = () => useContext(ModalCloseContext);
 
 type Props = {
     onClose: () => void;
@@ -58,13 +72,34 @@ const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, in
     const layerStyle = {'--docs-modal-level': stackLevel + nesting} as React.CSSProperties;
     const isCovered = covered > 0;
 
+    // Closing is driven from here rather than by the owner unmounting us, so the
+    // exit transition has somewhere to run: flip `open`, let Base UI animate, and
+    // report the close only once it has finished. Whatever unmounts this modal —
+    // the modal stack, or a parent's state — then does so after the animation
+    // instead of cutting it off.
+    const [open, setOpen] = useState(true);
+    const afterCloseRef = useRef<(() => void) | undefined>(undefined);
+
+    const closeWith = useCallback<CloseWith>((after) => {
+        afterCloseRef.current = after;
+        setOpen(false);
+    }, []);
+
     return (
         <Dialog.Root
-            open={true}
+            open={open}
             onOpenChange={(nextOpen) => {
                 if (!nextOpen) {
-                    onClose();
+                    closeWith();
                 }
+            }}
+            onOpenChangeComplete={(nextOpen) => {
+                if (nextOpen) {
+                    return;
+                }
+                const after = afterCloseRef.current;
+                afterCloseRef.current = undefined;
+                (after ?? onClose)();
             }}
         >
             <Dialog.Portal>
@@ -119,8 +154,10 @@ const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, in
                             {headerContent}
                         </div>
                         <ModalNestingContext.Provider value={nesting + 1}>
-                            {children}
-                            {footer && <div className={classNames(styles.footer, {[styles.footerDivider]: footerDivider})}>{footer}</div>}
+                            <ModalCloseContext.Provider value={closeWith}>
+                                {children}
+                                {footer && <div className={classNames(styles.footer, {[styles.footerDivider]: footerDivider})}>{footer}</div>}
+                            </ModalCloseContext.Provider>
                         </ModalNestingContext.Provider>
                     </Dialog.Popup>
                 </div>
