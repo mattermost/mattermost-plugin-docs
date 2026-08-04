@@ -40,7 +40,13 @@
 // layers rather than as one modal replacing another, and stop it taking clicks —
 // the covering backdrop already intercepts them, but a lower popup should never
 // be the thing under the pointer.
-.modalCovered {
+//
+// Two selectors because there are two ways to stack. `.modalCovered` is the modal
+// stack's own signal. `[data-nested-dialog-open]` is Base UI's, set on a popup
+// that has a dialog open inside its React tree — which is how a modal rendered in
+// another's JSX stacks, and which nothing was reading before.
+.modalCovered,
+.modal[data-nested-dialog-open] {
     transform: scale(0.96) translateY(-8px);
     opacity: 0.6;
     pointer-events: none;
@@ -58,6 +64,13 @@
 // them — but paint nothing.
 .backdropCovered {
     background: transparent;
+}
+
+// A nested modal's backdrop is additive: the modal below it is already dimming the
+// app, so this only has to separate the two layers. Full strength here would
+// compound toward black with every level.
+.backdropNested {
+    background: rgba(0, 0, 0, 0.24);
 }
 
 .header {
