@@ -3,7 +3,7 @@
 
 import {Dialog} from '@base-ui-components/react/dialog';
 import classNames from 'classnames';
-import React, {createContext, useCallback, useContext, useRef, useState} from 'react';
+import React, {createContext, useCallback, useContext, useEffect, useRef, useState} from 'react';
 import {useIntl} from 'react-intl';
 
 import CloseIcon from '@mattermost/compass-icons/components/close';
@@ -77,8 +77,19 @@ const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, in
     // report the close only once it has finished. Whatever unmounts this modal —
     // the modal stack, or a parent's state — then does so after the animation
     // instead of cutting it off.
-    const [open, setOpen] = useState(true);
+    const [open, setOpen] = useState(false);
     const afterCloseRef = useRef<(() => void) | undefined>(undefined);
+    const openedRef = useRef(false);
+
+    // Opened after the first paint rather than mounted open, so Base UI sees a
+    // false -> true change. A dialog that is already open on its first render never
+    // gets `data-starting-style` — useTransitionStatus initialises its `mounted`
+    // from `open`, so the starting state is skipped — and appears with no entrance
+    // animation. Every modal here is created already-open, so that was all of them.
+    useEffect(() => {
+        openedRef.current = true;
+        setOpen(true);
+    }, []);
 
     const closeWith = useCallback<CloseWith>((after) => {
         afterCloseRef.current = after;
@@ -94,7 +105,10 @@ const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, in
                 }
             }}
             onOpenChangeComplete={(nextOpen) => {
-                if (nextOpen) {
+                // `openedRef` guards the closed state this mounts in: without it a
+                // completion reported before the modal has opened would be read as a
+                // dismissal and close it on arrival.
+                if (nextOpen || !openedRef.current) {
                     return;
                 }
                 const after = afterCloseRef.current;
