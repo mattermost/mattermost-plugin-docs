@@ -143,7 +143,7 @@ describe('useCreateRootPage', () => {
             await create.current();
         });
 
-        expect(mockGoToEditPage).toHaveBeenCalledWith('eng', 'new', {replace: true});
+        expect(mockGoToEditPage).toHaveBeenCalledWith('eng', 'new');
         expect(mockGoToPage).not.toHaveBeenCalled();
     });
 

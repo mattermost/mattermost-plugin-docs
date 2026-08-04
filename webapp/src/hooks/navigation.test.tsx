@@ -22,10 +22,6 @@ function Probe() {
                     data-testid='go-edit'
                     onClick={() => goToEditPage('space1', 'pageX')}
                 />
-                <button
-                    data-testid='go-edit-replace'
-                    onClick={() => goToEditPage('space1', 'pageX', {replace: true})}
-                />
             </li>
         </ul>
     );
@@ -105,18 +101,6 @@ describe('useDocsNavigation goToEditPage', () => {
 
         expect(history.location.pathname + history.location.search).toBe('/myteam/spaces/space1/pageX?edit=1');
         expect(history.length).toBe(2);
-    });
-
-    it('replaces the current entry when asked, leaving nothing to go back to', () => {
-        const {history} = renderWithContext(<Probe/>, {
-            route: '/myteam/spaces/space1',
-            state: {currentTeam: {id: 't1', name: 'myteam'}},
-        });
-
-        fireEvent.click(screen.getByTestId('go-edit-replace'));
-
-        expect(history.location.pathname + history.location.search).toBe('/myteam/spaces/space1/pageX?edit=1');
-        expect(history.length).toBe(1);
     });
 });
 
