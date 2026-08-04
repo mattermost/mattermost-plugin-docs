@@ -26,7 +26,7 @@ type Props = {
 /**
  * The space view's left sidebar: a user-resizable panel that slides in and out.
  * The outer element animates its width for the open/close transition while the
- * inner element keeps the full width, so the content is revealed and clipped
+ * innermost element keeps the full width, so the content is revealed and clipped
  * rather than reflowed mid-slide.
  */
 const Sidebar = ({open, children}: Props) => {
@@ -42,11 +42,13 @@ const Sidebar = ({open, children}: Props) => {
             })}
             style={{width: open ? width : 0}}
         >
-            <div
-                className={styles.inner}
-                style={{width}}
-            >
-                {children}
+            <div className={styles.clip}>
+                <div
+                    className={styles.inner}
+                    style={{width}}
+                >
+                    {children}
+                </div>
             </div>
             {open && (
                 <ResizableDivider
