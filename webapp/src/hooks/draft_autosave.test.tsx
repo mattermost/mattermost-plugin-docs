@@ -333,4 +333,35 @@ describe('useDraftAutosave', () => {
         expect(mockUpdate.mock.calls[0][1]).toBe('page1');
         expect(patchesSent()[0]).toEqual({body: 'typed on page1'});
     });
+
+    it('flushes the pending patch even when the next page reports itself as loading', async () => {
+        const {result, rerender} = setup();
+
+        act(() => {
+            result.current.queue({body: 'typed on page1'});
+        });
+
+        await act(async () => {
+            rerender({spaceId: 'space1', pageId: 'page2', enabled: false});
+        });
+
+        expect(mockUpdate).toHaveBeenCalledTimes(1);
+        expect(mockUpdate.mock.calls[0][1]).toBe('page1');
+        expect(patchesSent()[0]).toEqual({body: 'typed on page1'});
+    });
+
+    it('flushes the pending patch when the editor unmounts', async () => {
+        const {result, unmount} = setup();
+
+        act(() => {
+            result.current.queue({body: 'typed before leaving'});
+        });
+
+        await act(async () => {
+            unmount();
+        });
+
+        expect(mockUpdate).toHaveBeenCalledTimes(1);
+        expect(patchesSent()[0]).toEqual({body: 'typed before leaving'});
+    });
 });

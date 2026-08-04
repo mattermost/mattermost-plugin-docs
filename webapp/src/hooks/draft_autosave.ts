@@ -61,10 +61,10 @@ export function useDraftAutosave({spaceId, pageId, enabled, baseEditAt, onSaved,
         }
     }, []);
 
-    const doWrite = useCallback(async (): Promise<boolean> => {
+    const doWrite = useCallback(async (force: boolean): Promise<boolean> => {
         const entry = pendingRef.current;
         const {enabled: on, onSaved: saved, onError: failed} = latest.current;
-        if (!entry || !on) {
+        if (!entry || (!on && !force)) {
             return true;
         }
         const baseline = entry.baseEditAt;
@@ -110,8 +110,9 @@ export function useDraftAutosave({spaceId, pageId, enabled, baseEditAt, onSaved,
         }
     }, [latest]);
 
-    const write = useCallback((): Promise<boolean> => {
-        const next = chainRef.current.then(doWrite, doWrite);
+    const write = useCallback((force = false): Promise<boolean> => {
+        const run = () => doWrite(force);
+        const next = chainRef.current.then(run, run);
         chainRef.current = next;
         return next;
     }, [doWrite]);
@@ -146,7 +147,7 @@ export function useDraftAutosave({spaceId, pageId, enabled, baseEditAt, onSaved,
 
     useEffect(() => () => {
         clearTimer();
-        write();
+        write(true);
     }, [clearTimer, write, spaceId, pageId]);
 
     return useMemo(() => ({status, queue, flush, cancel}), [status, queue, flush, cancel]);

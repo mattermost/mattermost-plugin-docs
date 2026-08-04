@@ -84,13 +84,17 @@ export const CalloutControl = ({getEditor}: CalloutProps) => {
         const editor = getEditor() as Editor | null;
         const chain = editor?.chain().focus();
 
+        let applied = false;
         if (chain && typeof chain.toggleCallout === 'function') {
-            chain.toggleCallout(type).run();
+            applied = chain.toggleCallout(type).run();
         }
         setOpen(false);
+        if (!applied) {
+            triggerRef.current?.focus();
+        }
     }, [getEditor]);
 
-    const label = formatMessage({id: 'docs.editor.callout', defaultMessage: 'Call out alert'});
+    const label = formatMessage({id: 'docs.editor.callout', defaultMessage: 'Insert callout'});
 
     return (
         <div
