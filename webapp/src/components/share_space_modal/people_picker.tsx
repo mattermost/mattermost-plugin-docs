@@ -85,8 +85,12 @@ const PeoplePicker = ({selected, excludeIds, onChange}: Props) => {
                 />
             </Combobox.Chips>
             <Combobox.Portal>
+                {/* Viewport coordinates: this picker only ever opens inside a modal,
+                    which is `position: fixed`, so the default `absolute` would place
+                    the popup in the document and let the two drift apart on scroll. */}
                 <Combobox.Positioner
                     className={styles.positioner}
+                    positionMethod='fixed'
                     sideOffset={4}
                 >
                     <Combobox.Popup className={styles.popup}>

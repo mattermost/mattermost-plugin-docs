@@ -62,8 +62,15 @@ const Select = ({id, label, value, options, onChange, disabled}: Props) => {
                 </BaseSelect.Icon>
             </BaseSelect.Trigger>
             <BaseSelect.Portal>
+                {/* Viewport coordinates, not document. Base UI defaults to
+                    `absolute`, which places the popup in the document while the
+                    trigger can sit inside a `position: fixed` container — a modal —
+                    so the two drift apart the moment anything scrolls. `fixed`
+                    matches the coordinate space the trigger is actually in, and is
+                    equally correct outside a modal. */}
                 <BaseSelect.Positioner
                     className={styles.positioner}
+                    positionMethod='fixed'
                     side='bottom'
                     align='start'
                     sideOffset={4}
