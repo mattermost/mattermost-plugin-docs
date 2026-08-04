@@ -45,6 +45,12 @@ describe('PageTitle edit mode', () => {
         expect(screen.queryByRole('heading')).not.toBeInTheDocument();
     });
 
+    it('takes focus, since the field appears in response to asking to edit', () => {
+        renderTitle({editing: true});
+
+        expect(screen.getByRole('textbox', {name: 'Page title'})).toHaveFocus();
+    });
+
     it('caps the field at the server title limit', () => {
         renderTitle({editing: true});
 

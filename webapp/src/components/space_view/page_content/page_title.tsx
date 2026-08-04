@@ -47,6 +47,15 @@ const PageTitle = ({value, editing, onChange, onCommit, onCancel}: Props) => {
             maxLength={TITLE_MAX_LENGTH}
             placeholder={untitled}
             aria-label={formatMessage({id: 'docs.page.titleLabel', defaultMessage: 'Page title'})}
+
+            // The field mounts only on entering edit mode, so this focuses on the
+            // gesture that asked to edit rather than on page load. Without it the
+            // field is unreachable by keyboard without tabbing the whole page tree,
+            // which sits between the Edit control and here in DOM order.
+            autoFocus={true}
+
+            // Not `onValueChange={onChange}`: Base UI also passes event details,
+            // and onChange's contract is the value alone.
             onValueChange={(newValue) => onChange(newValue)}
             onBlur={onCommit}
             onKeyDown={(e) => {

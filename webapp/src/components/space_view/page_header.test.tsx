@@ -51,6 +51,20 @@ describe('PageHeader edit control', () => {
         expect(screen.queryByRole('button', {name: 'Edit'})).not.toBeInTheDocument();
     });
 
+    // A label that changes on a button already holding focus is not reliably
+    // re-announced, so the toggle has to carry its state.
+    it('reports the unpressed mode while reading', () => {
+        renderHeader();
+
+        expect(screen.getByRole('button', {name: 'Edit'})).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    it('reports the pressed mode while editing', () => {
+        renderHeader({editing: true});
+
+        expect(screen.getByRole('button', {name: 'Done'})).toHaveAttribute('aria-pressed', 'true');
+    });
+
     it('reports a click on the control', () => {
         const onToggleEdit = jest.fn();
         renderHeader({onToggleEdit});

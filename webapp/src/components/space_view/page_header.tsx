@@ -155,6 +155,11 @@ const PageHeader = ({space, page, treeOpen, editing, onTogglePages, onToggleEdit
                             size='sm'
                             className={classNames('docs-btn-neutral', styles.iconLabel)}
                             leadingIcon={editing ? <CheckIcon size={18}/> : <PencilOutlineIcon size={18}/>}
+
+                            // The control is a mode toggle, and a changed label on a
+                            // button that already holds focus is not reliably
+                            // re-announced.
+                            aria-pressed={editing}
                             onClick={onToggleEdit}
                         >
                             {editing ? (
