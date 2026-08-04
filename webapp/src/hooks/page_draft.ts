@@ -36,12 +36,17 @@ const initial: PageDraftLoad = {
 
 const isNotFound = (error: unknown): boolean => error instanceof RestError && error.status === 404;
 
+type Resolved = PageDraftLoad & {key: string};
+
+const keyOf = (spaceId: string, pageId: string): string => `${spaceId}/${pageId}`;
+
 export function usePageDraft(spaceId: string, pageId: string): PageDraftLoad {
-    const [state, setState] = useState<PageDraftLoad>(initial);
+    const [state, setState] = useState<Resolved>(() => ({...initial, key: keyOf(spaceId, pageId)}));
 
     useEffect(() => {
         const controller = new AbortController();
-        setState(initial);
+        const key = keyOf(spaceId, pageId);
+        setState({...initial, key});
 
         const load = async () => {
             const [draftResult, pageResult] = await Promise.allSettled([
@@ -62,11 +67,12 @@ export function usePageDraft(spaceId: string, pageId: string): PageDraftLoad {
                 find((reason) => !isNotFound(reason));
 
             if (fatal) {
-                setState({...initial, loading: false, error: fatal});
+                setState({...initial, key, loading: false, error: fatal});
                 return;
             }
 
             setState({
+                key,
                 loading: false,
                 error: null,
 
@@ -75,7 +81,7 @@ export function usePageDraft(spaceId: string, pageId: string): PageDraftLoad {
                 page,
                 fromDraft: Boolean(draft),
                 notFound: !draft && !page,
-                baseEditAt: page?.edit_at,
+                baseEditAt: draft?.base_edit_at ?? page?.edit_at,
             });
         };
 
@@ -84,5 +90,5 @@ export function usePageDraft(spaceId: string, pageId: string): PageDraftLoad {
         return () => controller.abort();
     }, [spaceId, pageId]);
 
-    return state;
+    return state.key === keyOf(spaceId, pageId) ? state : initial;
 }

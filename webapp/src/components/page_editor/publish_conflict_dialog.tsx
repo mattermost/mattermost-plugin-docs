@@ -18,11 +18,13 @@ type Props = {
 
     onForcePublish: () => void;
     onClose: () => void;
+    busy?: boolean;
+    failed?: boolean;
 };
 
 const isConcurrentAutosave = (reason: string): boolean => reason.includes('concurrent_autosave');
 
-const PublishConflictDialog = ({currentPage, reason, onForcePublish, onClose}: Props) => {
+const PublishConflictDialog = ({currentPage, reason, onForcePublish, onClose, busy = false, failed = false}: Props) => {
     const {formatMessage} = useIntl();
     const autosaveConflict = isConcurrentAutosave(reason);
 
@@ -38,13 +40,19 @@ const PublishConflictDialog = ({currentPage, reason, onForcePublish, onClose}: P
             }
             footer={
                 <div className={styles.actions}>
-                    <SecondaryButton onClick={onClose}>
+                    <SecondaryButton
+                        onClick={onClose}
+                        disabled={busy}
+                    >
                         <FormattedMessage
                             id='docs.editor.conflict.cancel'
                             defaultMessage='Keep editing'
                         />
                     </SecondaryButton>
-                    <PrimaryButton onClick={onForcePublish}>
+                    <PrimaryButton
+                        onClick={onForcePublish}
+                        disabled={busy}
+                    >
                         <FormattedMessage
                             id='docs.editor.conflict.force'
                             defaultMessage='Publish anyway'
@@ -75,6 +83,17 @@ const PublishConflictDialog = ({currentPage, reason, onForcePublish, onClose}: P
                     />
                 </p>
             ) : null}
+            {failed && (
+                <p
+                    className={styles.error}
+                    role='alert'
+                >
+                    <FormattedMessage
+                        id='docs.editor.conflict.failed'
+                        defaultMessage='That did not work. Your changes are still here — try again, or keep editing.'
+                    />
+                </p>
+            )}
         </GenericModal>
     );
 };

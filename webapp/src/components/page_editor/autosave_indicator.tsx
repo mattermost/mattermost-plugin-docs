@@ -21,7 +21,7 @@ const AutosaveIndicator = ({status}: Props) => (
         {status === 'saving' && (
             <FormattedMessage
                 id='docs.editor.autosave.saving'
-                defaultMessage='Saving...'
+                defaultMessage='Saving…'
             />
         )}
         {status === 'saved' && (

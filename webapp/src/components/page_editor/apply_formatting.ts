@@ -18,6 +18,9 @@ type FormattingChain = {
 
 const selectWordUnderCaret = (editor: Editor) => {
     const {$from} = editor.state.selection;
+    if (!$from.parent.isTextblock) {
+        return;
+    }
 
     const text = $from.parent.textBetween(0, $from.parent.content.size, undefined, '\ufffc');
     const offset = $from.parentOffset;

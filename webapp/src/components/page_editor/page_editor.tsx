@@ -37,6 +37,7 @@ type Props = {
 type Conflict = {
     reason: string;
     currentPage: Page | null;
+    exitAfter: boolean;
 };
 
 const PageEditor = ({spaceId, pageId, isDraft}: Props) => {
@@ -170,7 +171,8 @@ const PageEditor = ({spaceId, pageId, isDraft}: Props) => {
             }
         } catch (error) {
             if (error instanceof PublishConflictError) {
-                setConflict({reason: error.reason, currentPage: error.currentPage});
+                setShowExitDialog(false);
+                setConflict({reason: error.reason, currentPage: error.currentPage, exitAfter});
                 return;
             }
             setActionError(error);
@@ -396,6 +398,7 @@ const PageEditor = ({spaceId, pageId, isDraft}: Props) => {
                             value={load.body}
                             onChange={onContentChange}
                             onSubmit={onPublish}
+                            useCtrlSend={true}
                             contentType='json'
                             extensions={DOCS_EXTENSIONS}
                             onContentError={onContentError}
@@ -427,8 +430,10 @@ const PageEditor = ({spaceId, pageId, isDraft}: Props) => {
                 <PublishConflictDialog
                     reason={conflict.reason}
                     currentPage={conflict.currentPage}
+                    busy={busy}
+                    failed={actionError != null}
                     onForcePublish={() => {
-                        publish(true);
+                        publish(true, conflict.exitAfter);
                     }}
                     onClose={() => setConflict(null)}
                 />

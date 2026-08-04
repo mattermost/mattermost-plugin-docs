@@ -1,18 +1,14 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import React, {useCallback, useEffect, useRef, useState} from 'react';
+import {autoUpdate, flip, inline, offset, shift, useFloating} from '@floating-ui/react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {hostGetEditor} from 'webapp_globals';
 import type {PublishedFormattingBarHandle, PublishedMarkdownMode} from 'webapp_globals';
 
 import styles from './floating_formatting_bar.module.scss';
 
 const GAP = 8;
-
-const boundaryTop = (editorEl: HTMLElement): number => {
-    const scroller = editorEl.closest('[data-docs-scroll]');
-    return scroller ? scroller.getBoundingClientRect().top : 0;
-};
 
 type Props = {
     editorRef: React.RefObject<HTMLElement>;
@@ -23,81 +19,72 @@ type Props = {
 };
 
 const FloatingFormattingBar = ({editorRef, applyFormatting, getEditor, barRef, additionalControls}: Props) => {
-    const wrapperRef = useRef<HTMLDivElement>(null);
+    const wrapperRef = useRef<HTMLDivElement | null>(null);
     const interactingRef = useRef(false);
-    const [position, setPosition] = useState<{top: number; left: number} | null>(null);
+    const rangeRef = useRef<Range | null>(null);
+    const [open, setOpen] = useState(false);
+    const [editorEl, setEditorEl] = useState<HTMLElement | null>(null);
 
-    const reposition = useCallback(() => {
-        const wrapper = wrapperRef.current;
-        const editorEl = editorRef.current;
-        if (!wrapper || !editorEl) {
-            return;
-        }
+    useEffect(() => setEditorEl(editorRef.current), [editorRef]);
 
-        if (interactingRef.current || wrapper.contains(document.activeElement)) {
+    const middleware = useMemo(() => [
+        inline(),
+        offset(GAP),
+        flip({boundary: editorEl?.closest('[data-docs-scroll]') ?? undefined, padding: GAP}),
+        shift({boundary: editorEl ?? undefined, padding: 0}),
+    ], [editorEl]);
+
+    const {refs, floatingStyles, update} = useFloating({
+        open,
+        placement: 'top',
+        strategy: 'absolute',
+        middleware,
+        whileElementsMounted: autoUpdate,
+    });
+
+    const {setReference, setFloating} = refs;
+
+    const reference = useMemo(() => ({
+        contextElement: editorEl ?? undefined,
+        getBoundingClientRect: () => rangeRef.current?.getBoundingClientRect() ?? new DOMRect(),
+        getClientRects: () => Array.from(rangeRef.current?.getClientRects() ?? []),
+    }), [editorEl]);
+
+    useEffect(() => setReference(reference), [setReference, reference]);
+
+    const setWrapper = useCallback((node: HTMLDivElement | null) => {
+        wrapperRef.current = node;
+        setFloating(node);
+    }, [setFloating]);
+
+    const sync = useCallback(() => {
+        const surface = editorRef.current;
+        if (!surface || interactingRef.current || wrapperRef.current?.contains(document.activeElement)) {
             return;
         }
 
         const selection = window.getSelection();
         if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
-            setPosition(null);
+            setOpen(false);
             return;
         }
 
         const range = selection.getRangeAt(0);
-        if (!editorEl.contains(range.commonAncestorContainer)) {
-            setPosition(null);
+        const rect = range.getBoundingClientRect();
+        if (!surface.contains(range.commonAncestorContainer) || (rect.width === 0 && rect.height === 0)) {
+            setOpen(false);
             return;
         }
 
-        const rect = range.getClientRects()[0] ?? range.getBoundingClientRect();
-        if (rect.width === 0 && rect.height === 0) {
-            setPosition(null);
-            return;
-        }
-
-        const originRect = editorEl.getBoundingClientRect();
-        const {offsetWidth, offsetHeight} = wrapper;
-        const selectionCenter = rect.left + (rect.width / 2);
-        const centered = selectionCenter - originRect.left - (offsetWidth / 2);
-        const maxLeft = Math.max(0, editorEl.clientWidth - offsetWidth);
-
-        const flipBelow = rect.top - offsetHeight - GAP < boundaryTop(editorEl);
-        const top = flipBelow ? (rect.bottom - originRect.top) + GAP : rect.top - originRect.top - offsetHeight - GAP;
-
-        setPosition({
-            top: Math.round(top),
-            left: Math.round(Math.min(Math.max(0, centered), maxLeft)),
-        });
-    }, [editorRef]);
-
-    const frameRef = useRef(0);
-    const schedule = useCallback(() => {
-        if (frameRef.current) {
-            return;
-        }
-        frameRef.current = requestAnimationFrame(() => {
-            frameRef.current = 0;
-            reposition();
-        });
-    }, [reposition]);
+        rangeRef.current = range;
+        setOpen(true);
+        update();
+    }, [editorRef, update]);
 
     useEffect(() => {
-        const scroller = editorRef.current?.closest('[data-docs-scroll]');
-
-        document.addEventListener('selectionchange', schedule);
-        window.addEventListener('resize', schedule);
-        scroller?.addEventListener('scroll', schedule);
-        return () => {
-            document.removeEventListener('selectionchange', schedule);
-            window.removeEventListener('resize', schedule);
-            scroller?.removeEventListener('scroll', schedule);
-            if (frameRef.current) {
-                cancelAnimationFrame(frameRef.current);
-                frameRef.current = 0;
-            }
-        };
-    }, [schedule, editorRef]);
+        document.addEventListener('selectionchange', sync);
+        return () => document.removeEventListener('selectionchange', sync);
+    }, [sync]);
 
     const onMouseDown = useCallback((e: React.MouseEvent) => {
         interactingRef.current = true;
@@ -121,9 +108,9 @@ const FloatingFormattingBar = ({editorRef, applyFormatting, getEditor, barRef, a
 
     return (
         <div
-            ref={wrapperRef}
-            className={position ? styles.bar : `${styles.bar} ${styles.hidden}`}
-            style={position ? {top: position.top, left: position.left} : undefined}
+            ref={setWrapper}
+            className={open ? styles.bar : `${styles.bar} ${styles.hidden}`}
+            style={floatingStyles}
             onMouseDown={onMouseDown}
         >
             <FormattingBar
