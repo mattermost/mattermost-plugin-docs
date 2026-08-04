@@ -4,7 +4,7 @@
 import {useUserProfile} from 'hooks/members';
 import {useDocsNavigation} from 'hooks/navigation';
 import {useAppDispatch} from 'hooks/redux';
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {useIntl} from 'react-intl';
 import {Avatar} from 'webapp_globals';
 
@@ -43,7 +43,12 @@ const PageContent = ({page, editing}: Props) => {
             <article className={styles.article}>
                 {page ? (
                     <>
+                        {/* The title buffer belongs to one page: keying it means a
+                            newly routed page never inherits what was typed for the
+                            last one, and a write already in flight keeps targeting
+                            the page it started on. */}
                         <PageTitleArea
+                            key={page.id}
                             page={page}
                             editing={editing}
                         />
@@ -70,6 +75,14 @@ const PageTitleArea = ({page, editing}: {page: Page; editing: boolean}) => {
     const [title, setTitle] = useState(page.title);
     const dispatch = useAppDispatch();
 
+    // Commit runs from an effect cleanup and from a settled write, neither of which
+    // can see the render they were created in; the ref is the buffer as it is now.
+    const titleRef = useRef(title);
+    const setBuffer = useCallback((next: string) => {
+        titleRef.current = next;
+        setTitle(next);
+    }, []);
+
     // Enter and blur are independent triggers (Enter doesn't blur the field), so
     // both can fire commit before a prior write resolves and the store's page.title
     // catches up. Without this guard a second write goes out on the same stale
@@ -77,15 +90,30 @@ const PageTitleArea = ({page, editing}: {page: Page; editing: boolean}) => {
     // write's edit_at bump turns the second into a conflict.
     const commitInFlight = useRef(false);
 
-    // A title edited elsewhere (the rename modal, another client) replaces the
-    // buffer; the routed page changing does too, since the component is reused.
-    useEffect(() => setTitle(page.title), [page.id, page.title]);
+    // The title this component last took from the page. The buffer holding anything
+    // else means there is unsaved input, which an incoming title must not replace —
+    // including the title our own write just put in the store, since the user may
+    // have typed on while it was in flight.
+    const observedTitle = useRef(page.title);
+    useEffect(() => {
+        const previous = observedTitle.current;
+        observedTitle.current = page.title;
+        if (titleRef.current === previous) {
+            setBuffer(page.title);
+        }
+    }, [page.title, setBuffer]);
+
+    // Deferred callers reach commit through the ref so they run the current one,
+    // which reads today's page.title rather than the one their closure captured.
+    const commitRef = useRef<() => Promise<void>>();
 
     // Trailing whitespace is never intentional in a title, and a title that only
     // changed by whitespace is not a change worth a write.
     const commit = async () => {
-        const next = title.trim();
-        setTitle(next);
+        const next = titleRef.current.trim();
+        if (next !== titleRef.current) {
+            setBuffer(next);
+        }
         if (next === page.title || commitInFlight.current) {
             return;
         }
@@ -104,7 +132,28 @@ const PageTitleArea = ({page, editing}: {page: Page; editing: boolean}) => {
         } finally {
             commitInFlight.current = false;
         }
+
+        // Anything typed while that write was in flight was turned away by the
+        // guard above and would otherwise be lost. One extra write per round trip
+        // at most, and the last thing typed is the one that lands.
+        if (titleRef.current.trim() !== next) {
+            await commitRef.current?.();
+        }
     };
+    commitRef.current = commit;
+
+    // Leaving edit mode is a commit trigger like blur and Enter: unmounting the
+    // field raises no blur event, so exits that don't go through the field — Back,
+    // routing to another page — would otherwise drop what was typed. Committing an
+    // unchanged title is already a no-op, so a blur that beat us here writes once.
+    useEffect(() => {
+        if (!editing) {
+            return undefined;
+        }
+        return () => {
+            commitRef.current?.();
+        };
+    }, [editing]);
 
     return (
         <header className={styles.titleArea}>
@@ -127,12 +176,15 @@ const PageTitleArea = ({page, editing}: {page: Page; editing: boolean}) => {
                 </Button>
             </div>
 
+            {/* Reading mode shows the stored title, not the buffer: a commit that
+                failed keeps the typed value in the field for another try, but the
+                heading must not present it as the page's title. */}
             <PageTitle
-                value={title}
+                value={editing ? title : page.title}
                 editing={editing}
-                onChange={setTitle}
+                onChange={setBuffer}
                 onCommit={commit}
-                onCancel={() => setTitle(page.title)}
+                onCancel={() => setBuffer(page.title)}
             />
 
             {author?.displayName && (
