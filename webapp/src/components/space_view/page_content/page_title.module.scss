@@ -1,0 +1,35 @@
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
+// See LICENSE.txt for license information.
+
+.title {
+    margin: 0;
+    overflow-wrap: break-word;
+    color: var(--center-channel-color);
+    font-family: 'Metropolis', sans-serif;
+    font-size: 36px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 44px;
+}
+
+.untitled {
+    color: rgba(var(--center-channel-color-rgb), 0.56);
+}
+
+// Applied with .title, never alone: the field is the heading with its control
+// chrome stripped, so toggling modes doesn't shift the text by a pixel.
+.field {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: none;
+    background: none;
+
+    &::placeholder {
+        color: rgba(var(--center-channel-color-rgb), 0.56);
+    }
+
+    &:focus {
+        outline: none;
+    }
+}
