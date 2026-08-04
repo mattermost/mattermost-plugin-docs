@@ -4,7 +4,7 @@
 import {Combobox} from '@base-ui-components/react/combobox';
 import type {MemberProfile} from 'hooks/members';
 import {useUserSearch} from 'hooks/user_search';
-import React, {useState} from 'react';
+import React, {useRef, useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {Avatar} from 'webapp_globals';
 
@@ -35,6 +35,9 @@ const PeoplePicker = ({selected, excludeIds, onChange}: Props) => {
     const [query, setQuery] = useState('');
     const {results, loading} = useUserSearch(query, excludeIds);
 
+    // The visible field, which the popup anchors to — see the positioner below.
+    const fieldRef = useRef<HTMLDivElement>(null);
+
     const placeholder = formatMessage({id: 'docs.share.search', defaultMessage: 'Add people or groups'});
 
     return (
@@ -50,7 +53,10 @@ const PeoplePicker = ({selected, excludeIds, onChange}: Props) => {
             isItemEqualToValue={sameUser}
             openOnInputClick={false}
         >
-            <Combobox.Chips className={styles.control}>
+            <Combobox.Chips
+                ref={fieldRef}
+                className={styles.control}
+            >
                 <MagnifyIcon
                     className={styles.searchIcon}
                     size={16}
@@ -85,11 +91,19 @@ const PeoplePicker = ({selected, excludeIds, onChange}: Props) => {
                 />
             </Combobox.Chips>
             <Combobox.Portal>
-                {/* Viewport coordinates: this picker only ever opens inside a modal,
-                    which is `position: fixed`, so the default `absolute` would place
-                    the popup in the document and let the two drift apart on scroll. */}
+                {/* Anchored to the field, not the input. Base UI anchors a combobox
+                    popup to its input by default, and here the input is a flex item
+                    inside the chips container: it sits after the chips and shrinks as
+                    they are added, so the popup was sized to that remnant and
+                    re-anchored on every chip. `--anchor-width` now measures the
+                    field, which is what the popup should line up with.
+
+                    Viewport coordinates because this only opens inside a modal, which
+                    is `position: fixed`; the default `absolute` places the popup in
+                    the document and the two drift apart on scroll. */}
                 <Combobox.Positioner
                     className={styles.positioner}
+                    anchor={fieldRef}
                     positionMethod='fixed'
                     sideOffset={4}
                 >
