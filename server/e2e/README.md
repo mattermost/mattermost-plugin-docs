@@ -4,9 +4,8 @@ This is the **official** end-to-end suite for the docs plugin's space-permission
 (MM-69269). It is Go + [Testcontainers](https://golang.testcontainers.org/), and boots a real
 Mattermost server with the plugin installed — no mocks.
 
-It ports the seven canonical Confluence permission scenarios (plus their named parity gaps) from
-`scripts/smoke-scenarios.sh` to run as a proper Go test suite. The bash script stays too, for fast
-local iteration; the two are intentionally kept in lockstep rather than merged into one.
+It covers the seven canonical Confluence permission scenarios plus their named parity gaps, and is
+the authoritative behavioral spec for them.
 
 ## Why a locally built core image
 

@@ -23,9 +23,8 @@ import (
 
 // TestScenarios runs the seven canonical Confluence space-permission scenarios plus the named
 // parity gaps against a real Mattermost server (built from the paired core branch) with the
-// plugin installed, via Testcontainers. scripts/smoke-scenarios.sh is the authoritative
-// behavioral spec and runs the same scenarios as a bash suite; the two are kept in lockstep, not
-// merged.
+// plugin installed, via Testcontainers. This suite is the authoritative behavioral spec for those
+// scenarios.
 func TestScenarios(t *testing.T) {
 	env := getEnv(t)
 	ctx := context.Background()
@@ -87,13 +86,14 @@ func TestScenarios(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "existing member edit: %s", body)
 
-		// Headline assertion: a team non-member's first default-granted write auto-joins them.
+		// Headline assertion: a team member who is not yet a space member is auto-joined by their
+		// first default-granted write.
 		status, body, err = doPluginRequest(ctx, outsider.client, http.MethodPost, "/spaces/"+s1ID+"/pages",
 			createPageReq("Drive-by page"), nil)
 		require.NoError(t, err)
-		require.Equal(t, http.StatusCreated, status, "non-member create: %s", body)
+		require.Equal(t, http.StatusCreated, status, "space non-member create: %s", body)
 		require.True(t, spaceHasMember(t, ctx, spaceAdmin, s1ID, outsider.id),
-			"non-member's drive-by write did not auto-join them (real GetChannelMember/AddChannelMember round-trip)")
+			"space non-member's drive-by write did not auto-join them (real GetChannelMember/AddChannelMember round-trip)")
 	})
 
 	t.Run("scenario2_knowledge_base", func(t *testing.T) {
@@ -601,8 +601,8 @@ func TestScenarios(t *testing.T) {
 	// capability exists to grant, deny, or probe).
 }
 
-// reverseString reverses s, mirroring smoke-scenarios.sh's `echo "$ID" | rev` — used to derive a
-// syntactically valid but nonexistent id from a real one.
+// reverseString reverses s — used to derive a syntactically valid but nonexistent id from a real
+// one.
 func reverseString(s string) string {
 	r := []rune(s)
 	slices.Reverse(r)

@@ -78,8 +78,7 @@ type actor struct {
 	client *mmmodel.Client4
 }
 
-// createActor creates a real user, adds it to teamID, and logs it in — mirroring
-// smoke-scenarios.sh's create_and_join_team + login_actor.
+// createActor creates a real user, adds it to teamID, and logs it in.
 func createActor(t *testing.T, ctx context.Context, env *testEnv, teamID, username string) actor {
 	t.Helper()
 
@@ -124,7 +123,7 @@ type spaceMemberJSON struct {
 }
 
 // spaceHasMember reports whether userID currently appears in spaceID's member list, as resolved
-// by the space admin actor — mirroring smoke-scenarios.sh's space_has_member.
+// by the space admin actor.
 func spaceHasMember(t *testing.T, ctx context.Context, admin actor, spaceID, userID string) bool {
 	t.Helper()
 	var resp spaceMembersResponse
@@ -149,7 +148,7 @@ func deleteSpace(t *testing.T, ctx context.Context, admin actor, spaceID string)
 }
 
 // pageDocBody is a minimal valid page body (see model.Page.IsValid — only size-limited, not
-// schema-validated), matching smoke-scenarios.sh's create_page_body/edit_page_body.
+// schema-validated).
 const pageDocBody = `{"type":"doc","content":[]}`
 
 // createPageReq builds a minimal valid page-create body.

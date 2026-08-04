@@ -328,16 +328,17 @@ func StubChannelScheme(mockAPI *plugintest.API, channelID string, channel *mmmod
 }
 
 // resolveChannelRoles mirrors core's GetSchemeRolesForChannel for a stubbed channel: the roles of
-// whichever scheme the channel currently points at. A channel with no scheme, or one pointing at a
-// scheme no test registered, resolves to empty role names rather than a plausible-looking default,
-// so a test relying on an unregistered scheme fails visibly.
+// whichever scheme the channel currently points at. A channel with no scheme resolves to empty role
+// names, matching core. A channel pointing at a scheme no test registered resolves to not-found, so
+// a test relying on an unregistered scheme fails visibly rather than reading empty role names as a
+// successful lookup.
 func resolveChannelRoles(channel *mmmodel.Channel) (string, string, string, *mmmodel.AppError) {
 	if channel == nil || channel.SchemeId == nil || *channel.SchemeId == "" {
 		return "", "", "", nil
 	}
 	roles, ok := rolesForScheme(*channel.SchemeId)
 	if !ok {
-		return "", "", "", nil
+		return "", "", "", mmmodel.NewAppError("resolveChannelRoles", "app.scheme.get.app_error", nil, "", http.StatusNotFound)
 	}
 	return roles.Guest, roles.User, roles.Admin, nil
 }

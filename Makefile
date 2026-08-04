@@ -367,6 +367,9 @@ endif
 ## into it, and drives the seven Confluence permission scenarios plus their named parity gaps
 ## through the real HTTP API. Requires Docker. See server/e2e/README.md.
 ##
+## A namespaced CORE_IMAGE (one containing a `/`) names a pullable image, so the local build is
+## skipped and Testcontainers fetches it — the path the CI e2e job takes.
+##
 ## The bundle must contain a linux-$(arch) plugin binary for the Docker container to load it —
 ## `make server` alone only builds for the host OS/arch when MM_SERVICESETTINGS_ENABLEDEVELOPER is
 ## set (a common local dev convenience), which produces a bundle unusable inside the container. So
@@ -385,7 +388,10 @@ test-e2e:
 		echo "No plugin bundle with a linux-$$goarch binary found — running 'make dist' (forcing an all-architecture build)..."; \
 		MM_SERVICESETTINGS_ENABLEDEVELOPER= $(MAKE) dist; \
 	fi
-	./build/build-core-image.sh
+	@case "$${CORE_IMAGE:-}" in \
+		*/*) echo "CORE_IMAGE=$$CORE_IMAGE is namespaced — leaving it to Testcontainers to pull; skipping the local core-image build." ;; \
+		*) ./build/build-core-image.sh ;; \
+	esac
 	$(GO) test -tags e2e -count=1 -v ./server/e2e/...
 
 ## Creates a coverage report for the server code.

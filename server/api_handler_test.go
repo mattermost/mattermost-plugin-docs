@@ -2256,7 +2256,6 @@ func TestHandler_SetSpaceDefaultCapabilities_CreatesPooledScheme(t *testing.T) {
 	mockAPI.AssertNumberOfCalls(t, "PatchRole", 3)
 }
 
-// TestHandler_SetSpaceDefaultCapabilities_SwitchBackToPresetRetiresCustomScheme verifies that
 // TestHandler_SetSpaceDefaultCapabilities_ReusesPooledScheme pins the property the shared pool
 // exists for: a capability set resolves to one scheme forever. Switching a space to a non-preset
 // set mints a pooled scheme, switching away to a preset leaves it in place, and switching back

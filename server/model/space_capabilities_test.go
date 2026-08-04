@@ -14,13 +14,14 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-// grantableCapabilities is the full grant vocabulary (the four atomic per-page capabilities plus
+// grantableCapabilities is the full grant vocabulary (the five atomic per-page capabilities plus
 // admin_space), used to enumerate every subset for the round-trip test below.
 var grantableCapabilities = []string{
 	model.CapabilityCreatePage,
 	model.CapabilityCommentPage,
 	model.CapabilityEditPage,
 	model.CapabilityDeleteOwnPage,
+	model.CapabilityDeletePage,
 	model.CapabilityAdminSpace,
 }
 
