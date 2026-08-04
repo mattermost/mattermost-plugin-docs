@@ -263,6 +263,7 @@ func buildLines(o Options) ([]string, lineCounts, []map[string]any, error) {
 			"content":               "This comment is counted but not imported.",
 			"create_at":             1704625200000,
 			"update_at":             1704625200000,
+			"props":                 map[string]any{"import_source_id": "201", "import_source": "confluence"},
 		}})
 		if cErr != nil {
 			return nil, counts, nil, cErr

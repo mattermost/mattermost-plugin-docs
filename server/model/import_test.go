@@ -16,17 +16,28 @@ func TestImportJobState_Predicates(t *testing.T) {
 		if !s.IsTerminal() {
 			t.Errorf("%s should be terminal", s)
 		}
-		if s.OwnsSourceQueue() {
-			t.Errorf("%s (terminal) must not own the source queue", s)
+		if s.IsWorkerOwned() {
+			t.Errorf("%s (terminal) must not be worker-owned", s)
 		}
 	}
-	owning := []ImportJobState{ImportStateQueuedPreflight, ImportStatePreflighting, ImportStateAwaitingConfirmation, ImportStateQueuedImport, ImportStateImporting, ImportStateCanceling}
+	owning := []ImportJobState{ImportStateQueuedPreflight, ImportStatePreflighting, ImportStateQueuedImport, ImportStateImporting, ImportStateTerminalizing}
 	for _, s := range owning {
 		if s.IsTerminal() {
 			t.Errorf("%s should not be terminal", s)
 		}
-		if !s.OwnsSourceQueue() {
-			t.Errorf("%s should own the source queue", s)
+		if !s.IsWorkerOwned() {
+			t.Errorf("%s should be worker-owned", s)
+		}
+	}
+	// Jobs waiting on a human are deliberately not worker-owned: that is what lets a later job
+	// preflight and even execute while an earlier one sits unconfirmed, with mapping-revision
+	// invalidation rather than queue ownership providing safety.
+	for _, s := range []ImportJobState{ImportStateAwaitingSource, ImportStateAwaitingConfirmation} {
+		if s.IsWorkerOwned() {
+			t.Errorf("%s must not be worker-owned", s)
+		}
+		if !s.AwaitsUser() {
+			t.Errorf("%s should await the user", s)
 		}
 	}
 	if ImportJobState("bogus").IsValid() {
@@ -71,20 +82,21 @@ func TestImportJob_IsValid(t *testing.T) {
 	}
 
 	tests := map[string]func(*ImportJob){
-		"bad id":            func(j *ImportJob) { j.Id = "x" },
-		"bad actor":         func(j *ImportJob) { j.ActorId = "" },
-		"bad target kind":   func(j *ImportJob) { j.TargetKind = "sideways" },
-		"bad target space":  func(j *ImportJob) { j.TargetSpaceId = "" },
-		"bad source mode":   func(j *ImportJob) { j.SourceSelectionMode = "maybe" },
-		"bad state":         func(j *ImportJob) { j.State = "limbo" },
-		"bad bundle sha":    func(j *ImportJob) { j.BundleSha256 = "nothex" },
-		"empty bundle sha":  func(j *ImportJob) { j.BundleSha256 = "" },
-		"bad preflight rev": func(j *ImportJob) { j.PreflightRevision = "short" },
-		"zero timestamps":   func(j *ImportJob) { j.CreateAt = 0 },
-		"long space title":  func(j *ImportJob) { j.ConfirmedSpaceTitle = strings.Repeat("x", ImportSpaceTitleMaxRunes+1) },
-		"long source name":  func(j *ImportJob) { j.SelectedSourceDisplayName = strings.Repeat("x", ImportDisplayNameMaxRunes+1) },
-		"long error code":   func(j *ImportJob) { j.ErrorCode = strings.Repeat("x", ImportErrorCodeMaxRunes+1) },
-		"oversize confirm":  func(j *ImportJob) { j.Confirmation = make(ImportConfirmation, ImportConfirmationMaxBytes+1) },
+		"bad id":                   func(j *ImportJob) { j.Id = "x" },
+		"bad actor":                func(j *ImportJob) { j.ActorId = "" },
+		"bad target kind":          func(j *ImportJob) { j.TargetKind = "sideways" },
+		"bad target space":         func(j *ImportJob) { j.TargetSpaceId = "" },
+		"bad source mode":          func(j *ImportJob) { j.SourceSelectionMode = "maybe" },
+		"bad state":                func(j *ImportJob) { j.State = "limbo" },
+		"bad intent":               func(j *ImportJob) { j.TerminalIntent = "sideways" },
+		"intentless terminalizing": func(j *ImportJob) { j.State = ImportStateTerminalizing },
+		"bad bundle sha":           func(j *ImportJob) { j.BundleSha256 = "nothex" },
+		"empty bundle sha":         func(j *ImportJob) { j.BundleSha256 = "" },
+		"bad preflight rev":        func(j *ImportJob) { j.PreflightRevision = "short" },
+		"zero timestamps":          func(j *ImportJob) { j.CreateAt = 0 },
+		"long space title":         func(j *ImportJob) { j.ConfirmedSpaceTitle = strings.Repeat("x", ImportSpaceTitleMaxRunes+1) },
+		"long source name":         func(j *ImportJob) { j.SelectedSourceDisplayName = strings.Repeat("x", ImportDisplayNameMaxRunes+1) },
+		"long error code":          func(j *ImportJob) { j.ErrorCode = strings.Repeat("x", ImportErrorCodeMaxRunes+1) },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -151,45 +163,68 @@ func TestImportIssueRecord_IsValid(t *testing.T) {
 }
 
 func TestImportConfirmation_ValueAndScan(t *testing.T) {
-	// Empty confirmation persists as an empty JSON object (matches the column's NOT NULL DEFAULT).
-	empty := ImportConfirmation(nil)
-	v, err := empty.Value()
+	// An empty confirmation persists as a JSON object, preserving the column's NOT NULL DEFAULT '{}'.
+	v, err := ImportConfirmation{}.Value()
 	if err != nil {
 		t.Fatalf("empty Value: %v", err)
 	}
-	if v != "{}" {
-		t.Errorf("empty Value = %v, want {}", v)
+	if s, _ := v.(string); s == "" || s[0] != '{' {
+		t.Errorf("empty Value = %v, want a JSON object", v)
 	}
 
-	// A payload larger than 1 MiB (which mmmodel.StringInterface's Value() would reject) must be
-	// accepted, since a valid confirmation with thousands of conflict descriptors exceeds 1 MiB.
-	oneAndHalfMiB := ImportConfirmation(`{"overwrite_conflicts":[` + strings.Repeat("0", 1_500_000) + `]}`)
-	if _, err := oneAndHalfMiB.Value(); err != nil {
-		t.Fatalf("1.5 MiB confirmation should persist, got %v", err)
+	// A confirmation approving thousands of conflicts exceeds mmmodel.StringInterface's internal
+	// 1 MiB valuer limit, which is exactly why these columns do not use that type.
+	big := ImportConfirmation{PreflightRevision: strings.Repeat("a", 64)}
+	for range 4000 {
+		big.OverwriteConflicts = append(big.OverwriteConflicts, strings.Repeat("9", 300))
 	}
-	// Confirm StringInterface would have rejected the same size, i.e. our new type is what unblocks it.
-	big := make(mmmodel.StringInterface)
-	big["blob"] = strings.Repeat("x", 1_500_000)
-	if _, siErr := big.Value(); siErr == nil {
+	if _, err := big.Value(); err != nil {
+		t.Fatalf("a large but valid confirmation must persist, got %v", err)
+	}
+	blob := make(mmmodel.StringInterface)
+	blob["blob"] = strings.Repeat("x", 1_500_000)
+	if _, siErr := blob.Value(); siErr == nil {
 		t.Errorf("expected StringInterface to reject a >1 MiB payload (sanity check on the motivation)")
-	}
-
-	// Over the deliberate cap is rejected as a backstop.
-	over := ImportConfirmation(strings.Repeat("x", ImportConfirmationMaxBytes+1))
-	if _, err := over.Value(); err == nil {
-		t.Errorf("expected rejection above ImportConfirmationMaxBytes")
 	}
 
 	// Round-trips through Scan for both []byte and string sources.
 	var c ImportConfirmation
-	if err := c.Scan([]byte(`{"a":1}`)); err != nil || string(c) != `{"a":1}` {
-		t.Errorf("Scan([]byte) = %q, %v", string(c), err)
+	if err := c.Scan([]byte(`{"preflight_revision":"abc","overwrite_conflicts":["101"]}`)); err != nil {
+		t.Fatalf("Scan([]byte): %v", err)
 	}
-	if err := c.Scan(`{"b":2}`); err != nil || string(c) != `{"b":2}` {
-		t.Errorf("Scan(string) = %q, %v", string(c), err)
+	if c.PreflightRevision != "abc" || len(c.OverwriteConflicts) != 1 || c.OverwriteConflicts[0] != "101" {
+		t.Errorf("Scan([]byte) produced %+v", c)
 	}
-	if err := c.Scan(nil); err != nil || c != nil {
-		t.Errorf("Scan(nil) = %q, %v", string(c), err)
+	if err := c.Scan(nil); err != nil {
+		t.Errorf("Scan(nil): %v", err)
+	}
+}
+
+func TestImportConfirmation_IsValid(t *testing.T) {
+	revision := strings.Repeat("a", 64)
+	valid := &ImportConfirmation{PreflightRevision: revision, OverwriteConflicts: []string{"101", "205"}}
+	if err := valid.IsValid(); err != nil {
+		t.Fatalf("valid confirmation rejected: %v", err)
+	}
+	tests := map[string]func(*ImportConfirmation){
+		"bad revision":    func(c *ImportConfirmation) { c.PreflightRevision = "short" },
+		"duplicate id":    func(c *ImportConfirmation) { c.OverwriteConflicts = []string{"101", "101"} },
+		"non-contract id": func(c *ImportConfirmation) { c.OverwriteConflicts = []string{"has space"} },
+		"over-long id": func(c *ImportConfirmation) {
+			c.OverwriteConflicts = []string{strings.Repeat("9", ImportExternalIDMaxBytes+1)}
+		},
+		"long space title": func(c *ImportConfirmation) {
+			c.NewSpace = &ImportNewSpaceMetadata{Title: strings.Repeat("x", ImportSpaceTitleMaxRunes+1)}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			c := &ImportConfirmation{PreflightRevision: revision}
+			mutate(c)
+			if err := c.IsValid(); err == nil {
+				t.Errorf("expected rejection for %q", name)
+			}
+		})
 	}
 }
 

@@ -30,10 +30,11 @@ const (
 
 // handleCreateImport handles POST /api/v1/imports/preflight.
 //
-// The upload is streamed to a private temporary file (never buffered in memory and never held in the
-// database), inspected synchronously, and — on success — persisted as a job plus its normalized
-// staged pages. The temporary file exists only for the duration of this request: everything the
-// worker later needs is in PostgreSQL, so no subsequent step depends on this node.
+// The multipart parts are required in order — `request` first, `bundle` second — so the small JSON
+// request can be parsed and *authorized* before a single byte of a possibly 250 MiB archive is
+// accepted. The bundle is then streamed to a private temporary file, inspected, and staged in one
+// transaction. The temporary file exists only for this request: everything the worker later needs is
+// in PostgreSQL, so no subsequent step depends on this node.
 func (p *Plugin) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 	actorID := userIDFromRequest(r)
 
@@ -42,25 +43,81 @@ func (p *Plugin) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, importer.MaxBundleUploadBytes+importer.MaxMultipartOverheadBytes)
 
 	// ParseMultipartForm is deliberately avoided: it would buffer/spool every part itself, including
-	// a 250 MiB archive, before the handler can apply its own limits.
+	// the archive, before the handler can apply its own limits or authorize the request.
 	reader, err := r.MultipartReader()
 	if err != nil {
 		p.writeAppError(w, mmmodel.NewAppError("handleCreateImport", "api.import.invalid_multipart.app_error", nil, "", http.StatusBadRequest).Wrap(err))
 		return
 	}
 
-	upload, cleanup, appErr := p.readImportUpload(reader)
-	if cleanup != nil {
-		// Remove the temp file and its directory on every return path, including success: the bundle
-		// is not needed after inspection.
-		defer cleanup()
+	// Part 1 must be the JSON request.
+	requestPart, err := reader.NextPart()
+	if err != nil {
+		p.writeAppError(w, multipartReadError("handleCreateImport", err))
+		return
 	}
+	if requestPart.FormName() != importPartRequest {
+		_ = requestPart.Close()
+		p.writeAppError(w, mmmodel.NewAppError("handleCreateImport", "api.import.request_part_not_first.app_error", nil, "", http.StatusBadRequest))
+		return
+	}
+	uploadRequest, appErr := decodeImportRequestPart(requestPart)
+	_ = requestPart.Close()
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return
 	}
 
-	view, appErr := p.service.CreateImportFromBundle(actorID, upload.request, upload.file, upload.size, upload.sha256)
+	// Authorize before accepting the bundle body. An unauthorized caller never gets to spend our disk
+	// or parser budget.
+	target, appErr := p.service.AuthorizeImportTarget(actorID, uploadRequest.Target)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
+	}
+
+	// Only now claim the single inspection slot, still before reading bundle bytes, so concurrent
+	// uploads cannot pile temporary files onto disk.
+	release, ok := p.acquireInspectionSlot(w)
+	if !ok {
+		return
+	}
+	defer release()
+
+	// Part 2 must be the bundle.
+	bundlePart, err := reader.NextPart()
+	if err != nil {
+		p.writeAppError(w, multipartReadError("handleCreateImport", err))
+		return
+	}
+	if bundlePart.FormName() != importPartBundle {
+		_ = bundlePart.Close()
+		p.writeAppError(w, mmmodel.NewAppError("handleCreateImport", "api.import.bundle_part_not_second.app_error", nil, "", http.StatusBadRequest))
+		return
+	}
+	file, size, sum, cleanup, bundleErr := writeBundleToTempFile(bundlePart)
+	_ = bundlePart.Close()
+	if cleanup != nil {
+		// Remove the temp file and its directory on every return path, including success: the bundle
+		// is not needed after inspection.
+		defer cleanup()
+	}
+	if bundleErr != nil {
+		p.writeAppError(w, bundleErr)
+		return
+	}
+
+	// Reject any further parts rather than ignoring them, so a second archive cannot ride along.
+	if extra, extraErr := reader.NextPart(); extraErr == nil {
+		_ = extra.Close()
+		p.writeAppError(w, mmmodel.NewAppError("handleCreateImport", "api.import.unknown_part.app_error", nil, "", http.StatusBadRequest))
+		return
+	} else if !errors.Is(extraErr, io.EOF) {
+		p.writeAppError(w, multipartReadError("handleCreateImport", extraErr))
+		return
+	}
+
+	view, appErr := p.service.CreateImportFromBundle(actorID, target, file, size, sum)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return
@@ -68,86 +125,106 @@ func (p *Plugin) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, view)
 }
 
-// importUpload is the validated result of reading the multipart request: the decoded JSON request
-// part plus the on-disk archive and the digest computed while writing it.
-type importUpload struct {
-	request *model.ImportUploadRequest
-	file    *os.File
-	size    int64
-	sha256  string
+// acquireInspectionSlot takes the process-wide single inspection slot and registers the in-flight
+// inspection so deactivation can wait for it. It returns a release func and false when the request
+// must be rejected, having already written the response.
+//
+// The closed-check and the WaitGroup Add happen under one mutex: doing them separately would race a
+// concurrent deactivation between the check and the Add, letting a new inspection start after the
+// store was closed.
+func (p *Plugin) acquireInspectionSlot(w http.ResponseWriter) (func(), bool) {
+	p.inspectionMu.Lock()
+	if p.inspectionClosed {
+		p.inspectionMu.Unlock()
+		p.writeAppError(w, mmmodel.NewAppError("acquireInspectionSlot", "api.import.shutting_down.app_error", nil, "", http.StatusServiceUnavailable))
+		return nil, false
+	}
+	p.inspectionWG.Add(1)
+	p.inspectionMu.Unlock()
+
+	select {
+	case p.inspectionSemaphore <- struct{}{}:
+		return func() {
+			<-p.inspectionSemaphore
+			p.inspectionWG.Done()
+		}, true
+	default:
+		// Another inspection holds the only slot. This is a capacity condition, not a client error, so
+		// the caller is told when to retry rather than being told the request was wrong.
+		p.inspectionWG.Done()
+		w.Header().Set("Retry-After", importRetryAfterSeconds)
+		p.writeAppError(w, mmmodel.NewAppError("acquireInspectionSlot", "api.import.inspection_busy.app_error", nil, "", http.StatusTooManyRequests))
+		return nil, false
+	}
 }
 
-// readImportUpload consumes the multipart stream, requiring exactly one `request` part and one
-// `bundle` part. It returns a cleanup func whenever a temporary file/directory was created, so the
-// caller can remove them even when this returns an error.
-func (p *Plugin) readImportUpload(reader *multipart.Reader) (*importUpload, func(), *mmmodel.AppError) {
-	upload := &importUpload{}
-	var cleanup func()
+// importRetryAfterSeconds is the Retry-After hint sent with a 429. One inspection runs at a time and
+// a large bundle takes tens of seconds, so a short retry keeps clients from hammering the endpoint.
+const importRetryAfterSeconds = "30"
 
-	// Every AppError below is constructed with a string-literal message id (rather than through a
-	// shared helper taking the id as a variable) so the i18n extraction tool can discover the keys.
-	for {
-		part, err := reader.NextPart()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			// A body that trips MaxBytesReader surfaces here; report it as too large rather than as a
-			// malformed request so the client can tell the two apart.
-			if isMaxBytesError(err) {
-				return nil, cleanup, mmmodel.NewAppError("readImportUpload", "api.import.upload_too_large.app_error", nil, "", http.StatusRequestEntityTooLarge).Wrap(err)
-			}
-			return nil, cleanup, mmmodel.NewAppError("readImportUpload", "api.import.invalid_multipart.app_error", nil, "", http.StatusBadRequest).Wrap(err)
-		}
-
-		switch part.FormName() {
-		case importPartRequest:
-			if upload.request != nil {
-				_ = part.Close()
-				return nil, cleanup, mmmodel.NewAppError("readImportUpload", "api.import.duplicate_part.app_error", nil, "", http.StatusBadRequest)
-			}
-			req, reqErr := decodeImportRequestPart(part)
-			_ = part.Close()
-			if reqErr != nil {
-				return nil, cleanup, reqErr
-			}
-			upload.request = req
-
-		case importPartBundle:
-			if upload.file != nil {
-				_ = part.Close()
-				return nil, cleanup, mmmodel.NewAppError("readImportUpload", "api.import.duplicate_part.app_error", nil, "", http.StatusBadRequest)
-			}
-			file, size, sum, tmpCleanup, bundleErr := writeBundleToTempFile(part)
-			_ = part.Close()
-			if tmpCleanup != nil {
-				cleanup = tmpCleanup
-			}
-			if bundleErr != nil {
-				return nil, cleanup, bundleErr
-			}
-			upload.file, upload.size, upload.sha256 = file, size, sum
-
-		default:
-			_ = part.Close()
-			return nil, cleanup, mmmodel.NewAppError("readImportUpload", "api.import.unknown_part.app_error", nil, "", http.StatusBadRequest)
-		}
+// multipartReadError maps a multipart read failure onto its status: a body that trips MaxBytesReader
+// is too large, anything else is malformed.
+func multipartReadError(where string, err error) *mmmodel.AppError {
+	if isMaxBytesError(err) {
+		return mmmodel.NewAppError(where, "api.import.upload_too_large.app_error", nil, "", http.StatusRequestEntityTooLarge).Wrap(err)
 	}
+	if errors.Is(err, io.EOF) {
+		return mmmodel.NewAppError(where, "api.import.missing_request_part.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+	}
+	return mmmodel.NewAppError(where, "api.import.invalid_multipart.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+}
 
-	if upload.request == nil {
-		return nil, cleanup, mmmodel.NewAppError("readImportUpload", "api.import.missing_request_part.app_error", nil, "", http.StatusBadRequest)
+// isMaxBytesError reports whether err is the error http.MaxBytesReader returns when the request body
+// exceeds its limit, including when it surfaces wrapped by the multipart reader.
+func isMaxBytesError(err error) bool {
+	var maxBytesErr *http.MaxBytesError
+	return errors.As(err, &maxBytesErr)
+}
+
+// handleGetImport handles GET /api/v1/imports/{job_id}.
+func (p *Plugin) handleGetImport(w http.ResponseWriter, r *http.Request) {
+	actorID := userIDFromRequest(r)
+	jobID := mux.Vars(r)["job_id"]
+	view, appErr := p.service.GetImportJob(jobID, actorID)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
 	}
-	if upload.file == nil {
-		return nil, cleanup, mmmodel.NewAppError("readImportUpload", "api.import.missing_bundle_part.app_error", nil, "", http.StatusBadRequest)
+	writeJSON(w, http.StatusOK, view)
+}
+
+// handleListImports handles GET /api/v1/imports?team_id={id}. Only the caller's own jobs are listed.
+func (p *Plugin) handleListImports(w http.ResponseWriter, r *http.Request) {
+	actorID := userIDFromRequest(r)
+	teamID := r.URL.Query().Get("team_id")
+	page, perPage := pageParam(r), perPageParam(r)
+	views, hasMore, appErr := p.service.GetImportJobsForActor(actorID, teamID, page, perPage)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
 	}
-	return upload, cleanup, nil
+	writePaginatedJSON(w, views, page, perPage, hasMore)
+}
+
+// handleGetImportIssues handles GET /api/v1/imports/{job_id}/issues?stage=&severity=.
+func (p *Plugin) handleGetImportIssues(w http.ResponseWriter, r *http.Request) {
+	actorID := userIDFromRequest(r)
+	jobID := mux.Vars(r)["job_id"]
+	stage := r.URL.Query().Get("stage")
+	severity := r.URL.Query().Get("severity")
+	page, perPage := pageParam(r), perPageParam(r)
+	issues, hasMore, appErr := p.service.GetImportIssues(jobID, actorID, stage, severity, page, perPage)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
+	}
+	writePaginatedJSON(w, issues, page, perPage, hasMore)
 }
 
 // decodeImportRequestPart decodes the JSON `request` part under its own size cap, rejecting trailing
 // data after the object.
 func decodeImportRequestPart(part *multipart.Part) (*model.ImportUploadRequest, *mmmodel.AppError) {
-	limited := io.LimitReader(part, importer.MaxRequestPartBytes+1)
-	raw, err := io.ReadAll(limited)
+	raw, err := io.ReadAll(io.LimitReader(part, importer.MaxRequestPartBytes+1))
 	if err != nil {
 		return nil, mmmodel.NewAppError("decodeImportRequestPart", "api.import.invalid_multipart.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 	}
@@ -215,51 +292,4 @@ func writeBundleToTempFile(part *multipart.Part) (_ *os.File, _ int64, _ string,
 		return nil, 0, "", cleanup, mmmodel.NewAppError("writeBundleToTempFile", "api.import.temp_storage_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
 	return file, written, hex.EncodeToString(hasher.Sum(nil)), cleanup, nil
-}
-
-// isMaxBytesError reports whether err is the error http.MaxBytesReader returns when the request body
-// exceeds its limit, including when it surfaces wrapped by the multipart reader.
-func isMaxBytesError(err error) bool {
-	var maxBytesErr *http.MaxBytesError
-	return errors.As(err, &maxBytesErr)
-}
-
-// handleGetImport handles GET /api/v1/imports/{job_id}.
-func (p *Plugin) handleGetImport(w http.ResponseWriter, r *http.Request) {
-	actorID := userIDFromRequest(r)
-	jobID := mux.Vars(r)["job_id"]
-	view, appErr := p.service.GetImportJob(jobID, actorID)
-	if appErr != nil {
-		p.writeAppError(w, appErr)
-		return
-	}
-	writeJSON(w, http.StatusOK, view)
-}
-
-// handleListImports handles GET /api/v1/imports?team_id={id}. Only the caller's own jobs are listed.
-func (p *Plugin) handleListImports(w http.ResponseWriter, r *http.Request) {
-	actorID := userIDFromRequest(r)
-	teamID := r.URL.Query().Get("team_id")
-	page, perPage := pageParam(r), perPageParam(r)
-	views, hasMore, appErr := p.service.GetImportJobsForActor(actorID, teamID, page, perPage)
-	if appErr != nil {
-		p.writeAppError(w, appErr)
-		return
-	}
-	writePaginatedJSON(w, views, page, perPage, hasMore)
-}
-
-// handleGetImportIssues handles GET /api/v1/imports/{job_id}/issues?stage=&severity=.
-func (p *Plugin) handleGetImportIssues(w http.ResponseWriter, r *http.Request) {
-	actorID := userIDFromRequest(r)
-	jobID := mux.Vars(r)["job_id"]
-	stage := r.URL.Query().Get("stage")
-	severity := r.URL.Query().Get("severity")
-	page, perPage := pageParam(r), perPageParam(r)
-	issues, hasMore, appErr := p.service.GetImportIssues(jobID, actorID, stage, severity, page, perPage)
-	if appErr != nil {
-		p.writeAppError(w, appErr)
-		return
-	}
-	writePaginatedJSON(w, issues, page, perPage, hasMore)
 }

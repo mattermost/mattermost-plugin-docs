@@ -35,6 +35,7 @@ const (
 	TipTapErrBadContent     = "tiptap_bad_content"
 	TipTapErrBadMarks       = "tiptap_bad_marks"
 	TipTapErrBadText        = "tiptap_bad_text"
+	TipTapErrUnstorableText = "tiptap_unstorable_text"
 	TipTapErrTooManyNodes   = "tiptap_too_many_nodes"
 	TipTapErrTooDeep        = "tiptap_too_deep"
 	TipTapErrBodyTooLarge   = "tiptap_body_too_large"
@@ -175,6 +176,12 @@ func (w *tiptapWalker) walkNode(node map[string]any, depth int) error {
 		if !ok {
 			return tiptapErr(TipTapErrBadText, "text node has a non-string text field")
 		}
+		// Reject rather than sanitize: a NUL cannot be stored in the body/SearchText columns and
+		// invalid UTF-8 would be silently mutated, so a document carrying either is refused outright
+		// instead of being altered behind the user's back.
+		if !IsStorableText(text) {
+			return tiptapErr(TipTapErrUnstorableText, "text node contains invalid UTF-8 or a NUL character")
+		}
 		w.search.WriteString(text)
 		if containsPlaceholderToken(text) {
 			w.links = append(w.links, DiscoveredLink{Raw: text, InText: true})
@@ -243,9 +250,6 @@ var (
 
 // normalizeSearchText collapses horizontal whitespace and excess blank lines, then trims.
 func normalizeSearchText(s string) string {
-	// Drop NUL bytes first: a TipTap text node may decode an escaped NUL to a literal NUL byte,
-	// which PostgreSQL cannot store in the SearchText TEXT column and would reject at staging insert.
-	s = stripNUL(s)
 	// Normalize CRLF/CR to LF first so newline collapsing is uniform.
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "\n")

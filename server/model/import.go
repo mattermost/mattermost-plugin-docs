@@ -16,17 +16,21 @@ import (
 
 // ImportJobState is a persisted import-job lifecycle state. The values here must exactly match the
 // chk_docs_importjob_state CHECK constraint in migration 000006.
+//
+// V1 runs a single worker goroutine on a single application node, so there are deliberately no
+// claim/lease states: restart safety comes from PostgreSQL state plus immutable per-page execution
+// checkpoints. Terminalization is its own state because success, failure, and cancellation all have
+// to durably record an outcome for every staged page before the job may become terminal.
 type ImportJobState string
 
 const (
 	ImportStateAwaitingSource       ImportJobState = "awaiting_source"
-	ImportStateWaitingSourceTurn    ImportJobState = "waiting_source_turn"
 	ImportStateQueuedPreflight      ImportJobState = "queued_preflight"
 	ImportStatePreflighting         ImportJobState = "preflighting"
 	ImportStateAwaitingConfirmation ImportJobState = "awaiting_confirmation"
 	ImportStateQueuedImport         ImportJobState = "queued_import"
 	ImportStateImporting            ImportJobState = "importing"
-	ImportStateCanceling            ImportJobState = "canceling"
+	ImportStateTerminalizing        ImportJobState = "terminalizing"
 	ImportStateCompleted            ImportJobState = "completed"
 	ImportStateCompletedWithIssues  ImportJobState = "completed_with_issues"
 	ImportStateFailed               ImportJobState = "failed"
@@ -35,11 +39,10 @@ const (
 
 // validImportStates is the set matching the DB CHECK; used for model-level validation.
 var validImportStates = map[ImportJobState]struct{}{
-	ImportStateAwaitingSource: {}, ImportStateWaitingSourceTurn: {},
-	ImportStateQueuedPreflight: {}, ImportStatePreflighting: {},
-	ImportStateAwaitingConfirmation: {},
-	ImportStateQueuedImport:         {}, ImportStateImporting: {}, ImportStateCanceling: {},
-	ImportStateCompleted: {}, ImportStateCompletedWithIssues: {},
+	ImportStateAwaitingSource: {}, ImportStateQueuedPreflight: {}, ImportStatePreflighting: {},
+	ImportStateAwaitingConfirmation: {}, ImportStateQueuedImport: {}, ImportStateImporting: {},
+	ImportStateTerminalizing: {},
+	ImportStateCompleted:     {}, ImportStateCompletedWithIssues: {},
 	ImportStateFailed: {}, ImportStateCanceled: {},
 }
 
@@ -49,8 +52,9 @@ func (s ImportJobState) IsValid() bool {
 	return ok
 }
 
-// IsTerminal reports whether s is a terminal (finished) state. Source-queue release and cleanup key
-// off this predicate.
+// IsTerminal reports whether s is a terminal (finished) state. Cleanup retention and mapping-revision
+// bookkeeping key off this predicate. Note that terminalizing is *not* terminal: it is the worker
+// phase that produces the durable outcome the terminal state then publishes.
 func (s ImportJobState) IsTerminal() bool {
 	switch s {
 	case ImportStateCompleted, ImportStateCompletedWithIssues, ImportStateFailed, ImportStateCanceled:
@@ -60,13 +64,39 @@ func (s ImportJobState) IsTerminal() bool {
 	}
 }
 
-// OwnsSourceQueue reports whether a job in state s retains ownership of its ImportSource's
-// ActiveJobId (from preflight through the end of execution). Terminal states never own the queue.
-func (s ImportJobState) OwnsSourceQueue() bool {
+// IsWorkerOwned reports whether the sole worker acts on a job in state s. Jobs awaiting source
+// selection or human confirmation are deliberately not worker-owned and never block other jobs.
+func (s ImportJobState) IsWorkerOwned() bool {
 	switch s {
 	case ImportStateQueuedPreflight, ImportStatePreflighting,
-		ImportStateAwaitingConfirmation,
-		ImportStateQueuedImport, ImportStateImporting, ImportStateCanceling:
+		ImportStateQueuedImport, ImportStateImporting, ImportStateTerminalizing:
+		return true
+	default:
+		return false
+	}
+}
+
+// AwaitsUser reports whether s is waiting on a human, which the seven-day review retention applies to.
+func (s ImportJobState) AwaitsUser() bool {
+	return s == ImportStateAwaitingSource || s == ImportStateAwaitingConfirmation
+}
+
+// ImportTerminalIntent records which terminal outcome the terminalizer must produce. It exists so
+// terminalization is restartable: a crash mid-terminalization resumes with the same intent rather
+// than re-deciding. Matches chk_docs_importjob_terminal_intent.
+type ImportTerminalIntent string
+
+const (
+	ImportIntentNone      ImportTerminalIntent = ""
+	ImportIntentCompleted ImportTerminalIntent = "completed"
+	ImportIntentFailed    ImportTerminalIntent = "failed"
+	ImportIntentCanceled  ImportTerminalIntent = "canceled"
+)
+
+// IsValid reports whether i is a known terminal intent (including unset).
+func (i ImportTerminalIntent) IsValid() bool {
+	switch i {
+	case ImportIntentNone, ImportIntentCompleted, ImportIntentFailed, ImportIntentCanceled:
 		return true
 	default:
 		return false
@@ -127,22 +157,121 @@ const (
 	ImportActionNoop          ImportAction = "noop"
 	ImportActionPreserveLocal ImportAction = "preserve_local"
 	ImportActionConflict      ImportAction = "conflict"
-	ImportActionStale         ImportAction = "stale"
 	ImportActionBlocked       ImportAction = "blocked"
+	ImportActionStale         ImportAction = "stale"
+	// ImportActionNotAttempted is recorded by terminalization for every staged page that never got an
+	// execution checkpoint because the job failed or was canceled first.
+	ImportActionNotAttempted ImportAction = "not_attempted"
 )
 
-// Import entity, stage, and severity constants match their respective DB CHECK constraints.
+// IsValid reports whether a is a known action (an empty action means "not yet classified").
+func (a ImportAction) IsValid() bool {
+	switch a {
+	case "", ImportActionCreate, ImportActionUpdate, ImportActionNoop, ImportActionPreserveLocal,
+		ImportActionConflict, ImportActionBlocked, ImportActionStale, ImportActionNotAttempted:
+		return true
+	default:
+		return false
+	}
+}
+
+// ImportOutcome is the durable per-entity outcome recorded in DOCS_ImportResult.
+type ImportOutcome string
+
 const (
-	ImportEntityTypePage = "page"
+	ImportOutcomeCreated             ImportOutcome = "created"
+	ImportOutcomeUpdated             ImportOutcome = "updated"
+	ImportOutcomeUnchanged           ImportOutcome = "unchanged"
+	ImportOutcomeLocalPreserved      ImportOutcome = "local_preserved"
+	ImportOutcomeConflictSkipped     ImportOutcome = "conflict_skipped"
+	ImportOutcomeBlocked             ImportOutcome = "blocked"
+	ImportOutcomeStale               ImportOutcome = "stale"
+	ImportOutcomeNotAttemptedCancel  ImportOutcome = "not_attempted_canceled"
+	ImportOutcomeNotAttemptedFailure ImportOutcome = "not_attempted_failed"
+)
 
-	ImportStageInspection = "inspection"
-	ImportStagePreflight  = "preflight"
-	ImportStageExecution  = "execution"
+// IsValid reports whether o is a known outcome (empty means "not yet decided").
+func (o ImportOutcome) IsValid() bool {
+	switch o {
+	case "", ImportOutcomeCreated, ImportOutcomeUpdated, ImportOutcomeUnchanged,
+		ImportOutcomeLocalPreserved, ImportOutcomeConflictSkipped, ImportOutcomeBlocked,
+		ImportOutcomeStale, ImportOutcomeNotAttemptedCancel, ImportOutcomeNotAttemptedFailure:
+		return true
+	default:
+		return false
+	}
+}
 
-	ImportSeverityInfo    = "info"
-	ImportSeverityWarning = "warning"
-	ImportSeverityError   = "error"
+// ImportIssueStage and ImportIssueSeverity mirror the DOCS_ImportIssue CHECK constraints.
+type (
+	ImportIssueStage    string
+	ImportIssueSeverity string
+)
 
+const (
+	ImportStageInspection ImportIssueStage = "inspection"
+	ImportStagePreflight  ImportIssueStage = "preflight"
+	ImportStageExecution  ImportIssueStage = "execution"
+
+	ImportSeverityInfo    ImportIssueSeverity = "info"
+	ImportSeverityWarning ImportIssueSeverity = "warning"
+	ImportSeverityError   ImportIssueSeverity = "error"
+)
+
+// IsValid reports whether the stage is one of the three persisted stages.
+func (s ImportIssueStage) IsValid() bool {
+	switch s {
+	case ImportStageInspection, ImportStagePreflight, ImportStageExecution:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsResultStage reports whether the stage may appear in DOCS_ImportResult, which — unlike issues —
+// has no inspection stage.
+func (s ImportIssueStage) IsResultStage() bool {
+	return s == ImportStagePreflight || s == ImportStageExecution
+}
+
+// IsValid reports whether the severity is one of the three persisted severities.
+func (s ImportIssueSeverity) IsValid() bool {
+	switch s {
+	case ImportSeverityInfo, ImportSeverityWarning, ImportSeverityError:
+		return true
+	default:
+		return false
+	}
+}
+
+// ImportChannelAttemptState mirrors chk_docs_importchannelattempt_state. Each external
+// channel-create call gets a durable attempt row before the call, so a returned-but-unattached
+// channel can be compensated independently of the one channel that ends up backing the Space.
+type ImportChannelAttemptState string
+
+const (
+	ImportChannelCreating            ImportChannelAttemptState = "creating"
+	ImportChannelProvisioned         ImportChannelAttemptState = "provisioned"
+	ImportChannelAttached            ImportChannelAttemptState = "attached"
+	ImportChannelPendingCompensation ImportChannelAttemptState = "pending_compensation"
+	ImportChannelCompensated         ImportChannelAttemptState = "compensated"
+	ImportChannelFailed              ImportChannelAttemptState = "failed"
+)
+
+// IsValid reports whether s is a known channel-attempt state.
+func (s ImportChannelAttemptState) IsValid() bool {
+	switch s {
+	case ImportChannelCreating, ImportChannelProvisioned, ImportChannelAttached,
+		ImportChannelPendingCompensation, ImportChannelCompensated, ImportChannelFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Entity type and source type constants matching their DB CHECK constraints.
+const (
+	ImportEntityTypePage       = "page"
 	ImportSourceTypeConfluence = "confluence"
 )
 
@@ -152,62 +281,34 @@ const (
 	ImportSpaceTitleMaxRunes  = 128
 	ImportErrorCodeMaxRunes   = 64
 	ImportIssueCodeMaxRunes   = 64
+
+	// ImportExternalIDMaxBytes bounds every externally supplied identifier that participates in a
+	// B-tree index (Confluence page IDs, Atlassian account IDs).
+	ImportExternalIDMaxBytes = 512
+	// ImportSpaceKeyMaxBytes bounds source organization IDs and Space keys.
+	ImportSpaceKeyMaxBytes = 255
+
+	// ImportMaxPages is the per-bundle page ceiling. It also fixes the ordinal ranges: page ordinals
+	// occupy 0..ImportMaxPages-1 and stale result ordinals start at ImportMaxPages.
+	ImportMaxPages = 5000
+	// ImportMaxMappingsPerSource caps retained mappings per ImportSource so stale anti-joins,
+	// terminal stale rows, and restart work stay bounded.
+	ImportMaxMappingsPerSource = 5000
 )
 
-// ImportConfirmationMaxBytes bounds the persisted confirmation JSON (see ImportConfirmation). It is
-// set well above the realistic worst case: the confirmation carries one overwrite descriptor per
-// approved conflict, each ~350 bytes (three 64-char baseline hashes + external id + timestamp), so
-// a reimport approving the plan's ceiling of 5,000 conflicting pages produces ~1.75 MiB. 4 MiB
-// leaves ample headroom while still bounding an abusive payload.
-const ImportConfirmationMaxBytes = 4 * 1024 * 1024
+// importIdentifierPattern is the ASCII contract every non-empty external identifier must match.
+// Confluence page IDs, Atlassian account IDs, organization IDs, and Space keys emitted by the
+// authoritative producer all fit this set, so bounding it keeps index sizing deterministic and
+// rejects incompatible future producer identifiers until the contract is deliberately revised.
+var importIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9._:@-]+$`)
 
-// ImportConfirmation is the persisted confirmation payload (plan §17), stored in the
-// DOCS_ImportJob.Confirmation JSONB column as raw JSON.
-//
-// It deliberately is NOT mmmodel.StringInterface. That type's database Value() rejects any
-// marshaled JSON larger than its internal maxPropSizeBytes (1 MiB), but a *valid* confirmation can
-// legitimately exceed 1 MiB: with up to 5,000 individually approved conflict overwrite descriptors
-// (~350 bytes each) the payload approaches ~1.75 MiB, so StringInterface would make a legitimate
-// confirmation impossible to persist (ErrMaxPropSizeExceeded at insert). ImportConfirmation instead
-// stores the raw JSON bytes verbatim and enforces its own, deliberately higher bound
-// (ImportConfirmationMaxBytes). The bundle summaries keep using StringInterface because they hold
-// fixed-shape count structures that never approach 1 MiB; only the confirmation grows with input.
-//
-// The Phase-4 confirm HTTP handler must cap its request body to ImportConfirmationMaxBytes so an
-// over-limit confirmation is rejected as a 413 at the edge rather than failing opaquely at insert;
-// the Value() bound below is the last-line backstop, not the primary gate.
-type ImportConfirmation json.RawMessage
-
-// Value implements driver.Valuer for the JSONB column. An empty confirmation persists as "{}" so
-// the column's NOT NULL DEFAULT '{}' invariant holds, and an over-limit payload is rejected here as
-// a backstop. The raw bytes are returned as a string, which lib/pq sends to a jsonb column.
-func (c ImportConfirmation) Value() (driver.Value, error) {
-	if len(c) == 0 {
-		return "{}", nil
+// IsValidImportIdentifier reports whether id is a non-empty, contract-conforming identifier no
+// longer than maxBytes. Callers that permit absence check for "" separately.
+func IsValidImportIdentifier(id string, maxBytes int) bool {
+	if id == "" || len(id) > maxBytes {
+		return false
 	}
-	if len(c) > ImportConfirmationMaxBytes {
-		return nil, fmt.Errorf("import confirmation of %d bytes exceeds the %d byte limit", len(c), ImportConfirmationMaxBytes)
-	}
-	return string(c), nil
-}
-
-// Scan implements sql.Scanner, reading the JSONB column back as raw JSON bytes (lib/pq yields
-// []byte for jsonb; a string form is also accepted defensively). The bytes are copied so the
-// value does not alias a driver-owned buffer.
-func (c *ImportConfirmation) Scan(src any) error {
-	switch v := src.(type) {
-	case nil:
-		*c = nil
-	case []byte:
-		b := make([]byte, len(v))
-		copy(b, v)
-		*c = b
-	case string:
-		*c = ImportConfirmation(v)
-	default:
-		return fmt.Errorf("unsupported Scan type %T for ImportConfirmation", src)
-	}
-	return nil
+	return importIdentifierPattern.MatchString(id)
 }
 
 // hexSHA256 matches exactly 64 lowercase hexadecimal characters. Every non-empty SHA-256 column is
@@ -215,10 +316,398 @@ func (c *ImportConfirmation) Scan(src any) error {
 // never enters a comparison.
 var hexSHA256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// IsValidImportHash reports whether s is empty or exactly 64 lowercase hex characters.
+// IsValidImportHash reports whether s is empty or exactly 64 lowercase hex characters. Use it for
+// the optional preflight baselines; required hashes must additionally be non-empty.
 func IsValidImportHash(s string) bool {
 	return s == "" || hexSHA256.MatchString(s)
 }
+
+// --- typed JSONB columns ---
+
+// Named byte limits for the typed JSONB columns. They are enforced at the model boundary rather than
+// relying on any driver-side cap: mmmodel.StringInterface is deliberately not used as the database
+// value type for these columns because its internal valuer rejects anything over 1 MiB, which is
+// below the worst-case approved-conflict list.
+const (
+	// ImportSummaryMaxBytes bounds the bundle/preflight/final summaries. They are fixed-shape count
+	// structures, so this is generous headroom rather than a working constraint.
+	ImportSummaryMaxBytes = 256 * 1024
+	// ImportConfirmationMaxBytes bounds the persisted confirmation. The worst case is one approved
+	// external ID per page: ImportMaxPages identifiers bounded to ImportExternalIDMaxBytes each,
+	// plus JSON overhead, which fits well inside 8 MiB. The confirm handler caps its request body to
+	// the same value so an over-limit confirmation is rejected at the edge, not at insert.
+	ImportConfirmationMaxBytes = 8 * 1024 * 1024
+)
+
+// marshalJSONColumn marshals v for a jsonb column, enforcing maxBytes. An empty/zero value still
+// marshals to a JSON object, preserving each column's NOT NULL DEFAULT '{}' invariant. The bytes are
+// returned as a string, which lib/pq sends to jsonb.
+func marshalJSONColumn(v any, maxBytes int, what string) (driver.Value, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal %s: %w", what, err)
+	}
+	if len(raw) > maxBytes {
+		return nil, fmt.Errorf("%s of %d bytes exceeds the %d byte limit", what, len(raw), maxBytes)
+	}
+	return string(raw), nil
+}
+
+// scanJSONColumn unmarshals a jsonb column into dst. A NULL or empty column leaves dst at its zero
+// value rather than erroring, so a row written before a field existed still scans.
+func scanJSONColumn(src any, dst any, what string) error {
+	var raw []byte
+	switch v := src.(type) {
+	case nil:
+		return nil
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		return fmt.Errorf("unsupported Scan type %T for %s", src, what)
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(raw, dst); err != nil {
+		return fmt.Errorf("failed to unmarshal %s: %w", what, err)
+	}
+	return nil
+}
+
+// --- persisted rows ---
+
+// ImportSource identifies one Confluence Space chosen by a user within one target Docs Space. It —
+// not organization id or space key — scopes page mappings (DOCS_ImportSource).
+type ImportSource struct {
+	Id                  string `json:"id"`
+	SpaceId             string `json:"space_id"`
+	SourceType          string `json:"source_type"`
+	DisplayName         string `json:"display_name"`
+	OrganizationId      string `json:"organization_id,omitempty"`
+	ExternalSpaceKey    string `json:"external_space_key"`
+	ExternalSpaceName   string `json:"external_space_name"`
+	CreatedBy           string `json:"created_by"`
+	CreateAt            int64  `json:"create_at"`
+	UpdateAt            int64  `json:"update_at"`
+	LastImportAt        int64  `json:"last_import_at"`
+	LastSuccessfulJobId string `json:"last_successful_job_id,omitempty"`
+	// MappingRevision is the optimistic-invalidation token that replaced full-lifecycle source
+	// ownership. Preflight captures it, confirmation and execution start require an exact match, and
+	// terminalization increments it once per job that committed a mapping-affecting decision.
+	MappingRevision int64                   `json:"mapping_revision"`
+	Props           mmmodel.StringInterface `json:"props"`
+}
+
+// ImportJob is one restartable import lifecycle (DOCS_ImportJob).
+type ImportJob struct {
+	Id      string `json:"id"`
+	ActorId string `json:"actor_id"`
+	TeamId  string `json:"team_id"`
+
+	TargetKind                ImportTargetKind `json:"target_kind"`
+	TargetSpaceId             string           `json:"target_space_id"`
+	TargetSpaceExisted        bool             `json:"target_space_existed"`
+	ConfirmedSpaceTitle       string           `json:"confirmed_space_title,omitempty"`
+	ConfirmedSpaceDescription string           `json:"confirmed_space_description,omitempty"`
+	ProvisionedChannelId      string           `json:"-"`
+
+	SourceSelectionMode       ImportSourceSelectionMode `json:"source_selection_mode"`
+	SelectedImportSourceId    string                    `json:"selected_import_source_id,omitempty"`
+	SelectedSourceDisplayName string                    `json:"selected_source_display_name,omitempty"`
+	PreflightMappingRevision  int64                     `json:"-"`
+
+	State                ImportJobState       `json:"state"`
+	Phase                ImportJobPhase       `json:"phase,omitempty"`
+	TerminalIntent       ImportTerminalIntent `json:"-"`
+	MappingInputsChanged bool                 `json:"-"`
+	InvalidationPending  bool                 `json:"-"`
+	ProgressCurrent      int64                `json:"progress_current"`
+	ProgressTotal        int64                `json:"progress_total"`
+
+	StagedBytes           int64 `json:"-"`
+	RetainedBytes         int64 `json:"-"`
+	RetainedReservedBytes int64 `json:"-"`
+
+	BundleSha256      string                 `json:"-"`
+	BundleSummary     ImportBundleSummary    `json:"bundle_summary"`
+	PreflightSummary  ImportPreflightSummary `json:"preflight_summary"`
+	PreflightRevision string                 `json:"preflight_revision,omitempty"`
+	Confirmation      ImportConfirmation     `json:"-"`
+	FinalSummary      ImportFinalSummary     `json:"final_summary"`
+
+	ErrorCode         string `json:"error_code,omitempty"`
+	ErrorMessage      string `json:"-"`
+	CancelRequestedAt int64  `json:"cancel_requested_at"`
+
+	CreateAt    int64 `json:"create_at"`
+	UpdateAt    int64 `json:"update_at"`
+	ConfirmedAt int64 `json:"confirmed_at"`
+	StartedAt   int64 `json:"started_at"`
+	FinishedAt  int64 `json:"finished_at"`
+	RetainUntil int64 `json:"-"`
+}
+
+// ImportChannelAttempt is one durable external channel-create attempt (DOCS_ImportChannelAttempt).
+type ImportChannelAttempt struct {
+	JobId       string                    `json:"job_id"`
+	AttemptId   string                    `json:"attempt_id"`
+	ChannelName string                    `json:"-"`
+	ChannelId   string                    `json:"-"`
+	State       ImportChannelAttemptState `json:"state"`
+	ErrorCode   string                    `json:"error_code,omitempty"`
+	CreateAt    int64                     `json:"create_at"`
+	UpdateAt    int64                     `json:"update_at"`
+}
+
+// ImportCapacity is the singleton admission-accounting row (DOCS_ImportCapacity). It bounds
+// aggregate resource use; it is not worker ownership and carries no HA semantics.
+type ImportCapacity struct {
+	Id                    int16 `json:"id"`
+	ReservedStagedBytes   int64 `json:"reserved_staged_bytes"`
+	ReservedRetainedBytes int64 `json:"reserved_retained_bytes"`
+	UpdateAt              int64 `json:"update_at"`
+}
+
+// ImportStagedPage is one normalized staged page (DOCS_ImportStagedPage), retained until terminal
+// staged-body cleanup.
+type ImportStagedPage struct {
+	JobId string `json:"job_id"`
+	// Ordinal is the zero-based page ordinal used by execution checkpoints and issue ranges.
+	Ordinal int `json:"ordinal"`
+	// SourceLine is the one-based JSONL line number, for diagnostics only.
+	SourceLine       int    `json:"source_line"`
+	ExternalId       string `json:"external_id"`
+	ParentExternalId string `json:"parent_external_id"`
+	SourceOrdinal    int    `json:"source_ordinal"`
+	Restricted       bool   `json:"restricted"`
+
+	Title                 string                  `json:"title"`
+	CanonicalBody         string                  `json:"-"`
+	SearchText            string                  `json:"-"`
+	SourceUserProposal    string                  `json:"source_user_proposal"`
+	SourceAuthorAccountId string                  `json:"source_author_account_id"`
+	SourceCreateAt        int64                   `json:"source_create_at"`
+	SourceUpdateAt        int64                   `json:"source_update_at"`
+	SourceProps           mmmodel.StringInterface `json:"-"`
+
+	// Content hashes deliberately exclude parent and ordinal; the structural baselines below are
+	// compared separately so a preserved local move never reads as a content conflict.
+	IncomingSourceContentHash   string       `json:"-"`
+	PreflightCurrentContentHash string       `json:"-"`
+	PreflightMappingContentHash string       `json:"-"`
+	PreflightCurrentParentId    string       `json:"-"`
+	PreflightMappingParentId    string       `json:"-"`
+	PreflightMappingUpdateAt    int64        `json:"-"`
+	PlannedAction               ImportAction `json:"planned_action,omitempty"`
+	PlannedPageId               string       `json:"-"`
+	ResolvedUserId              string       `json:"-"`
+	AuthorFallbackReason        string       `json:"author_fallback_reason,omitempty"`
+}
+
+// ImportManifestUser is one durable manifest user mapping (DOCS_ImportManifestUser). Author
+// resolution reads these rows rather than the upload request's in-memory manifest, so it survives a
+// process restart.
+type ImportManifestUser struct {
+	JobId              string `json:"job_id"`
+	Ordinal            int    `json:"ordinal"`
+	AccountId          string `json:"account_id"`
+	ConfluenceUsername string `json:"confluence_username,omitempty"`
+	MattermostUsername string `json:"mattermost_username,omitempty"`
+}
+
+// ImportEntity is the durable page mapping (DOCS_ImportEntity), the idempotency boundary.
+type ImportEntity struct {
+	ImportSourceId string `json:"import_source_id"`
+	EntityType     string `json:"entity_type"`
+	ExternalId     string `json:"external_id"`
+	LocalId        string `json:"local_id"`
+
+	LastSourceContentHash  string `json:"-"`
+	LastAppliedContentHash string `json:"-"`
+	// LastAppliedParentId is the structural baseline: the local parent the importer established.
+	// V1 never changes it for an existing page.
+	LastAppliedParentId        string `json:"-"`
+	LastSourceParentExternalId string `json:"last_source_parent_external_id"`
+	// LastSourceTitle keeps source identity available for title-placeholder analysis after a local
+	// rename or staged-body cleanup.
+	LastSourceTitle   string `json:"last_source_title,omitempty"`
+	LastSourceOrdinal int    `json:"last_source_ordinal"`
+	FirstJobId        string `json:"first_job_id"`
+	LastSeenJobId     string `json:"last_seen_job_id"`
+	CreateAt          int64  `json:"create_at"`
+	UpdateAt          int64  `json:"update_at"`
+}
+
+// ImportResultRecord is one durable entity-level outcome row (DOCS_ImportResult).
+type ImportResultRecord struct {
+	JobId         string                  `json:"job_id"`
+	Stage         ImportIssueStage        `json:"stage"`
+	Ordinal       int                     `json:"ordinal"`
+	EntityType    string                  `json:"entity_type"`
+	ExternalId    string                  `json:"external_id"`
+	LocalId       string                  `json:"local_id,omitempty"`
+	Title         string                  `json:"title,omitempty"`
+	PlannedAction ImportAction            `json:"planned_action,omitempty"`
+	ActualAction  ImportAction            `json:"actual_action,omitempty"`
+	Outcome       ImportOutcome           `json:"outcome"`
+	Details       mmmodel.StringInterface `json:"details,omitempty"`
+	CreateAt      int64                   `json:"create_at"`
+	UpdateAt      int64                   `json:"update_at"`
+}
+
+// ImportIssueRecord is one durable issue row (DOCS_ImportIssue).
+type ImportIssueRecord struct {
+	JobId       string                  `json:"job_id"`
+	Stage       ImportIssueStage        `json:"stage"`
+	Ordinal     int                     `json:"ordinal"`
+	Severity    ImportIssueSeverity     `json:"severity"`
+	Code        string                  `json:"code"`
+	EntityType  string                  `json:"entity_type,omitempty"`
+	ExternalId  string                  `json:"external_id,omitempty"`
+	LocalId     string                  `json:"local_id,omitempty"`
+	Title       string                  `json:"title,omitempty"`
+	Message     string                  `json:"message"`
+	Remediation string                  `json:"remediation,omitempty"`
+	Details     mmmodel.StringInterface `json:"details,omitempty"`
+}
+
+// --- typed summary/confirmation JSONB payloads ---
+
+// ImportPreflightSummary is the persisted preflight impact summary.
+type ImportPreflightSummary struct {
+	Manifest ImportBundleCounts `json:"manifest"`
+	Actions  ImportActionCounts `json:"actions"`
+	Authors  ImportAuthorCounts `json:"authors"`
+	Links    ImportLinkCounts   `json:"links"`
+}
+
+// Value implements driver.Valuer for the PreflightSummary jsonb column.
+func (s ImportPreflightSummary) Value() (driver.Value, error) {
+	return marshalJSONColumn(s, ImportSummaryMaxBytes, "import preflight summary")
+}
+
+// Scan implements sql.Scanner for the PreflightSummary jsonb column.
+func (s *ImportPreflightSummary) Scan(src any) error {
+	return scanJSONColumn(src, s, "import preflight summary")
+}
+
+// ImportFinalSummary is the persisted final outcome summary. Counts here are actual results, never
+// historical preflight classifications.
+type ImportFinalSummary struct {
+	Manifest ImportBundleCounts `json:"manifest"`
+	Actions  ImportActionCounts `json:"actions"`
+	Authors  ImportAuthorCounts `json:"authors"`
+	Links    ImportLinkCounts   `json:"links"`
+	// Outcomes counts durable per-entity outcomes by ImportOutcome value.
+	Outcomes map[string]int `json:"outcomes,omitempty"`
+}
+
+// Value implements driver.Valuer for the FinalSummary jsonb column.
+func (s ImportFinalSummary) Value() (driver.Value, error) {
+	return marshalJSONColumn(s, ImportSummaryMaxBytes, "import final summary")
+}
+
+// Scan implements sql.Scanner for the FinalSummary jsonb column.
+func (s *ImportFinalSummary) Scan(src any) error {
+	return scanJSONColumn(src, s, "import final summary")
+}
+
+// ImportActionCounts counts planned or actual actions.
+type ImportActionCounts struct {
+	Create        int `json:"create"`
+	Update        int `json:"update"`
+	Noop          int `json:"noop"`
+	PreserveLocal int `json:"preserve_local"`
+	Conflict      int `json:"conflict"`
+	Stale         int `json:"stale"`
+	Blocked       int `json:"blocked"`
+	NotAttempted  int `json:"not_attempted,omitempty"`
+}
+
+// ImportAuthorCounts counts author resolution outcomes.
+type ImportAuthorCounts struct {
+	Mapped          int `json:"mapped"`
+	FallbackToActor int `json:"fallback_to_actor"`
+}
+
+// ImportLinkCounts counts discovered placeholder links by resolution category.
+type ImportLinkCounts struct {
+	SameSource        int `json:"same_source"`
+	CrossSourceUnique int `json:"cross_source_unique"`
+	Ambiguous         int `json:"ambiguous"`
+	Unresolved        int `json:"unresolved"`
+	FilePlaceholders  int `json:"file_placeholders"`
+}
+
+// ImportNewSpaceMetadata is the confirmed, user-editable metadata for a new Space.
+type ImportNewSpaceMetadata struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+}
+
+// ImportAcknowledgements records the explicit acknowledgements the user gave at confirmation.
+type ImportAcknowledgements struct {
+	ConfirmNewSpaceMetadata bool `json:"confirm_new_space_metadata,omitempty"`
+	PageOnlyPartialImport   bool `json:"page_only_partial_import,omitempty"`
+	WidenRestrictedPages    bool `json:"widen_restricted_pages,omitempty"`
+	ReimportExistingPages   bool `json:"reimport_existing_pages,omitempty"`
+}
+
+// ImportConfirmation is the persisted confirmation payload, stored in the
+// DOCS_ImportJob.Confirmation jsonb column.
+//
+// OverwriteConflicts holds only external IDs: the browser never calculates or echoes source, local,
+// or mapping hashes. The approved ID grants intent while the server-owned staged baselines — which
+// execution rechecks under locks — grant safety.
+type ImportConfirmation struct {
+	PreflightRevision  string                  `json:"preflight_revision,omitempty"`
+	NewSpace           *ImportNewSpaceMetadata `json:"new_space,omitempty"`
+	Acknowledgements   ImportAcknowledgements  `json:"acknowledgements"`
+	OverwriteConflicts []string                `json:"overwrite_conflicts,omitempty"`
+}
+
+// Value implements driver.Valuer for the Confirmation jsonb column.
+func (c ImportConfirmation) Value() (driver.Value, error) {
+	return marshalJSONColumn(c, ImportConfirmationMaxBytes, "import confirmation")
+}
+
+// Scan implements sql.Scanner for the Confirmation jsonb column.
+func (c *ImportConfirmation) Scan(src any) error {
+	return scanJSONColumn(src, c, "import confirmation")
+}
+
+// IsValid checks the confirmation's own shape limits: a well-formed revision and a bounded,
+// duplicate-free list of contract-conforming external IDs. Cross-checking those IDs against
+// persisted conflict results is the application's job.
+func (c *ImportConfirmation) IsValid() *mmmodel.AppError {
+	where := "ImportConfirmation.IsValid"
+	if !hexSHA256.MatchString(c.PreflightRevision) {
+		return mmmodel.NewAppError(where, "model.import_confirmation.is_valid.revision.app_error", nil, "", http.StatusBadRequest)
+	}
+	if len(c.OverwriteConflicts) > ImportMaxPages {
+		return mmmodel.NewAppError(where, "model.import_confirmation.is_valid.too_many_overwrites.app_error",
+			map[string]any{"Max": ImportMaxPages}, "", http.StatusBadRequest)
+	}
+	seen := make(map[string]struct{}, len(c.OverwriteConflicts))
+	for _, id := range c.OverwriteConflicts {
+		if !IsValidImportIdentifier(id, ImportExternalIDMaxBytes) {
+			return mmmodel.NewAppError(where, "model.import_confirmation.is_valid.external_id.app_error", nil, "", http.StatusBadRequest)
+		}
+		if _, dup := seen[id]; dup {
+			return mmmodel.NewAppError(where, "model.import_confirmation.is_valid.duplicate_overwrite.app_error", nil, "", http.StatusBadRequest)
+		}
+		seen[id] = struct{}{}
+	}
+	if c.NewSpace != nil && utf8.RuneCountInString(c.NewSpace.Title) > ImportSpaceTitleMaxRunes {
+		return mmmodel.NewAppError(where, "model.import_confirmation.is_valid.space_title.app_error",
+			map[string]any{"MaxLength": ImportSpaceTitleMaxRunes}, "", http.StatusBadRequest)
+	}
+	return nil
+}
+
+// --- request types ---
 
 // ImportTargetRequest is the caller-supplied target of an import. The request — never a value from
 // the bundle — chooses the destination: bundle team values are advisory metadata only.
@@ -262,156 +751,14 @@ func (r *ImportTargetRequest) IsValid() *mmmodel.AppError {
 	return nil
 }
 
-// Acknowledgement keys the confirmation request must set (plan §17). The set a given job requires is
-// returned to the client rather than assumed, so a client never has to infer which apply.
+// Acknowledgement keys the confirmation request must set. The set a given job requires is returned
+// to the client rather than assumed, so a client never has to infer which apply.
 const (
 	ImportAckNewSpaceMetadata = "confirm_new_space_metadata"
 	ImportAckPageOnlyPartial  = "page_only_partial_import"
 	ImportAckWidenRestricted  = "widen_restricted_pages"
 	ImportAckReimportExisting = "reimport_existing_pages"
 )
-
-// ImportSource identifies one Confluence Space chosen by a user within one target Docs Space. It —
-// not organization id or space key — scopes page mappings (DOCS_ImportSource).
-type ImportSource struct {
-	Id                  string                  `json:"id"`
-	SpaceId             string                  `json:"space_id"`
-	SourceType          string                  `json:"source_type"`
-	DisplayName         string                  `json:"display_name"`
-	OrganizationId      string                  `json:"organization_id,omitempty"`
-	ExternalSpaceKey    string                  `json:"external_space_key"`
-	ExternalSpaceName   string                  `json:"external_space_name"`
-	CreatedBy           string                  `json:"created_by"`
-	CreateAt            int64                   `json:"create_at"`
-	UpdateAt            int64                   `json:"update_at"`
-	LastImportAt        int64                   `json:"last_import_at"`
-	LastSuccessfulJobId string                  `json:"last_successful_job_id,omitempty"`
-	ActiveJobId         string                  `json:"active_job_id,omitempty"`
-	Props               mmmodel.StringInterface `json:"props"`
-}
-
-// ImportJob is one restartable import lifecycle (DOCS_ImportJob). Claim/lease fields are internal
-// and never exposed through ImportJobView.
-type ImportJob struct {
-	Id      string `json:"id"`
-	ActorId string `json:"actor_id"`
-	TeamId  string `json:"team_id"`
-
-	TargetKind                ImportTargetKind `json:"target_kind"`
-	TargetSpaceId             string           `json:"target_space_id"`
-	TargetSpaceExisted        bool             `json:"target_space_existed"`
-	ConfirmedSpaceTitle       string           `json:"confirmed_space_title,omitempty"`
-	ConfirmedSpaceDescription string           `json:"confirmed_space_description,omitempty"`
-	ProvisionedChannelId      string           `json:"-"`
-
-	SourceSelectionMode       ImportSourceSelectionMode `json:"source_selection_mode"`
-	SelectedImportSourceId    string                    `json:"selected_import_source_id,omitempty"`
-	SelectedSourceDisplayName string                    `json:"selected_source_display_name,omitempty"`
-
-	State           ImportJobState `json:"state"`
-	Phase           ImportJobPhase `json:"phase,omitempty"`
-	ProgressCurrent int64          `json:"progress_current"`
-	ProgressTotal   int64          `json:"progress_total"`
-
-	BundleSha256      string                  `json:"-"`
-	BundleSummary     mmmodel.StringInterface `json:"bundle_summary"`
-	PreflightSummary  mmmodel.StringInterface `json:"preflight_summary"`
-	PreflightRevision string                  `json:"preflight_revision,omitempty"`
-	Confirmation      ImportConfirmation      `json:"-"`
-	FinalSummary      mmmodel.StringInterface `json:"final_summary"`
-
-	ErrorCode         string `json:"error_code,omitempty"`
-	ErrorMessage      string `json:"-"`
-	CancelRequestedAt int64  `json:"cancel_requested_at"`
-
-	ClaimToken     string `json:"-"`
-	ClaimedBy      string `json:"-"`
-	LeaseExpiresAt int64  `json:"-"`
-	HeartbeatAt    int64  `json:"-"`
-
-	CreateAt    int64 `json:"create_at"`
-	UpdateAt    int64 `json:"update_at"`
-	ConfirmedAt int64 `json:"confirmed_at"`
-	StartedAt   int64 `json:"started_at"`
-	FinishedAt  int64 `json:"finished_at"`
-	RetainUntil int64 `json:"-"`
-}
-
-// ImportStagedPage is one normalized staged page (DOCS_ImportStagedPage), retained until cleanup.
-type ImportStagedPage struct {
-	JobId            string `json:"job_id"`
-	Ordinal          int    `json:"ordinal"`
-	ExternalId       string `json:"external_id"`
-	ParentExternalId string `json:"parent_external_id"`
-	SourceOrdinal    int    `json:"source_ordinal"`
-
-	Title                 string                  `json:"title"`
-	CanonicalBody         string                  `json:"-"`
-	SearchText            string                  `json:"-"`
-	SourceUserProposal    string                  `json:"source_user_proposal"`
-	SourceAuthorAccountId string                  `json:"source_author_account_id"`
-	SourceCreateAt        int64                   `json:"source_create_at"`
-	SourceUpdateAt        int64                   `json:"source_update_at"`
-	SourceProps           mmmodel.StringInterface `json:"source_props"`
-
-	IncomingSourceHash       string       `json:"incoming_source_hash"`
-	PreflightCurrentHash     string       `json:"preflight_current_hash,omitempty"`
-	PreflightMappingHash     string       `json:"preflight_mapping_hash,omitempty"`
-	PreflightMappingUpdateAt int64        `json:"preflight_mapping_update_at,omitempty"`
-	PlannedAction            ImportAction `json:"planned_action,omitempty"`
-	PlannedPageId            string       `json:"planned_page_id,omitempty"`
-	ResolvedUserId           string       `json:"resolved_user_id,omitempty"`
-	AuthorFallbackReason     string       `json:"author_fallback_reason,omitempty"`
-}
-
-// ImportEntity is the durable page mapping (DOCS_ImportEntity), the idempotency boundary.
-type ImportEntity struct {
-	ImportSourceId             string `json:"import_source_id"`
-	EntityType                 string `json:"entity_type"`
-	ExternalId                 string `json:"external_id"`
-	LocalId                    string `json:"local_id"`
-	LastSourceHash             string `json:"last_source_hash"`
-	LastAppliedHash            string `json:"last_applied_hash"`
-	LastSourceParentExternalId string `json:"last_source_parent_external_id"`
-	LastSourceOrdinal          int    `json:"last_source_ordinal"`
-	FirstJobId                 string `json:"first_job_id"`
-	LastSeenJobId              string `json:"last_seen_job_id"`
-	CreateAt                   int64  `json:"create_at"`
-	UpdateAt                   int64  `json:"update_at"`
-}
-
-// ImportResultRecord is one durable entity-level outcome row (DOCS_ImportResult).
-type ImportResultRecord struct {
-	JobId         string                  `json:"job_id"`
-	Stage         string                  `json:"stage"`
-	Ordinal       int                     `json:"ordinal"`
-	EntityType    string                  `json:"entity_type"`
-	ExternalId    string                  `json:"external_id"`
-	LocalId       string                  `json:"local_id,omitempty"`
-	Title         string                  `json:"title,omitempty"`
-	PlannedAction ImportAction            `json:"planned_action,omitempty"`
-	ActualAction  ImportAction            `json:"actual_action,omitempty"`
-	Outcome       string                  `json:"outcome"`
-	Details       mmmodel.StringInterface `json:"details,omitempty"`
-	CreateAt      int64                   `json:"create_at"`
-	UpdateAt      int64                   `json:"update_at"`
-}
-
-// ImportIssueRecord is one durable issue row (DOCS_ImportIssue).
-type ImportIssueRecord struct {
-	JobId       string                  `json:"job_id"`
-	Stage       string                  `json:"stage"`
-	Ordinal     int                     `json:"ordinal"`
-	Severity    string                  `json:"severity"`
-	Code        string                  `json:"code"`
-	EntityType  string                  `json:"entity_type,omitempty"`
-	ExternalId  string                  `json:"external_id,omitempty"`
-	LocalId     string                  `json:"local_id,omitempty"`
-	Title       string                  `json:"title,omitempty"`
-	Message     string                  `json:"message"`
-	Remediation string                  `json:"remediation,omitempty"`
-	Details     mmmodel.StringInterface `json:"details,omitempty"`
-}
 
 // --- API-safe projections ---
 
@@ -430,12 +777,23 @@ type ImportTargetView struct {
 	Existed bool             `json:"existed"`
 }
 
-// ImportBundleSummary is the public inspected-bundle projection.
+// ImportBundleSummary is the public inspected-bundle projection, also persisted as the job's
+// BundleSummary jsonb column.
 type ImportBundleSummary struct {
 	Version       int                 `json:"version"`
 	Source        ImportReportSource  `json:"source"`
 	SpaceDefaults ImportSpaceDefaults `json:"space_defaults"`
 	Counts        ImportBundleCounts  `json:"counts"`
+}
+
+// Value implements driver.Valuer for the BundleSummary jsonb column.
+func (s ImportBundleSummary) Value() (driver.Value, error) {
+	return marshalJSONColumn(s, ImportSummaryMaxBytes, "import bundle summary")
+}
+
+// Scan implements sql.Scanner for the BundleSummary jsonb column.
+func (s *ImportBundleSummary) Scan(src any) error {
+	return scanJSONColumn(src, s, "import bundle summary")
 }
 
 // ImportSpaceDefaults carries the bundle-derived, editable new-Space metadata.
@@ -477,8 +835,9 @@ type ImportPublicError struct {
 	Code string `json:"code"`
 }
 
-// ImportJobView is the API-safe projection of a job. It deliberately omits claim tokens, lease
-// owners, provisioned channel IDs, internal SQL errors, bodies, and raw source props.
+// ImportJobView is the API-safe projection of a job. It deliberately omits the provisioned channel
+// ID, internal SQL errors, bodies, raw source props, persisted content/parent baselines, byte
+// accounting, and manifest user rows.
 type ImportJobView struct {
 	Id                       string                  `json:"id"`
 	State                    ImportJobState          `json:"state"`
@@ -496,6 +855,21 @@ type ImportJobView struct {
 	UpdateAt                 int64                   `json:"update_at"`
 	FinishedAt               int64                   `json:"finished_at"`
 }
+
+// ImportPreflightResultView is one row of the typed, paginated preflight review projection. It
+// exposes what the wizard displays plus overwrite eligibility, and never hashes, mapping
+// timestamps, bodies, or raw props.
+type ImportPreflightResultView struct {
+	ExternalId        string       `json:"external_id"`
+	LocalId           string       `json:"local_id,omitempty"`
+	Title             string       `json:"title"`
+	PlannedAction     ImportAction `json:"planned_action"`
+	Outcome           string       `json:"outcome"`
+	OverwriteEligible bool         `json:"overwrite_eligible"`
+	StructuralChanges []string     `json:"structural_changes,omitempty"`
+}
+
+// --- validation ---
 
 // IsValid checks an ImportJob's required fields and enumerated values before insert. It does not
 // validate the full state machine (transitions are enforced by compare-and-set store updates).
@@ -522,6 +896,14 @@ func (j *ImportJob) IsValid() *mmmodel.AppError {
 	if !j.State.IsValid() {
 		return mmmodel.NewAppError(where, "model.import_job.is_valid.state.app_error", nil, "id="+j.Id, http.StatusBadRequest)
 	}
+	if !j.TerminalIntent.IsValid() {
+		return mmmodel.NewAppError(where, "model.import_job.is_valid.terminal_intent.app_error", nil, "id="+j.Id, http.StatusBadRequest)
+	}
+	// Terminalizing exists precisely to carry an intent, so an intentless terminalizing job could
+	// never decide what outcome to publish.
+	if j.State == ImportStateTerminalizing && j.TerminalIntent == ImportIntentNone {
+		return mmmodel.NewAppError(where, "model.import_job.is_valid.terminalizing_without_intent.app_error", nil, "id="+j.Id, http.StatusBadRequest)
+	}
 	// BundleSha256 is always computed during upload inspection, so a persisted job must carry a
 	// valid 64-hex digest; an empty value is a bug, not a valid pre-inspection state.
 	if !hexSHA256.MatchString(j.BundleSha256) {
@@ -541,8 +923,8 @@ func (j *ImportJob) IsValid() *mmmodel.AppError {
 	if utf8.RuneCountInString(j.ErrorCode) > ImportErrorCodeMaxRunes {
 		return mmmodel.NewAppError(where, "model.import_job.is_valid.error_code_length.app_error", map[string]any{"MaxLength": ImportErrorCodeMaxRunes}, "id="+j.Id, http.StatusBadRequest)
 	}
-	if len(j.Confirmation) > ImportConfirmationMaxBytes {
-		return mmmodel.NewAppError(where, "model.import_job.is_valid.confirmation_too_large.app_error", map[string]any{"MaxBytes": ImportConfirmationMaxBytes}, "id="+j.Id, http.StatusBadRequest)
+	if j.StagedBytes < 0 || j.RetainedBytes < 0 || j.RetainedReservedBytes < 0 {
+		return mmmodel.NewAppError(where, "model.import_job.is_valid.byte_accounting.app_error", nil, "id="+j.Id, http.StatusBadRequest)
 	}
 	if j.CreateAt == 0 || j.UpdateAt == 0 || j.RetainUntil == 0 {
 		return mmmodel.NewAppError(where, "model.import_job.is_valid.timestamps.app_error", nil, "id="+j.Id, http.StatusBadRequest)
@@ -565,14 +947,74 @@ func (s *ImportSource) IsValid() *mmmodel.AppError {
 	if !mmmodel.IsValidId(s.CreatedBy) {
 		return mmmodel.NewAppError(where, "model.import_source.is_valid.created_by.app_error", nil, "id="+s.Id, http.StatusBadRequest)
 	}
-	if s.ExternalSpaceKey == "" {
+	if !IsValidImportIdentifier(s.ExternalSpaceKey, ImportSpaceKeyMaxBytes) {
 		return mmmodel.NewAppError(where, "model.import_source.is_valid.space_key.app_error", nil, "id="+s.Id, http.StatusBadRequest)
+	}
+	// The organization id is optional metadata, but when present it is indexed and must be bounded.
+	if s.OrganizationId != "" && !IsValidImportIdentifier(s.OrganizationId, ImportSpaceKeyMaxBytes) {
+		return mmmodel.NewAppError(where, "model.import_source.is_valid.organization_id.app_error", nil, "id="+s.Id, http.StatusBadRequest)
 	}
 	if utf8.RuneCountInString(s.DisplayName) > ImportDisplayNameMaxRunes {
 		return mmmodel.NewAppError(where, "model.import_source.is_valid.display_name_length.app_error", map[string]any{"MaxLength": ImportDisplayNameMaxRunes}, "id="+s.Id, http.StatusBadRequest)
 	}
+	if s.MappingRevision < 0 {
+		return mmmodel.NewAppError(where, "model.import_source.is_valid.mapping_revision.app_error", nil, "id="+s.Id, http.StatusBadRequest)
+	}
 	if s.CreateAt == 0 || s.UpdateAt == 0 {
 		return mmmodel.NewAppError(where, "model.import_source.is_valid.timestamps.app_error", nil, "id="+s.Id, http.StatusBadRequest)
+	}
+	return nil
+}
+
+// IsValid checks a staged page's required fields, bounded identifiers, and hashes before insert.
+func (p *ImportStagedPage) IsValid() *mmmodel.AppError {
+	where := "ImportStagedPage.IsValid"
+	if !mmmodel.IsValidId(p.JobId) {
+		return mmmodel.NewAppError(where, "model.import_staged_page.is_valid.job_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	if p.Ordinal < 0 || p.Ordinal >= ImportMaxPages {
+		return mmmodel.NewAppError(where, "model.import_staged_page.is_valid.ordinal.app_error", map[string]any{"Max": ImportMaxPages}, "", http.StatusBadRequest)
+	}
+	if p.SourceLine < 1 {
+		return mmmodel.NewAppError(where, "model.import_staged_page.is_valid.source_line.app_error", nil, "", http.StatusBadRequest)
+	}
+	if !IsValidImportIdentifier(p.ExternalId, ImportExternalIDMaxBytes) {
+		return mmmodel.NewAppError(where, "model.import_staged_page.is_valid.external_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	if p.ParentExternalId != "" && !IsValidImportIdentifier(p.ParentExternalId, ImportExternalIDMaxBytes) {
+		return mmmodel.NewAppError(where, "model.import_staged_page.is_valid.parent_external_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	if p.SourceAuthorAccountId != "" && !IsValidImportIdentifier(p.SourceAuthorAccountId, ImportExternalIDMaxBytes) {
+		return mmmodel.NewAppError(where, "model.import_staged_page.is_valid.author_account_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	if p.Title == "" || utf8.RuneCountInString(p.Title) > PageTitleMaxRunes {
+		return mmmodel.NewAppError(where, "model.import_staged_page.is_valid.title.app_error", map[string]any{"MaxLength": PageTitleMaxRunes}, "", http.StatusBadRequest)
+	}
+	if !hexSHA256.MatchString(p.IncomingSourceContentHash) {
+		return mmmodel.NewAppError(where, "model.import_staged_page.is_valid.incoming_hash.app_error", nil, "", http.StatusBadRequest)
+	}
+	for _, h := range []string{p.PreflightCurrentContentHash, p.PreflightMappingContentHash} {
+		if !IsValidImportHash(h) {
+			return mmmodel.NewAppError(where, "model.import_staged_page.is_valid.preflight_hash.app_error", nil, "", http.StatusBadRequest)
+		}
+	}
+	if !p.PlannedAction.IsValid() {
+		return mmmodel.NewAppError(where, "model.import_staged_page.is_valid.planned_action.app_error", nil, "", http.StatusBadRequest)
+	}
+	return nil
+}
+
+// IsValid checks a manifest-user row's bounded account identifier.
+func (u *ImportManifestUser) IsValid() *mmmodel.AppError {
+	where := "ImportManifestUser.IsValid"
+	if !mmmodel.IsValidId(u.JobId) {
+		return mmmodel.NewAppError(where, "model.import_manifest_user.is_valid.job_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	if u.Ordinal < 0 {
+		return mmmodel.NewAppError(where, "model.import_manifest_user.is_valid.ordinal.app_error", nil, "", http.StatusBadRequest)
+	}
+	if !IsValidImportIdentifier(u.AccountId, ImportExternalIDMaxBytes) {
+		return mmmodel.NewAppError(where, "model.import_manifest_user.is_valid.account_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	return nil
 }
@@ -581,14 +1023,10 @@ func (s *ImportSource) IsValid() *mmmodel.AppError {
 // DOCS_ImportIssue.Code VARCHAR(64) column, so an over-long or unknown code is rejected before insert.
 func (r *ImportIssueRecord) IsValid() *mmmodel.AppError {
 	where := "ImportIssueRecord.IsValid"
-	switch r.Stage {
-	case ImportStageInspection, ImportStagePreflight, ImportStageExecution:
-	default:
+	if !r.Stage.IsValid() {
 		return mmmodel.NewAppError(where, "model.import_issue.is_valid.stage.app_error", nil, "", http.StatusBadRequest)
 	}
-	switch r.Severity {
-	case ImportSeverityInfo, ImportSeverityWarning, ImportSeverityError:
-	default:
+	if !r.Severity.IsValid() {
 		return mmmodel.NewAppError(where, "model.import_issue.is_valid.severity.app_error", nil, "", http.StatusBadRequest)
 	}
 	if r.Code == "" || utf8.RuneCountInString(r.Code) > ImportIssueCodeMaxRunes {
@@ -596,6 +1034,30 @@ func (r *ImportIssueRecord) IsValid() *mmmodel.AppError {
 	}
 	if r.Message == "" {
 		return mmmodel.NewAppError(where, "model.import_issue.is_valid.message.app_error", nil, "", http.StatusBadRequest)
+	}
+	if r.ExternalId != "" && !IsValidImportIdentifier(r.ExternalId, ImportExternalIDMaxBytes) {
+		return mmmodel.NewAppError(where, "model.import_issue.is_valid.external_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	return nil
+}
+
+// IsValid checks a result row's stage, action, and outcome enumerations.
+func (r *ImportResultRecord) IsValid() *mmmodel.AppError {
+	where := "ImportResultRecord.IsValid"
+	if !r.Stage.IsResultStage() {
+		return mmmodel.NewAppError(where, "model.import_result.is_valid.stage.app_error", nil, "", http.StatusBadRequest)
+	}
+	if r.Ordinal < 0 {
+		return mmmodel.NewAppError(where, "model.import_result.is_valid.ordinal.app_error", nil, "", http.StatusBadRequest)
+	}
+	if !r.PlannedAction.IsValid() || !r.ActualAction.IsValid() {
+		return mmmodel.NewAppError(where, "model.import_result.is_valid.action.app_error", nil, "", http.StatusBadRequest)
+	}
+	if !r.Outcome.IsValid() {
+		return mmmodel.NewAppError(where, "model.import_result.is_valid.outcome.app_error", nil, "", http.StatusBadRequest)
+	}
+	if !IsValidImportIdentifier(r.ExternalId, ImportExternalIDMaxBytes) {
+		return mmmodel.NewAppError(where, "model.import_result.is_valid.external_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	return nil
 }

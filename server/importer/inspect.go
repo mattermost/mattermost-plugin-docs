@@ -4,10 +4,12 @@
 package importer
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -18,10 +20,15 @@ import (
 
 // MaxManifestWarnings bounds how many producer manifest warnings are materialized as inspection
 // issues. A valid sub-limit manifest could otherwise carry hundreds of thousands of warnings; each
-// copied into an issue struct, that would let a single upload retain a large multiple of the
-// manifest size, and concurrent uploads could exhaust plugin memory. Warnings beyond the cap are
-// summarized in one aggregate issue rather than materialized individually.
+// copied into an issue row, that would let a single upload consume a large multiple of the manifest
+// size. Warnings beyond the cap are summarized in one aggregate issue.
 const MaxManifestWarnings = 1000
+
+// MaxHierarchyDepth is the maximum page depth the importer accepts, mirroring model.MaxPageDepth: a
+// root page is depth 1, so a chain of 10 pages is the deepest allowed and an 11-page chain is
+// rejected. The value is duplicated (rather than imported from the app package) to keep this pure
+// package dependency-light; the model constant is the canonical one and both must move together.
+const MaxHierarchyDepth = model.MaxPageDepth
 
 // Manifest mirrors the fields of the producer's import-manifest.json that the importer reads.
 // Unknown fields are ignored (forward-compatible).
@@ -94,6 +101,7 @@ func inspectErr(code, format string, args ...any) *InspectError {
 const (
 	InspectErrManifestInvalid      = "manifest_invalid"
 	InspectErrManifestVersion      = "manifest_unsupported_version"
+	InspectErrManifestSourceType   = "manifest_unsupported_source_type"
 	InspectErrManifestHasErrors    = "manifest_reports_errors"
 	InspectErrChecksumMissing      = "jsonl_checksum_missing"
 	InspectErrChecksumMismatch     = "jsonl_checksum_mismatch"
@@ -107,6 +115,7 @@ const (
 	InspectErrVersionValue         = "jsonl_unsupported_version"
 	InspectErrTooManyPages         = "jsonl_too_many_pages"
 	InspectErrPageMissingID        = "page_missing_external_id"
+	InspectErrPageInvalidID        = "page_invalid_external_id"
 	InspectErrDuplicatePageID      = "page_duplicate_external_id"
 	InspectErrPageMissingTitle     = "page_missing_title"
 	InspectErrPageTitleTooLong     = "page_title_too_long"
@@ -116,13 +125,19 @@ const (
 	InspectErrTipTap               = "page_content_invalid"
 	InspectErrSpaceKeyMismatch     = "space_key_mismatch"
 	InspectErrSpaceKeyMissing      = "space_key_missing"
-	InspectErrCommentMissingPageID = "comment_missing_page_id"
+	InspectErrCommentInvalid       = "comment_invalid"
 	InspectErrAttachmentPath       = "attachment_invalid_path"
+	InspectErrAttachmentID         = "attachment_invalid_source_id"
 	InspectErrCountMismatch        = "manifest_count_mismatch"
+	InspectErrManifestUserInvalid  = "manifest_user_invalid"
+	InspectErrManifestUserConflict = "manifest_user_conflict"
+	InspectErrTooManyManifestUsers = "manifest_too_many_users"
+	InspectErrUnstorableText       = "unstorable_text"
+	InspectErrSourcePropShape      = "source_prop_invalid_shape"
 	InspectErrHash                 = "hash_failed"
 )
 
-// Inspection issue severities.
+// Inspection issue severities, mirroring the persisted enumeration.
 const (
 	SeverityInfo    = "info"
 	SeverityWarning = "warning"
@@ -138,10 +153,14 @@ const (
 	IssueSourceUpdateAtInvalid         = "source_update_at_invalid"
 	IssuePlaceholderInText             = "placeholder_in_text_not_rewritten"
 	// IssueAttachmentsNotImported flags a page that carries attachment records, none of which are
-	// imported in this release. This is the plan's partial-scope code (section 20.2), distinct from
-	// the attachment_placeholder_not_imported link code used when a CONF_ATTACHMENT placeholder is
-	// discovered in a link (section 13).
+	// imported in this release. It is the plan's partial-scope code, distinct from the
+	// attachment_placeholder_not_imported link code used for a discovered CONF_ATTACHMENT placeholder.
 	IssueAttachmentsNotImported = "attachments_not_imported"
+	// IssueRestrictedManifestEntryNotEmitted records a manifest restriction identity that matches no
+	// emitted page, so it cannot claim widened access.
+	IssueRestrictedManifestEntryNotEmitted = "restricted_manifest_entry_not_emitted"
+	// IssueCommentsNotImported records that comments were counted but not imported.
+	IssueCommentsNotImported = "comments_not_imported"
 )
 
 // InspectionIssue is one non-fatal finding recorded during inspection.
@@ -155,38 +174,60 @@ type InspectionIssue struct {
 	Details     map[string]any `json:"details,omitempty"`
 }
 
-// StagedPage is one normalized page ready to persist to DOCS_ImportStagedPage. It holds no HTTP or
-// DB types; the store maps it to a row.
+// StagedPage is one normalized page handed to the sink. It is not retained by the inspector: the
+// caller persists it and the inspector moves on, which is what keeps peak memory bounded regardless
+// of bundle size.
 type StagedPage struct {
-	Ordinal               int
-	ExternalID            string
-	ParentExternalID      string
-	SourceOrdinal         int
-	Title                 string
-	CanonicalBody         string
-	SearchText            string
-	SourceUserProposal    string
-	SourceAuthorAccountID string
-	SourceCreateAt        int64
-	SourceUpdateAt        int64
-	SourceProps           map[string]any
-	IncomingSourceHash    string
-	// Links are the placeholders discovered in this page's approved attributes and text. Not
-	// persisted verbatim; used for link counts and per-page link issues during preflight.
+	Ordinal    int
+	SourceLine int
+	ExternalID string
+	// ParentExternalID is structural metadata: it is compared through its own baseline and is
+	// deliberately absent from the source content hash.
+	ParentExternalID          string
+	SourceOrdinal             int
+	Restricted                bool
+	Title                     string
+	CanonicalBody             string
+	SearchText                string
+	SourceUserProposal        string
+	SourceAuthorAccountID     string
+	SourceCreateAt            int64
+	SourceUpdateAt            int64
+	SourceProps               map[string]any
+	IncomingSourceContentHash string
+	// Links are the placeholders discovered in this page's approved attributes and text. They are not
+	// persisted verbatim; the caller uses them for link counts and per-page link issues.
 	Links []DiscoveredLink
+}
+
+// StagedManifestUser is one validated manifest user mapping handed to the sink for persistence.
+type StagedManifestUser struct {
+	Ordinal            int
+	AccountID          string
+	ConfluenceUsername string
+	MattermostUsername string
+}
+
+// StreamSink receives normalized inspection output incrementally. The inspector stays a pure
+// package: the store is injected here as a sink rather than imported, so staging rows can be written
+// inside the caller's transaction while parsing proceeds. Any error a callback returns aborts
+// inspection and is returned to the caller unchanged.
+type StreamSink struct {
+	Page         func(*StagedPage) error
+	ManifestUser func(*StagedManifestUser) error
+	Issue        func(*InspectionIssue) error
 }
 
 // RestrictedSummary partitions manifest restricted entries by whether they intersect emitted pages.
 type RestrictedSummary struct {
-	ManifestTotal   int      `json:"restricted_manifest_total"`
-	EmittedPages    int      `json:"restricted_emitted_pages"`
-	ManifestOnly    int      `json:"restricted_manifest_only"`
-	EmittedIDs      []string `json:"restricted_emitted_ids,omitempty"`
-	ManifestOnlyIDs []string `json:"restricted_manifest_only_ids,omitempty"`
+	ManifestTotal int `json:"restricted_manifest_total"`
+	EmittedPages  int `json:"restricted_emitted_pages"`
+	ManifestOnly  int `json:"restricted_manifest_only"`
 }
 
-// InspectionResult is the complete synchronous inspection output.
-type InspectionResult struct {
+// InspectionSummary is the aggregate inspection outcome. It carries counts and metadata only: pages,
+// users, and issues were streamed to the sink.
+type InspectionSummary struct {
 	Version          int
 	OrganizationID   string
 	SpaceKey         string
@@ -194,15 +235,21 @@ type InspectionResult struct {
 	SpaceTitle       string
 	SpaceDescription string
 
-	Pages           []StagedPage
+	PageCount       int
 	CommentCount    int
 	AttachmentCount int
 	Restricted      RestrictedSummary
 
-	Manifest    *Manifest
 	JSONLSha256 string
+	Links       LinkCounts
+}
 
-	Issues []InspectionIssue
+// LinkCounts aggregates discovered placeholder links across the bundle.
+type LinkCounts struct {
+	SameSource       int
+	Unresolved       int
+	FilePlaceholders int
+	InText           int
 }
 
 // InspectOptions carries optional context the pure inspector uses only for advisory checks.
@@ -217,15 +264,13 @@ type InspectOptions struct {
 }
 
 // futureTimestampAllowance is how far past Now a source timestamp may sit before it is judged
-// implausibly in the future — clock skew between the source and this server should be well under a
-// day.
+// implausibly in the future — clock skew between the source and this server should be well under a day.
 const futureTimestampAllowance = int64(24 * 60 * 60 * 1000)
 
 // year2100Millis is the fallback future ceiling used when InspectOptions.Now is not supplied.
 const year2100Millis = int64(4102444800000)
 
-// futureCeiling returns the largest source timestamp treated as plausible: now plus a skew
-// allowance when now is supplied, otherwise the fixed year-2100 ceiling.
+// futureCeiling returns the largest source timestamp treated as plausible.
 func (o InspectOptions) futureCeiling() int64 {
 	if o.Now > 0 {
 		return o.Now + futureTimestampAllowance
@@ -233,101 +278,102 @@ func (o InspectOptions) futureCeiling() int64 {
 	return year2100Millis
 }
 
-// parsing states for the JSONL sequence.
-type parseState int
-
-const (
-	stateVersion parseState = iota
-	stateSpace
-	statePages
-	stateComments
-	stateDone
-)
-
-// Inspect performs full synchronous inspection of an already-safely-decompressed bundle: it parses
-// and validates the manifest and JSONL, verifies the JSONL checksum, normalizes pages, and
-// reconciles counts. A hard failure returns an *InspectError and no result; recoverable findings
-// are collected as issues on the result.
-func Inspect(contents *ArchiveContents, opts InspectOptions) (*InspectionResult, error) {
-	manifest, err := parseManifest(contents.ManifestBytes)
+// Inspect validates a bundle and streams its normalized contents to sink, returning the aggregate
+// summary. It is memory-bounded: the manifest is the only entry read whole, the JSONL is streamed
+// once to verify its checksum and once more to parse, and each page is canonicalized and handed off
+// individually rather than accumulated.
+//
+// A hard failure returns an *InspectError (or *ArchiveError) and the caller must discard everything
+// already streamed — the plan requires the whole staging transaction to roll back.
+func Inspect(a *Archive, opts InspectOptions, sink StreamSink) (*InspectionSummary, error) {
+	manifestBytes, err := a.ReadManifest()
 	if err != nil {
 		return nil, err
 	}
-
-	// Verify JSONL integrity before doing anything else with the data.
-	if manifest.Checksums.JSONLSha256 == "" {
-		return nil, inspectErr(InspectErrChecksumMissing, "manifest is missing checksums.jsonl_sha256")
-	}
-	if !strings.EqualFold(manifest.Checksums.JSONLSha256, contents.JSONLSha256) {
-		return nil, inspectErr(InspectErrChecksumMismatch, "import.jsonl checksum does not match the manifest")
+	manifest, err := parseManifest(manifestBytes)
+	if err != nil {
+		return nil, err
 	}
 
 	// A producer that reported its own errors yields a failed upload.
 	if len(manifest.Errors) > 0 {
 		return nil, inspectErr(InspectErrManifestHasErrors, "manifest reports %d producer error(s): %s", len(manifest.Errors), manifest.Errors[0])
 	}
-
-	// A source space key is mandatory: it becomes the ImportSource's ExternalSpaceKey, which
-	// ImportSource.IsValid requires. The producer omits it only when neither an organization id nor
-	// a space key is known — a bundle we cannot map, so reject it here rather than fail later.
+	// A source space key is mandatory: it becomes the ImportSource's ExternalSpaceKey. It is also
+	// indexed, so it must satisfy the bounded-identifier contract.
 	if manifest.Source.SpaceKey == "" {
 		return nil, inspectErr(InspectErrSpaceKeyMissing, "manifest source is missing a space key")
 	}
+	if !IsValidIdentifier(manifest.Source.SpaceKey, SpaceKeyMaxBytes) {
+		return nil, inspectErr(InspectErrSpaceKeyMismatch, "manifest source space key %q is not a valid bounded identifier", manifest.Source.SpaceKey)
+	}
+	if manifest.Source.OrganizationID != "" && !IsValidIdentifier(manifest.Source.OrganizationID, SpaceKeyMaxBytes) {
+		return nil, inspectErr(InspectErrSpaceKeyMismatch, "manifest source organization id is not a valid bounded identifier")
+	}
 
-	res := &InspectionResult{
-		Manifest:       manifest,
-		JSONLSha256:    contents.JSONLSha256,
+	// Verify JSONL integrity before parsing anything from it.
+	if manifest.Checksums.JSONLSha256 == "" {
+		return nil, inspectErr(InspectErrChecksumMissing, "manifest is missing checksums.jsonl_sha256")
+	}
+	jsonlSha, err := a.JSONLSha256()
+	if err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(manifest.Checksums.JSONLSha256, jsonlSha) {
+		return nil, inspectErr(InspectErrChecksumMismatch, "import.jsonl checksum does not match the manifest")
+	}
+
+	summary := &InspectionSummary{
 		OrganizationID: manifest.Source.OrganizationID,
 		SpaceKey:       manifest.Source.SpaceKey,
 		SpaceName:      manifest.Source.SpaceName,
+		JSONLSha256:    jsonlSha,
 	}
 
-	// Copy manifest warnings into issues, bounded by MaxManifestWarnings so a manifest packed with
-	// warnings cannot force unbounded issue allocation.
-	warnings := manifest.Warnings
-	suppressed := 0
-	if len(warnings) > MaxManifestWarnings {
-		suppressed = len(warnings) - MaxManifestWarnings
-		warnings = warnings[:MaxManifestWarnings]
+	if err := emitManifestIssues(manifest, sink); err != nil {
+		return nil, err
 	}
-	for _, w := range warnings {
-		res.Issues = append(res.Issues, InspectionIssue{
-			Severity: SeverityWarning, Code: IssueManifestWarning, Message: w,
-			Remediation: "Review the producer warning; it does not block import.",
-		})
-	}
-	if suppressed > 0 {
-		res.Issues = append(res.Issues, InspectionIssue{
-			Severity: SeverityWarning, Code: IssueManifestWarning,
-			Message:     fmt.Sprintf("%d additional manifest warnings were suppressed (limit %d)", suppressed, MaxManifestWarnings),
-			Remediation: "Only the first manifest warnings are reported individually.",
-			Details:     map[string]any{"suppressed": suppressed, "limit": MaxManifestWarnings},
-		})
-	}
-	// Attachments are never verified in this release.
-	if manifest.Checksums.AttachmentsSha256 != "" {
-		res.Issues = append(res.Issues, InspectionIssue{
-			Severity: SeverityInfo, Code: IssueAttachmentChecksumNotVerified,
-			Message:     "attachment checksum not verified: attachments are out of scope in this release",
-			Remediation: "Attachment bytes are neither extracted nor verified; import attachments in a future release.",
-			Details:     map[string]any{"reason": "attachments_out_of_scope"},
-		})
-	}
-
-	if err := parseJSONL(contents.JSONLBytes, manifest, opts, res); err != nil {
+	if err := emitManifestUsers(manifest, sink); err != nil {
 		return nil, err
 	}
 
-	if err := reconcileCounts(manifest, res); err != nil {
+	restricted := restrictedIDSet(manifest)
+	summary.Restricted.ManifestTotal = len(restricted)
+
+	emittedRestricted := make(map[string]struct{}, len(restricted))
+	if err := streamJSONL(a, manifest, opts, sink, summary, restricted, emittedRestricted); err != nil {
 		return nil, err
 	}
-	summarizeRestricted(manifest, res)
 
-	return res, nil
+	summary.Restricted.EmittedPages = len(emittedRestricted)
+	summary.Restricted.ManifestOnly = summary.Restricted.ManifestTotal - summary.Restricted.EmittedPages
+
+	// Manifest restriction identities that match no emitted page cannot claim widened access; they are
+	// reported individually so an operator can see exactly which pages they were.
+	if err := emitManifestOnlyRestrictions(manifest, emittedRestricted, sink); err != nil {
+		return nil, err
+	}
+	if err := reconcileCounts(manifest, summary); err != nil {
+		return nil, err
+	}
+	if summary.CommentCount > 0 {
+		if err := sink.Issue(&InspectionIssue{
+			Severity: SeverityWarning, Code: IssueCommentsNotImported,
+			Message:     fmt.Sprintf("%d comment(s) were counted but are not imported in this release", summary.CommentCount),
+			Remediation: "Comment import is a future release; the counts are recorded in the report.",
+			Details:     map[string]any{"comments": summary.CommentCount},
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return summary, nil
 }
 
 // parseManifest decodes and version-checks the manifest.
 func parseManifest(b []byte) (*Manifest, error) {
+	if !utf8.Valid(b) {
+		return nil, inspectErr(InspectErrManifestInvalid, "manifest is not valid UTF-8")
+	}
 	var m Manifest
 	dec := json.NewDecoder(strings.NewReader(string(b)))
 	if err := dec.Decode(&m); err != nil {
@@ -342,14 +388,685 @@ func parseManifest(b []byte) (*Manifest, error) {
 	if m.Version != ManifestVersion {
 		return nil, inspectErr(InspectErrManifestVersion, "manifest version %q is unsupported; require %q", m.Version, ManifestVersion)
 	}
+	if m.Source.Type != "" && m.Source.Type != model.ImportSourceTypeConfluence {
+		return nil, inspectErr(InspectErrManifestSourceType, "manifest source type %q is unsupported", m.Source.Type)
+	}
 	return &m, nil
 }
 
-// lineHasForeignPayload reports whether the line carries a payload field that does not belong to
-// its declared type. The version line owns both the version and source fields; every other type
-// owns exactly its matching payload. A line declaring one type but carrying another type's payload
-// (e.g. {"type":"page","page":{...},"space":{...}}) is rejected so a malformed or smuggled payload
-// cannot ride along unnoticed.
+// emitManifestIssues streams the manifest-derived issues: producer warnings (bounded) and the
+// attachment-checksum notice.
+func emitManifestIssues(manifest *Manifest, sink StreamSink) error {
+	warnings := manifest.Warnings
+	suppressed := 0
+	if len(warnings) > MaxManifestWarnings {
+		suppressed = len(warnings) - MaxManifestWarnings
+		warnings = warnings[:MaxManifestWarnings]
+	}
+	for _, w := range warnings {
+		if !IsStorableText(w) {
+			return inspectErr(InspectErrUnstorableText, "a manifest warning contains invalid UTF-8 or a NUL character")
+		}
+		if err := sink.Issue(&InspectionIssue{
+			Severity: SeverityWarning, Code: IssueManifestWarning, Message: w,
+			Remediation: "Review the producer warning; it does not block import.",
+		}); err != nil {
+			return err
+		}
+	}
+	if suppressed > 0 {
+		if err := sink.Issue(&InspectionIssue{
+			Severity: SeverityWarning, Code: IssueManifestWarning,
+			Message:     fmt.Sprintf("%d additional manifest warnings were suppressed (limit %d)", suppressed, MaxManifestWarnings),
+			Remediation: "Only the first manifest warnings are reported individually.",
+			Details:     map[string]any{"suppressed": suppressed, "limit": MaxManifestWarnings},
+		}); err != nil {
+			return err
+		}
+	}
+	if manifest.Checksums.AttachmentsSha256 != "" {
+		if err := sink.Issue(&InspectionIssue{
+			Severity: SeverityInfo, Code: IssueAttachmentChecksumNotVerified,
+			Message:     "attachment checksum not verified: attachments are out of scope in this release",
+			Remediation: "Attachment bytes are neither extracted nor verified; import attachments in a future release.",
+			Details:     map[string]any{"reason": "attachments_out_of_scope"},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// emitManifestUsers validates and streams the manifest user mappings in deterministic manifest
+// order. A duplicate account id carrying conflicting values is a contract violation, because author
+// resolution would then depend on which row won.
+func emitManifestUsers(manifest *Manifest, sink StreamSink) error {
+	if len(manifest.Users) > MaxManifestUsers {
+		return inspectErr(InspectErrTooManyManifestUsers, "manifest has %d users, limit is %d", len(manifest.Users), MaxManifestUsers)
+	}
+	seen := make(map[string]ManifestUser, len(manifest.Users))
+	ordinal := 0
+	for _, u := range manifest.Users {
+		if !IsValidIdentifier(u.AccountID, ExternalIDMaxBytes) {
+			return inspectErr(InspectErrManifestUserInvalid, "manifest user account id %q is not a valid bounded identifier", u.AccountID)
+		}
+		if !IsStorableText(u.ConfluenceUsername) || !IsStorableText(u.MattermostUsername) {
+			return inspectErr(InspectErrUnstorableText, "manifest user %q contains invalid UTF-8 or a NUL character", u.AccountID)
+		}
+		if prev, dup := seen[u.AccountID]; dup {
+			if prev != u {
+				return inspectErr(InspectErrManifestUserConflict, "manifest lists account id %q twice with conflicting values", u.AccountID)
+			}
+			// An exact duplicate is redundant but harmless; skip it so the unique constraint holds.
+			continue
+		}
+		seen[u.AccountID] = u
+		if err := sink.ManifestUser(&StagedManifestUser{
+			Ordinal:            ordinal,
+			AccountID:          u.AccountID,
+			ConfluenceUsername: u.ConfluenceUsername,
+			MattermostUsername: u.MattermostUsername,
+		}); err != nil {
+			return err
+		}
+		ordinal++
+	}
+	return nil
+}
+
+// restrictedIDSet returns the deduplicated manifest restriction identities.
+func restrictedIDSet(manifest *Manifest) map[string]string {
+	set := make(map[string]string, len(manifest.RestrictedPages))
+	for _, rp := range manifest.RestrictedPages {
+		if _, dup := set[rp.ID]; dup {
+			continue
+		}
+		set[rp.ID] = rp.Title
+	}
+	return set
+}
+
+// emitManifestOnlyRestrictions reports each restriction identity that never matched an emitted page,
+// in deterministic id order.
+func emitManifestOnlyRestrictions(manifest *Manifest, emitted map[string]struct{}, sink StreamSink) error {
+	all := restrictedIDSet(manifest)
+	ids := make([]string, 0, len(all))
+	for id := range all {
+		if _, ok := emitted[id]; !ok {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if err := sink.Issue(&InspectionIssue{
+			Severity: SeverityInfo, Code: IssueRestrictedManifestEntryNotEmitted,
+			ExternalID: id, Title: all[id],
+			Message:     "a manifest restriction entry does not correspond to any emitted page, so no access was widened for it",
+			Remediation: "The producer may have listed a draft, deleted, or historical page that the export omitted.",
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// parseState tracks the required JSONL line order.
+type parseState int
+
+const (
+	stateVersion parseState = iota
+	stateSpace
+	statePages
+	stateComments
+	stateDone
+)
+
+// streamParser holds the cross-line state the JSONL state machine needs. Its maps are bounded by the
+// page and comment caps, so they stay small relative to the bodies that are never accumulated.
+type streamParser struct {
+	manifest *Manifest
+	opts     InspectOptions
+	sink     StreamSink
+	summary  *InspectionSummary
+
+	state parseState
+	// depthOf gives each emitted page's depth (root = 1). Because a parent must appear before its
+	// child, a child's depth is derived from its parent's in one step, so the limit is enforced as
+	// pages stream rather than in a second pass.
+	depthOf map[string]int
+	// siblingCounter maps a parent external id ("" for roots) to the next sibling ordinal.
+	siblingCounter map[string]int
+	// commentIDs enforces comment source-id uniqueness and reply-parent ordering.
+	commentIDs  map[string]struct{}
+	teamValues  map[string]struct{}
+	pageOrdinal int
+	// pendingTeamMismatch holds the aggregate advisory-team mismatch until every line is parsed,
+	// so the issue is emitted once at a deterministic position rather than per line.
+	pendingTeamMismatch []string
+}
+
+// streamJSONL reopens import.jsonl and runs the strict v2 line sequence, handing each normalized page
+// to the sink as it is parsed.
+func streamJSONL(a *Archive, manifest *Manifest, opts InspectOptions, sink StreamSink, summary *InspectionSummary, restricted map[string]string, emittedRestricted map[string]struct{}) error {
+	rc, err := a.OpenJSONL()
+	if err != nil {
+		return err
+	}
+	// Best-effort close: a parse failure is already being returned, and a CRC error on an entry we
+	// deliberately stopped reading early would be misleading.
+	defer func() { _ = rc.Close() }()
+
+	p := &streamParser{
+		manifest: manifest, opts: opts, sink: sink, summary: summary,
+		depthOf:        make(map[string]int),
+		siblingCounter: make(map[string]int),
+		commentIDs:     make(map[string]struct{}),
+		teamValues:     make(map[string]struct{}),
+	}
+	// The manifest's advisory target team is compared alongside the per-line values, so a mismatch
+	// declared only in the manifest is still surfaced.
+	p.collectTeam(manifest.Target.Team)
+
+	scanner := bufio.NewScanner(rc)
+	// Permit a single line up to the documented limit, and one byte beyond so an exactly-oversized
+	// line is reported as too long rather than silently truncated.
+	scanner.Buffer(make([]byte, 0, 64*1024), MaxJSONLLineBytes+1)
+
+	lineNo := 0
+	total := 0
+	for scanner.Scan() {
+		lineNo++
+		raw := scanner.Bytes()
+		total += len(raw) + 1
+		if total > MaxJSONLBytes {
+			return inspectErr(ArchiveErrJSONLTooLarge, "import.jsonl exceeds %d bytes", MaxJSONLBytes)
+		}
+		if err := p.handleLine(raw, lineNo, restricted, emittedRestricted); err != nil {
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return inspectErr(InspectErrLineTooLong, "an import.jsonl line exceeds %d bytes", MaxJSONLLineBytes)
+		}
+		return inspectErr(InspectErrLineInvalid, "failed to read import.jsonl: %v", err)
+	}
+	if lineNo == 0 {
+		return inspectErr(InspectErrJSONLEmpty, "import.jsonl is empty")
+	}
+	if p.state != stateDone {
+		return inspectErr(InspectErrSequence, "import.jsonl is missing the trailing resolve_space_placeholders line")
+	}
+
+	summary.PageCount = p.pageOrdinal
+	p.emitTeamMismatch()
+	return p.flushTeamMismatch()
+}
+
+// handleLine dispatches one JSONL line through the sequence state machine.
+func (p *streamParser) handleLine(raw []byte, lineNo int, restricted map[string]string, emittedRestricted map[string]struct{}) error {
+	if len(raw) == 0 {
+		return inspectErr(InspectErrBlankLine, "import.jsonl line %d is blank", lineNo)
+	}
+	if len(raw) > MaxJSONLLineBytes {
+		return inspectErr(InspectErrLineTooLong, "import.jsonl line %d exceeds %d bytes", lineNo, MaxJSONLLineBytes)
+	}
+	if !utf8.Valid(raw) {
+		return inspectErr(InspectErrUnstorableText, "import.jsonl line %d is not valid UTF-8", lineNo)
+	}
+
+	var line Line
+	if err := json.Unmarshal(raw, &line); err != nil {
+		return inspectErr(InspectErrLineInvalid, "import.jsonl line %d is invalid JSON: %v", lineNo, err)
+	}
+	if lineHasForeignPayload(&line, line.Type) {
+		return inspectErr(InspectErrPayloadMismatch, "import.jsonl line %d declares type %q but carries another type's payload", lineNo, line.Type)
+	}
+
+	switch line.Type {
+	case LineTypeVersion:
+		if p.state != stateVersion {
+			return inspectErr(InspectErrSequence, "unexpected version line at line %d", lineNo)
+		}
+		if line.Version == nil || *line.Version != ContractVersion {
+			return inspectErr(InspectErrVersionValue, "line %d: version must be %d", lineNo, ContractVersion)
+		}
+		if line.Source != nil {
+			if err := requireSameSpaceKey("version.source.space_key", stringOrEmpty(line.Source.SpaceKey), p.manifest.Source.SpaceKey); err != nil {
+				return err
+			}
+		}
+		p.summary.Version = *line.Version
+		p.state = stateSpace
+
+	case LineTypeSpace:
+		if p.state != stateSpace {
+			return inspectErr(InspectErrSequence, "unexpected space line at line %d", lineNo)
+		}
+		if line.Space == nil {
+			return inspectErr(InspectErrPayloadMismatch, "line %d declares type space but has no space payload", lineNo)
+		}
+		if err := p.handleSpaceLine(line.Space); err != nil {
+			return err
+		}
+		p.state = statePages
+
+	case LineTypePage:
+		if p.state != statePages {
+			return inspectErr(InspectErrSequence, "unexpected page line at line %d (pages must follow the space line and precede comments)", lineNo)
+		}
+		if line.Page == nil {
+			return inspectErr(InspectErrPayloadMismatch, "line %d declares type page but has no page payload", lineNo)
+		}
+		if p.pageOrdinal >= MaxPages {
+			return inspectErr(InspectErrTooManyPages, "bundle has more than %d pages", MaxPages)
+		}
+		return p.handlePageLine(line.Page, lineNo, restricted, emittedRestricted)
+
+	case LineTypePageComment:
+		if p.state != statePages && p.state != stateComments {
+			return inspectErr(InspectErrSequence, "unexpected page_comment line at line %d", lineNo)
+		}
+		p.state = stateComments
+		if line.PageComment == nil {
+			return inspectErr(InspectErrPayloadMismatch, "line %d declares type page_comment but has no payload", lineNo)
+		}
+		return p.handleCommentLine(line.PageComment, lineNo)
+
+	case LineTypeResolveSpacePlaceholders:
+		if p.state != statePages && p.state != stateComments {
+			return inspectErr(InspectErrSequence, "unexpected resolve_space_placeholders line at line %d", lineNo)
+		}
+		if line.ResolveSpacePlaceholders == nil {
+			return inspectErr(InspectErrPayloadMismatch, "line %d declares type resolve_space_placeholders but has no payload", lineNo)
+		}
+		if err := requireSameSpaceKey("resolve_space_placeholders.space_import_source_id",
+			stringOrEmpty(line.ResolveSpacePlaceholders.SpaceImportSourceID), p.manifest.Source.SpaceKey); err != nil {
+			return err
+		}
+		p.collectTeam(stringOrEmpty(line.ResolveSpacePlaceholders.Team))
+		p.state = stateDone
+
+	case "":
+		return inspectErr(InspectErrUnknownType, "line %d has an empty type", lineNo)
+	default:
+		return inspectErr(InspectErrUnknownType, "line %d has unknown type %q", lineNo, line.Type)
+	}
+	return nil
+}
+
+// handleSpaceLine records the Space defaults and validates its space key against the manifest.
+func (p *streamParser) handleSpaceLine(space *SpaceData) error {
+	p.collectTeam(stringOrEmpty(space.Team))
+	title := stringOrEmpty(space.Title)
+	description := stringOrEmpty(space.Description)
+	if !IsStorableText(title) || !IsStorableText(description) {
+		return inspectErr(InspectErrUnstorableText, "the space title or description contains invalid UTF-8 or a NUL character")
+	}
+	p.summary.SpaceTitle = title
+	p.summary.SpaceDescription = description
+	return requireSameSpaceKey("space.props.import_source_id",
+		propString(derefProps(space.Props), PropImportSourceID), p.manifest.Source.SpaceKey)
+}
+
+// handlePageLine validates and normalizes one page, then streams it to the sink.
+func (p *streamParser) handlePageLine(page *PageData, lineNo int, restricted map[string]string, emittedRestricted map[string]struct{}) error {
+	p.collectTeam(stringOrEmpty(page.Team))
+
+	props := derefProps(page.Props)
+	externalID := propString(props, PropImportSourceID)
+	if externalID == "" {
+		return inspectErr(InspectErrPageMissingID, "line %d: page is missing props.import_source_id", lineNo)
+	}
+	if !IsValidIdentifier(externalID, ExternalIDMaxBytes) {
+		return inspectErr(InspectErrPageInvalidID, "line %d: page external id %q is not a valid bounded identifier", lineNo, externalID)
+	}
+	if _, dup := p.depthOf[externalID]; dup {
+		return inspectErr(InspectErrDuplicatePageID, "line %d: duplicate page external id %q", lineNo, externalID)
+	}
+
+	// Normalize the title exactly as Page.PreSave does (SanitizeUnicode then trim). Import uses a
+	// dedicated store path that bypasses PreSave, so without this the stored title could carry unsafe
+	// Unicode controls, and the source hash would be computed on a value that never matches the
+	// applied hash of the normalized title.
+	rawTitle := stringOrEmpty(page.Title)
+	if !IsStorableText(rawTitle) {
+		return inspectErr(InspectErrUnstorableText, "line %d: page %q title contains invalid UTF-8 or a NUL character", lineNo, externalID)
+	}
+	title := strings.TrimSpace(mmmodel.SanitizeUnicode(rawTitle))
+	if title == "" {
+		return inspectErr(InspectErrPageMissingTitle, "line %d: page %q is missing a title", lineNo, externalID)
+	}
+	if utf8.RuneCountInString(title) > model.PageTitleMaxRunes {
+		return inspectErr(InspectErrPageTitleTooLong, "line %d: page %q title exceeds %d runes", lineNo, externalID, model.PageTitleMaxRunes)
+	}
+
+	if err := requireSameSpaceKey(fmt.Sprintf("page %q space_import_source_id", externalID),
+		stringOrEmpty(page.SpaceImportSourceID), p.manifest.Source.SpaceKey); err != nil {
+		return err
+	}
+
+	parentID := stringOrEmpty(page.ParentImportSourceID)
+	depth := 1
+	if parentID != "" {
+		if !IsValidIdentifier(parentID, ExternalIDMaxBytes) {
+			return inspectErr(InspectErrPageInvalidID, "line %d: page %q parent id is not a valid bounded identifier", lineNo, externalID)
+		}
+		parentDepth, seen := p.depthOf[parentID]
+		if !seen {
+			return inspectErr(InspectErrParentNotSeen, "line %d: page %q references parent %q that has not appeared earlier", lineNo, externalID, parentID)
+		}
+		depth = parentDepth + 1
+		if depth > MaxHierarchyDepth {
+			return inspectErr(InspectErrDepthExceeded, "line %d: page %q exceeds maximum hierarchy depth of %d", lineNo, externalID, MaxHierarchyDepth)
+		}
+	}
+
+	content := stringOrEmpty(page.Content)
+	if !IsStorableText(content) {
+		return inspectErr(InspectErrUnstorableText, "line %d: page %q content contains invalid UTF-8 or a NUL character", lineNo, externalID)
+	}
+	canonicalBody, searchText, links, tErr := CanonicalizeAndExtractSearchText(content)
+	if tErr != nil {
+		return inspectErr(InspectErrTipTap, "line %d: page %q content invalid: %v", lineNo, externalID, tErr)
+	}
+
+	sourceCreateAt := int64OrZero(page.CreateAt)
+	if !plausibleTimestamp(sourceCreateAt, p.opts.futureCeiling()) {
+		if err := p.sink.Issue(&InspectionIssue{
+			Severity: SeverityWarning, Code: IssueSourceCreateAtInvalid, ExternalID: externalID, Title: title,
+			Message:     "source create timestamp is missing, non-positive, or implausibly in the future",
+			Remediation: "The page is staged; execution falls back to the import time for CreateAt.",
+			Details:     map[string]any{"source_create_at": sourceCreateAt},
+		}); err != nil {
+			return err
+		}
+	}
+	if page.UpdateAt != nil && !plausibleTimestamp(*page.UpdateAt, p.opts.futureCeiling()) {
+		if err := p.sink.Issue(&InspectionIssue{
+			Severity: SeverityWarning, Code: IssueSourceUpdateAtInvalid, ExternalID: externalID, Title: title,
+			Message:     "source update timestamp was supplied but is not usable",
+			Remediation: "The raw value is preserved in props; it does not affect local timestamps.",
+			Details:     map[string]any{"source_update_at": *page.UpdateAt},
+		}); err != nil {
+			return err
+		}
+	}
+
+	sourceProps, propErr := allowlistSourceProps(props, externalID, lineNo)
+	if propErr != nil {
+		return propErr
+	}
+	authorAccountID := propString(props, PropConfluenceAuthorAccountID)
+	if authorAccountID != "" && !IsValidIdentifier(authorAccountID, ExternalIDMaxBytes) {
+		return inspectErr(InspectErrPageInvalidID, "line %d: page %q author account id is not a valid bounded identifier", lineNo, externalID)
+	}
+	userProposal := stringOrEmpty(page.User)
+	if !IsStorableText(userProposal) {
+		return inspectErr(InspectErrUnstorableText, "line %d: page %q user proposal contains invalid UTF-8 or a NUL character", lineNo, externalID)
+	}
+
+	incomingHash, hErr := HashSourceContent(SourceContentHashInput{
+		Title:           title,
+		CanonicalBody:   canonicalBody,
+		AuthorAccountID: authorAccountID,
+		AuthorProposal:  userProposal,
+		SourceCreateAt:  sourceCreateAt,
+		SourceUpdateAt:  int64OrZero(page.UpdateAt),
+		SourceProps:     sourceProps,
+	})
+	if hErr != nil {
+		return inspectErr(InspectErrHash, "line %d: failed to hash page %q: %v", lineNo, externalID, hErr)
+	}
+
+	attachmentCount, attErr := p.countAttachments(page, externalID, title, lineNo)
+	if attErr != nil {
+		return attErr
+	}
+	p.summary.AttachmentCount += attachmentCount
+
+	if err := p.emitLinkIssues(links, externalID, title); err != nil {
+		return err
+	}
+
+	_, isRestricted := restricted[externalID]
+	if isRestricted {
+		emittedRestricted[externalID] = struct{}{}
+	}
+
+	p.depthOf[externalID] = depth
+	sourceOrdinal := p.siblingCounter[parentID]
+	p.siblingCounter[parentID] = sourceOrdinal + 1
+
+	staged := &StagedPage{
+		Ordinal:                   p.pageOrdinal,
+		SourceLine:                lineNo,
+		ExternalID:                externalID,
+		ParentExternalID:          parentID,
+		SourceOrdinal:             sourceOrdinal,
+		Restricted:                isRestricted,
+		Title:                     title,
+		CanonicalBody:             canonicalBody,
+		SearchText:                searchText,
+		SourceUserProposal:        userProposal,
+		SourceAuthorAccountID:     authorAccountID,
+		SourceCreateAt:            sourceCreateAt,
+		SourceUpdateAt:            int64OrZero(page.UpdateAt),
+		SourceProps:               sourceProps,
+		IncomingSourceContentHash: incomingHash,
+		Links:                     links,
+	}
+	if err := p.sink.Page(staged); err != nil {
+		return err
+	}
+	p.pageOrdinal++
+	return nil
+}
+
+// countAttachments validates and counts a page's attachment records without opening any file.
+func (p *streamParser) countAttachments(page *PageData, externalID, title string, lineNo int) (int, error) {
+	if page.Attachments == nil || len(*page.Attachments) == 0 {
+		return 0, nil
+	}
+	for _, att := range *page.Attachments {
+		path := stringOrEmpty(att.Path)
+		if err := validateAttachmentPath(path, externalID, lineNo); err != nil {
+			return 0, err
+		}
+		// The attachment's own source id is indexed in a future release and must already conform.
+		if sourceID := propString(derefProps(att.Props), PropImportSourceID); sourceID != "" {
+			if !IsValidIdentifier(sourceID, ExternalIDMaxBytes) {
+				return 0, inspectErr(InspectErrAttachmentID, "line %d: page %q has an attachment with an invalid source id", lineNo, externalID)
+			}
+		}
+	}
+	count := len(*page.Attachments)
+	if err := p.sink.Issue(&InspectionIssue{
+		Severity: SeverityInfo, Code: IssueAttachmentsNotImported, ExternalID: externalID, Title: title,
+		Message:     fmt.Sprintf("%d attachment(s) counted but not imported in this release", count),
+		Remediation: "Attachment import is a future release; bytes are neither extracted nor stored.",
+		Details:     map[string]any{"attachments": count},
+	}); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// emitLinkIssues reports placeholders left in ordinary text and accumulates the link counters.
+func (p *streamParser) emitLinkIssues(links []DiscoveredLink, externalID, title string) error {
+	inText := false
+	for _, l := range links {
+		switch {
+		case l.InText:
+			inText = true
+		case l.Kind == LinkKindPageID || l.Kind == LinkKindPageTitle:
+			p.summary.Links.SameSource++
+		case l.Kind == LinkKindFile || l.Kind == LinkKindAttachment:
+			p.summary.Links.FilePlaceholders++
+		default:
+			p.summary.Links.Unresolved++
+		}
+	}
+	if inText {
+		p.summary.Links.InText++
+		return p.sink.Issue(&InspectionIssue{
+			Severity: SeverityInfo, Code: IssuePlaceholderInText, ExternalID: externalID, Title: title,
+			Message:     "a Confluence placeholder token appears in ordinary text and is left intact",
+			Remediation: "Placeholders in text are not rewritten in this release.",
+		})
+	}
+	return nil
+}
+
+// handleCommentLine validates one comment enough to count it. Comments are never staged in this
+// release, but a malformed comment still indicates a broken bundle.
+func (p *streamParser) handleCommentLine(c *PageCommentData, lineNo int) error {
+	pageID := stringOrEmpty(c.PageImportSourceID)
+	if pageID == "" {
+		return inspectErr(InspectErrCommentInvalid, "line %d: page_comment is missing page_import_source_id", lineNo)
+	}
+	if _, known := p.depthOf[pageID]; !known {
+		return inspectErr(InspectErrCommentInvalid, "line %d: page_comment references unknown page %q", lineNo, pageID)
+	}
+	if stringOrEmpty(c.User) == "" || stringOrEmpty(c.Content) == "" {
+		return inspectErr(InspectErrCommentInvalid, "line %d: page_comment on page %q is missing a user or content", lineNo, pageID)
+	}
+	commentID := propString(derefProps(c.Props), PropImportSourceID)
+	if !IsValidIdentifier(commentID, ExternalIDMaxBytes) {
+		return inspectErr(InspectErrCommentInvalid, "line %d: page_comment on page %q has a missing or invalid source id", lineNo, pageID)
+	}
+	if _, dup := p.commentIDs[commentID]; dup {
+		return inspectErr(InspectErrCommentInvalid, "line %d: duplicate comment source id %q", lineNo, commentID)
+	}
+	// A reply must follow the comment it answers, matching the producer's parent-before-reply order.
+	if parent := stringOrEmpty(c.ParentCommentImportSourceID); parent != "" {
+		if _, seen := p.commentIDs[parent]; !seen {
+			return inspectErr(InspectErrCommentInvalid, "line %d: comment %q replies to %q which has not appeared earlier", lineNo, commentID, parent)
+		}
+	}
+	p.commentIDs[commentID] = struct{}{}
+	p.summary.CommentCount++
+	return nil
+}
+
+// collectTeam records a non-empty advisory team value.
+func (p *streamParser) collectTeam(team string) {
+	if team != "" {
+		p.teamValues[team] = struct{}{}
+	}
+}
+
+// emitTeamMismatch computes the aggregate advisory-team mismatch, storing it for flushTeamMismatch.
+func (p *streamParser) emitTeamMismatch() {
+	if p.opts.RequestedTeamName == "" {
+		return
+	}
+	var mismatched []string
+	for t := range p.teamValues {
+		if t != p.opts.RequestedTeamName {
+			mismatched = append(mismatched, t)
+		}
+	}
+	sort.Strings(mismatched)
+	p.pendingTeamMismatch = mismatched
+}
+
+// flushTeamMismatch emits the aggregate team-mismatch warning, if any, after all lines are parsed.
+func (p *streamParser) flushTeamMismatch() error {
+	if len(p.pendingTeamMismatch) == 0 {
+		return nil
+	}
+	return p.sink.Issue(&InspectionIssue{
+		Severity: SeverityWarning, Code: IssueBundleTeamMismatch,
+		Message:     "advisory bundle team values differ from the requested target team",
+		Remediation: "The requested target team is authoritative; the bundle team is advisory only.",
+		Details:     map[string]any{"requested_team": p.opts.RequestedTeamName, "bundle_teams": p.pendingTeamMismatch},
+	})
+}
+
+// allowlistSourceProps copies only the allowlisted source props, validating each one's shape so a
+// malformed value cannot reach a JSONB column or a hash input.
+func allowlistSourceProps(props map[string]any, externalID string, lineNo int) (map[string]any, error) {
+	out := make(map[string]any)
+	for _, key := range AllowlistedSourceProps {
+		v, ok := props[key]
+		if !ok {
+			continue
+		}
+		if bad, storable := findUnstorableValue(v); !storable {
+			return nil, inspectErr(InspectErrUnstorableText, "line %d: page %q prop %q contains invalid UTF-8 or a NUL character (%q)", lineNo, externalID, key, bad)
+		}
+		// import_labels is contractually an array of strings; a different shape means the producer
+		// changed and must be handled deliberately rather than persisted opaquely.
+		if key == PropImportLabels {
+			items, isArray := v.([]any)
+			if !isArray {
+				return nil, inspectErr(InspectErrSourcePropShape, "line %d: page %q prop %q must be an array", lineNo, externalID, key)
+			}
+			for _, item := range items {
+				if _, isString := item.(string); !isString {
+					return nil, inspectErr(InspectErrSourcePropShape, "line %d: page %q prop %q must contain only strings", lineNo, externalID, key)
+				}
+			}
+		}
+		out[key] = v
+	}
+	return out, nil
+}
+
+// requireSameSpaceKey rejects a non-empty space key that differs from the manifest's. An empty value
+// is tolerated (some lines may omit it); only a present-and-different key is a mismatch.
+func requireSameSpaceKey(where, value, manifestKey string) error {
+	if value == "" || manifestKey == "" {
+		return nil
+	}
+	if value != manifestKey {
+		return inspectErr(InspectErrSpaceKeyMismatch, "%s (%q) does not match manifest source space key (%q)", where, value, manifestKey)
+	}
+	return nil
+}
+
+// validateAttachmentPath rejects an unsafe attachment path without opening the file. The
+// authoritative producer emits "/" separators on every OS, so a backslash is a producer bug.
+func validateAttachmentPath(p, externalID string, lineNo int) error {
+	if p == "" {
+		return inspectErr(InspectErrAttachmentPath, "line %d: page %q has an attachment with an empty path", lineNo, externalID)
+	}
+	if !IsStorableText(p) || strings.Contains(p, "\\") || strings.HasPrefix(p, "/") {
+		return inspectErr(InspectErrAttachmentPath, "line %d: page %q has an unsafe attachment path %q", lineNo, externalID, p)
+	}
+	for seg := range strings.SplitSeq(p, "/") {
+		if seg == "." || seg == ".." {
+			return inspectErr(InspectErrAttachmentPath, "line %d: page %q attachment path %q contains a %q segment", lineNo, externalID, p, seg)
+		}
+	}
+	return nil
+}
+
+// reconcileCounts rejects the bundle when a parsed entity count disagrees with the manifest. The
+// JSONL checksum is already verified, and the producer writes exactly one page/comment line per
+// counted entity (and one attachment count per emitted attachment), so for any well-formed bundle
+// the manifest counts equal the parsed counts exactly. A mismatch therefore signals a corrupt or
+// internally inconsistent producer bundle, which must be rejected rather than imported partially.
+func reconcileCounts(manifest *Manifest, summary *InspectionSummary) error {
+	check := func(name string, parsed, declared int) error {
+		if declared != parsed {
+			return inspectErr(InspectErrCountMismatch, "manifest declares %d %s but %d were parsed", declared, name, parsed)
+		}
+		return nil
+	}
+	if err := check("pages", summary.PageCount, manifest.Counts.Pages); err != nil {
+		return err
+	}
+	if err := check("comments", summary.CommentCount, manifest.Counts.Comments); err != nil {
+		return err
+	}
+	return check("attachments", summary.AttachmentCount, manifest.Counts.Attachments)
+}
+
+// lineHasForeignPayload reports whether the line carries a payload field that does not belong to its
+// declared type. The version line owns both the version and source fields; every other type owns
+// exactly its matching payload.
 func lineHasForeignPayload(l *Line, declaredType string) bool {
 	present := map[string]bool{
 		LineTypeVersion:                  l.Version != nil || l.Source != nil,
@@ -366,451 +1083,7 @@ func lineHasForeignPayload(l *Line, declaredType string) bool {
 	return false
 }
 
-// parseJSONL runs the strict v2 line sequence state machine, normalizing pages into res.
-func parseJSONL(b []byte, manifest *Manifest, opts InspectOptions, res *InspectionResult) error {
-	lines := splitJSONLLines(b)
-	if len(lines) == 0 {
-		return inspectErr(InspectErrJSONLEmpty, "import.jsonl is empty")
-	}
-
-	state := stateVersion
-	seenPageIDs := make(map[string]struct{})
-	parentOf := make(map[string]string)
-	siblingCounter := make(map[string]int) // parent external ID ("" for roots) -> next sibling ordinal
-	teamValues := make(map[string]struct{})
-	// The manifest's advisory target team is also compared against the requested team, alongside the
-	// per-line team values, so a mismatch declared only in the manifest is still surfaced.
-	collectTeam(teamValues, manifest.Target.Team)
-
-	pageOrdinal := 0
-
-	for i, raw := range lines {
-		if raw == "" {
-			return inspectErr(InspectErrBlankLine, "import.jsonl line %d is blank", i+1)
-		}
-		if len(raw) > MaxJSONLLineBytes {
-			return inspectErr(InspectErrLineTooLong, "import.jsonl line %d exceeds %d bytes", i+1, MaxJSONLLineBytes)
-		}
-
-		var line Line
-		if err := json.Unmarshal([]byte(raw), &line); err != nil {
-			return inspectErr(InspectErrLineInvalid, "import.jsonl line %d is invalid JSON: %v", i+1, err)
-		}
-		if lineHasForeignPayload(&line, line.Type) {
-			return inspectErr(InspectErrPayloadMismatch, "import.jsonl line %d declares type %q but carries another type's payload", i+1, line.Type)
-		}
-
-		switch line.Type {
-		case LineTypeVersion:
-			if state != stateVersion {
-				return inspectErr(InspectErrSequence, "unexpected version line at line %d", i+1)
-			}
-			if line.Version == nil || *line.Version != ContractVersion {
-				return inspectErr(InspectErrVersionValue, "line %d: version must be %d", i+1, ContractVersion)
-			}
-			if line.Source != nil {
-				if err := requireSameSpaceKey("version.source.space_key", stringOrEmpty(line.Source.SpaceKey), manifest.Source.SpaceKey); err != nil {
-					return err
-				}
-			}
-			res.Version = *line.Version
-			state = stateSpace
-
-		case LineTypeSpace:
-			if state != stateSpace {
-				return inspectErr(InspectErrSequence, "unexpected space line at line %d", i+1)
-			}
-			if line.Space == nil {
-				return inspectErr(InspectErrPayloadMismatch, "line %d declares type space but has no space payload", i+1)
-			}
-			if err := handleSpaceLine(line.Space, manifest, teamValues, res); err != nil {
-				return err
-			}
-			state = statePages
-
-		case LineTypePage:
-			if state != statePages {
-				return inspectErr(InspectErrSequence, "unexpected page line at line %d (pages must follow the space line and precede comments)", i+1)
-			}
-			if line.Page == nil {
-				return inspectErr(InspectErrPayloadMismatch, "line %d declares type page but has no page payload", i+1)
-			}
-			if len(res.Pages) >= MaxPages {
-				return inspectErr(InspectErrTooManyPages, "bundle has more than %d pages", MaxPages)
-			}
-			sp, err := normalizePage(line.Page, manifest, i+1, pageOrdinal, seenPageIDs, parentOf, siblingCounter, teamValues, opts.futureCeiling(), res)
-			if err != nil {
-				return err
-			}
-			res.Pages = append(res.Pages, *sp)
-			pageOrdinal++
-
-		case LineTypePageComment:
-			if state != statePages && state != stateComments {
-				return inspectErr(InspectErrSequence, "unexpected page_comment line at line %d", i+1)
-			}
-			state = stateComments
-			if line.PageComment == nil {
-				return inspectErr(InspectErrPayloadMismatch, "line %d declares type page_comment but has no payload", i+1)
-			}
-			if stringOrEmpty(line.PageComment.PageImportSourceID) == "" {
-				return inspectErr(InspectErrCommentMissingPageID, "line %d: page_comment is missing page_import_source_id", i+1)
-			}
-			res.CommentCount++
-
-		case LineTypeResolveSpacePlaceholders:
-			if state != statePages && state != stateComments {
-				return inspectErr(InspectErrSequence, "unexpected resolve_space_placeholders line at line %d", i+1)
-			}
-			if line.ResolveSpacePlaceholders == nil {
-				return inspectErr(InspectErrPayloadMismatch, "line %d declares type resolve_space_placeholders but has no payload", i+1)
-			}
-			collectTeam(teamValues, stringOrEmpty(line.ResolveSpacePlaceholders.Team))
-			state = stateDone
-
-		case "":
-			return inspectErr(InspectErrUnknownType, "line %d has an empty type", i+1)
-		default:
-			return inspectErr(InspectErrUnknownType, "line %d has unknown type %q", i+1, line.Type)
-		}
-	}
-
-	if state != stateDone {
-		return inspectErr(InspectErrSequence, "import.jsonl is missing the trailing resolve_space_placeholders line")
-	}
-
-	// Independently verify hierarchy depth over the assembled parent map.
-	if err := verifyHierarchy(res.Pages, parentOf); err != nil {
-		return err
-	}
-
-	emitTeamMismatch(teamValues, opts, res)
-	return nil
-}
-
-// splitJSONLLines splits on newline and drops exactly one trailing terminator newline, so a normal
-// file ending in "\n" is not treated as having a blank final line. Any other empty element remains
-// and is rejected as a blank line by the caller.
-func splitJSONLLines(b []byte) []string {
-	s := string(b)
-	if s == "" {
-		return nil
-	}
-	lines := strings.Split(s, "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	return lines
-}
-
-// handleSpaceLine records the space defaults and validates the space key against the manifest.
-func handleSpaceLine(space *SpaceData, manifest *Manifest, teamValues map[string]struct{}, res *InspectionResult) error {
-	collectTeam(teamValues, stringOrEmpty(space.Team))
-	res.SpaceTitle = stringOrEmpty(space.Title)
-	res.SpaceDescription = stringOrEmpty(space.Description)
-
-	spaceKey := propString(derefProps(space.Props), PropImportSourceID)
-	if err := requireSameSpaceKey("space.props.import_source_id", spaceKey, manifest.Source.SpaceKey); err != nil {
-		return err
-	}
-	return nil
-}
-
-// normalizePage validates and normalizes one page line into a StagedPage.
-func normalizePage(
-	page *PageData, manifest *Manifest, lineNo, ordinal int,
-	seenPageIDs map[string]struct{}, parentOf map[string]string,
-	siblingCounter map[string]int, teamValues map[string]struct{}, futureCeiling int64, res *InspectionResult,
-) (*StagedPage, error) {
-	collectTeam(teamValues, stringOrEmpty(page.Team))
-
-	props := derefProps(page.Props)
-	externalID := propString(props, PropImportSourceID)
-	if externalID == "" {
-		return nil, inspectErr(InspectErrPageMissingID, "line %d: page is missing props.import_source_id", lineNo)
-	}
-	if _, dup := seenPageIDs[externalID]; dup {
-		return nil, inspectErr(InspectErrDuplicatePageID, "line %d: duplicate page external id %q", lineNo, externalID)
-	}
-
-	// Normalize the title exactly as Page.PreSave does (SanitizeUnicode then trim), plus stripNUL
-	// (SanitizeUnicode does not drop NUL, which PostgreSQL cannot store). Import uses a dedicated
-	// store path that bypasses PreSave, so without this the stored title could carry unsafe Unicode
-	// controls or a NUL, and — more subtly — the incoming source hash would be computed on a value
-	// that never matches the applied hash of the normalized title, causing spurious conflicts.
-	title := strings.TrimSpace(stripNUL(mmmodel.SanitizeUnicode(stringOrEmpty(page.Title))))
-	if title == "" {
-		return nil, inspectErr(InspectErrPageMissingTitle, "line %d: page %q is missing a title", lineNo, externalID)
-	}
-	// Reject an over-long title at inspection so it fails early here rather than at execution, where
-	// Page.IsValid enforces the same PageTitleMaxRunes bound.
-	if utf8.RuneCountInString(title) > model.PageTitleMaxRunes {
-		return nil, inspectErr(InspectErrPageTitleTooLong, "line %d: page %q title exceeds %d runes", lineNo, externalID, model.PageTitleMaxRunes)
-	}
-
-	// Space key must match the manifest.
-	if err := requireSameSpaceKey(fmt.Sprintf("page %q space_import_source_id", externalID), stringOrEmpty(page.SpaceImportSourceID), manifest.Source.SpaceKey); err != nil {
-		return nil, err
-	}
-
-	parentID := stringOrEmpty(page.ParentImportSourceID)
-	if parentID != "" {
-		if _, seen := seenPageIDs[parentID]; !seen {
-			return nil, inspectErr(InspectErrParentNotSeen, "line %d: page %q references parent %q that has not appeared earlier", lineNo, externalID, parentID)
-		}
-	}
-
-	// Decode and canonicalize the TipTap body independently of the line.
-	canonicalBody, searchText, links, tErr := CanonicalizeAndExtractSearchText(stringOrEmpty(page.Content))
-	if tErr != nil {
-		return nil, inspectErr(InspectErrTipTap, "line %d: page %q content invalid: %v", lineNo, externalID, tErr)
-	}
-
-	// Timestamp validation (does not discard the page).
-	sourceCreateAt := int64OrZero(page.CreateAt)
-	if !plausibleTimestamp(sourceCreateAt, futureCeiling) {
-		res.Issues = append(res.Issues, InspectionIssue{
-			Severity: SeverityWarning, Code: IssueSourceCreateAtInvalid, ExternalID: externalID, Title: title,
-			Message:     "source create timestamp is missing, non-positive, or implausibly in the future",
-			Remediation: "The page is staged; execution falls back to the import time for CreateAt.",
-			Details:     map[string]any{"source_create_at": sourceCreateAt},
-		})
-	}
-	// update_at issue is emitted only when supplied but unusable.
-	if page.UpdateAt != nil && !plausibleTimestamp(*page.UpdateAt, futureCeiling) {
-		res.Issues = append(res.Issues, InspectionIssue{
-			Severity: SeverityWarning, Code: IssueSourceUpdateAtInvalid, ExternalID: externalID, Title: title,
-			Message:     "source update timestamp was supplied but is not usable",
-			Remediation: "The raw value is preserved in props; it does not affect local timestamps.",
-			Details:     map[string]any{"source_update_at": *page.UpdateAt},
-		})
-	}
-
-	// Strip NUL from every persisted free-text field (SanitizeUnicode does not remove it) so a NUL
-	// in producer content cannot break the TEXT/JSONB staging insert. This runs before hashing so
-	// the incoming hash matches the value actually stored.
-	sourceProps, _ := stripNULFromValue(allowlistSourceProps(props)).(map[string]any)
-	authorAccountID := stripNUL(propString(props, PropConfluenceAuthorAccountID))
-	userProposal := stripNUL(stringOrEmpty(page.User))
-
-	incomingHash, hErr := HashSourceState(SourceStateHashInput{
-		Title:            title,
-		CanonicalBody:    canonicalBody,
-		ParentExternalID: parentID,
-		AuthorAccountID:  authorAccountID,
-		AuthorProposal:   userProposal,
-		SourceCreateAt:   sourceCreateAt,
-		SourceUpdateAt:   int64OrZero(page.UpdateAt),
-		SourceProps:      sourceProps,
-	})
-	if hErr != nil {
-		return nil, inspectErr(InspectErrHash, "line %d: failed to hash page %q: %v", lineNo, externalID, hErr)
-	}
-
-	// Count attachments and validate their paths (never opened).
-	if page.Attachments != nil {
-		for _, att := range *page.Attachments {
-			p := stringOrEmpty(att.Path)
-			if err := validateAttachmentPath(p, externalID, lineNo); err != nil {
-				return nil, err
-			}
-			res.AttachmentCount++
-		}
-		if len(*page.Attachments) > 0 {
-			res.Issues = append(res.Issues, InspectionIssue{
-				Severity: SeverityInfo, Code: IssueAttachmentsNotImported, ExternalID: externalID, Title: title,
-				Message:     fmt.Sprintf("%d attachment(s) counted but not imported in this release", len(*page.Attachments)),
-				Remediation: "Attachment import is a future release; bytes are neither extracted nor stored.",
-			})
-		}
-	}
-
-	// Report placeholders that appeared in ordinary text (never rewritten).
-	for _, l := range links {
-		if l.InText {
-			res.Issues = append(res.Issues, InspectionIssue{
-				Severity: SeverityInfo, Code: IssuePlaceholderInText, ExternalID: externalID, Title: title,
-				Message:     "a Confluence placeholder token appears in ordinary text and is left intact",
-				Remediation: "Placeholders in text are not rewritten in this release.",
-			})
-			break
-		}
-	}
-
-	seenPageIDs[externalID] = struct{}{}
-	parentOf[externalID] = parentID
-	sourceOrdinal := siblingCounter[parentID]
-	siblingCounter[parentID] = sourceOrdinal + 1
-
-	return &StagedPage{
-		Ordinal:               ordinal,
-		ExternalID:            externalID,
-		ParentExternalID:      parentID,
-		SourceOrdinal:         sourceOrdinal,
-		Title:                 title,
-		CanonicalBody:         canonicalBody,
-		SearchText:            searchText,
-		SourceUserProposal:    userProposal,
-		SourceAuthorAccountID: authorAccountID,
-		SourceCreateAt:        sourceCreateAt,
-		SourceUpdateAt:        int64OrZero(page.UpdateAt),
-		SourceProps:           sourceProps,
-		IncomingSourceHash:    incomingHash,
-		Links:                 links,
-	}, nil
-}
-
-// allowlistSourceProps copies only the allowlisted source props, never arbitrary future producer
-// fields. Returns a fresh map (nil-safe).
-func allowlistSourceProps(props map[string]any) map[string]any {
-	out := make(map[string]any)
-	for _, key := range AllowlistedSourceProps {
-		if v, ok := props[key]; ok {
-			out[key] = v
-		}
-	}
-	return out
-}
-
-// MaxHierarchyDepth is the maximum page depth the importer accepts, mirroring app.MaxPageDepth: a
-// root page is depth 1, so a chain of 10 pages is the deepest allowed and an 11-page chain is
-// rejected. The value is duplicated (rather than imported from the app package) to keep this pure
-// package free of a dependency cycle; both must move together.
-const MaxHierarchyDepth = 10
-
-// verifyHierarchy independently recomputes each page's depth from the parent map, rejecting cycles,
-// missing parents, and depth greater than MaxHierarchyDepth. It counts the root as depth 1 so the
-// bound matches the app-layer depth enforced at execution, and does not trust any producer
-// flattening claim.
-func verifyHierarchy(pages []StagedPage, parentOf map[string]string) error {
-	for _, p := range pages {
-		depth := 1 // the page itself counts as one level; root is depth 1
-		cur := p.ExternalID
-		for {
-			parent := parentOf[cur]
-			if parent == "" {
-				break
-			}
-			if _, ok := parentOf[parent]; !ok {
-				return inspectErr(InspectErrParentNotSeen, "page %q references missing parent %q", p.ExternalID, parent)
-			}
-			depth++
-			if depth > MaxHierarchyDepth {
-				return inspectErr(InspectErrDepthExceeded, "page %q exceeds maximum hierarchy depth of %d", p.ExternalID, MaxHierarchyDepth)
-			}
-			if depth > len(parentOf)+1 {
-				return inspectErr(InspectErrCycle, "page %q is part of a parent cycle", p.ExternalID)
-			}
-			cur = parent
-		}
-	}
-	return nil
-}
-
-// requireSameSpaceKey rejects a non-empty space key that differs from the manifest's. An empty
-// value is tolerated (some lines may omit it); only a present-and-different key is a mismatch.
-func requireSameSpaceKey(where, value, manifestKey string) error {
-	if value == "" || manifestKey == "" {
-		return nil
-	}
-	if value != manifestKey {
-		return inspectErr(InspectErrSpaceKeyMismatch, "%s (%q) does not match manifest source space key (%q)", where, value, manifestKey)
-	}
-	return nil
-}
-
-// validateAttachmentPath rejects an unsafe attachment path without opening the file.
-func validateAttachmentPath(p, externalID string, lineNo int) error {
-	if p == "" {
-		return inspectErr(InspectErrAttachmentPath, "line %d: page %q has an attachment with an empty path", lineNo, externalID)
-	}
-	if strings.ContainsRune(p, 0) || strings.Contains(p, "\\") || strings.HasPrefix(p, "/") {
-		return inspectErr(InspectErrAttachmentPath, "line %d: page %q has an unsafe attachment path %q", lineNo, externalID, p)
-	}
-	for seg := range strings.SplitSeq(p, "/") {
-		if seg == "." || seg == ".." {
-			return inspectErr(InspectErrAttachmentPath, "line %d: page %q attachment path %q contains a %q segment", lineNo, externalID, p, seg)
-		}
-	}
-	return nil
-}
-
-// reconcileCounts rejects the bundle when a parsed entity count disagrees with the manifest. The
-// JSONL checksum is already verified, and the producer writes exactly one page/comment line per
-// counted entity (and one attachment count per emitted attachment), so for any well-formed bundle
-// the manifest counts equal the parsed counts exactly. A mismatch therefore signals a corrupt or
-// internally inconsistent producer bundle, which must be rejected rather than imported partially.
-func reconcileCounts(manifest *Manifest, res *InspectionResult) error {
-	check := func(name string, parsed, declared int) error {
-		if declared != parsed {
-			return inspectErr(InspectErrCountMismatch, "manifest declares %d %s but %d were parsed", declared, name, parsed)
-		}
-		return nil
-	}
-	if err := check("pages", len(res.Pages), manifest.Counts.Pages); err != nil {
-		return err
-	}
-	if err := check("comments", res.CommentCount, manifest.Counts.Comments); err != nil {
-		return err
-	}
-	return check("attachments", res.AttachmentCount, manifest.Counts.Attachments)
-}
-
-// summarizeRestricted intersects the manifest restricted list with emitted (staged) page IDs.
-func summarizeRestricted(manifest *Manifest, res *InspectionResult) {
-	staged := make(map[string]struct{}, len(res.Pages))
-	for _, p := range res.Pages {
-		staged[p.ExternalID] = struct{}{}
-	}
-	seen := make(map[string]struct{})
-	for _, rp := range manifest.RestrictedPages {
-		if _, dup := seen[rp.ID]; dup {
-			continue
-		}
-		seen[rp.ID] = struct{}{}
-		res.Restricted.ManifestTotal++
-		if _, ok := staged[rp.ID]; ok {
-			res.Restricted.EmittedPages++
-			res.Restricted.EmittedIDs = append(res.Restricted.EmittedIDs, rp.ID)
-		} else {
-			res.Restricted.ManifestOnly++
-			res.Restricted.ManifestOnlyIDs = append(res.Restricted.ManifestOnlyIDs, rp.ID)
-		}
-	}
-}
-
-// collectTeam records a non-empty advisory team value.
-func collectTeam(teams map[string]struct{}, team string) {
-	if team != "" {
-		teams[team] = struct{}{}
-	}
-}
-
-// emitTeamMismatch adds one aggregate warning when any advisory bundle team differs from the
-// requested team name. It never reroutes.
-func emitTeamMismatch(teams map[string]struct{}, opts InspectOptions, res *InspectionResult) {
-	if opts.RequestedTeamName == "" {
-		return
-	}
-	var mismatched []string
-	for t := range teams {
-		if t != opts.RequestedTeamName {
-			mismatched = append(mismatched, t)
-		}
-	}
-	if len(mismatched) > 0 {
-		res.Issues = append(res.Issues, InspectionIssue{
-			Severity: SeverityWarning, Code: IssueBundleTeamMismatch,
-			Message:     "advisory bundle team values differ from the requested target team",
-			Remediation: "The requested target team is authoritative; the bundle team is advisory only.",
-			Details:     map[string]any{"requested_team": opts.RequestedTeamName, "bundle_teams": mismatched},
-		})
-	}
-}
-
-// plausibleTimestamp reports whether ms is a positive epoch-millis value at or below futureCeiling
-// (now + a skew allowance, or the year-2100 fallback). A non-positive or too-far-future value is
-// implausible.
+// plausibleTimestamp reports whether ms is a positive epoch-millis value at or below futureCeiling.
 func plausibleTimestamp(ms, futureCeiling int64) bool {
 	return ms > 0 && ms <= futureCeiling
 }

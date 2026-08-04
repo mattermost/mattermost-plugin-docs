@@ -103,15 +103,57 @@ func (b *bundleBuilder) bytesZipWithManifestSuffix(t *testing.T, suffix string) 
 	return buf.Bytes()
 }
 
-// inspectBundle runs InspectArchive + Inspect over the builder's bytes.
-func (b *bundleBuilder) inspect(t *testing.T, opts InspectOptions) (*InspectionResult, error) {
+// collected is the streamed inspection output gathered into one value for assertions. Production
+// callers persist each page as it arrives; tests accumulate them so they can inspect the whole set.
+type collected struct {
+	Summary *InspectionSummary
+	Pages   []StagedPage
+	Users   []StagedManifestUser
+	Issues  []InspectionIssue
+}
+
+// Convenience accessors mirroring the summary fields tests assert on.
+func (c *collected) Version() int                  { return c.Summary.Version }
+func (c *collected) SpaceKey() string              { return c.Summary.SpaceKey }
+func (c *collected) SpaceTitle() string            { return c.Summary.SpaceTitle }
+func (c *collected) CommentCount() int             { return c.Summary.CommentCount }
+func (c *collected) AttachmentCount() int          { return c.Summary.AttachmentCount }
+func (c *collected) Restricted() RestrictedSummary { return c.Summary.Restricted }
+
+// inspect opens the builder's archive and streams a full inspection into a collected result.
+func (b *bundleBuilder) inspect(t *testing.T, opts InspectOptions) (*collected, error) {
 	t.Helper()
 	raw := b.bytesZip(t)
-	contents, err := InspectArchive(bytes.NewReader(raw), int64(len(raw)))
+	archive, err := OpenArchive(bytes.NewReader(raw), int64(len(raw)))
 	if err != nil {
 		return nil, err
 	}
-	return Inspect(contents, opts)
+	return collectInspect(archive, opts)
+}
+
+// collectInspect runs Inspect with a sink that accumulates everything it is handed.
+func collectInspect(archive *Archive, opts InspectOptions) (*collected, error) {
+	out := &collected{}
+	sink := StreamSink{
+		Page: func(p *StagedPage) error {
+			out.Pages = append(out.Pages, *p)
+			return nil
+		},
+		ManifestUser: func(u *StagedManifestUser) error {
+			out.Users = append(out.Users, *u)
+			return nil
+		},
+		Issue: func(i *InspectionIssue) error {
+			out.Issues = append(out.Issues, *i)
+			return nil
+		},
+	}
+	summary, err := Inspect(archive, opts, sink)
+	if err != nil {
+		return nil, err
+	}
+	out.Summary = summary
+	return out, nil
 }
 
 // baseManifest returns a minimal valid v2 manifest with the given counts.

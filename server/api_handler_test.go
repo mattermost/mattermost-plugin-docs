@@ -72,6 +72,9 @@ func openTestPlugin(t *testing.T, mockAPI *plugintest.API) *apiTestHarness {
 	p := &Plugin{store: s, service: app.New(s, nil, client)}
 	p.API = mockAPI
 	p.snapshotFeatureFlags(p.API.GetConfig())
+	// Open the import inspection gate exactly as OnActivate does; without it every upload would be
+	// rejected as busy.
+	p.initImportAdmission()
 	p.router = p.initRouter()
 	return &apiTestHarness{plugin: p, store: s, db: db}
 }
