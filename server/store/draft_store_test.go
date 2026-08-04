@@ -204,6 +204,37 @@ func TestDraft(t *testing.T) {
 		require.Equal(t, draft.PageId, kept.PageId)
 	})
 
+	t.Run("a draft on a live page is hidden while its space is soft-deleted", func(t *testing.T) {
+		// The subtest above drafts against a page id that has no page row, so the filter's
+		// p.Id IS NULL branch carries it. Here the draft sits on a live page row, so only the
+		// space-liveness JOIN can hide it.
+		s := openTestDB(t)
+		channelID := mmmodel.NewId()
+		space, err := s.CreateSpace(newSpace(channelID))
+		require.NoError(t, err)
+		userID := mmmodel.NewId()
+
+		page, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+		require.NoError(t, err)
+
+		d := newDraft(userID, space.Id, page.Id, "")
+		d.BaseEditAt = page.EditAt
+		saved, _, err := s.UpsertDraft(d, nil, nil, nil)
+		require.NoError(t, err)
+
+		require.NoError(t, s.DeleteSpace(space.Id))
+
+		_, err = s.GetDraft(userID, page.Id)
+		require.True(t, store.IsErrNotFound(err), "the draft must be hidden while its space is soft-deleted")
+
+		require.NoError(t, s.RestoreSpace(space.Id))
+
+		got, err := s.GetDraft(userID, page.Id)
+		require.NoError(t, err, "the draft must survive the space delete+restore round trip")
+		require.Equal(t, saved.Body, got.Body)
+		require.Equal(t, saved.UpdateAt, got.UpdateAt)
+	})
+
 	t.Run("drafts for space excludes a draft whose page lives in another space", func(t *testing.T) {
 		s := openTestDB(t)
 		userID := mmmodel.NewId()
@@ -685,6 +716,207 @@ func TestDeletePageReparentsPendingDrafts(t *testing.T) {
 	// The reparented draft is publishable: CreatePage with its parent now succeeds.
 	_, err = s.CreatePage(newPage(space.Id, channelID, userID, got.ParentId), testDefaultMaxDepth)
 	require.NoError(t, err, "draft's reparented parent must be a valid live parent")
+}
+
+// TestDeletePagePreservesEditDraftAndReparentsChildDraft verifies the two draft cascades DeletePage
+// runs stay isolated when both apply to the same delete: the deleted page's own edit draft (keyed
+// PageId = pageID) is preserved-but-hidden, while a pending new-page draft parented under that page
+// (ParentId = pageID) is reparented to the deleted page's parent. reparentDraftsForPage matches only
+// on ParentId, never PageId, which is why it cannot touch the edit draft row.
+func TestDeletePagePreservesEditDraftAndReparentsChildDraft(t *testing.T) {
+	s := openTestDB(t)
+	channelID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+	userID := mmmodel.NewId()
+
+	grandparent, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+	require.NoError(t, err)
+	page, err := s.CreatePage(newPage(space.Id, channelID, userID, grandparent.Id), testDefaultMaxDepth)
+	require.NoError(t, err)
+
+	editDraft := newDraft(userID, space.Id, page.Id, "")
+	editDraft.BaseEditAt = page.EditAt
+	_, _, err = s.UpsertDraft(editDraft, nil, nil, nil)
+	require.NoError(t, err)
+
+	childPageID := mmmodel.NewId()
+	parentID := page.Id
+	_, _, err = s.UpsertDraft(newDraft(userID, space.Id, childPageID, parentID), &parentID, nil, nil)
+	require.NoError(t, err)
+
+	require.NoError(t, deletePageErr(s, page.Id, space.Id, userID))
+
+	_, err = s.GetDraft(userID, page.Id)
+	require.True(t, store.IsErrNotFound(err), "the edit draft must be hidden while its page is deleted")
+
+	child, err := s.GetDraft(userID, childPageID)
+	require.NoError(t, err, "the pending child draft must survive as a reparented new-page draft")
+	require.Equal(t, grandparent.Id, child.ParentId, "child draft must be reparented to the deleted page's parent")
+
+	// Restore brings the edit draft back; the child's reparent is a structural rewrite that
+	// RestorePage does not undo, since RestorePage never touches draft rows. Full field parity
+	// across the round trip is pinned by TestDeletePage in store_test.go.
+	_, err = s.RestorePage(page.Id, space.Id, userID, testDefaultMaxDepth)
+	require.NoError(t, err)
+
+	_, err = s.GetDraft(userID, page.Id)
+	require.NoError(t, err, "the edit draft must reappear after restore")
+
+	stillReparented, err := s.GetDraft(userID, childPageID)
+	require.NoError(t, err)
+	require.Equal(t, grandparent.Id, stillReparented.ParentId, "the child draft's reparent survives the page's own restore")
+}
+
+// TestUpsertDraftQuotaCountsDraftsHiddenByPageDelete pins the quota consequence of preserving a
+// draft whose page was deleted: countDraftsForUser has no liveness join, so the hidden row still
+// consumes a slot even though no read path lists it. This bounds total row growth, but it also means
+// the owner can be refused a new draft while their visible listing is short of the cap.
+func TestUpsertDraftQuotaCountsDraftsHiddenByPageDelete(t *testing.T) {
+	s := openTestDB(t)
+	channelID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+	userID := mmmodel.NewId()
+
+	page, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+	require.NoError(t, err)
+	d := newDraft(userID, space.Id, page.Id, "")
+	d.BaseEditAt = page.EditAt
+	_, _, err = s.UpsertDraft(d, nil, nil, nil)
+	require.NoError(t, err)
+
+	require.NoError(t, deletePageErr(s, page.Id, space.Id, userID))
+
+	// One hidden draft exists; fill the rest of the quota with visible new-page drafts.
+	for range model.MaxDraftsPerUserPerSpace - 1 {
+		_, _, err = s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), ""), nil, nil, nil)
+		require.NoError(t, err)
+	}
+
+	visible, err := s.GetDraftsForSpace(userID, space.Id, 0, testDraftListLimit)
+	require.NoError(t, err)
+	require.Len(t, visible, model.MaxDraftsPerUserPerSpace-1, "the page-deleted draft stays excluded from the visible listing")
+
+	// The store holds the full quota (1 hidden + Max-1 visible), so one more upsert must be refused.
+	// A liveness-filtered count would wrongly allow it, since only Max-1 drafts are visible.
+	_, _, err = s.UpsertDraft(newDraft(userID, space.Id, mmmodel.NewId(), ""), nil, nil, nil)
+	require.True(t, store.IsErrLimitExceeded(err), "expected the hidden draft to count against the quota, got %T: %v", err, err)
+}
+
+// TestRestoreSpaceLeavesIndividuallyDeletedPageDraftHidden carries RestoreSpace's stamp-scoped
+// un-cascade through to draft visibility: RestoreSpace only revives pages carrying the space's own
+// DeleteAt stamp, so a page deleted individually beforehand keeps its earlier stamp and stays
+// deleted — and its draft stays hidden even though the space is live again.
+func TestRestoreSpaceLeavesIndividuallyDeletedPageDraftHidden(t *testing.T) {
+	s := openTestDB(t)
+	channelID := mmmodel.NewId()
+	space, err := s.CreateSpace(newSpace(channelID))
+	require.NoError(t, err)
+	userID := mmmodel.NewId()
+
+	individual, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+	require.NoError(t, err)
+	cascaded, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+	require.NoError(t, err)
+
+	dIndividual := newDraft(userID, space.Id, individual.Id, "")
+	dIndividual.BaseEditAt = individual.EditAt
+	_, _, err = s.UpsertDraft(dIndividual, nil, nil, nil)
+	require.NoError(t, err)
+
+	dCascaded := newDraft(userID, space.Id, cascaded.Id, "")
+	dCascaded.BaseEditAt = cascaded.EditAt
+	_, _, err = s.UpsertDraft(dCascaded, nil, nil, nil)
+	require.NoError(t, err)
+
+	// Delete one page first so its stamp predates the space's cascade stamp, which DeleteSpace
+	// computes to be strictly greater than any existing page DeleteAt.
+	require.NoError(t, deletePageErr(s, individual.Id, space.Id, userID))
+
+	require.NoError(t, s.DeleteSpace(space.Id))
+	require.NoError(t, s.RestoreSpace(space.Id))
+
+	_, err = s.GetDraft(userID, cascaded.Id)
+	require.NoError(t, err, "a draft on a page the space delete cascaded must reappear after RestoreSpace")
+
+	_, err = s.GetPage(individual.Id, false)
+	require.True(t, store.IsErrNotFound(err), "individually-deleted page must stay deleted after RestoreSpace")
+	_, err = s.GetDraft(userID, individual.Id)
+	require.True(t, store.IsErrNotFound(err), "its draft must stay hidden after RestoreSpace")
+}
+
+// TestDiscardPathsReachDraftHiddenByPageDelete verifies the explicit discard paths are not gated by
+// applyDraftLivenessFilter the way the read paths are, so a draft the reads currently hide is still
+// discardable. This is the only route by which an owner reclaims a hidden draft's quota slot, and it
+// requires knowing the page id — no read path will surface it.
+func TestDiscardPathsReachDraftHiddenByPageDelete(t *testing.T) {
+	t.Run("DeleteDraftVersion discards a draft hidden by its page's soft-delete", func(t *testing.T) {
+		s := openTestDB(t)
+		channelID := mmmodel.NewId()
+		space, err := s.CreateSpace(newSpace(channelID))
+		require.NoError(t, err)
+		userID := mmmodel.NewId()
+		page, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+		require.NoError(t, err)
+
+		d := newDraft(userID, space.Id, page.Id, "")
+		d.BaseEditAt = page.EditAt
+		saved, _, err := s.UpsertDraft(d, nil, nil, nil)
+		require.NoError(t, err)
+
+		require.NoError(t, deletePageErr(s, page.Id, space.Id, userID))
+		_, err = s.GetDraft(userID, page.Id)
+		require.True(t, store.IsErrNotFound(err), "the draft must be hidden while its page is deleted")
+
+		discarded, delErr := s.DeleteDraftVersion(userID, page.Id, saved.UpdateAt)
+		require.NoError(t, delErr)
+		require.True(t, discarded, "the CAS delete must match the hidden row")
+
+		// Restoring proves the row is gone rather than merely hidden: it does not come back.
+		_, err = s.RestorePage(page.Id, space.Id, userID, testDefaultMaxDepth)
+		require.NoError(t, err)
+		_, err = s.GetDraft(userID, page.Id)
+		require.True(t, store.IsErrNotFound(err), "the discarded draft must not reappear after restore")
+	})
+
+	t.Run("DeleteDraftReparenting discards a draft hidden by its page's soft-delete", func(t *testing.T) {
+		s := openTestDB(t)
+		channelID := mmmodel.NewId()
+		space, err := s.CreateSpace(newSpace(channelID))
+		require.NoError(t, err)
+		userID := mmmodel.NewId()
+		page, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
+		require.NoError(t, err)
+
+		d := newDraft(userID, space.Id, page.Id, "")
+		d.BaseEditAt = page.EditAt
+		_, _, err = s.UpsertDraft(d, nil, nil, nil)
+		require.NoError(t, err)
+
+		childPageID := mmmodel.NewId()
+		parentID := page.Id
+		_, _, err = s.UpsertDraft(newDraft(userID, space.Id, childPageID, parentID), &parentID, nil, nil)
+		require.NoError(t, err)
+
+		require.NoError(t, deletePageErr(s, page.Id, space.Id, userID))
+
+		// pageExistsInSpace reports false for a soft-deleted page, so the discard reads the page as
+		// not-live and takes the new-page reparent branch. That branch is a no-op here: DeletePage's
+		// own reparentDraftsForPage already moved every ParentId pointing at this page, so nothing
+		// still matches. The return value is what carries the consequence — the caller uses it to pick
+		// the presence-broadcast audience.
+		pageWasLive, delErr := s.DeleteDraftReparenting(userID, space.Id, page.Id)
+		require.NoError(t, delErr)
+		require.False(t, pageWasLive, "a soft-deleted page must read as not-live to the discard path")
+
+		_, err = s.GetDraft(userID, page.Id)
+		require.True(t, store.IsErrNotFound(err), "the discarded edit draft must be gone")
+
+		child, err := s.GetDraft(userID, childPageID)
+		require.NoError(t, err, "the child draft must be untouched by the sibling discard")
+		require.Equal(t, "", child.ParentId, "the child was already reparented to root by the page delete")
+	})
 }
 
 // TestGetActiveEditorsForPage covers the presence window predicate: a draft updated at/after the

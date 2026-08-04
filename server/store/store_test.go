@@ -1013,7 +1013,7 @@ func TestDeletePage(t *testing.T) {
 		created, err := s.CreatePage(newPage(space.Id, channelID, userID, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
 
-		// Two users hold drafts for this page; both must be hard-deleted when the page is.
+		// Two users hold drafts for this page; both survive the soft-delete but are hidden.
 		// UpsertDraft requires the EditAt baseline when the page row already exists.
 		otherUserID := mmmodel.NewId()
 		withBaseline := func(uid string) *model.Draft {
@@ -1021,9 +1021,9 @@ func TestDeletePage(t *testing.T) {
 			d.BaseEditAt = created.EditAt
 			return d
 		}
-		_, _, err = s.UpsertDraft(withBaseline(userID), nil, nil, nil)
+		savedOwner, _, err := s.UpsertDraft(withBaseline(userID), nil, nil, nil)
 		require.NoError(t, err)
-		_, _, err = s.UpsertDraft(withBaseline(otherUserID), nil, nil, nil)
+		savedOther, _, err := s.UpsertDraft(withBaseline(otherUserID), nil, nil, nil)
 		require.NoError(t, err)
 
 		require.NoError(t, deletePageErr(s, created.Id, created.SpaceId, userID))
@@ -1035,11 +1035,32 @@ func TestDeletePage(t *testing.T) {
 		require.NoError(t, err)
 		require.NotZero(t, got.DeleteAt)
 
-		// The page's drafts are hard-deleted, across users.
-		_, err = s.GetDraft(userID, created.Id)
-		require.True(t, store.IsErrNotFound(err), "owner draft must be purged on page delete")
-		_, err = s.GetDraft(otherUserID, created.Id)
-		require.True(t, store.IsErrNotFound(err), "other user's draft must be purged on page delete")
+		// The page's drafts are hidden while it is deleted, across users — the read filter excludes
+		// them because their page is not live, not because the rows were destroyed.
+		for _, uid := range []string{userID, otherUserID} {
+			_, err = s.GetDraft(uid, created.Id)
+			require.True(t, store.IsErrNotFound(err), "draft must be hidden while the page is deleted")
+
+			drafts, listErr := s.GetDraftsForSpace(uid, space.Id, 0, testDraftListLimit)
+			require.NoError(t, listErr)
+			require.Empty(t, drafts, "a deleted page's draft must not be listed")
+		}
+
+		_, err = s.RestorePage(created.Id, created.SpaceId, userID, testDefaultMaxDepth)
+		require.NoError(t, err)
+
+		// Every field must be unchanged, not just the row's presence — especially UpdateAt, the CAS
+		// token DeleteDraftVersion and deletePublishedDraftTx key off. A restore that silently
+		// rewrote it would corrupt publish's optimistic lock.
+		for _, saved := range []*model.Draft{savedOwner, savedOther} {
+			got, getErr := s.GetDraft(saved.UserId, created.Id)
+			require.NoError(t, getErr, "draft must survive the page delete+restore round trip")
+			require.Equal(t, saved.Title, got.Title)
+			require.Equal(t, saved.Body, got.Body)
+			require.Equal(t, saved.BaseEditAt, got.BaseEditAt)
+			require.Equal(t, saved.CreateAt, got.CreateAt)
+			require.Equal(t, saved.UpdateAt, got.UpdateAt, "restore must not rewrite the draft's CAS version token")
+		}
 	})
 
 	t.Run("reparents live children to the deleted page's parent", func(t *testing.T) {
