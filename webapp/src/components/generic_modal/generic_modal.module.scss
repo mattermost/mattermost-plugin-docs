@@ -68,7 +68,7 @@
 // appears to sit in front of it rather than the two sliding apart.
 .modalCovered,
 .modal[data-nested-dialog-open] {
-    transform: scale(0.99) translateY(6px);
+    transform: scale(0.99) translateY(2px);
     pointer-events: none;
 }
 
