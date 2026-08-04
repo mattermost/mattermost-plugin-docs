@@ -10,10 +10,15 @@
     overflow-y: auto;
 }
 
+// No gap between root rows: each row carries its own vertical spacing as padding
+// on its drop hitbox, so the hitboxes stay contiguous for drag and drop. The
+// negative block margin cancels the outermost rows' share of that padding, which
+// has no neighbour to space against — without it the tree would grow 4px at each
+// end against the space-home item above and the add-page button below.
 .tree {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    margin-block: -4px;
 }
 
 // Available to screen readers only: the tree's key bindings and its move

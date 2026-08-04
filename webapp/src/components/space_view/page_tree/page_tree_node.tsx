@@ -29,10 +29,6 @@ import styles from './page_tree_node.module.scss';
 
 const INDENT_STEP = 12;
 
-// Vertical spacing between rows. Shared with the tree's CSS gap so the reorder
-// indicator lands in the middle of the gap instead of against a row's edge.
-const ROW_GAP = '8px';
-
 type Props = {
     node: PageNode;
     activePageId?: string;
@@ -141,8 +137,9 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
         }
     };
 
-    // Two elements, two jobs: the row is the drag/drop target (its box is what the
-    // pointer hit-tests against), while the outer treeitem is what takes focus.
+    // Three elements, three jobs: the hit wrapper is the drag/drop target (its box
+    // includes the spacing around the row, so a drag between rows still lands in
+    // one), the row inside it is what's painted, and the outer treeitem takes focus.
     const setRowElement = (next: HTMLDivElement | null) => setElement(next);
 
     const setNodeElement = (next: HTMLDivElement | null) => registerRow(page.id, next);
@@ -184,75 +181,74 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
         >
             <div
                 ref={setRowElement}
-                className={classNames(styles.row, {
-                    [styles.active]: isActive,
-                    [styles.dragging]: dragging,
-                    [styles.reparent]: dropTarget?.mode === 'reparent',
-                    [styles.blocked]: blocked,
-                    [styles.invalidZone]: inDraggedSubtree,
-                })}
-                style={{marginInlineStart: depth * INDENT_STEP}}
-                onClick={onRowClick}
+                className={styles.rowHit}
             >
-                {hasChildren ? (
-                    <button
-                        type='button'
-                        className={styles.chevron}
-                        tabIndex={-1}
-                        aria-label={toggleLabel}
-                        aria-expanded={!isCollapsed}
-                        onClick={onChevronClick}
-                    >
-                        {isCollapsed ? <ChevronRightIcon size={16}/> : <ChevronDownIcon size={16}/>}
-                    </button>
-                ) : (
-                    <span
-                        className={styles.chevronSpacer}
-                        aria-hidden={true}
-                    />
-                )}
-                <span
-                    className={styles.icon}
-                    aria-hidden={true}
+                <div
+                    className={classNames(styles.row, {
+                        [styles.active]: isActive,
+                        [styles.dragging]: dragging,
+                        [styles.reparent]: dropTarget?.mode === 'reparent',
+                        [styles.blocked]: blocked,
+                        [styles.invalidZone]: inDraggedSubtree,
+                    })}
+                    style={{marginInlineStart: depth * INDENT_STEP}}
+                    onClick={onRowClick}
                 >
-                    <PageGlyph size={16}/>
-                </span>
-                {title}
-                {favorited && (
-                    <span
-                        className={styles.favorite}
-                        aria-label={favoriteLabel}
-                        role='img'
-                    >
-                        <StarIcon size={12}/>
-                    </span>
-                )}
-                <Spacer/>
-                <PageMenu
-                    spaceId={page.space_id}
-                    pageId={page.id}
-                    pageTitle={page.title}
-                    align='right'
-                    open={menuOpen}
-                    onOpenChange={setMenuOpen}
-                    trigger={(
+                    {hasChildren ? (
                         <button
                             type='button'
-                            className={styles.menuTrigger}
+                            className={styles.chevron}
                             tabIndex={-1}
-                            aria-label={menuLabel}
-                            onClick={(event) => event.stopPropagation()}
+                            aria-label={toggleLabel}
+                            aria-expanded={!isCollapsed}
+                            onClick={onChevronClick}
                         >
-                            <DotsHorizontalIcon size={16}/>
+                            {isCollapsed ? <ChevronRightIcon size={16}/> : <ChevronDownIcon size={16}/>}
                         </button>
+                    ) : (
+                        <span
+                            className={styles.chevronSpacer}
+                            aria-hidden={true}
+                        />
                     )}
-                />
-                {dropTarget?.mode === 'reorder' && (
-                    <DropIndicator
-                        edge={dropTarget.edge}
-                        gap={ROW_GAP}
+                    <span
+                        className={styles.icon}
+                        aria-hidden={true}
+                    >
+                        <PageGlyph size={16}/>
+                    </span>
+                    {title}
+                    {favorited && (
+                        <span
+                            className={styles.favorite}
+                            aria-label={favoriteLabel}
+                            role='img'
+                        >
+                            <StarIcon size={12}/>
+                        </span>
+                    )}
+                    <Spacer/>
+                    <PageMenu
+                        spaceId={page.space_id}
+                        pageId={page.id}
+                        pageTitle={page.title}
+                        align='right'
+                        open={menuOpen}
+                        onOpenChange={setMenuOpen}
+                        trigger={(
+                            <button
+                                type='button'
+                                className={styles.menuTrigger}
+                                tabIndex={-1}
+                                aria-label={menuLabel}
+                                onClick={(event) => event.stopPropagation()}
+                            >
+                                <DotsHorizontalIcon size={16}/>
+                            </button>
+                        )}
                     />
-                )}
+                </div>
+                {dropTarget?.mode === 'reorder' && <DropIndicator edge={dropTarget.edge}/>}
             </div>
             {previewContainer && createPortal(
                 <PageDragPreview

@@ -3,19 +3,30 @@
 .node {
     display: flex;
     flex-direction: column;
-    gap: 8px;
     min-width: 0;
     outline: none;
 }
 
+// The row's drop hitbox. Row spacing is this element's padding rather than a
+// `gap` on the containers, so adjacent hitboxes touch and a drag crossing the
+// space between two rows is always inside one of them. With a gap, that space
+// belonged to no drop target and the drag registered nothing.
+//
+// Each row contributes half the spacing above and below, so any two adjacent
+// rows — siblings, or a parent and its first child — still sit 8px apart.
+.rowHit {
+    position: relative;
+    padding-block: 4px;
+}
+
 // Focus is on the node, but the ring belongs around the row — the node's box
 // spans the whole subtree.
-.node:focus-visible > .row {
+.node:focus-visible > .rowHit > .row {
     outline: 2px solid var(--button-bg);
     outline-offset: -2px;
 }
 
-.node:focus-visible > .row .menuTrigger {
+.node:focus-visible > .rowHit > .row .menuTrigger {
     opacity: 1;
 }
 
@@ -155,9 +166,9 @@
     opacity: 1;
 }
 
+// No gap: spacing comes from each row's `.rowHit` padding (see above).
 .children {
     display: flex;
     flex-direction: column;
-    gap: 8px;
     min-width: 0;
 }
