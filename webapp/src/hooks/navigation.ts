@@ -38,7 +38,16 @@ export function useDocsNavigation() {
     // ?edit=1 on a space or overview URL names nothing to edit and is ignored.
     const isEditing = Boolean(pageId) && !isOverview && new URLSearchParams(search).get(EDIT_QUERY) === '1';
 
-    const goToSpace = useCallback((id: string) => history.push(spacePath(teamName, id)), [history, teamName]);
+    // `replace` for arrivals that follow the routed page ceasing to exist: the URL
+    // being left is dead, so it shouldn't be somewhere Back can return to.
+    const goToSpace = useCallback((id: string, {replace = false} = {}) => {
+        const path = spacePath(teamName, id);
+        if (replace) {
+            history.replace(path);
+        } else {
+            history.push(path);
+        }
+    }, [history, teamName]);
     const goToPage = useCallback((space: string, page: string) => history.push(pagePath(teamName, space, page)), [history, teamName]);
     const goToDraft = useCallback((space: string, page: string) => history.push(draftPath(teamName, space, page)), [history, teamName]);
     const goToEditPage = useCallback((space: string, page: string) => history.push(editPagePath(teamName, space, page)), [history, teamName]);

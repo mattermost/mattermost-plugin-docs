@@ -2,11 +2,12 @@
 // See LICENSE.txt for license information.
 
 import {useDocsNavigation} from 'hooks/navigation';
-import {useAppDispatch} from 'hooks/redux';
+import {useAppDispatch, useAppSelector} from 'hooks/redux';
 import React from 'react';
 import {FormattedMessage} from 'react-intl';
 
 import {deletePage} from 'store/actions';
+import {isPageInSubtree} from 'store/selectors';
 
 import ConfirmModal from 'components/confirm_modal/confirm_modal';
 import {toast} from 'components/toast';
@@ -19,18 +20,24 @@ type Props = {
 };
 
 /**
- * Confirms deleting a page and its subpages. Deleting the page currently routed
- * to leaves nothing to show, so the viewer is sent home.
+ * Confirms deleting a page and its subpages. Deleting the page being viewed — or
+ * any of its ancestors, since subpages go with it — leaves nothing to show, so
+ * the viewer lands on the space's home URL. That keeps them in the space and lets
+ * the default-landing-page redirect apply, rather than ejecting them to Docs home.
  */
 const DeletePageModal = ({spaceId, pageId, pageTitle, onClose}: Props) => {
     const dispatch = useAppDispatch();
-    const {pageId: routedPageId, goHome} = useDocsNavigation();
+    const {pageId: routedPageId, goToSpace} = useDocsNavigation();
+
+    // Resolved before the delete, while the subtree is still in the store.
+    const viewingDeletedSubtree = useAppSelector((state) =>
+        (routedPageId ? isPageInSubtree(state, pageId, routedPageId) : false));
 
     const confirm = async () => {
         try {
             await dispatch(deletePage(spaceId, pageId));
-            if (routedPageId === pageId) {
-                goHome();
+            if (viewingDeletedSubtree) {
+                goToSpace(spaceId, {replace: true});
             }
         } catch (error) {
             toast.error(

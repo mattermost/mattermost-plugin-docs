@@ -10,6 +10,7 @@ import {getCurrentTeamId} from 'mattermost-redux/selectors/entities/teams';
 
 import type {Page, Space} from 'types/docs';
 
+import {collectSubtreeIds} from './entities';
 import type {DocsEntitiesState, DocsPluginState} from './types';
 
 const EMPTY_PLUGIN_STATE: DocsPluginState = {
@@ -114,6 +115,12 @@ export const getPageInSpace = (state: GlobalState, spaceId: string, id: string):
     const page = getPagesById(state)[id];
     return page?.space_id === spaceId ? page : undefined;
 };
+
+// Whether `id` is `rootId` or sits beneath it. Deleting a page deletes its
+// subpages too, so a viewer on any page in the subtree — not just the one being
+// deleted — is about to lose what they're looking at.
+export const isPageInSubtree = (state: GlobalState, rootId: string, id: string): boolean =>
+    collectSubtreeIds(getPagesById(state), rootId).has(id);
 
 // Whether a space's member list has been loaded. A space always has at least its
 // creator, so a count of 0 means "not loaded (or the request failed)" rather than
