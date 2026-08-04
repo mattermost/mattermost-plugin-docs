@@ -16,19 +16,22 @@ import {useDocsNavigation} from './navigation';
 import {useAppDispatch, useAppSelector} from './redux';
 
 /**
- * Returns a handler that creates a top-level page in the space and navigates to
- * it. Shared by the page header's add button and the page tree's "Add page".
+ * Returns a handler that creates a top-level page in the space and opens it in
+ * edit mode. Shared by the page header's add button and the page tree's "Add
+ * page". A new page is empty and titled "Untitled", so reading it is never what
+ * was wanted; edit mode also focuses the title, which is the first thing to fill
+ * in.
  */
 export function useCreateRootPage(spaceId: string) {
     const dispatch = useAppDispatch();
-    const {goToPage} = useDocsNavigation();
+    const {goToEditPage} = useDocsNavigation();
     const {formatMessage} = useIntl();
     const untitled = formatMessage({id: 'docs.pageTree.untitled', defaultMessage: 'Untitled'});
 
     return useCallback(async () => {
         try {
             const page = await dispatch(createPage(spaceId, {title: untitled}));
-            goToPage(spaceId, page.id);
+            goToEditPage(spaceId, page.id);
         } catch (error) {
             // Without this the add-page buttons look inert on failure.
             toast.error(formatMessage({id: 'docs.pageTree.addFailed', defaultMessage: 'Could not create the page. Please try again.'}));
@@ -36,7 +39,7 @@ export function useCreateRootPage(spaceId: string) {
             // eslint-disable-next-line no-console
             console.error('Docs: failed to create page', error);
         }
-    }, [dispatch, spaceId, untitled, goToPage, formatMessage]);
+    }, [dispatch, spaceId, untitled, goToEditPage, formatMessage]);
 }
 
 /**
