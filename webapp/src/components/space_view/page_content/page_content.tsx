@@ -3,6 +3,7 @@
 
 import {useUserProfile} from 'hooks/members';
 import {useDocsNavigation} from 'hooks/navigation';
+import {useAppDispatch} from 'hooks/redux';
 import React, {useEffect, useState} from 'react';
 import {useIntl} from 'react-intl';
 import {Avatar} from 'webapp_globals';
@@ -10,8 +11,11 @@ import {Avatar} from 'webapp_globals';
 import EmoticonPlusOutlineIcon from '@mattermost/compass-icons/components/emoticon-plus-outline';
 import ImageOutlineIcon from '@mattermost/compass-icons/components/image-outline';
 
+import {updatePage} from 'store/actions';
+
 import {Button} from 'components/form_controls/button';
 import PageEditor from 'components/page_editor/page_editor';
+import {toast} from 'components/toast';
 
 import type {Page} from 'types/docs';
 
@@ -64,10 +68,32 @@ const PageTitleArea = ({page, editing}: {page: Page; editing: boolean}) => {
     const {formatMessage} = useIntl();
     const author = useUserProfile(page.user_id);
     const [title, setTitle] = useState(page.title);
+    const dispatch = useAppDispatch();
 
     // A title edited elsewhere (the rename modal, another client) replaces the
     // buffer; the routed page changing does too, since the component is reused.
     useEffect(() => setTitle(page.title), [page.id, page.title]);
+
+    // Trailing whitespace is never intentional in a title, and a title that only
+    // changed by whitespace is not a change worth a write.
+    const commit = async () => {
+        const next = title.trim();
+        setTitle(next);
+        if (next === page.title) {
+            return;
+        }
+
+        try {
+            await dispatch(updatePage(page.space_id, page.id, {title: next}));
+        } catch {
+            // Keep the typed title: reverting would look like the edit was taken
+            // and then silently lost.
+            toast.error(formatMessage({
+                id: 'docs.page.titleSaveFailed',
+                defaultMessage: 'Could not rename the page. Please try again.',
+            }));
+        }
+    };
 
     return (
         <header className={styles.titleArea}>
@@ -94,7 +120,7 @@ const PageTitleArea = ({page, editing}: {page: Page; editing: boolean}) => {
                 value={title}
                 editing={editing}
                 onChange={setTitle}
-                onCommit={() => setTitle(title.trim())}
+                onCommit={commit}
                 onCancel={() => setTitle(page.title)}
             />
 

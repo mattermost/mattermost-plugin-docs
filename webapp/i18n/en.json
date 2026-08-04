@@ -70,6 +70,7 @@
   "docs.page.byAuthor": "By {name}",
   "docs.page.headerImage": "Header image",
   "docs.page.titleLabel": "Page title",
+  "docs.page.titleSaveFailed": "Could not rename the page. Please try again.",
   "docs.page.untitled": "Untitled",
   "docs.pageMenu.comingSoon": "Coming soon",
   "docs.pageMenu.copyLink": "Copy link",
