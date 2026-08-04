@@ -60,6 +60,14 @@ export const overviewPath = (teamName: string, spaceId: string): string => `${sp
 
 export const draftPath = (teamName: string, spaceId: string, pageId: string): string => `${spacePath(teamName, spaceId)}/drafts/${segment(pageId)}`;
 
+// Edit mode is a query on the page URL, not a path segment: the page id stays
+// canonical in the path, and /drafts/:pageId is left to mean a page with no
+// published version yet.
+export const EDIT_QUERY = 'edit';
+
+export const editPagePath = (teamName: string, spaceId: string, pageId: string): string =>
+    `${pagePath(teamName, spaceId, pageId)}?${EDIT_QUERY}=1`;
+
 export const docsPath = (teamName: string, spaceId?: string, pageId?: string): string => {
     if (!spaceId) {
         return docsHomePath(teamName);

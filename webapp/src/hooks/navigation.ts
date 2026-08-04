@@ -3,8 +3,8 @@
 
 import {useTeamContext} from 'hooks/team';
 import {useCallback} from 'react';
-import {useHistory, useRouteMatch} from 'react-router-dom';
-import {DOCS_DRAFT_ROUTE, DOCS_ROUTE, DOCS_SPACE_OVERVIEW_ROUTE, docsHomePath, docsPath, draftPath, overviewPath, pagePath, spacePath} from 'routing/paths';
+import {useHistory, useLocation, useRouteMatch} from 'react-router-dom';
+import {DOCS_DRAFT_ROUTE, DOCS_ROUTE, DOCS_SPACE_OVERVIEW_ROUTE, EDIT_QUERY, docsHomePath, docsPath, draftPath, editPagePath, overviewPath, pagePath, spacePath} from 'routing/paths';
 
 type DocsRouteParams = {
     team?: string;
@@ -32,9 +32,16 @@ export function useDocsNavigation() {
     const isDraft = match?.path === DOCS_DRAFT_ROUTE;
     const isOverview = match?.path === DOCS_SPACE_OVERVIEW_ROUTE;
 
+    const {search} = useLocation();
+
+    // Only a routed page can be edited, so the query alone doesn't mean edit mode:
+    // ?edit=1 on a space or overview URL names nothing to edit and is ignored.
+    const isEditing = Boolean(pageId) && !isOverview && new URLSearchParams(search).get(EDIT_QUERY) === '1';
+
     const goToSpace = useCallback((id: string) => history.push(spacePath(teamName, id)), [history, teamName]);
     const goToPage = useCallback((space: string, page: string) => history.push(pagePath(teamName, space, page)), [history, teamName]);
     const goToDraft = useCallback((space: string, page: string) => history.push(draftPath(teamName, space, page)), [history, teamName]);
+    const goToEditPage = useCallback((space: string, page: string) => history.push(editPagePath(teamName, space, page)), [history, teamName]);
     const goToOverview = useCallback((space: string) => history.push(overviewPath(teamName, space)), [history, teamName]);
     const goHome = useCallback(() => history.push(docsHomePath(teamName)), [history, teamName]);
     const navigate = useCallback((space: string, page?: string) => history.push(docsPath(teamName, space, page)), [history, teamName]);
@@ -48,10 +55,12 @@ export function useDocsNavigation() {
         spaceId,
         pageId,
         isDraft,
+        isEditing,
         isOverview,
         goToSpace,
         goToPage,
         goToDraft,
+        goToEditPage,
         goToOverview,
         goHome,
         navigate,
