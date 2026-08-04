@@ -50,7 +50,18 @@ export function useDocsNavigation() {
     }, [history, teamName]);
     const goToPage = useCallback((space: string, page: string) => history.push(pagePath(teamName, space, page)), [history, teamName]);
     const goToDraft = useCallback((space: string, page: string) => history.push(draftPath(teamName, space, page)), [history, teamName]);
-    const goToEditPage = useCallback((space: string, page: string) => history.push(editPagePath(teamName, space, page)), [history, teamName]);
+
+    // `replace` for an edit session that is the point of the navigation rather than
+    // a mode change on a page the user was already reading — creating a page, where
+    // the click that opened it isn't a place to go back to.
+    const goToEditPage = useCallback((space: string, page: string, {replace = false} = {}) => {
+        const path = editPagePath(teamName, space, page);
+        if (replace) {
+            history.replace(path);
+        } else {
+            history.push(path);
+        }
+    }, [history, teamName]);
     const goToOverview = useCallback((space: string) => history.push(overviewPath(teamName, space)), [history, teamName]);
     const goHome = useCallback(() => history.push(docsHomePath(teamName)), [history, teamName]);
     const navigate = useCallback((space: string, page?: string) => history.push(docsPath(teamName, space, page)), [history, teamName]);

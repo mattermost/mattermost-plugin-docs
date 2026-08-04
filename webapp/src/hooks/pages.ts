@@ -31,7 +31,7 @@ export function useCreateRootPage(spaceId: string) {
     return useCallback(async () => {
         try {
             const page = await dispatch(createPage(spaceId, {title: untitled}));
-            goToEditPage(spaceId, page.id);
+            goToEditPage(spaceId, page.id, {replace: true});
         } catch (error) {
             // Without this the add-page buttons look inert on failure.
             toast.error(formatMessage({id: 'docs.pageTree.addFailed', defaultMessage: 'Could not create the page. Please try again.'}));
