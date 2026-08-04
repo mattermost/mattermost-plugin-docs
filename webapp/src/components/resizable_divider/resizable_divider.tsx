@@ -28,6 +28,14 @@ type Props = {
 
     /** Fires once when the drag ends — the place to persist the result. */
     onResizeEnd: (width: number) => void;
+
+    /**
+     * Pixels to slide the handle outward, off the panel it resizes. Pass this when
+     * the panel scrolls: its scrollbar sits on the same edge the handle straddles,
+     * and the handle would otherwise take the clicks meant for it. 6 is enough to
+     * clear the panel entirely, whatever width the platform's scrollbar is.
+     */
+    scrollbarClearance?: number;
 };
 
 // Keyboard resizing steps by this many pixels per arrow press.
@@ -37,7 +45,7 @@ const KEYBOARD_STEP = 16;
 // is easy to land on by feel (core's sidebars do the same).
 const SNAP_DISTANCE = 10;
 
-const ResizableDivider = ({ariaLabel, side, width, minWidth, maxWidth, defaultWidth, onResize, onResizeEnd}: Props) => {
+const ResizableDivider = ({ariaLabel, side, width, minWidth, maxWidth, defaultWidth, onResize, onResizeEnd, scrollbarClearance = 0}: Props) => {
     const [dragging, setDragging] = useState(false);
     const [snapped, setSnapped] = useState(false);
     const startX = useRef(0);
@@ -128,6 +136,7 @@ const ResizableDivider = ({ariaLabel, side, width, minWidth, maxWidth, defaultWi
                 [styles.active]: dragging,
                 [styles.snapped]: dragging && snapped,
             })}
+            style={{'--docs-divider-clearance': `${scrollbarClearance}px`} as React.CSSProperties}
             role='separator'
             tabIndex={0}
             aria-label={ariaLabel}

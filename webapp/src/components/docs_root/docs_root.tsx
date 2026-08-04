@@ -24,6 +24,10 @@ const DEFAULT_SPACES_WIDTH = 264;
 const MIN_SPACES_WIDTH = 220;
 const MAX_SPACES_WIDTH = 420;
 
+// The spaces list scrolls, so its scrollbar sits on the edge the resize handle
+// straddles; this moves the handle clear of it.
+const SPACES_SCROLLBAR_CLEARANCE = 6;
+
 const DocsRoot = () => {
     useBootstrapDocs();
 
@@ -60,6 +64,7 @@ const DocsRoot = () => {
                 <ResizableDivider
                     ariaLabel={formatMessage({id: 'docs.sidebar.resizeSpaces', defaultMessage: 'Resize spaces sidebar'})}
                     side='left'
+                    scrollbarClearance={SPACES_SCROLLBAR_CLEARANCE}
                     width={width}
                     minWidth={MIN_SPACES_WIDTH}
                     maxWidth={MAX_SPACES_WIDTH}

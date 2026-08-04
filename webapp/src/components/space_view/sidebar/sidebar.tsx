@@ -14,6 +14,10 @@ export const DEFAULT_SIDEBAR_WIDTH = 264;
 const MIN_SIDEBAR_WIDTH = 200;
 const MAX_SIDEBAR_WIDTH = 480;
 
+// Clears the pages panel's own scrollbar, which sits on the edge the resize handle
+// straddles; without it the handle takes the clicks meant for the scrollbar.
+const SCROLLBAR_CLEARANCE = 6;
+
 type Props = {
     open: boolean;
     children: React.ReactNode;
@@ -48,6 +52,9 @@ const Sidebar = ({open, children}: Props) => {
                 <ResizableDivider
                     ariaLabel={formatMessage({id: 'docs.sidebar.resize', defaultMessage: 'Resize pages sidebar'})}
                     side='left'
+
+                    // The pages panel scrolls, so its scrollbar shares this edge.
+                    scrollbarClearance={SCROLLBAR_CLEARANCE}
                     width={width}
                     minWidth={MIN_SIDEBAR_WIDTH}
                     maxWidth={MAX_SIDEBAR_WIDTH}
