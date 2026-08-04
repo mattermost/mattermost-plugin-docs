@@ -52,21 +52,6 @@
     line-height: 16px;
 }
 
-.title {
-    margin: 0;
-    overflow-wrap: break-word;
-    color: var(--center-channel-color);
-    font-family: 'Metropolis', sans-serif;
-    font-size: 36px;
-    font-weight: 600;
-    letter-spacing: -0.02em;
-    line-height: 44px;
-}
-
-.titleUntitled {
-    color: rgba(var(--center-channel-color-rgb), 0.56);
-}
-
 .metadata {
     display: flex;
     flex-wrap: wrap;

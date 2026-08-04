@@ -1,10 +1,9 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import classNames from 'classnames';
 import {useUserProfile} from 'hooks/members';
 import {useDocsNavigation} from 'hooks/navigation';
-import React from 'react';
+import React, {useEffect, useState} from 'react';
 import {useIntl} from 'react-intl';
 import {Avatar} from 'webapp_globals';
 
@@ -18,6 +17,7 @@ import type {Page} from 'types/docs';
 
 import styles from './page_content.module.scss';
 import PageContentPlaceholder from './page_content_placeholder';
+import PageTitle from './page_title';
 
 type Props = {
 
@@ -25,12 +25,13 @@ type Props = {
     // space's pages are still loading (an id that doesn't belong to the space
     // redirects instead of rendering here).
     page?: Page;
+    editing: boolean;
 };
 
 // The selected page's content column: a title area over the page body, which is
 // the editor. Until the routed page arrives in the store there is no title and no
 // id to open the editor on, so that window stays a skeleton.
-const PageContent = ({page}: Props) => {
+const PageContent = ({page, editing}: Props) => {
     const {isDraft} = useDocsNavigation();
 
     return (
@@ -38,7 +39,10 @@ const PageContent = ({page}: Props) => {
             <article className={styles.article}>
                 {page ? (
                     <>
-                        <PageTitleArea page={page}/>
+                        <PageTitleArea
+                            page={page}
+                            editing={editing}
+                        />
                         <PageEditor
                             spaceId={page.space_id}
                             pageId={page.id}
@@ -56,9 +60,14 @@ const PageContent = ({page}: Props) => {
 // Title, byline, and the decoration actions that reveal on hover. Adding an
 // emoji or a header image needs page props the editor work will bring, so those
 // two are affordances only for now.
-const PageTitleArea = ({page}: {page: Page}) => {
+const PageTitleArea = ({page, editing}: {page: Page; editing: boolean}) => {
     const {formatMessage} = useIntl();
     const author = useUserProfile(page.user_id);
+    const [title, setTitle] = useState(page.title);
+
+    // A title edited elsewhere (the rename modal, another client) replaces the
+    // buffer; the routed page changing does too, since the component is reused.
+    useEffect(() => setTitle(page.title), [page.id, page.title]);
 
     return (
         <header className={styles.titleArea}>
@@ -81,9 +90,13 @@ const PageTitleArea = ({page}: {page: Page}) => {
                 </Button>
             </div>
 
-            <h1 className={classNames(styles.title, {[styles.titleUntitled]: !page.title})}>
-                {page.title || formatMessage({id: 'docs.page.untitled', defaultMessage: 'Untitled'})}
-            </h1>
+            <PageTitle
+                value={title}
+                editing={editing}
+                onChange={setTitle}
+                onCommit={() => setTitle(title.trim())}
+                onCancel={() => setTitle(page.title)}
+            />
 
             {author?.displayName && (
                 <div className={styles.metadata}>

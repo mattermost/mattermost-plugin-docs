@@ -32,7 +32,7 @@ import styles from './space_view.module.scss';
 // (hero) until a page is routed, at which point it shows that page instead.
 // Page bodies are a placeholder until the editor is mounted.
 const SpaceView = ({space}: {space: Space}) => {
-    const {pageId, paths} = useDocsNavigation();
+    const {pageId, isEditing, paths, goToPage, goToEditPage} = useDocsNavigation();
     const page = useAppSelector((state) => (pageId ? getPageInSpace(state, space.id, pageId) : undefined));
     const pagesLoaded = useAppSelector((state) => arePagesLoadedForSpace(state, space.id));
     const {pageCount, memberCount} = useSpaceStats(space.id);
@@ -44,6 +44,16 @@ const SpaceView = ({space}: {space: Space}) => {
     const toggleInfo = useCallback(() => setInfoView((view) => (view ? null : 'root')), []);
     const closeInfo = useCallback(() => setInfoView(null), []);
     const showMembers = useCallback(() => setInfoView('members'), []);
+    const toggleEdit = useCallback(() => {
+        if (!pageId) {
+            return;
+        }
+        if (isEditing) {
+            goToPage(space.id, pageId);
+        } else {
+            goToEditPage(space.id, pageId);
+        }
+    }, [isEditing, pageId, space.id, goToPage, goToEditPage]);
 
     // A space with a default page opens on that page; `<Redirect>` replaces the
     // space-home entry rather than pushing one.
@@ -73,7 +83,9 @@ const SpaceView = ({space}: {space: Space}) => {
                     space={space}
                     page={page}
                     treeOpen={treeOpen}
+                    editing={isEditing}
                     onTogglePages={togglePages}
+                    onToggleEdit={toggleEdit}
                 />
                 <div className={styles.body}>
                     <Sidebar open={treeOpen}>
@@ -82,7 +94,10 @@ const SpaceView = ({space}: {space: Space}) => {
                     <div className={styles.main}>
                         <div className={styles.scroll}>
                             {pageId ? (
-                                <PageContent page={page}/>
+                                <PageContent
+                                    page={page}
+                                    editing={isEditing}
+                                />
                             ) : (
                                 <div className={styles.content}>
                                     <PageHero

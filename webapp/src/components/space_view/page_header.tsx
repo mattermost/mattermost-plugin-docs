@@ -10,6 +10,7 @@ import {Timestamp} from 'webapp_globals';
 import type {TimestampUnit} from 'webapp_globals';
 
 import ArrowExpandIcon from '@mattermost/compass-icons/components/arrow-expand';
+import CheckIcon from '@mattermost/compass-icons/components/check';
 import DotsHorizontalIcon from '@mattermost/compass-icons/components/dots-horizontal';
 import FormatListBulletedIcon from '@mattermost/compass-icons/components/format-list-bulleted';
 import MessageTextOutlineIcon from '@mattermost/compass-icons/components/message-text-outline';
@@ -57,12 +58,14 @@ type Props = {
     // last-updated time shows.
     page?: Page;
     treeOpen: boolean;
+    editing: boolean;
     onTogglePages: () => void;
+    onToggleEdit: () => void;
 };
 
 // Page controls (comments, edit, overflow, expand) are visual scaffolding wired
 // in later passes; the pages toggle drives the page tree panel.
-const PageHeader = ({space, page, treeOpen, onTogglePages}: Props) => {
+const PageHeader = ({space, page, treeOpen, editing, onTogglePages, onToggleEdit}: Props) => {
     const {formatMessage} = useIntl();
     const createRootPage = useCreateRootPage(space.id);
 
@@ -151,12 +154,20 @@ const PageHeader = ({space, page, treeOpen, onTogglePages}: Props) => {
                             emphasis='quaternary'
                             size='sm'
                             className={classNames('docs-btn-neutral', styles.iconLabel)}
-                            leadingIcon={<PencilOutlineIcon size={18}/>}
+                            leadingIcon={editing ? <CheckIcon size={18}/> : <PencilOutlineIcon size={18}/>}
+                            onClick={onToggleEdit}
                         >
-                            <FormattedMessage
-                                id='docs.space.edit'
-                                defaultMessage='Edit'
-                            />
+                            {editing ? (
+                                <FormattedMessage
+                                    id='docs.space.done'
+                                    defaultMessage='Done'
+                                />
+                            ) : (
+                                <FormattedMessage
+                                    id='docs.space.edit'
+                                    defaultMessage='Edit'
+                                />
+                            )}
                         </Button>
                         <PageMenu
                             spaceId={space.id}
