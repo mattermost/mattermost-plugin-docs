@@ -50,3 +50,16 @@ func (s *Store) ExecBuilderForTest(b sq.Sqlizer) (sql.Result, error) {
 func (s *Store) FetchDescendantRowsForTest(pageID string) ([]*model.Page, error) {
 	return s.fetchDescendantRows(s.db, pageID)
 }
+
+// DBStatsForTest exposes sql.DBStats for the store's underlying handle, so tests can assert on
+// the pool limits configured by New.
+func (s *Store) DBStatsForTest() sql.DBStats {
+	return s.db.Stats()
+}
+
+// PluginMaxOpenConnsForTest exposes the pool limit New configures, so tests can assert on it
+// without duplicating the value.
+const PluginMaxOpenConnsForTest = pluginMaxOpenConns
+
+// PluginMaxIdleConnsForTest exposes the idle-pool limit New configures.
+const PluginMaxIdleConnsForTest = pluginMaxIdleConns
