@@ -65,6 +65,15 @@
     z-index: 1;
 }
 
+// Lifted above the stretched hit area for the sake of hover, not clicks: under it,
+// the pointer's target is the anchor and the title never sees a mouseenter — which
+// is what its truncation tooltip listens for. Raising it changes nothing about the
+// click, since the title sits inside the anchor either way.
+.title {
+    position: relative;
+    z-index: 1;
+}
+
 // The whole row is the click target, so it owns the only hover/selected state
 // in the tree; the chevron inside only tints itself. Nesting is applied as a
 // left margin (not padding) so the hitbox and its hover/selected background

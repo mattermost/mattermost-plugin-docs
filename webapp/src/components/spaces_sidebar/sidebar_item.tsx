@@ -2,8 +2,11 @@
 // See LICENSE.txt for license information.
 
 import classNames from 'classnames';
+import {useTextOverflow} from 'hooks/text_overflow';
 import React from 'react';
 import {Link} from 'react-router-dom';
+
+import {WithTooltip} from '@mattermost/shared/components/tooltip';
 
 import styles from './sidebar_item.module.scss';
 
@@ -12,6 +15,9 @@ type Props = {
     label: React.ReactNode;
     active?: boolean;
     muted?: boolean;
+
+    // The label as plain text, for the tooltip a clipped row falls back to. Rows
+    // whose label cannot be clipped (a fixed one that always fits) can omit it.
     title?: string;
     trailing?: React.ReactNode;
     revealTrailingOnHover?: boolean;
@@ -28,13 +34,32 @@ type Props = {
 };
 
 const SidebarItem = ({leading, label, active = false, muted = true, title, trailing, revealTrailingOnHover = false, to, onClick, draggable}: Props) => {
+    const [labelClipped, labelRef] = useTextOverflow();
+
+    const labelText = (
+        <span
+            ref={labelRef}
+            className={classNames(styles.label, {[styles.bright]: active || !muted})}
+        >
+            {label}
+        </span>
+    );
+
     const content = (
         <>
             <span className={styles.icon}>{leading}</span>
             <span className={styles.content}>
-                <span className={classNames(styles.label, {[styles.bright]: active || !muted})}>
-                    {label}
-                </span>
+                {title ? (
+
+                    // Only a clipped label gets a tooltip; a fully visible one would
+                    // just repeat the text under the pointer.
+                    <WithTooltip
+                        title={title}
+                        disabled={!labelClipped}
+                    >
+                        {labelText}
+                    </WithTooltip>
+                ) : labelText}
             </span>
         </>
     );
@@ -46,7 +71,6 @@ const SidebarItem = ({leading, label, active = false, muted = true, title, trail
                 <Link
                     className={styles.button}
                     to={to}
-                    title={title}
                     draggable={draggable}
                     onClick={onClick}
                 >
@@ -56,7 +80,6 @@ const SidebarItem = ({leading, label, active = false, muted = true, title, trail
                 <button
                     type='button'
                     className={styles.button}
-                    title={title}
                     onClick={onClick}
                 >
                     {content}

@@ -21,7 +21,6 @@ import {WithTooltip} from '@mattermost/shared/components/tooltip';
 import type {PageNode} from 'store/page_tree';
 
 import PageMenu from 'components/page_menu/page_menu';
-import Spacer from 'components/spacer/spacer';
 
 import {MAX_PAGE_DEPTH} from './depth';
 import {usePageDragDrop} from './dnd/use_page_drag_drop';
@@ -296,8 +295,6 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
                             <StarIcon size={12}/>
                         </span>
                     )}
-                    <Spacer/>
-
                     <PageMenu
                         spaceId={spaceId}
                         pageId={id}

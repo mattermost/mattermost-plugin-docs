@@ -42,14 +42,18 @@ const SpaceItemMenu = ({space}: Props) => {
         setConfirmLeaveOpen(false);
     }, [leaveThisSpace]);
 
+    // The accessible name carries the space, since a screen reader reaching this
+    // button has no row to read it from. The tooltip drops it: the pointer is already
+    // resting on the row, so repeating its name there is noise.
     const menuLabel = formatMessage({id: 'docs.sidebar.space.menu', defaultMessage: 'Space options for {name}'}, {name: space.title});
+    const tooltipLabel = formatMessage({id: 'docs.sidebar.space.menuShort', defaultMessage: 'Space options'});
 
     return (
         <>
             <Menu
                 ariaLabel={menuLabel}
                 align='right'
-                tooltip={menuLabel}
+                tooltip={tooltipLabel}
                 trigger={(
                     <button
                         type='button'
