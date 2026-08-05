@@ -2091,6 +2091,45 @@ func TestHandler_SetSpaceMemberCapabilities_LastAdminConflict(t *testing.T) {
 	require.Nil(t, conflict.CurrentPage)
 }
 
+// TestHandler_SetSpaceMemberCapabilities_OtherAdminAllowsDemote verifies the positive side of the
+// last-admin guard: demoting an admin succeeds once another reachable admin remains.
+//
+// The member list deliberately places a non-admin ahead of the surviving admin. The guard's scan
+// stops only once it has answered both of its questions, so a scan that stopped at the first
+// reachable member would never see the admin behind it and would reject this demote as removing
+// the last one.
+func TestHandler_SetSpaceMemberCapabilities_OtherAdminAllowsDemote(t *testing.T) {
+	channelID := mmmodel.NewId()
+	targetUserID := mmmodel.NewId()
+	plainMemberID := mmmodel.NewId()
+	otherAdminID := mmmodel.NewId()
+	adminID := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	grantSpaceAdmin(mockAPI, channelID, adminID)
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("GetChannelMember", channelID, targetUserID).
+		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: targetUserID, SchemeAdmin: true}, nil)
+	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).
+		Return(mmmodel.ChannelMembers{
+			{ChannelId: channelID, UserId: targetUserID, SchemeAdmin: true},
+			{ChannelId: channelID, UserId: plainMemberID},
+			{ChannelId: channelID, UserId: otherAdminID, SchemeAdmin: true},
+		}, nil)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+
+	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
+		"granted_capabilities": []string{},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var member model.SpaceMember
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &member))
+	require.False(t, member.IsAdmin)
+}
+
 // TestHandler_SetSpaceMemberCapabilities_EmptyDoesNotDemoteBelowDefault verifies the additive-only
 // contract: granting the empty set to a plain member on a contribute-default space clears their
 // per-member grant but never demotes their effective capabilities below the space default.

@@ -100,6 +100,48 @@ func TestServiceCreateSpace_BackingChannel(t *testing.T) {
 	mockAPI.AssertExpectations(t)
 }
 
+// TestServiceCreateSpace_PresetSchemeMissing verifies an unseeded server is reported as a server
+// fault rather than as a missing space. Core seeds the preset schemes; a space create that cannot
+// find one says nothing about what the caller asked for, so it must not share the not-found key
+// every ordinary row lookup returns.
+func TestServiceCreateSpace_PresetSchemeMissing(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	// Registered ahead of the harness, whose StubPresetSchemes would otherwise match first.
+	mockAPI.On("GetSchemeByName", mmmodel.SchemeNameSpaceContribute).
+		Return((*mmmodel.Scheme)(nil), &mmmodel.AppError{StatusCode: http.StatusNotFound})
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: mmmodel.NewId(), Title: "Unseeded"}, mmmodel.NewId(), nil, nil)
+
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
+	require.Equal(t, "app.space.preset_scheme_missing.app_error", appErr.Id)
+	mockAPI.AssertNotCalled(t, "CreateChannel")
+}
+
+// TestServiceCreateSpace_SchemeDenialKeepsStatus verifies a refusal core issues against the scheme
+// API — a license gate, or the permissions migration still running — reaches the caller with the
+// status core chose. Reporting it as a 500 would hide a condition the operator can act on.
+func TestServiceCreateSpace_SchemeDenialKeepsStatus(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	mockAPI.On("GetSchemeByName", mock.AnythingOfType("string")).
+		Return((*mmmodel.Scheme)(nil), &mmmodel.AppError{StatusCode: http.StatusNotFound})
+	// The status and id core's own gate returns: minting a custom scheme without the licence for it
+	// is reported as not-implemented, not as a permission denial.
+	mockAPI.On("CreateScheme", mock.AnythingOfType("*model.Scheme")).
+		Return((*mmmodel.Scheme)(nil), &mmmodel.AppError{StatusCode: http.StatusNotImplemented, Id: "api.scheme.create_scheme.license.error"})
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	// A single capability matches no preset, so the create resolves through the shared pool.
+	capabilities := []string{model.CapabilityCreatePage}
+	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: mmmodel.NewId(), Title: "Unlicensed"}, mmmodel.NewId(), &capabilities, nil)
+
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusNotImplemented, appErr.StatusCode)
+	require.Equal(t, "api.scheme.create_scheme.license.error", appErr.Id)
+	mockAPI.AssertNotCalled(t, "CreateChannel")
+}
+
 // TestServiceCreateSpace_ChannelIdRejected verifies a caller-supplied ChannelId is rejected
 // before any backing-channel side effect.
 func TestServiceCreateSpace_ChannelIdRejected(t *testing.T) {
@@ -165,6 +207,7 @@ func TestServiceCreateSpace_ReplicaConfiguredSucceeds(t *testing.T) {
 	require.Equal(t, channelID, saved.ChannelId)
 	mockAPI.AssertNotCalled(t, "GetChannel", channelID)
 	mockAPI.AssertNotCalled(t, "DeleteChannel", channelID)
+	mockAPI.AssertExpectations(t)
 }
 
 // TestServiceCreateSpace_InvalidInput verifies the up-front validations reject before any

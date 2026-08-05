@@ -552,6 +552,10 @@
     "translation": "The specified user could not be found."
   },
   {
+    "id": "app.space.preset_scheme_missing.app_error",
+    "translation": "The built-in space permission schemes are not available on this server."
+  },
+  {
     "id": "app.space.remove_member.failed.app_error",
     "translation": "Unable to remove the member from the space."
   },

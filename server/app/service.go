@@ -136,6 +136,26 @@ func membershipLockAppError(where string, lockErr error) *mmmodel.AppError {
 	return storeAppError(where, lockErr)
 }
 
+// schemeAppError maps a scheme-resolution failure to an *AppError. Resolution reaches core through
+// the pluginapi client rather than the plugin's own store, so the error may already be an
+// *AppError carrying the status core chose — a license denial for a custom scheme, or the refusal
+// the scheme API returns while core's permissions migration is still running. Those are surfaced
+// unchanged; storeAppError would collapse both to a 500 because neither is a store sentinel.
+//
+// A missing preset scheme is separated out because storeAppError renders every not-found with the
+// shared key ordinary row lookups use, which would report an unseeded server as though the caller
+// had asked for a space that does not exist.
+func schemeAppError(where string, err error) *mmmodel.AppError {
+	if errors.Is(err, errPresetSchemeMissing) {
+		return mmmodel.NewAppError(where, "app.space.preset_scheme_missing.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+	}
+	var appErr *mmmodel.AppError
+	if errors.As(err, &appErr) {
+		return appErr
+	}
+	return storeAppError(where, err)
+}
+
 // storeAppError maps a store sentinel error to an *AppError with the conventional status code
 // and a shared message key (app.store.*); the where argument identifies the calling operation for logs.
 // This is the default for translating store errors; hand-roll an inline NewAppError only when a

@@ -5,6 +5,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"unicode/utf8"
@@ -14,6 +15,10 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
+
+// errPresetSchemeMissing tags a preset-scheme lookup that found nothing, which means core has not
+// seeded the space schemes on this server.
+var errPresetSchemeMissing = errors.New("preset space scheme is not seeded")
 
 // validateSpaceMutableFields enforces the Description/Icon size caps shared by CreateSpace and
 // UpdateSpace. where identifies the calling operation for logs; the message keys are shared
@@ -58,6 +63,12 @@ func (s *Service) resolveSpaceScheme(capabilities []string) (schemeID string, po
 	if presetName, ok := model.SchemeNameForDefaultCapabilities(capabilities); ok {
 		id, getErr := s.getSchemeIDByName(presetName)
 		if getErr != nil {
+			// Core seeds the presets; the plugin only reads them. A miss therefore means the server
+			// is unseeded, not that the caller named something that does not exist, so it is tagged
+			// to keep it out of the shared not-found translation.
+			if store.IsErrNotFound(getErr) {
+				return "", nil, fmt.Errorf("%w: %s", errPresetSchemeMissing, presetName)
+			}
 			return "", nil, getErr
 		}
 		return id, nil, nil
@@ -147,7 +158,7 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultCapabili
 
 	schemeID, pooledRoles, schemeErr := s.resolveSpaceScheme(capabilities)
 	if schemeErr != nil {
-		return nil, storeAppError("CreateSpace", schemeErr)
+		return nil, schemeAppError("CreateSpace", schemeErr)
 	}
 
 	s.log.Debug("Creating space", "team_id", space.TeamId, "user_id", userID)
@@ -393,7 +404,7 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 
 		targetSchemeID, pooledRoles, schemeErr := s.resolveSpaceScheme(requested)
 		if schemeErr != nil {
-			return storeAppError("SetSpaceDefaultCapabilities", schemeErr)
+			return schemeAppError("SetSpaceDefaultCapabilities", schemeErr)
 		}
 		if targetSchemeID == currentSchemeID {
 			// No-op: requested set already matches the live default.

@@ -227,6 +227,43 @@ func TestRequireSpaceDraftWrite_LookupFailureIsNotADenial(t *testing.T) {
 	mockAPI.AssertNumberOfCalls(t, "GetTeamMember", 1)
 }
 
+// TestResolveSpacePageOwnOrAny_CheckFailureIsNotADenial pins the same error discipline on the
+// own/any gate that TestRequireSpaceDraftWrite_LookupFailureIsNotADenial pins on the draft gate:
+// a failure of either attempt surfaces as itself.
+//
+// The distinction the gate draws is between "neither permission grants this" — reported as
+// admitted=false with no error, which the caller turns into its own 403 — and "the check could not
+// be carried out", which must reach the caller as the failure it is.
+//
+// Both ownerMatches values are covered because an owner match is what opens the second attempt,
+// and the failure must not be converted into a grant by it. Only the any-attempt's guard is
+// exercised either way: both attempts resolve through the same client, so an any-attempt that
+// reached a verdict at all guarantees the own-attempt can only deny or grant.
+func TestResolveSpacePageOwnOrAny_CheckFailureIsNotADenial(t *testing.T) {
+	for name, ownerMatches := range map[string]bool{
+		"owner does not match": false,
+		"owner matches":        true,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := openTestService(t)
+			// An unwired client makes both permission attempts fail as a 500 rather than deny.
+			h.svc = app.New(h.store, nil, nil)
+			space := testutil.MustCreateSpace(t, h.store, mmmodel.NewId(), mmmodel.NewId())
+
+			ownOnly, admitted, appErr := h.svc.ResolveSpacePageOwnOrAny(
+				space, mmmodel.NewId(),
+				"any", mmmodel.PermissionDeletePage,
+				"own", mmmodel.PermissionDeleteOwnPage,
+				ownerMatches, app.ReadViaMember)
+
+			require.NotNil(t, appErr, "a failed check must not be reported as an ordinary denial")
+			require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
+			require.False(t, admitted)
+			require.False(t, ownOnly)
+		})
+	}
+}
+
 // TestRequireSpacePagePermissionFrom_FallthroughAdmitsReadOnly is the escalation guard on the
 // open-space fall-through: it exists to admit reads, and must never admit a write. A non-member
 // whose space default withholds the write permission — so the auto-join pre-step does not join

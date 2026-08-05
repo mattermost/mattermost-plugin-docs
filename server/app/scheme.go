@@ -5,6 +5,7 @@ package app
 
 import (
 	"errors"
+	"slices"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
@@ -12,6 +13,20 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
+
+// permissionSetsEqual reports whether two permission sets hold the same ids, disregarding order.
+// The sets being compared are built differently — a generated user role leads with the baseline
+// read followed by the sorted capabilities, the admin role follows core's declaration order, and a
+// stored role comes back in whatever order it was last written.
+func permissionSetsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	sortedA, sortedB := slices.Clone(a), slices.Clone(b)
+	slices.Sort(sortedA)
+	slices.Sort(sortedB)
+	return slices.Equal(sortedA, sortedB)
+}
 
 // A non-preset default-capability set resolves to a scheme in a shared pool keyed by that set, so
 // the number of schemes is bounded by the capability vocabulary rather than by the number of
@@ -187,6 +202,13 @@ func (s *Service) setRolePermissions(roleName string, permissions []string) erro
 			return &store.ErrNotFound{EntityName: "Role", ID: roleName}
 		}
 		return err
+	}
+	// configureSharedScheme runs on every resolution, not only when the scheme is created, so that a
+	// scheme a racing caller left mid-configuration still converges. Once the stored set matches,
+	// rewriting it would invalidate the role in core's cache on every node, for every space sharing
+	// this pooled scheme, so a matching set is left as it stands.
+	if permissionSetsEqual(role.Permissions, permissions) {
+		return nil
 	}
 	// Patched by id rather than by handing back the role just read: core re-reads the stored role
 	// so its scope guard judges a SchemeId the caller cannot influence.
