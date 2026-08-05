@@ -4,7 +4,7 @@
 import classNames from 'classnames';
 import {useCreateRootPage} from 'hooks/pages';
 import {useSidebarWidth} from 'hooks/sidebar_width';
-import React from 'react';
+import React, {useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {Timestamp} from 'webapp_globals';
 import type {TimestampUnit} from 'webapp_globals';
@@ -22,6 +22,7 @@ import PageMenu from 'components/page_menu/page_menu';
 import Spacer from 'components/spacer/spacer';
 
 import type {Page, Space} from 'types/docs';
+import type {Draft} from 'types/drafts';
 
 import styles from './page_header.module.scss';
 import {DEFAULT_SIDEBAR_WIDTH} from './sidebar/sidebar';
@@ -57,17 +58,35 @@ type Props = {
     // the page-scoped controls; on the space home (no page) only the space's
     // last-updated time shows.
     page?: Page;
+
+    // The routed draft, for a page that isn't published yet. Swaps the page-scoped
+    // controls for Publish: there is no published version to comment on, share, or
+    // toggle back to reading.
+    draft?: Draft;
     treeOpen: boolean;
     editing: boolean;
     onTogglePages: () => void;
     onToggleEdit: () => void;
+    onPublish: () => void;
 };
 
 // Page controls (comments, edit, overflow, expand) are visual scaffolding wired
 // in later passes; the pages toggle drives the page tree panel.
-const PageHeader = ({space, page, treeOpen, editing, onTogglePages, onToggleEdit}: Props) => {
+const PageHeader = ({space, page, draft, treeOpen, editing, onTogglePages, onToggleEdit, onPublish}: Props) => {
     const {formatMessage} = useIntl();
     const createRootPage = useCreateRootPage(space.id);
+    const [publishing, setPublishing] = useState(false);
+
+    // Publishing navigates on success, so the guard is against a second click during
+    // the round trip rather than a state this component returns to.
+    const publish = async () => {
+        setPublishing(true);
+        try {
+            await onPublish();
+        } finally {
+            setPublishing(false);
+        }
+    };
 
     // Read-only view of the pages sidebar's live width, so the add-page button
     // can sit on its right edge (shared store, no prop threading).
@@ -78,9 +97,9 @@ const PageHeader = ({space, page, treeOpen, editing, onTogglePages, onToggleEdit
     const moreLabel = formatMessage({id: 'docs.space.more', defaultMessage: 'More actions'});
     const expandLabel = formatMessage({id: 'docs.space.expand', defaultMessage: 'Expand'});
 
-    // The current page's last-updated time when a page is open, otherwise the
-    // space's.
-    const updatedAt = page ? page.update_at : space.update_at;
+    // The open page's last-updated time, the draft's own while it is unpublished,
+    // otherwise the space's.
+    const updatedAt = page?.update_at ?? draft?.update_at ?? space.update_at;
 
     // Timestamp's `style` is a narrow/short/long format variant, not a DOM style object.
     /* eslint-disable react/style-prop-object */
@@ -140,6 +159,19 @@ const PageHeader = ({space, page, treeOpen, editing, onTogglePages, onToggleEdit
                         values={{relative: updatedRelative}}
                     />
                 </span>
+                {draft && (
+                    <Button
+                        emphasis='primary'
+                        size='sm'
+                        disabled={publishing}
+                        onClick={publish}
+                    >
+                        <FormattedMessage
+                            id='docs.space.publish'
+                            defaultMessage='Publish'
+                        />
+                    </Button>
+                )}
                 {page && (
                     <>
                         <Button

@@ -4,7 +4,7 @@
 import {useCallback} from 'react';
 import {useIntl} from 'react-intl';
 
-import {createPage} from 'store/actions';
+import {createDraft} from 'store/actions';
 import {getPage} from 'store/selectors';
 
 import {toast} from 'components/toast';
@@ -16,22 +16,27 @@ import {useDocsNavigation} from './navigation';
 import {useAppDispatch, useAppSelector} from './redux';
 
 /**
- * Returns a handler that creates a top-level page in the space and opens it in
- * edit mode. Shared by the page header's add button and the page tree's "Add
- * page". A new page is empty and titled "Untitled", so reading it is never what
- * was wanted; edit mode also focuses the title, which is the first thing to fill
- * in.
+ * Returns a handler that starts a new top-level page in the space and opens it for
+ * writing. Shared by the page header's add button and the page tree's "Add page".
+ *
+ * It creates a *draft*, not a page: nobody else sees a half-written page, and the
+ * author decides when it becomes real by publishing. The draft reserves the page id
+ * up front, which is what makes it addressable at `/drafts/:pageId` before it
+ * exists as a page.
+ *
+ * The draft carries the untitled placeholder as its title because publishing
+ * requires a non-empty one; the title field renders that as empty (see PageTitle).
  */
 export function useCreateRootPage(spaceId: string) {
     const dispatch = useAppDispatch();
-    const {goToEditPage} = useDocsNavigation();
+    const {goToDraft} = useDocsNavigation();
     const {formatMessage} = useIntl();
     const untitled = formatMessage(UNTITLED_PAGE_TITLE);
 
     return useCallback(async () => {
         try {
-            const page = await dispatch(createPage(spaceId, {title: untitled}));
-            goToEditPage(spaceId, page.id);
+            const draft = await dispatch(createDraft(spaceId, untitled));
+            goToDraft(spaceId, draft.page_id);
         } catch (error) {
             // Without this the add-page buttons look inert on failure.
             toast.error(formatMessage({id: 'docs.pageTree.addFailed', defaultMessage: 'Could not create the page. Please try again.'}));
@@ -39,7 +44,7 @@ export function useCreateRootPage(spaceId: string) {
             // eslint-disable-next-line no-console
             console.error('Docs: failed to create page', error);
         }
-    }, [dispatch, spaceId, untitled, goToEditPage, formatMessage]);
+    }, [dispatch, spaceId, untitled, goToDraft, formatMessage]);
 }
 
 /**

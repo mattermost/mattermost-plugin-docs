@@ -36,7 +36,11 @@ export function useDocsNavigation() {
 
     // Only a routed page can be edited, so the query alone doesn't mean edit mode:
     // ?edit=1 on a space or overview URL names nothing to edit and is ignored.
-    const isEditing = Boolean(pageId) && !isOverview && new URLSearchParams(search).get(EDIT_QUERY) === '1';
+    //
+    // A draft is unpublished work with no published version to read, so its route is
+    // always editing and carries no query — there is no reading mode to toggle to.
+    const isEditing = isDraft ||
+        (Boolean(pageId) && !isOverview && new URLSearchParams(search).get(EDIT_QUERY) === '1');
 
     // `replace` for arrivals that follow the routed page ceasing to exist: the URL
     // being left is dead, so it shouldn't be somewhere Back can return to.
@@ -48,7 +52,17 @@ export function useDocsNavigation() {
             history.push(path);
         }
     }, [history, teamName]);
-    const goToPage = useCallback((space: string, page: string) => history.push(pagePath(teamName, space, page)), [history, teamName]);
+
+    // `replace` for arrivals where the URL being left no longer names anything —
+    // publishing a draft, whose draft URL ceases to exist with it.
+    const goToPage = useCallback((space: string, page: string, {replace = false} = {}) => {
+        const path = pagePath(teamName, space, page);
+        if (replace) {
+            history.replace(path);
+        } else {
+            history.push(path);
+        }
+    }, [history, teamName]);
     const goToDraft = useCallback((space: string, page: string) => history.push(draftPath(teamName, space, page)), [history, teamName]);
     const goToEditPage = useCallback((space: string, page: string) => history.push(editPagePath(teamName, space, page)), [history, teamName]);
     const goToOverview = useCallback((space: string) => history.push(overviewPath(teamName, space)), [history, teamName]);

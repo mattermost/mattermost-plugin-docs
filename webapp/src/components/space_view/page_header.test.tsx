@@ -32,6 +32,7 @@ const renderHeader = (props: Partial<React.ComponentProps<typeof PageHeader>> = 
             editing={false}
             onTogglePages={jest.fn()}
             onToggleEdit={jest.fn()}
+            onPublish={jest.fn()}
             {...props}
         />,
     );

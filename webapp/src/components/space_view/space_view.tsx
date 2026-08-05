@@ -1,6 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {usePageDraft, usePublishDraft} from 'hooks/drafts';
 import {useDocsNavigation, useTogglePageEditMode} from 'hooks/navigation';
 import {useDefaultPagePath} from 'hooks/pages';
 import {useAppSelector} from 'hooks/redux';
@@ -32,10 +33,19 @@ import styles from './space_view.module.scss';
 // (hero) until a page is routed, at which point it shows that page instead.
 // Page bodies are a placeholder until the editor is mounted.
 const SpaceView = ({space}: {space: Space}) => {
-    const {pageId, isEditing, paths} = useDocsNavigation();
+    const {pageId, isDraft, isEditing, paths} = useDocsNavigation();
     const toggleEdit = useTogglePageEditMode(space.id);
     const page = useAppSelector((state) => (pageId ? getPageInSpace(state, space.id, pageId) : undefined));
     const pagesLoaded = useAppSelector((state) => arePagesLoadedForSpace(state, space.id));
+
+    // Only the draft route loads a draft. Unpublished edits to a published page are
+    // the editor's concern; this view renders the page for those.
+    const {draft, loaded: draftLoaded} = usePageDraft(
+        isDraft ? space.id : undefined,
+        isDraft ? pageId : undefined,
+    );
+    const publish = usePublishDraft(space.id);
+    const onPublish = useCallback(() => (pageId ? publish(pageId) : undefined), [publish, pageId]);
     const {pageCount, memberCount} = useSpaceStats(space.id);
     const defaultPagePath = useDefaultPagePath(space);
     const [treeOpen, setTreeOpen] = useState(true);
@@ -52,11 +62,25 @@ const SpaceView = ({space}: {space: Space}) => {
         return <Redirect to={defaultPagePath}/>;
     }
 
+    // A draft URL whose page now exists means the draft was published — here or in
+    // another tab. The page is the canonical address for it, so hand over.
+    if (isDraft && pageId && page) {
+        return <Redirect to={paths.page(space.id, pageId)}/>;
+    }
+
+    // A draft URL naming no draft was discarded or never existed. Waiting for the
+    // fetch to settle first matters: correcting it earlier would turn a slow
+    // response into a bounce out of a draft that is really there.
+    if (isDraft && draftLoaded && !draft) {
+        return <Redirect to={paths.overview(space.id)}/>;
+    }
+
     // Once the space's pages are loaded, a routed id that isn't among them names
     // a page in another space or one that's gone, so fall back to the front door
     // rather than rendering a page shell that can never fill in. /overview is
     // explicit, so it won't bounce back through the default-page redirect above.
-    if (pageId && pagesLoaded && !page) {
+    // Excludes the draft route, where having no page is the normal case.
+    if (!isDraft && pageId && pagesLoaded && !page) {
         return <Redirect to={paths.overview(space.id)}/>;
     }
 
@@ -73,10 +97,12 @@ const SpaceView = ({space}: {space: Space}) => {
                 <PageHeader
                     space={space}
                     page={page}
+                    draft={draft}
                     treeOpen={treeOpen}
                     editing={isEditing}
                     onTogglePages={togglePages}
                     onToggleEdit={toggleEdit}
+                    onPublish={onPublish}
                 />
                 <div className={styles.body}>
                     <Sidebar open={treeOpen}>
@@ -87,6 +113,7 @@ const SpaceView = ({space}: {space: Space}) => {
                             {pageId ? (
                                 <PageContent
                                     page={page}
+                                    draft={draft}
                                     editing={isEditing}
                                 />
                             ) : (
