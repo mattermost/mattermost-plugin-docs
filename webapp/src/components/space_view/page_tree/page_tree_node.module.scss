@@ -30,6 +30,41 @@
     opacity: 1;
 }
 
+// The row's link. It holds the icon and title inline, and its ::after stretches
+// the hit area across the whole row — so the row stays clickable end to end while
+// the chevron and menu stay real buttons, which they could not be nested inside an
+// anchor. Those sit above the stretched area on their own stacking context.
+.rowLink {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    align-items: center;
+    gap: 4px;
+    color: inherit;
+    text-decoration: none;
+
+    &:hover,
+    &:focus {
+        color: inherit;
+        text-decoration: none;
+    }
+
+    &::after {
+        position: absolute;
+        border-radius: 4px;
+        content: '';
+        inset: 0;
+    }
+}
+
+.chevron,
+.menuTrigger,
+.favorite,
+.draftBadge {
+    position: relative;
+    z-index: 1;
+}
+
 // The whole row is the click target, so it owns the only hover/selected state
 // in the tree; the chevron inside only tints itself. Nesting is applied as a
 // left margin (not padding) so the hitbox and its hover/selected background

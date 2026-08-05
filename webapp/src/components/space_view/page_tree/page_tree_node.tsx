@@ -8,6 +8,7 @@ import {useTextOverflow} from 'hooks/text_overflow';
 import React, {useState} from 'react';
 import {createPortal} from 'react-dom';
 import {FormattedMessage, useIntl} from 'react-intl';
+import {Link} from 'react-router-dom';
 
 import ChevronDownIcon from '@mattermost/compass-icons/components/chevron-down';
 import ChevronRightIcon from '@mattermost/compass-icons/components/chevron-right';
@@ -41,7 +42,10 @@ type Props = {
 
     // The one row in the whole tree that is tabbable (roving tabindex).
     tabStopId?: string;
-    onSelect: (pageId: string) => void;
+
+    // Where this row points. Rows are real links so a page can be opened in a new
+    // tab, copied, or middle-clicked like any other address in the product.
+    hrefFor: (node: PageNode) => string;
     onToggle: (pageId: string) => void;
     onSetCollapsed: (ids: string[], collapsed: boolean) => void;
     onFocusRow: (pageId: string) => void;
@@ -49,7 +53,7 @@ type Props = {
     registerRow: (pageId: string, element: HTMLElement | null) => void;
 };
 
-const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeights, draggingId, dndEnabled, tabStopId, onSelect, onToggle, onSetCollapsed, onFocusRow, onRowKeyDown, registerRow}: Props) => {
+const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeights, draggingId, dndEnabled, tabStopId, hrefFor, onToggle, onSetCollapsed, onFocusRow, onRowKeyDown, registerRow}: Props) => {
     const {formatMessage} = useIntl();
     const [element, setElement] = useState<HTMLDivElement | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
@@ -58,6 +62,7 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
     // Narrow subscription: only this page's own favorite state re-renders the row.
     const favorited = useIsFavorite('page', node.id);
     const {id, page, draft, children, depth} = node;
+    const spaceId = page?.space_id ?? draft?.space_id ?? '';
     const hasChildren = children.length > 0;
     const isCollapsed = collapsed.has(id);
 
@@ -112,12 +117,14 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
         onSetCollapsed(ids, !isCollapsed);
     };
 
-    const onRowClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    // A plain click is left to the link, so modifier-clicks keep their browser
+    // meaning (new tab, new window, download). Only the shift-click shortcut is
+    // intercepted, since shift on a link means "open in a new window".
+    const onLinkClick = (event: React.MouseEvent<HTMLAnchorElement>) => {
         if (event.shiftKey && hasChildren) {
+            event.preventDefault();
             toggleRecursive();
-            return;
         }
-        onSelect(id);
     };
 
     const onChevronClick = (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -167,7 +174,7 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
             draggingId={draggingId}
             dndEnabled={dndEnabled}
             tabStopId={tabStopId}
-            onSelect={onSelect}
+            hrefFor={hrefFor}
             onToggle={onToggle}
             onSetCollapsed={onSetCollapsed}
             onFocusRow={onFocusRow}
@@ -233,7 +240,6 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
                         [styles.invalidZone]: inDraggedSubtree,
                     })}
                     style={{marginInlineStart: depth * INDENT_STEP}}
-                    onClick={onRowClick}
                 >
                     {hasChildren ? (
                         <button
@@ -252,13 +258,27 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
                             aria-hidden={true}
                         />
                     )}
-                    <span
-                        className={styles.icon}
-                        aria-hidden={true}
+                    <Link
+                        className={styles.rowLink}
+                        to={hrefFor(node)}
+
+                        // The row itself is the drag handle; a link's native drag
+                        // would start a URL drag and pre-empt it.
+                        draggable={false}
+
+                        // The treeitem is the tab stop, so the link stays out of the
+                        // tab order and Enter is handled by the row.
+                        tabIndex={-1}
+                        onClick={onLinkClick}
                     >
-                        <PageGlyph size={16}/>
-                    </span>
-                    {title}
+                        <span
+                            className={styles.icon}
+                            aria-hidden={true}
+                        >
+                            <PageGlyph size={16}/>
+                        </span>
+                        {title}
+                    </Link>
                     {draft && (
                         <span className={styles.draftBadge}>
                             <FormattedMessage
@@ -278,30 +298,26 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
                     )}
                     <Spacer/>
 
-                    {/* Every entry in the page menu — rename, favorite, copy link,
-                        delete — acts on a published page. An unpublished one is
-                        managed from the page itself, where Publish and Discard are. */}
-                    {page && (
-                        <PageMenu
-                            spaceId={page.space_id}
-                            pageId={id}
-                            pageTitle={node.title}
-                            align='right'
-                            open={menuOpen}
-                            onOpenChange={setMenuOpen}
-                            trigger={(
-                                <button
-                                    type='button'
-                                    className={styles.menuTrigger}
-                                    tabIndex={-1}
-                                    aria-label={menuLabel}
-                                    onClick={(event) => event.stopPropagation()}
-                                >
-                                    <DotsHorizontalIcon size={16}/>
-                                </button>
-                            )}
-                        />
-                    )}
+                    <PageMenu
+                        spaceId={spaceId}
+                        pageId={id}
+                        pageTitle={node.title}
+                        isDraft={!page}
+                        align='right'
+                        open={menuOpen}
+                        onOpenChange={setMenuOpen}
+                        trigger={(
+                            <button
+                                type='button'
+                                className={styles.menuTrigger}
+                                tabIndex={-1}
+                                aria-label={menuLabel}
+                                onClick={(event) => event.stopPropagation()}
+                            >
+                                <DotsHorizontalIcon size={16}/>
+                            </button>
+                        )}
+                    />
                 </div>
                 {/* Indented to the destination's level: the line spans the hit
                     wrapper, which is full width, but the page would land as this

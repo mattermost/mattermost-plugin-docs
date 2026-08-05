@@ -7,6 +7,7 @@ import {useCreateRootPage} from 'hooks/pages';
 import {useAppDispatch, useAppSelector} from 'hooks/redux';
 import React, {useCallback, useLayoutEffect, useMemo, useRef, useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
+import {useHistory} from 'react-router-dom';
 
 import PlusIcon from '@mattermost/compass-icons/components/plus';
 
@@ -42,7 +43,8 @@ const REORDER_KEYS: Record<string, ReorderIntent> = {
 const PageTreePanel = ({space}: {space: Space}) => {
     const dispatch = useAppDispatch();
     const {formatMessage} = useIntl();
-    const {goToPage, pageId} = useDocsNavigation();
+    const {pageId, paths} = useDocsNavigation();
+    const history = useHistory();
     const {collapsed, toggle, setCollapsedFor} = useCollapsedPages();
     const createRootPage = useCreateRootPage(space.id);
 
@@ -55,6 +57,13 @@ const PageTreePanel = ({space}: {space: Space}) => {
     const descendants = useMemo(() => buildDescendantMap(roots), [roots]);
     const subtreeHeights = useMemo(() => buildSubtreeHeightMap(roots), [roots]);
     const visibleRows = useMemo(() => flattenVisibleRows(roots, collapsed), [roots, collapsed]);
+
+    // A draft has no published page, so it is addressed as a draft. One helper for
+    // the row links and for the keyboard, so the two can never disagree.
+    const hrefFor = useCallback(
+        (node: PageNode) => (node.page ? paths.page(space.id, node.id) : paths.draft(space.id, node.id)),
+        [paths, space.id],
+    );
 
     // Published rows first, drafts after; split so the root append strip lands
     // between them rather than below the drafts (see the render).
@@ -235,14 +244,14 @@ const PageTreePanel = ({space}: {space: Space}) => {
             break;
         case 'Enter':
         case ' ':
-            goToPage(space.id, rowId);
+            history.push(hrefFor(node));
             break;
         default:
             return;
         }
 
         event.preventDefault();
-    }, [visibleRows, collapsed, reorder, focusRow, toggle, goToPage, space.id]);
+    }, [visibleRows, collapsed, reorder, focusRow, toggle, history, hrefFor]);
 
     // The row that owns the tab stop: wherever focus last was, else the routed
     // page, else the first row — so Tab always lands somewhere sensible.
@@ -268,7 +277,7 @@ const PageTreePanel = ({space}: {space: Space}) => {
             draggingId={draggingId}
             dndEnabled={true}
             tabStopId={tabStopId}
-            onSelect={(id) => goToPage(space.id, id)}
+            hrefFor={hrefFor}
             onToggle={toggle}
             onSetCollapsed={setCollapsedFor}
             onFocusRow={onFocusRow}

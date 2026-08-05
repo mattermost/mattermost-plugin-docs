@@ -4,12 +4,13 @@
 import {fireEvent, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 
-import {makePage, makeSpace} from 'store/test_fixtures';
+import {makeDraft, makePage, makeSpace} from 'store/test_fixtures';
 
 import {getReadoutMessage} from 'components/readout';
 import {toast} from 'components/toast';
 
 import type {Page} from 'types/docs';
+import type {Draft} from 'types/drafts';
 
 import PageTreePanel from './page_tree_panel';
 
@@ -26,6 +27,7 @@ jest.mock('hooks/navigation', () => ({
         paths: {
             overview: (spaceId: string) => `/docs/${spaceId}/overview`,
             page: (spaceId: string, pageId: string) => `/docs/${spaceId}/${pageId}`,
+            draft: (spaceId: string, pageId: string) => `/docs/${spaceId}/drafts/${pageId}`,
         },
     }),
 }));
@@ -67,12 +69,14 @@ const PAGES: Page[] = [
     makePage('b', SPACE.id, 'b', 1),
 ];
 
-const renderPanel = () => renderWithContext(<PageTreePanel space={SPACE}/>, {
+const renderPanel = ({drafts = []}: {drafts?: Draft[]} = {}) => renderWithContext(<PageTreePanel space={SPACE}/>, {
     state: {
         docs: {
             spaces: {[SPACE.id]: SPACE},
             pages: Object.fromEntries(PAGES.map((page) => [page.id, page])),
             pagesInSpace: {[SPACE.id]: new Set(PAGES.map((page) => page.id))},
+            drafts: Object.fromEntries(drafts.map((draft) => [draft.page_id, draft])),
+            draftsInSpace: {[SPACE.id]: new Set(drafts.map((draft) => draft.page_id))},
         },
     },
 });
@@ -80,6 +84,25 @@ const renderPanel = () => renderWithContext(<PageTreePanel space={SPACE}/>, {
 // A row's accessible name folds in its chevron and menu labels, so rows are found
 // by their title text and walked up to the treeitem.
 const row = (title: string) => screen.getByText(title).closest('[role="treeitem"]') as HTMLElement;
+
+// Rows are anchors so a page can be opened in a new tab, copied, or middle-clicked
+// like any other address; a div with an onClick supports none of that.
+describe('PageTreePanel row links', () => {
+    it('renders each row as a link to its page', () => {
+        renderPanel();
+
+        expect(screen.getByText('a1').closest('a')).toHaveAttribute('href', `/docs/${SPACE.id}/a1`);
+    });
+
+    // A draft has no published page, so a page address would 404 into the overview
+    // redirect — which is what made draft rows look unclickable.
+    it('links a draft row to its draft address', () => {
+        renderPanel({drafts: [makeDraft('d1', SPACE.id, 'Unpublished')]});
+
+        expect(screen.getByText('Unpublished').closest('a')).
+            toHaveAttribute('href', `/docs/${SPACE.id}/drafts/d1`);
+    });
+});
 
 describe('PageTreePanel keyboard support', () => {
     beforeEach(() => {
@@ -136,10 +159,10 @@ describe('PageTreePanel keyboard support', () => {
     });
 
     it('opens the routed page on Enter', () => {
-        renderPanel();
+        const {history} = renderPanel();
 
         fireEvent.keyDown(row('a1'), {key: 'Enter'});
-        expect(mockGoToPage).toHaveBeenCalledWith(SPACE.id, 'a1');
+        expect(history.location.pathname).toBe(`/docs/${SPACE.id}/a1`);
     });
 
     it('reorders with Alt+arrow and announces the new position', () => {

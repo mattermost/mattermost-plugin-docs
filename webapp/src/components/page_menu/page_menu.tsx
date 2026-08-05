@@ -25,6 +25,7 @@ import {updatePage} from 'store/actions';
 
 import BasicInputModal from 'components/basic_input_modal/basic_input_modal';
 import DeletePageModal from 'components/delete_page_modal/delete_page_modal';
+import DiscardDraftModal from 'components/discard_draft_modal/discard_draft_modal';
 import Menu from 'components/menu/menu';
 import {openDocsModal} from 'components/modals';
 
@@ -35,6 +36,11 @@ type Props = {
     spaceId: string;
     pageId: string;
     pageTitle: string;
+
+    // An unpublished page. Most page actions have no meaning for one — it cannot be
+    // favorited, shared, exported or version-tracked — so it gets a reduced set
+    // ending in Discard rather than Delete.
+    isDraft?: boolean;
 
     // Base UI merges its own open/aria/ref props onto the trigger element.
     trigger: React.ReactElement;
@@ -51,14 +57,14 @@ type Props = {
  * The page actions menu, shared by the page tree rows and the page header.
  * Items without a handler are scaffolding for features that have no API yet.
  */
-const PageMenu = ({spaceId, pageId, pageTitle, trigger, align = 'left', tooltip, open, onOpenChange}: Props) => {
+const PageMenu = ({spaceId, pageId, pageTitle, isDraft = false, trigger, align = 'left', tooltip, open, onOpenChange}: Props) => {
     const {formatMessage} = useIntl();
     const {paths} = useDocsNavigation();
     const dispatch = useAppDispatch();
     const favorited = useIsFavorite('page', pageId);
     const toggleFavorite = useToggleFavorite();
 
-    const pageUrl = `${window.location.origin}${paths.page(spaceId, pageId)}`;
+    const pageUrl = `${window.location.origin}${isDraft ? paths.draft(spaceId, pageId) : paths.page(spaceId, pageId)}`;
 
     const copyLink = useCallback(() => copyToClipboard(pageUrl), [pageUrl]);
     const openInNewWindow = useCallback(() => window.open(pageUrl, '_blank', 'noopener,noreferrer'), [pageUrl]);
@@ -89,6 +95,62 @@ const PageMenu = ({spaceId, pageId, pageTitle, trigger, align = 'left', tooltip,
             />
         ));
     }, [pageId, pageTitle, spaceId]);
+
+    const openDiscardConfirm = useCallback(() => {
+        openDocsModal((modal) => (
+            <DiscardDraftModal
+                spaceId={spaceId}
+                pageId={pageId}
+                pageTitle={pageTitle}
+                onClose={modal.close}
+            />
+        ));
+    }, [pageId, pageTitle, spaceId]);
+
+    if (isDraft) {
+        return (
+            <Menu
+                ariaLabel={formatMessage({id: 'docs.pageMenu.draftLabel', defaultMessage: 'Draft options for {title}'}, {title: pageTitle})}
+                align={align}
+                tooltip={tooltip}
+                trigger={trigger}
+                open={open}
+                onOpenChange={onOpenChange}
+            >
+                <Menu.Item
+                    leadingIcon={<LinkVariantIcon size={18}/>}
+                    onClick={copyLink}
+                >
+                    <FormattedMessage
+                        id='docs.pageMenu.copyLink'
+                        defaultMessage='Copy link'
+                    />
+                </Menu.Item>
+                <Menu.Item
+                    leadingIcon={<DockWindowIcon size={18}/>}
+                    onClick={openInNewWindow}
+                >
+                    <FormattedMessage
+                        id='docs.pageMenu.openNewWindow'
+                        defaultMessage='Open in new window'
+                    />
+                </Menu.Item>
+
+                <Menu.Separator/>
+
+                <Menu.Item
+                    destructive={true}
+                    leadingIcon={<TrashCanOutlineIcon size={18}/>}
+                    onClick={openDiscardConfirm}
+                >
+                    <FormattedMessage
+                        id='docs.pageMenu.discard'
+                        defaultMessage='Discard draft'
+                    />
+                </Menu.Item>
+            </Menu>
+        );
+    }
 
     return (
         <Menu
