@@ -59,9 +59,9 @@ type Props = {
     // last-updated time shows.
     page?: Page;
 
-    // The routed draft, for a page that isn't published yet. Swaps the page-scoped
-    // controls for Publish: there is no published version to comment on, share, or
-    // toggle back to reading.
+    // The routed page's draft, if it has one. With no `page` it is an unpublished
+    // page and Publish creates it; alongside a `page` it is unpublished edits and
+    // Update applies them.
     draft?: Draft;
     treeOpen: boolean;
     editing: boolean;
@@ -70,8 +70,9 @@ type Props = {
     onPublish: () => void;
 };
 
-// Page controls (comments, edit, overflow, expand) are visual scaffolding wired
-// in later passes; the pages toggle drives the page tree panel.
+// Comments, overflow and expand are visual scaffolding wired in later passes; the
+// pages toggle drives the page tree panel, and Edit/Close plus Publish/Update are
+// live.
 const PageHeader = ({space, page, draft, treeOpen, editing, onTogglePages, onToggleEdit, onPublish}: Props) => {
     const {formatMessage} = useIntl();
     const createRootPage = useCreateRootPage(space.id);
@@ -96,6 +97,18 @@ const PageHeader = ({space, page, draft, treeOpen, editing, onTogglePages, onTog
     const commentsLabel = formatMessage({id: 'docs.space.comments', defaultMessage: 'Comments'});
     const moreLabel = formatMessage({id: 'docs.space.more', defaultMessage: 'More actions'});
     const expandLabel = formatMessage({id: 'docs.space.expand', defaultMessage: 'Expand'});
+    const updateLabel = formatMessage({id: 'docs.space.update', defaultMessage: 'Update'});
+    const noChangesLabel = formatMessage({id: 'docs.space.noUnpublishedChanges', defaultMessage: 'No unpublished changes'});
+
+    // What the page-scoped controls act on: the published page, or the unpublished
+    // one when there is no published version yet.
+    const subject = page ?? (draft && {id: draft.page_id, title: draft.title});
+
+    // Two different states share one draft: with no published page it *is* the page
+    // (Publish creates it); with one, it is unpublished edits to it (Update applies
+    // them).
+    const unpublished = !page && Boolean(draft);
+    const hasUnpublishedEdits = Boolean(page) && Boolean(draft);
 
     // The open page's last-updated time, the draft's own while it is unpublished,
     // otherwise the space's.
@@ -159,7 +172,20 @@ const PageHeader = ({space, page, draft, treeOpen, editing, onTogglePages, onTog
                         values={{relative: updatedRelative}}
                     />
                 </span>
-                {draft && (
+                {page && (
+                    <Button
+                        emphasis='quaternary'
+                        size='sm'
+                        className='btn-icon'
+                        badge={true}
+                        tooltip={commentsLabel}
+                        leadingIcon={<MessageTextOutlineIcon size={18}/>}
+                    />
+                )}
+
+                {/* Publish/Update sits before Close: the action that commits the
+                    work reads first, and leaving is the fallback beside it. */}
+                {editing && subject && (unpublished ? (
                     <Button
                         emphasis='primary'
                         size='sm'
@@ -171,45 +197,64 @@ const PageHeader = ({space, page, draft, treeOpen, editing, onTogglePages, onTog
                             defaultMessage='Publish'
                         />
                     </Button>
-                )}
-                {page && (
-                    <>
-                        <Button
-                            emphasis='quaternary'
-                            size='sm'
-                            className='btn-icon'
-                            badge={true}
-                            tooltip={commentsLabel}
-                            leadingIcon={<MessageTextOutlineIcon size={18}/>}
-                        />
-                        <Button
-                            emphasis='quaternary'
-                            size='sm'
-                            className={classNames('docs-btn-neutral', styles.iconLabel)}
-                            leadingIcon={editing ? <CheckIcon size={18}/> : <PencilOutlineIcon size={18}/>}
+                ) : (
+                    <Button
+                        emphasis='primary'
+                        size='sm'
 
-                            // The control is a mode toggle, and a changed label on a
-                            // button that already holds focus is not reliably
-                            // re-announced.
-                            aria-pressed={editing}
-                            onClick={onToggleEdit}
-                        >
-                            {editing ? (
-                                <FormattedMessage
-                                    id='docs.space.done'
-                                    defaultMessage='Done'
-                                />
-                            ) : (
-                                <FormattedMessage
-                                    id='docs.space.edit'
-                                    defaultMessage='Edit'
-                                />
-                            )}
-                        </Button>
+                        // Update publishes the edits held as a draft against this
+                        // page. With none there is nothing to apply, so the control
+                        // says why rather than failing when pressed.
+                        disabled={publishing || !hasUnpublishedEdits}
+
+                        // Explicit, because `tooltip` otherwise becomes the
+                        // accessible name — and the control is still "Update"
+                        // whatever the reason it is unavailable.
+                        aria-label={updateLabel}
+                        tooltip={hasUnpublishedEdits ? undefined : noChangesLabel}
+                        onClick={publish}
+                    >
+                        <FormattedMessage
+                            id='docs.space.update'
+                            defaultMessage='Update'
+                        />
+                    </Button>
+                ))}
+
+                {subject && (
+                    <Button
+                        emphasis='quaternary'
+                        size='sm'
+                        className={classNames('docs-btn-neutral', styles.iconLabel)}
+                        leadingIcon={editing ? <CheckIcon size={18}/> : <PencilOutlineIcon size={18}/>}
+
+                        // The control is a mode toggle, and a changed label on a
+                        // button that already holds focus is not reliably
+                        // re-announced.
+                        aria-pressed={editing}
+                        onClick={onToggleEdit}
+                    >
+                        {editing ? (
+                            <FormattedMessage
+                                id='docs.space.close'
+                                defaultMessage='Close'
+                            />
+                        ) : (
+                            <FormattedMessage
+                                id='docs.space.edit'
+                                defaultMessage='Edit'
+                            />
+                        )}
+                    </Button>
+                )}
+
+                {subject && (
+                    <>
                         <PageMenu
                             spaceId={space.id}
-                            pageId={page.id}
-                            pageTitle={page.title}
+                            pageId={subject.id}
+                            pageTitle={subject.title}
+                            isDraft={unpublished}
                             align='right'
                             tooltip={moreLabel}
                             trigger={(

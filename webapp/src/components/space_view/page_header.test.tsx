@@ -4,7 +4,7 @@
 import {fireEvent, screen} from '@testing-library/react';
 import React from 'react';
 
-import {makePage, makeSpace} from 'store/test_fixtures';
+import {makeDraft, makePage, makeSpace} from 'store/test_fixtures';
 
 import PageHeader from './page_header';
 
@@ -42,13 +42,13 @@ describe('PageHeader edit control', () => {
         renderHeader();
 
         expect(screen.getByRole('button', {name: 'Edit'})).toBeInTheDocument();
-        expect(screen.queryByRole('button', {name: 'Done'})).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Close'})).not.toBeInTheDocument();
     });
 
-    it('offers Done while editing', () => {
+    it('offers Close while editing', () => {
         renderHeader({editing: true});
 
-        expect(screen.getByRole('button', {name: 'Done'})).toBeInTheDocument();
+        expect(screen.getByRole('button', {name: 'Close'})).toBeInTheDocument();
         expect(screen.queryByRole('button', {name: 'Edit'})).not.toBeInTheDocument();
     });
 
@@ -63,7 +63,7 @@ describe('PageHeader edit control', () => {
     it('reports the pressed mode while editing', () => {
         renderHeader({editing: true});
 
-        expect(screen.getByRole('button', {name: 'Done'})).toHaveAttribute('aria-pressed', 'true');
+        expect(screen.getByRole('button', {name: 'Close'})).toHaveAttribute('aria-pressed', 'true');
     });
 
     it('reports a click on the control', () => {
@@ -79,5 +79,48 @@ describe('PageHeader edit control', () => {
         renderHeader({page: undefined});
 
         expect(screen.queryByRole('button', {name: 'Edit'})).not.toBeInTheDocument();
+    });
+});
+
+describe('PageHeader publish controls', () => {
+    const DRAFT = makeDraft('runbook', 'eng', 'Runbook');
+
+    // With no published page the draft *is* the page, so committing it creates one.
+    it('offers Publish while editing an unpublished page', () => {
+        renderHeader({page: undefined, draft: DRAFT, editing: true});
+
+        expect(screen.getByRole('button', {name: 'Publish'})).toBeEnabled();
+        expect(screen.queryByRole('button', {name: 'Update'})).not.toBeInTheDocument();
+    });
+
+    // Alongside a published page the same draft means unpublished edits to it.
+    it('offers Update while editing a page that has unpublished edits', () => {
+        renderHeader({draft: DRAFT, editing: true});
+
+        expect(screen.getByRole('button', {name: 'Update'})).toBeEnabled();
+        expect(screen.queryByRole('button', {name: 'Publish'})).not.toBeInTheDocument();
+    });
+
+    // Nothing to apply, so the control says so rather than failing when pressed.
+    it('disables Update when the page has no unpublished edits', () => {
+        renderHeader({editing: true});
+
+        expect(screen.getByRole('button', {name: 'Update'})).toBeDisabled();
+    });
+
+    it('shows neither while reading', () => {
+        renderHeader({draft: DRAFT});
+
+        expect(screen.queryByRole('button', {name: 'Update'})).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Publish'})).not.toBeInTheDocument();
+    });
+
+    it('publishes on click', () => {
+        const onPublish = jest.fn();
+        renderHeader({page: undefined, draft: DRAFT, editing: true, onPublish});
+
+        fireEvent.click(screen.getByRole('button', {name: 'Publish'}));
+
+        expect(onPublish).toHaveBeenCalled();
     });
 });

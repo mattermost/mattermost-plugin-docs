@@ -36,11 +36,9 @@ export function useDocsNavigation() {
 
     // Only a routed page can be edited, so the query alone doesn't mean edit mode:
     // ?edit=1 on a space or overview URL names nothing to edit and is ignored.
-    //
-    // A draft is unpublished work with no published version to read, so its route is
-    // always editing and carries no query — there is no reading mode to toggle to.
-    const isEditing = isDraft ||
-        (Boolean(pageId) && !isOverview && new URLSearchParams(search).get(EDIT_QUERY) === '1');
+    // Drafts read the same query as published pages — an unpublished page still has
+    // a rendered form worth reading before deciding to publish it.
+    const isEditing = Boolean(pageId) && !isOverview && new URLSearchParams(search).get(EDIT_QUERY) === '1';
 
     // `replace` for arrivals that follow the routed page ceasing to exist: the URL
     // being left is dead, so it shouldn't be somewhere Back can return to.
@@ -104,21 +102,21 @@ export function useDocsNavigation() {
 
 /**
  * Returns a handler that moves the routed page in and out of edit mode: into
- * `?edit=1` while reading, back to the bare page path while editing. Both are
- * pushes, so Back is an exit. A no-op when no page is routed, since there is
- * nothing to edit.
+ * `?edit=1` while reading, back to the bare path while editing. Both are pushes, so
+ * Back is an exit. A no-op when no page is routed, since there is nothing to edit.
+ *
+ * Works for a draft as well as a published page — the query rides on whichever
+ * address is current, so toggling never moves between the two.
  */
 export function useTogglePageEditMode(spaceId: string) {
-    const {pageId, isEditing, goToPage, goToEditPage} = useDocsNavigation();
+    const history = useHistory();
+    const {pageId, isDraft, isEditing, paths} = useDocsNavigation();
 
     return useCallback(() => {
         if (!pageId) {
             return;
         }
-        if (isEditing) {
-            goToPage(spaceId, pageId);
-        } else {
-            goToEditPage(spaceId, pageId);
-        }
-    }, [isEditing, pageId, spaceId, goToPage, goToEditPage]);
+        const base = isDraft ? paths.draft(spaceId, pageId) : paths.page(spaceId, pageId);
+        history.push(isEditing ? base : `${base}?${EDIT_QUERY}=1`);
+    }, [history, isDraft, isEditing, pageId, spaceId, paths]);
 }

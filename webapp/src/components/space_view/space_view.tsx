@@ -38,12 +38,9 @@ const SpaceView = ({space}: {space: Space}) => {
     const page = useAppSelector((state) => (pageId ? getPageInSpace(state, space.id, pageId) : undefined));
     const pagesLoaded = useAppSelector((state) => arePagesLoadedForSpace(state, space.id));
 
-    // Only the draft route loads a draft. Unpublished edits to a published page are
-    // the editor's concern; this view renders the page for those.
-    const {draft, loaded: draftLoaded} = usePageDraft(
-        isDraft ? space.id : undefined,
-        isDraft ? pageId : undefined,
-    );
+    // Loaded for any routed page, not just the draft route: a published page can
+    // have unpublished edits too, and that is what Update acts on.
+    const {draft, loaded: draftLoaded} = usePageDraft(space.id, pageId);
     const publish = usePublishDraft(space.id);
     const onPublish = useCallback(() => (pageId ? publish(pageId) : undefined), [publish, pageId]);
     const {pageCount, memberCount} = useSpaceStats(space.id);
