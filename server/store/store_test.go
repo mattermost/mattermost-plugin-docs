@@ -1863,21 +1863,28 @@ func TestNewConnectionPoolLimitEnforcedUnderConcurrency(t *testing.T) {
 	s := openTestDB(t)
 
 	const concurrent = 50
+	start := make(chan struct{})
 	var wg sync.WaitGroup
 	var maxObserved atomic.Int64
 	for range concurrent {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
+			<-start
 			_, err := s.RawExecForTest("SELECT pg_sleep(0.05)")
 			require.NoError(t, err)
-			if open := int64(s.DBStatsForTest().OpenConnections); open > maxObserved.Load() {
-				maxObserved.Store(open)
+			for {
+				open := int64(s.DBStatsForTest().OpenConnections)
+				prev := maxObserved.Load()
+				if open <= prev || maxObserved.CompareAndSwap(prev, open) {
+					break
+				}
 			}
-		}()
+		})
 	}
+	close(start)
 	wg.Wait()
 
 	require.LessOrEqual(t, int(maxObserved.Load()), store.PluginMaxOpenConnsForTest,
 		"observed open connections must never exceed the configured MaxOpenConns cap")
+	require.Positive(t, s.DBStatsForTest().WaitCount,
+		"at least one query must have waited for a connection to confirm the cap was actually exercised")
 }
