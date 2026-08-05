@@ -14,7 +14,7 @@ import {FormattedMessage, useIntl} from 'react-intl';
 import {hostCanUseEditor, hostGetEditor, hostSupportsDocumentEditor} from 'webapp_globals';
 import type {PublishedFormattingBarHandle, PublishedMarkdownMode, PublishedWysiwygEditorHandle} from 'webapp_globals';
 
-import {PrimaryButton, SecondaryButton} from 'components/form-controls/button';
+import {PrimaryButton, SecondaryButton} from 'components/form_controls/button';
 
 import type {Page} from 'types/docs';
 

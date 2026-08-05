@@ -4,7 +4,7 @@
 import React from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 
-import {DestructiveButton, PrimaryButton, SecondaryButton} from 'components/form-controls/button';
+import {DestructiveButton, PrimaryButton, SecondaryButton} from 'components/form_controls/button';
 import GenericModal from 'components/generic_modal/generic_modal';
 
 import styles from './exit_editor_dialog.module.scss';
