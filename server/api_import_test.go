@@ -33,6 +33,9 @@ type importMockOptions struct {
 	canCreateChannel bool
 	// teamName is returned by GetTeam, and is compared against the bundle's advisory team.
 	teamName string
+	// deactivatedActor makes GetUser report the acting user as deleted, which the read paths treat as
+	// lost entitlement.
+	deactivatedActor bool
 }
 
 // newImportMockAPI builds a plugintest API with only the stubs the import flow needs, so a test can
@@ -61,6 +64,13 @@ func newImportMockAPI(o importMockOptions) *plugintest.API {
 		name = "myteam"
 	}
 	api.On("GetTeam", mock.Anything).Return(&mmmodel.Team{Id: mmmodel.NewId(), Name: name}, nil).Maybe()
+
+	// Read paths re-resolve the actor to confirm they are still a live, active user.
+	actor := &mmmodel.User{Id: mmmodel.NewId()}
+	if o.deactivatedActor {
+		actor.DeleteAt = mmmodel.GetMillis()
+	}
+	api.On("GetUser", mock.Anything).Return(actor, nil).Maybe()
 
 	return api
 }
@@ -434,4 +444,161 @@ func TestHandleCreateImport_StagesPagesForWorker(t *testing.T) {
 	require.Empty(t, job.Confirmation.OverwriteConflicts)
 	// Retention gives the user a review window rather than expiring immediately.
 	require.Greater(t, job.RetainUntil, job.CreateAt)
+}
+
+func TestHandleCancelImport_ReleasesAdmissionCapacity(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
+	h := openTestPlugin(t, api)
+	actorID, teamID := mmmodel.NewId(), mmmodel.NewId()
+
+	rec := h.uploadFixture(t, actorID, newTargetRequest(teamID), importfixture.Options{Pages: 3})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	jobID := decodeJobView(t, rec).Id
+
+	before, err := h.store.GetImportCapacity()
+	require.NoError(t, err)
+	require.Greater(t, before.ReservedStagedBytes, int64(0))
+
+	cancel := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/cancel", actorID, nil)
+	require.Equal(t, http.StatusAccepted, cancel.Code, cancel.Body.String())
+	require.Equal(t, model.ImportStateCanceled, decodeJobView(t, cancel).State)
+
+	// The staged reservation is given back, so an abandoned upload cannot hold admission budget.
+	after, err := h.store.GetImportCapacity()
+	require.NoError(t, err)
+	require.Equal(t, int64(0), after.ReservedStagedBytes)
+
+	// The bodies are gone but the job and its issues survive for the report.
+	staged, err := h.store.CountImportStagedPages(jobID)
+	require.NoError(t, err)
+	require.Zero(t, staged)
+	job, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateCanceled, job.State)
+	require.Equal(t, model.ImportIntentCanceled, job.TerminalIntent)
+	require.Zero(t, job.StagedBytes)
+
+	// Cancelling twice is a conflict, not a second release.
+	again := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/cancel", actorID, nil)
+	require.Equal(t, http.StatusConflict, again.Code)
+
+	// Another user cannot cancel someone else's job, and cannot learn it exists.
+	other := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/cancel", mmmodel.NewId(), nil)
+	require.Equal(t, http.StatusNotFound, other.Code)
+}
+
+func TestHandleCreateImport_AdmissionLimitsConcurrentJobs(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+
+	// The per-actor nonterminal job cap is 3; each upload uses a distinct team so the per-target cap
+	// is not what trips first.
+	var jobIDs []string
+	for range 3 {
+		rec := h.uploadFixture(t, actorID, newTargetRequest(mmmodel.NewId()), importfixture.Options{Pages: 1})
+		require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+		jobIDs = append(jobIDs, decodeJobView(t, rec).Id)
+	}
+	blocked := h.uploadFixture(t, actorID, newTargetRequest(mmmodel.NewId()), importfixture.Options{Pages: 1})
+	require.Equal(t, http.StatusTooManyRequests, blocked.Code, blocked.Body.String())
+	// A capacity refusal tells the client when to come back rather than looking like a client error.
+	require.NotEmpty(t, blocked.Header().Get("Retry-After"))
+
+	// Cancelling one frees a slot, so the user is never permanently locked out.
+	cancel := h.do(t, http.MethodPost, "/api/v1/imports/"+jobIDs[0]+"/cancel", actorID, nil)
+	require.Equal(t, http.StatusAccepted, cancel.Code)
+	retry := h.uploadFixture(t, actorID, newTargetRequest(mmmodel.NewId()), importfixture.Options{Pages: 1})
+	require.Equal(t, http.StatusCreated, retry.Code, retry.Body.String())
+}
+
+func TestImportMaintenance_ExpiresAndReleases(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
+	h := openTestPlugin(t, api)
+	actorID, teamID := mmmodel.NewId(), mmmodel.NewId()
+
+	rec := h.uploadFixture(t, actorID, newTargetRequest(teamID), importfixture.Options{Pages: 2})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	jobID := decodeJobView(t, rec).Id
+
+	// Nothing is expired while the review window is open.
+	counts, err := h.plugin.service.RunImportMaintenance()
+	require.NoError(t, err)
+	require.Zero(t, counts.ExpiredJobs)
+
+	// Backdate the deadline to simulate an abandoned upload. This job is a new-Space target, so it sits
+	// in queued_preflight rather than waiting on the user — expiry has to reclaim that state too, or a
+	// job with no worker to advance it would hold its admission budget forever.
+	_, err = h.db.Exec(`UPDATE DOCS_ImportJob SET RetainUntil = 1 WHERE Id = $1`, jobID)
+	require.NoError(t, err)
+
+	counts, err = h.plugin.service.RunImportMaintenance()
+	require.NoError(t, err)
+	require.Equal(t, 1, counts.ExpiredJobs)
+	require.Greater(t, counts.ReleasedStagedBytes, int64(0))
+
+	job, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateCanceled, job.State)
+	require.Zero(t, job.StagedBytes)
+
+	capacity, err := h.store.GetImportCapacity()
+	require.NoError(t, err)
+	require.Zero(t, capacity.ReservedStagedBytes)
+
+	// Past the 90-day terminal retention the job itself is deleted and its retained reservation freed.
+	_, err = h.db.Exec(`UPDATE DOCS_ImportJob SET RetainUntil = 1 WHERE Id = $1`, jobID)
+	require.NoError(t, err)
+	counts, err = h.plugin.service.RunImportMaintenance()
+	require.NoError(t, err)
+	require.Equal(t, 1, counts.DeletedJobs)
+	_, err = h.store.GetImportJob(jobID)
+	require.Error(t, err)
+
+	capacity, err = h.store.GetImportCapacity()
+	require.NoError(t, err)
+	require.Zero(t, capacity.ReservedRetainedBytes)
+}
+
+func TestHandleGetImport_EntitlementLoss(t *testing.T) {
+	// The actor owns the job but has lost access to the existing target Space: the job stays visible
+	// as a minimal record, while its issues become invisible.
+	api := newEnabledMockAPI()
+	api.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
+	api.On("GetTeam", mock.Anything).Return(&mmmodel.Team{Id: mmmodel.NewId(), Name: "myteam"}, nil).Maybe()
+	api.On("HasPermissionToTeam", mock.Anything, mock.Anything, mock.Anything).Return(true).Maybe()
+	api.On("GetUser", mock.Anything).Return(&mmmodel.User{Id: mmmodel.NewId()}, nil).Maybe()
+	// Channel membership is granted for the upload and revoked afterwards.
+	membership := api.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil)
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+	space := seedSpace(t, h.store, mmmodel.NewId())
+
+	rec := h.uploadFixture(t, actorID, existingTargetRequest(space.Id), importfixture.Options{Pages: 2, WithFindings: true})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	jobID := decodeJobView(t, rec).Id
+
+	// Revoke Space access.
+	membership.Unset()
+	api.On("GetChannelMember", mock.Anything, mock.Anything).
+		Return(nil, mmmodel.NewAppError("GetChannelMember", "not_found", nil, "", http.StatusNotFound)).Maybe()
+
+	got := h.do(t, http.MethodGet, "/api/v1/imports/"+jobID, actorID, nil)
+	require.Equal(t, http.StatusOK, got.Code)
+	view := decodeJobView(t, got)
+	require.Equal(t, jobID, view.Id)
+	// Nothing target- or source-identifying survives the downgrade.
+	require.Empty(t, view.Target.SpaceId)
+	require.Empty(t, view.Target.TeamId)
+	require.Zero(t, view.Bundle.Counts.Pages)
+	require.Empty(t, view.Bundle.Source.SpaceKey)
+
+	// Sensitive per-page detail is hidden outright.
+	issues := h.do(t, http.MethodGet, "/api/v1/imports/"+jobID+"/issues", actorID, nil)
+	require.Equal(t, http.StatusNotFound, issues.Code)
+
+	// And the job drops out of the listing rather than appearing as a stub.
+	list := h.do(t, http.MethodGet, "/api/v1/imports", actorID, nil)
+	require.Equal(t, http.StatusOK, list.Code)
+	require.Contains(t, list.Body.String(), `"items":[]`)
 }

@@ -31,17 +31,83 @@ func TestCanonicalize_RejectsTrailingDelimiter(t *testing.T) {
 	}
 }
 
-func TestCanonicalize_PreservesUnknownTypes(t *testing.T) {
+// TestCanonicalize_RejectsUnknownNodeTypes pins the security-relevant reversal: an unknown node type
+// is rejected rather than preserved, because preserving it is exactly how unsanitized content would
+// reach storage. Imported content goes through the same allowlist as browser-supplied content.
+func TestCanonicalize_RejectsUnknownNodeTypes(t *testing.T) {
 	body := `{"type":"doc","content":[{"type":"customWidget","attrs":{"foo":"bar"},"content":[{"type":"text","text":"hi"}]}]}`
-	canon, search, _, err := CanonicalizeAndExtractSearchText(body)
+	_, _, _, err := CanonicalizeAndExtractSearchText(body)
+	if te, ok := err.(*TipTapError); !ok || te.Code != TipTapErrSanitizerRejected {
+		t.Fatalf("err = %v, want %s", err, TipTapErrSanitizerRejected)
+	}
+}
+
+// TestCanonicalize_RunsSharedSanitizer proves the shared sanitizer is actually applied to imported
+// content: a script-bearing URL is neutralized and an event-handler attribute is stripped, rather
+// than being canonicalized through into staging.
+func TestCanonicalize_RunsSharedSanitizer(t *testing.T) {
+	doc := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "paragraph",
+				"content": []any{
+					map[string]any{
+						"type": "text",
+						"text": "click me",
+						"marks": []any{map[string]any{
+							"type":  "link",
+							"attrs": map[string]any{"href": "javascript:alert(1)", "onclick": "steal()"},
+						}},
+					},
+				},
+			},
+			map[string]any{"type": "image", "attrs": map[string]any{
+				"src": "vbscript:evil", "style": "position:fixed",
+			}},
+		},
+	}
+	canon, _, _, err := CanonicalizeAndExtractSearchText(marshal(doc))
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
-	if !strings.Contains(canon, "customWidget") || !strings.Contains(canon, "bar") {
-		t.Errorf("unknown node/attr not preserved: %s", canon)
+	for _, forbidden := range []string{"javascript:", "vbscript:", "onclick", "position:fixed"} {
+		if strings.Contains(canon, forbidden) {
+			t.Errorf("canonical body still contains %q: %s", forbidden, canon)
+		}
 	}
-	if search != "hi" {
-		t.Errorf("search = %q, want hi", search)
+}
+
+// TestCanonicalize_KeepsPlaceholdersThroughSanitizer confirms the Confluence placeholders survive
+// URL sanitization: they carry no scheme, so the allowlist treats them as relative references.
+func TestCanonicalize_KeepsPlaceholdersThroughSanitizer(t *testing.T) {
+	doc := map[string]any{
+		"type": "doc",
+		"content": []any{
+			map[string]any{
+				"type": "paragraph",
+				"content": []any{
+					map[string]any{
+						"type": "text",
+						"text": "see page",
+						"marks": []any{map[string]any{
+							"type":  "link",
+							"attrs": map[string]any{"href": "{{CONF_PAGE_ID:101}}"},
+						}},
+					},
+				},
+			},
+		},
+	}
+	canon, _, links, err := CanonicalizeAndExtractSearchText(marshal(doc))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if !strings.Contains(canon, "{{CONF_PAGE_ID:101}}") {
+		t.Errorf("placeholder did not survive sanitization: %s", canon)
+	}
+	if len(links) != 1 || links[0].Kind != LinkKindPageID || links[0].Target != "101" {
+		t.Errorf("placeholder not discovered after sanitization: %+v", links)
 	}
 }
 
@@ -55,11 +121,11 @@ func TestCanonicalize_RejectsNonArrayContent(t *testing.T) {
 }
 
 func TestCanonicalize_RejectsMissingNodeType(t *testing.T) {
-	// A child node with no type is structurally invalid, not an unknown type.
+	// A child node with no type is structurally invalid; the shared sanitizer rejects it first.
 	body := `{"type":"doc","content":[{"attrs":{"x":1},"content":[{"type":"text","text":"hi"}]}]}`
 	_, _, _, err := CanonicalizeAndExtractSearchText(body)
-	if te, ok := err.(*TipTapError); !ok || te.Code != TipTapErrMissingType {
-		t.Fatalf("err = %v, want %s", err, TipTapErrMissingType)
+	if te, ok := err.(*TipTapError); !ok || te.Code != TipTapErrSanitizerRejected {
+		t.Fatalf("err = %v, want %s", err, TipTapErrSanitizerRejected)
 	}
 }
 

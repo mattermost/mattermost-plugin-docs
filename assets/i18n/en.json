@@ -88,6 +88,10 @@
     "translation": "The import bundle exceeds an allowed size limit ({{.Code}})."
   },
   {
+    "id": "app.import.cancel.already_terminal.app_error",
+    "translation": "This import has already finished and cannot be canceled."
+  },
+  {
     "id": "app.import.create.invalid_bundle_digest.app_error",
     "translation": "The import bundle checksum could not be computed."
   },
@@ -98,6 +102,10 @@
   {
     "id": "app.import.create.nil_request.app_error",
     "translation": "The import request is missing."
+  },
+  {
+    "id": "app.import.entitlement.lookup_failed.app_error",
+    "translation": "Your access to the import target could not be verified."
   },
   {
     "id": "app.import.get.invalid_id.app_error",
@@ -708,12 +716,24 @@
     "translation": "The confirmation approves more than {{.Max}} pages for overwrite."
   },
   {
+    "id": "model.import_details.invalid.app_error",
+    "translation": "The {{.Field}} could not be encoded."
+  },
+  {
+    "id": "model.import_details.too_large.app_error",
+    "translation": "The {{.Field}} must be {{.MaxBytes}} bytes or smaller."
+  },
+  {
     "id": "model.import_issue.is_valid.code.app_error",
     "translation": "The import issue code is required and must be {{.MaxLength}} characters or fewer."
   },
   {
     "id": "model.import_issue.is_valid.external_id.app_error",
     "translation": "The import issue source identifier is not valid."
+  },
+  {
+    "id": "model.import_issue.is_valid.local_id.app_error",
+    "translation": "The import issue local page id is not valid."
   },
   {
     "id": "model.import_issue.is_valid.message.app_error",
@@ -726,6 +746,14 @@
   {
     "id": "model.import_issue.is_valid.stage.app_error",
     "translation": "The import issue stage is not valid."
+  },
+  {
+    "id": "model.import_issue.is_valid.text_too_long.app_error",
+    "translation": "An import issue message must be {{.MaxBytes}} bytes or smaller."
+  },
+  {
+    "id": "model.import_issue.is_valid.title_too_long.app_error",
+    "translation": "An import issue title must be {{.MaxLength}} characters or fewer."
   },
   {
     "id": "model.import_job.is_valid.actor_id.app_error",
@@ -808,8 +836,16 @@
     "translation": "The import result action is not valid."
   },
   {
+    "id": "model.import_result.is_valid.entity_type.app_error",
+    "translation": "The import result entity type is not supported."
+  },
+  {
     "id": "model.import_result.is_valid.external_id.app_error",
     "translation": "The import result source identifier is not valid."
+  },
+  {
+    "id": "model.import_result.is_valid.local_id.app_error",
+    "translation": "The import result local page id is not valid."
   },
   {
     "id": "model.import_result.is_valid.ordinal.app_error",
@@ -820,8 +856,20 @@
     "translation": "The import result outcome is not valid."
   },
   {
+    "id": "model.import_result.is_valid.outcome_required.app_error",
+    "translation": "The import result outcome is required."
+  },
+  {
     "id": "model.import_result.is_valid.stage.app_error",
     "translation": "The import result stage is not valid."
+  },
+  {
+    "id": "model.import_result.is_valid.timestamps.app_error",
+    "translation": "The import result timestamps are not set."
+  },
+  {
+    "id": "model.import_result.is_valid.title_too_long.app_error",
+    "translation": "An import result title must be {{.MaxLength}} characters or fewer."
   },
   {
     "id": "model.import_source.is_valid.created_by.app_error",

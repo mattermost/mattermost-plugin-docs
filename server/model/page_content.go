@@ -139,6 +139,14 @@ const maxTipTapDepth = 100
 // rich documents with ~5 inline nodes per paragraph stay well under 50 000 for any sane document.
 const maxTipTapNodes = 50_000
 
+// MaxTipTapNodes and MaxTipTapDepth expose the sanitizer's bounds to other packages (notably the
+// Confluence importer) so there is exactly one node-count and nesting limit for stored content
+// rather than two that can drift apart.
+const (
+	MaxTipTapNodes = maxTipTapNodes
+	MaxTipTapDepth = maxTipTapDepth
+)
+
 var errAttrDepthExceeded = errors.New("content attribute nesting exceeds the maximum depth")
 
 func sanitizeTipTapDocument(doc *TipTapDocument) error {

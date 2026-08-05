@@ -28,6 +28,15 @@ const (
 	importPartBundle  = "bundle"
 )
 
+// abandonPart discards a rejected multipart part *without reading it*.
+//
+// multipart.Part.Close drains whatever is unread (io.Copy to io.Discard), so calling it on a
+// mis-ordered or unexpected part would make the server consume the whole body — potentially a 250 MiB
+// archive — before the request is refused, and before either authorization or the inspection
+// semaphore has been consulted. Returning without reading leaves the unread body to net/http, which
+// closes the connection rather than draining an oversized one.
+func abandonPart(_ *multipart.Part) {}
+
 // handleCreateImport handles POST /api/v1/imports/preflight.
 //
 // The multipart parts are required in order — `request` first, `bundle` second — so the small JSON
@@ -57,11 +66,13 @@ func (p *Plugin) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if requestPart.FormName() != importPartRequest {
-		_ = requestPart.Close()
+		abandonPart(requestPart)
 		p.writeAppError(w, mmmodel.NewAppError("handleCreateImport", "api.import.request_part_not_first.app_error", nil, "", http.StatusBadRequest))
 		return
 	}
 	uploadRequest, appErr := decodeImportRequestPart(requestPart)
+	// The request part is bounded at MaxRequestPartBytes and has just been read, so closing it drains
+	// at most that much.
 	_ = requestPart.Close()
 	if appErr != nil {
 		p.writeAppError(w, appErr)
@@ -91,7 +102,7 @@ func (p *Plugin) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bundlePart.FormName() != importPartBundle {
-		_ = bundlePart.Close()
+		abandonPart(bundlePart)
 		p.writeAppError(w, mmmodel.NewAppError("handleCreateImport", "api.import.bundle_part_not_second.app_error", nil, "", http.StatusBadRequest))
 		return
 	}
@@ -109,7 +120,7 @@ func (p *Plugin) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 
 	// Reject any further parts rather than ignoring them, so a second archive cannot ride along.
 	if extra, extraErr := reader.NextPart(); extraErr == nil {
-		_ = extra.Close()
+		abandonPart(extra)
 		p.writeAppError(w, mmmodel.NewAppError("handleCreateImport", "api.import.unknown_part.app_error", nil, "", http.StatusBadRequest))
 		return
 	} else if !errors.Is(extraErr, io.EOF) {
@@ -119,6 +130,11 @@ func (p *Plugin) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 
 	view, appErr := p.service.CreateImportFromBundle(actorID, target, file, size, sum)
 	if appErr != nil {
+		// Admission exhaustion surfaces from the staging transaction as a 429; give it the same
+		// Retry-After hint the semaphore path sends, so a client never has to guess for one of them.
+		if appErr.StatusCode == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", importRetryAfterSeconds)
+		}
 		p.writeAppError(w, appErr)
 		return
 	}
@@ -179,6 +195,21 @@ func multipartReadError(where string, err error) *mmmodel.AppError {
 func isMaxBytesError(err error) bool {
 	var maxBytesErr *http.MaxBytesError
 	return errors.As(err, &maxBytesErr)
+}
+
+// handleCancelImport handles POST /api/v1/imports/{job_id}/cancel. Cancelling releases the admission
+// capacity the job held, so it is the user's way out of a stuck or unwanted import.
+func (p *Plugin) handleCancelImport(w http.ResponseWriter, r *http.Request) {
+	actorID := userIDFromRequest(r)
+	jobID := mux.Vars(r)["job_id"]
+	view, appErr := p.service.CancelImportJob(jobID, actorID)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
+	}
+	// 202: the job is durably canceled, but any already-committed work is deliberately left in place
+	// rather than rolled back.
+	writeJSON(w, http.StatusAccepted, view)
 }
 
 // handleGetImport handles GET /api/v1/imports/{job_id}.

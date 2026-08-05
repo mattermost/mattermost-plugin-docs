@@ -9,8 +9,9 @@ back.
 > target) and stays there. That is the expected end state for now — see
 > `implementation-plans/confluence-page-import.md`, phases 4 and 5.
 >
-> **Single node only.** V1 runs one importer worker on one application node and is explicitly
-> unsupported on clustered deployments until the HA follow-up lands.
+> **Single node only.** V1 is designed for one importer worker on one application node, and is
+> explicitly unsupported on clustered deployments until the HA follow-up lands. Only the hourly
+> maintenance sweep runs today; the job-processing worker arrives with phase 4.
 
 ## Prerequisites
 
@@ -151,6 +152,29 @@ With `-with-findings` you should see codes such as:
 Note that issue visibility is **actor-only**: another user requesting your job gets `404` (not
 `403`), so the endpoint cannot be used to probe for someone else's import.
 
+## 4b. Cancel a job and watch capacity come back
+
+Admission bounds how many jobs and how many staged bytes one user may hold (3 jobs, 512 MiB), so
+cancelling is how you give that budget back:
+
+```bash
+curl -sS -X POST "$API/imports/$JOB/cancel" -H "$AUTH" | jq '{id, state}'   # 202, state "canceled"
+```
+
+Uploading a fourth concurrent bundle returns `429` with `Retry-After`; cancelling one lets the next
+upload through. Cancelling deletes the staged page bodies and releases the reservation while keeping
+the job and its issues, so the report still reads back.
+
+The hourly maintenance sweep does the same automatically: any pre-execution job past its seven-day
+deadline is canceled with `job_expired`, terminal staged bodies are purged after seven days, and jobs
+are deleted after ninety — each step releasing what it held. One pass also runs at activation, so a
+restart reclaims anything abandoned while the server was down. Watch for:
+
+```text
+Import maintenance pass completed  expired_jobs=1 purged_staged_jobs=0 deleted_jobs=0
+  released_staged_bytes=20480
+```
+
 ## 5. Verify the rejection paths
 
 Each mode breaks exactly one contract rule:
@@ -235,6 +259,7 @@ SELECT Ordinal, SourceLine, ExternalId, Restricted FROM DOCS_ImportStagedPage
 SELECT Ordinal, AccountId, MattermostUsername FROM DOCS_ImportManifestUser WHERE JobId = '<job id>';
 SELECT Stage, Severity, Code FROM DOCS_ImportIssue WHERE JobId = '<job id>' ORDER BY Ordinal;
 -- Admission reserved this job's bytes on the shared singleton row.
+-- Reservations must return to zero once every job is canceled, purged, or deleted.
 SELECT * FROM DOCS_ImportCapacity;
 ```
 
