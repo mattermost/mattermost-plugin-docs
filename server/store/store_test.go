@@ -615,7 +615,7 @@ func TestFetchDescendantRowsByteBudgetAllowed(t *testing.T) {
 	s := openTestDB(t)
 	channelID, root := seedSpaceAndPage(t, s)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		child := newPage(root.SpaceId, channelID, mmmodel.NewId(), root.Id)
 		child.Body = fmt.Sprintf("small body %d", i)
 		_, err := s.CreatePage(child, testDefaultMaxDepth)

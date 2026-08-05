@@ -684,7 +684,9 @@ func (s *Store) fetchDescendantRows(e sqlx.ExtContext, pageID string) ([]*model.
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to find descendants for page_id=%s", pageID)
 	}
-	defer sqlRows.Close()
+	defer func() {
+		_ = sqlRows.Close()
+	}()
 
 	var pages []*model.Page
 	var totalBytes int
@@ -704,7 +706,7 @@ func (s *Store) fetchDescendantRows(e sqlx.ExtContext, pageID string) ([]*model.
 			return nil, &ErrLimitExceeded{Resource: "Page descendants for page_id=" + pageID + " (depth)", Limit: MaxPageHierarchyDepth}
 		}
 
-		totalBytes += len(row.Page.Body) + len(row.Page.SearchText)
+		totalBytes += len(row.Body) + len(row.SearchText)
 		if totalBytes > MaxPageDescendantsTotalBytes {
 			return nil, &ErrLimitExceeded{
 				Resource: "Page descendants for page_id=" + pageID + " (bytes)",
