@@ -71,6 +71,12 @@ export const EDIT_QUERY = 'edit';
 export const RHS_QUERY = 'rhs';
 export const RHS_VIEW_QUERY = 'rhsView';
 
+// Fullscreen hides the spaces sidebar to give the page the window. A query for the
+// same reason as the others, and because the two ends of it — the sidebar at the
+// product root and the control in the page header — have no state to share
+// otherwise.
+export const FULLSCREEN_QUERY = 'fs';
+
 export const editPagePath = (teamName: string, spaceId: string, pageId: string): string =>
     `${pagePath(teamName, spaceId, pageId)}?${EDIT_QUERY}=1`;
 

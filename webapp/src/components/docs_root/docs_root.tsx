@@ -2,6 +2,7 @@
 // See LICENSE.txt for license information.
 
 import {useBootstrapDocs} from 'hooks/bootstrap';
+import {useFullscreen} from 'hooks/fullscreen';
 import {useDocsNavigation} from 'hooks/navigation';
 import {useSidebarWidth} from 'hooks/sidebar_width';
 import {useRecordSpaceView} from 'hooks/spaces';
@@ -35,6 +36,10 @@ const DocsRoot = () => {
     const {spaceId} = useDocsNavigation();
     const {width, setWidth, commitWidth} = useSidebarWidth('spaces', DEFAULT_SPACES_WIDTH);
 
+    // Fullscreen gives the page the window by dropping this column; the space header
+    // grows a "Back to all spaces" control to stand in for it.
+    const {fullscreen} = useFullscreen();
+
     useRecordSpaceView(spaceId);
 
     const [switcherOpen, setSwitcherOpen] = useState(false);
@@ -53,26 +58,28 @@ const DocsRoot = () => {
 
     return (
         <div className={styles.root}>
-            <div
-                className={styles.sidebar}
-                style={{width}}
-            >
-                <SpacesSidebar
-                    onOpenSwitcher={openSwitcher}
-                    onCreateSpace={openCreateSpace}
-                />
-                <ResizableDivider
-                    ariaLabel={formatMessage({id: 'docs.sidebar.resizeSpaces', defaultMessage: 'Resize spaces sidebar'})}
-                    side='left'
-                    scrollbarClearance={SPACES_SCROLLBAR_CLEARANCE}
-                    width={width}
-                    minWidth={MIN_SPACES_WIDTH}
-                    maxWidth={MAX_SPACES_WIDTH}
-                    defaultWidth={DEFAULT_SPACES_WIDTH}
-                    onResize={setWidth}
-                    onResizeEnd={commitWidth}
-                />
-            </div>
+            {!fullscreen && (
+                <div
+                    className={styles.sidebar}
+                    style={{width}}
+                >
+                    <SpacesSidebar
+                        onOpenSwitcher={openSwitcher}
+                        onCreateSpace={openCreateSpace}
+                    />
+                    <ResizableDivider
+                        ariaLabel={formatMessage({id: 'docs.sidebar.resizeSpaces', defaultMessage: 'Resize spaces sidebar'})}
+                        side='left'
+                        scrollbarClearance={SPACES_SCROLLBAR_CLEARANCE}
+                        width={width}
+                        minWidth={MIN_SPACES_WIDTH}
+                        maxWidth={MAX_SPACES_WIDTH}
+                        defaultWidth={DEFAULT_SPACES_WIDTH}
+                        onResize={setWidth}
+                        onResizeEnd={commitWidth}
+                    />
+                </div>
+            )}
             <main className={styles.main}>
                 <DocsMainContent
                     onCreateSpace={openCreateSpace}

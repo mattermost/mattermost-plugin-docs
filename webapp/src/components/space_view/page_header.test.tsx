@@ -163,3 +163,30 @@ describe('PageHeader comments control', () => {
     });
 });
 
+// The control lives here while the sidebar it hides belongs to the product root, so
+// the mode travels in the URL — these assert this end of it.
+describe('PageHeader fullscreen control', () => {
+    it('offers fullscreen while windowed', () => {
+        renderHeader();
+
+        expect(screen.getByRole('button', {name: 'Expand'})).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    it('offers the way out while fullscreen', () => {
+        renderHeader({}, `${PAGE_URL}?fs=1`);
+
+        const control = screen.getByRole('button', {name: 'Exit fullscreen'});
+        expect(control).toHaveAttribute('aria-pressed', 'true');
+        expect(screen.queryByRole('button', {name: 'Expand'})).not.toBeInTheDocument();
+    });
+
+    it('enters fullscreen without pushing a history entry', () => {
+        const {history} = renderHeader();
+        const before = history.length;
+
+        fireEvent.click(screen.getByRole('button', {name: 'Expand'}));
+
+        expect(history.location.search).toBe('?fs=1');
+        expect(history.length).toBe(before);
+    });
+});

@@ -3,6 +3,7 @@
 
 import classNames from 'classnames';
 import {useSpaceFavoriteState, useToggleFavorite} from 'hooks/favorites';
+import {useFullscreen} from 'hooks/fullscreen';
 import {useLeaveSpace} from 'hooks/leave_space';
 import {useDocsNavigation} from 'hooks/navigation';
 import {useAppDispatch} from 'hooks/redux';
@@ -13,6 +14,7 @@ import {SpaceIcon} from 'utils/space_icon';
 
 import AccountMultipleOutlineIcon from '@mattermost/compass-icons/components/account-multiple-outline';
 import ArchiveOutlineIcon from '@mattermost/compass-icons/components/archive-outline';
+import ArrowLeftIcon from '@mattermost/compass-icons/components/arrow-left';
 import ChevronDownIcon from '@mattermost/compass-icons/components/chevron-down';
 import CogOutlineIcon from '@mattermost/compass-icons/components/cog-outline';
 import ExitToAppIcon from '@mattermost/compass-icons/components/exit-to-app';
@@ -53,6 +55,7 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}
     const dispatch = useAppDispatch();
     const {paths, spaceId, goHome} = useDocsNavigation();
     const {canManageMembers} = useSpacePermissions(space.id);
+    const {fullscreen} = useFullscreen();
     const leaveThisSpace = useLeaveSpace(space);
     const favoriteState = useSpaceFavoriteState(space.id);
     const toggleFavorite = useToggleFavorite();
@@ -188,6 +191,22 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}
     // itself is named by `ariaLabel` on the popup.
     const left = (
         <div className={styles.leftCluster}>
+            {fullscreen && (
+
+                // Stands in for the hidden spaces sidebar: in fullscreen this is the
+                // only way back to the list.
+                <Button
+                    emphasis='tertiary'
+                    size='sm'
+                    leadingIcon={<ArrowLeftIcon size={16}/>}
+                    onClick={goHome}
+                >
+                    <FormattedMessage
+                        id='docs.space.allSpaces'
+                        defaultMessage='All spaces'
+                    />
+                </Button>
+            )}
             <Button
                 emphasis='quaternary'
                 size='sm'

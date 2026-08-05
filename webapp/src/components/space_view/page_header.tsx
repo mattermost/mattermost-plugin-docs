@@ -2,13 +2,15 @@
 // See LICENSE.txt for license information.
 
 import classNames from 'classnames';
+import {useFullscreen} from 'hooks/fullscreen';
 import {useCreateRootPage} from 'hooks/pages';
 import {useSidebarWidth} from 'hooks/sidebar_width';
 import React, {useState} from 'react';
-import {FormattedMessage, useIntl} from 'react-intl';
+import {FormattedMessage, defineMessage, useIntl} from 'react-intl';
 import {Timestamp} from 'webapp_globals';
 import type {TimestampUnit} from 'webapp_globals';
 
+import ArrowCollapseIcon from '@mattermost/compass-icons/components/arrow-collapse';
 import ArrowExpandIcon from '@mattermost/compass-icons/components/arrow-expand';
 import CheckIcon from '@mattermost/compass-icons/components/check';
 import DotsHorizontalIcon from '@mattermost/compass-icons/components/dots-horizontal';
@@ -42,6 +44,12 @@ export const PAGES_KEYBOARD_HELP_ID = 'docsPageTreeHelp';
 // from the sidebar width to land on the sidebar's right edge.
 const BAR_INLINE_START_PADDING = 8;
 
+// Descriptors rather than inline objects: the expand control picks between them, and
+// a bare object inside a conditional isn't statically analyzable, so extraction would
+// miss both.
+const EXPAND_LABEL = defineMessage({id: 'docs.space.expand', defaultMessage: 'Expand'});
+const EXIT_FULLSCREEN_LABEL = defineMessage({id: 'docs.space.exitFullscreen', defaultMessage: 'Exit fullscreen'});
+
 // Relative "Updated …" buckets for the host Timestamp.
 const UPDATED_TIME_SPEC: TimestampUnit[] = [
     ['minute', -59],
@@ -72,12 +80,16 @@ type Props = {
     onPublish: () => void;
 };
 
-// Overflow and expand are visual scaffolding wired in later passes; the pages toggle
-// drives the page tree panel, Comments opens its right-hand panel, and Edit/Close
-// plus Publish/Update are live.
+// Overflow is visual scaffolding wired in a later pass; the pages toggle drives the
+// page tree panel, Comments opens its right-hand panel, expand goes fullscreen, and
+// Edit/Close plus Publish/Update are live.
 const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogglePages, onToggleComments, onToggleEdit, onPublish}: Props) => {
     const {formatMessage} = useIntl();
     const createRootPage = useCreateRootPage(space.id);
+
+    // Read here rather than passed in: the sidebar it hides belongs to the product
+    // root, which shares no state with this header — see useFullscreen.
+    const {fullscreen, toggleFullscreen} = useFullscreen();
     const [publishing, setPublishing] = useState(false);
 
     // Publishing navigates on success, so the guard is against a second click during
@@ -98,7 +110,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
     const addPageLabel = formatMessage({id: 'docs.pageTree.add', defaultMessage: 'Add page'});
     const commentsLabel = formatMessage({id: 'docs.space.comments', defaultMessage: 'Comments'});
     const moreLabel = formatMessage({id: 'docs.space.more', defaultMessage: 'More actions'});
-    const expandLabel = formatMessage({id: 'docs.space.expand', defaultMessage: 'Expand'});
+    const expandLabel = formatMessage(fullscreen ? EXIT_FULLSCREEN_LABEL : EXPAND_LABEL);
     const updateLabel = formatMessage({id: 'docs.space.update', defaultMessage: 'Update'});
     const noChangesLabel = formatMessage({id: 'docs.space.noUnpublishedChanges', defaultMessage: 'No unpublished changes'});
 
@@ -279,9 +291,11 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                         <Button
                             emphasis='quaternary'
                             size='sm'
-                            className='btn-icon'
+                            className={classNames('btn-icon', {active: fullscreen})}
                             tooltip={expandLabel}
-                            leadingIcon={<ArrowExpandIcon size={18}/>}
+                            aria-pressed={fullscreen}
+                            leadingIcon={fullscreen ? <ArrowCollapseIcon size={18}/> : <ArrowExpandIcon size={18}/>}
+                            onClick={toggleFullscreen}
                         />
                     </>
                 )}
