@@ -9,9 +9,10 @@ import {getCurrentTeamId, getMyTeams} from 'mattermost-redux/selectors/entities/
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
 import type {CreatePageInput, CreateSpaceInput, Page, Space, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
+import type {Draft, DraftPatch} from 'types/drafts';
 import type {DocsThunkAction} from 'types/store';
 
-import {PageTypes, SpaceTypes} from './action_types';
+import {DraftTypes, PageTypes, SpaceTypes} from './action_types';
 import {collectSubtreeIds} from './entities';
 import {getPage, getPagesById, getSpace} from './selectors';
 
@@ -137,6 +138,85 @@ export function deletePage(spaceId: string, pageId: string): DocsThunkAction<Pro
         const pageIds = [...collectSubtreeIds(getPagesById(getState()), pageId)];
         await docsDataSource.deletePage(spaceId, pageId);
         dispatch({type: PageTypes.DELETED_PAGE, pageId, spaceId, pageIds});
+    };
+}
+
+// The caller's drafts for a space. Seeds the index entry even when there are none,
+// so consumers can tell "no drafts" from "not fetched". A failed load leaves the
+// space's drafts unknown rather than pretending it has none.
+export function fetchDrafts(spaceId: string): DocsThunkAction<Promise<void>> {
+    return async (dispatch) => {
+        try {
+            const drafts = await docsDataSource.listSpaceDrafts(spaceId);
+            dispatch({type: DraftTypes.RECEIVED_DRAFTS, drafts, spaceId});
+        } catch (error) {
+            // eslint-disable-next-line no-console
+            console.error('Docs: failed to load drafts', error);
+        }
+    };
+}
+
+// Loads one draft with its body (the space list carries metadata only). Returns
+// the draft, or undefined when the page has none. Rejects on failure so the editor
+// can tell "no draft" apart from "could not tell".
+export function fetchPageDraft(spaceId: string, pageId: string, signal?: AbortSignal): DocsThunkAction<Promise<Draft | undefined>> {
+    return async (dispatch) => {
+        const draft = await docsDataSource.getPageDraft(spaceId, pageId, signal);
+        if (draft) {
+            dispatch({type: DraftTypes.RECEIVED_DRAFT, draft});
+        }
+        return draft;
+    };
+}
+
+/**
+ * Reserves a page id and creates a draft for a page that does not exist yet.
+ *
+ * `base_edit_at` stays 0 for the draft's lifetime, which is what marks it as a new
+ * page rather than an edit to an existing one.
+ */
+export function createDraft(spaceId: string, title: string, parentId = ''): DocsThunkAction<Promise<Draft>> {
+    return async (dispatch) => {
+        const draft = await docsDataSource.createSpaceDraft(spaceId, title, parentId);
+        dispatch({type: DraftTypes.RECEIVED_DRAFT, draft});
+        return draft;
+    };
+}
+
+// Autosave. The caller owns the debounce and the in-flight bookkeeping; this is
+// just the write and the store update.
+export function saveDraft(spaceId: string, pageId: string, patch: DraftPatch, signal?: AbortSignal): DocsThunkAction<Promise<Draft>> {
+    return async (dispatch) => {
+        const draft = await docsDataSource.updatePageDraft(spaceId, pageId, patch, signal);
+        dispatch({type: DraftTypes.RECEIVED_DRAFT, draft});
+        return draft;
+    };
+}
+
+// Discards unpublished work. For an orphan draft this destroys the unpublished page
+// outright; for an edit it leaves the published page as it was.
+export function discardDraft(spaceId: string, pageId: string): DocsThunkAction<Promise<void>> {
+    return async (dispatch) => {
+        await docsDataSource.deletePageDraft(spaceId, pageId);
+        dispatch({type: DraftTypes.DELETED_DRAFT, spaceId, pageId});
+    };
+}
+
+/**
+ * Publishes a draft into its page and removes the draft.
+ *
+ * One dispatch, not two: the tree reads pages and orphan drafts from the same
+ * render, so removing the draft and adding the page separately shows a frame with
+ * both — the new page appearing twice.
+ *
+ * Rejects with PublishConflictError when the page moved underneath the draft; the
+ * caller decides whether to offer force (see PublishConflictError.isForceable).
+ */
+export function publishDraft(spaceId: string, pageId: string, force = false): DocsThunkAction<Promise<Page>> {
+    return async (dispatch) => {
+        const page = await docsDataSource.publishPageDraft(spaceId, pageId, force);
+        dispatch({type: DraftTypes.PUBLISHED_DRAFT, spaceId, pageId, page});
+        return page;
     };
 }
 

@@ -23,6 +23,8 @@ const EMPTY_DOCS_ENTITIES: DocsEntitiesState = {
     pages: {},
     pagesInSpace: {},
     spaceMembers: {},
+    drafts: {},
+    draftsInSpace: {},
 };
 
 type TestTeam = {id: string; name: string; display_name?: string};

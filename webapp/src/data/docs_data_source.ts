@@ -2,6 +2,7 @@
 // See LICENSE.txt for license information.
 
 import type {CreatePageInput, CreateSpaceInput, Page, Space, SpaceMember, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
+import type {Draft, DraftPatch, DraftSummary} from 'types/drafts';
 
 // The seam between the store's thunks and the Docs server REST API. The
 // API-backed source implements this over the plugin's /api/v1 routes; the
@@ -63,4 +64,30 @@ export interface DocsDataSource {
 
     // Deletes (soft-deletes) a page and, on the server, its subpages.
     deletePage(spaceId: string, pageId: string): Promise<void>;
+
+    // Reserves a page id and creates a draft against it, for a page that does not
+    // exist yet. `parentId` is where the page will land on publish ('' = root).
+    createSpaceDraft(spaceId: string, title: string, parentId: string): Promise<Draft>;
+
+    // The caller's draft for a page, or undefined when they have none. Absence is a
+    // 404 on the wire and is normalized here: "no unpublished edits" is an ordinary
+    // answer, not a failure the caller should have to catch.
+    getPageDraft(spaceId: string, pageId: string, signal?: AbortSignal): Promise<Draft | undefined>;
+
+    // Autosave. Only the provided fields are sent; `base_edit_at` is ignored by the
+    // server after the draft's first write (it is write-once), so this cannot
+    // re-baseline an existing draft.
+    updatePageDraft(spaceId: string, pageId: string, patch: DraftPatch, signal?: AbortSignal): Promise<Draft>;
+
+    // Discards the caller's draft, leaving any published page untouched.
+    deletePageDraft(spaceId: string, pageId: string): Promise<void>;
+
+    // The caller's drafts across a space, newest first. Metadata only — fetch a
+    // draft by page id for its body.
+    listSpaceDrafts(spaceId: string): Promise<DraftSummary[]>;
+
+    // Publishes a draft into its page, creating that page when the draft is an
+    // orphan, and discards the draft. `force` overwrites a concurrent edit.
+    // Rejects with PublishConflictError on a 409 (see data/publish_conflict).
+    publishPageDraft(spaceId: string, pageId: string, force: boolean): Promise<Page>;
 }

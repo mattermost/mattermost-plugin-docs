@@ -15,3 +15,14 @@ export const PageTypes = {
     MOVED_PAGE: manifest.id + '_moved_page',
     DELETED_PAGE: manifest.id + '_deleted_page',
 } as const;
+
+export const DraftTypes = {
+    RECEIVED_DRAFTS: manifest.id + '_received_drafts',
+    RECEIVED_DRAFT: manifest.id + '_received_draft',
+    DELETED_DRAFT: manifest.id + '_deleted_draft',
+
+    // Compound on purpose: publishing removes the draft and adds the resulting page.
+    // As two actions the tree renders one frame holding both the draft row and the
+    // new page row, which reads as a duplicate.
+    PUBLISHED_DRAFT: manifest.id + '_published_draft',
+} as const;

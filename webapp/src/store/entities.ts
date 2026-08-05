@@ -5,8 +5,9 @@ import {combineReducers} from 'redux';
 import type {UnknownAction} from 'redux';
 
 import type {Page, Space} from 'types/docs';
+import type {Draft, DraftSummary} from 'types/drafts';
 
-import {PageTypes, SpaceTypes} from './action_types';
+import {DraftTypes, PageTypes, SpaceTypes} from './action_types';
 
 // `teamId` is set when the action is a full list for that team, which seeds the
 // team's index entry even when it has no spaces (see the spacesInTeam reducer).
@@ -21,6 +22,15 @@ type MovedPageAction = {pageId: string; spaceId: string; parentId: string; sibli
 // (via collectSubtreeIds) rather than twice from a map only one slice holds.
 type DeletedPageAction = {pageId: string; spaceId: string; pageIds: string[]};
 type ReceivedSpaceMembersAction = {spaceId: string; userIds: string[]};
+
+// `spaceId` marks a full list for that space, seeding its index entry even when the
+// space has no drafts — the same "loaded" signal RECEIVED_PAGES uses.
+type ReceivedDraftsAction = {drafts: Array<Draft | DraftSummary>; spaceId?: string};
+type ReceivedDraftAction = {draft: Draft};
+type DeletedDraftAction = {spaceId: string; pageId: string};
+
+// Publishing is one action so no render sees both the draft and its page.
+type PublishedDraftAction = {spaceId: string; pageId: string; page: Page};
 
 const bySortOrder = (a: Page, b: Page): number =>
     a.sort_order - b.sort_order || a.title.localeCompare(b.title);
@@ -187,6 +197,12 @@ function pages(state: Record<string, Page> = {}, action: UnknownAction): Record<
         }
         return next;
     }
+
+    // The other half of PUBLISHED_DRAFT: the page the draft became.
+    case DraftTypes.PUBLISHED_DRAFT: {
+        const {page} = action as unknown as PublishedDraftAction;
+        return {...state, [page.id]: page};
+    }
     case PageTypes.MOVED_PAGE: {
         const {pageId, spaceId, parentId, siblingIndex} = action as unknown as MovedPageAction;
         if (!(pageId in state)) {
@@ -235,6 +251,12 @@ function pagesInSpace(state: Record<string, Set<string>> = {}, action: UnknownAc
         }
         return next;
     }
+    case DraftTypes.PUBLISHED_DRAFT: {
+        const {page} = action as unknown as PublishedDraftAction;
+        const set = new Set(state[page.space_id]);
+        set.add(page.id);
+        return {...state, [page.space_id]: set};
+    }
     case PageTypes.DELETED_PAGE: {
         const {spaceId, pageIds} = action as unknown as DeletedPageAction;
         const set = state[spaceId];
@@ -281,8 +303,131 @@ function spaceMembers(state: Record<string, string[]> = {}, action: UnknownActio
     }
 }
 
+/**
+ * The caller's drafts, keyed by **page id**.
+ *
+ * Deliberately not merged into `pages`. The server keys a draft by
+ * (user_id, page_id), and every draft a client can read is its own user's — so page
+ * id alone is a sufficient key here, but the maps must stay separate or one user's
+ * unpublished title would render in another's tree.
+ */
+function drafts(state: Record<string, Draft> = {}, action: UnknownAction): Record<string, Draft> {
+    switch (action.type) {
+    case DraftTypes.RECEIVED_DRAFTS: {
+        const {drafts: received} = action as unknown as ReceivedDraftsAction;
+        if (received.length === 0) {
+            return state;
+        }
+        const next = {...state};
+        for (const draft of received) {
+            // A summary carries no body; merging preserves a body already fetched
+            // for that page rather than blanking it on a list refresh.
+            next[draft.page_id] = {...next[draft.page_id], ...draft} as Draft;
+        }
+        return next;
+    }
+    case DraftTypes.RECEIVED_DRAFT: {
+        const {draft} = action as unknown as ReceivedDraftAction;
+        return {...state, [draft.page_id]: draft};
+    }
+    case DraftTypes.DELETED_DRAFT:
+    case DraftTypes.PUBLISHED_DRAFT: {
+        const {pageId} = action as unknown as DeletedDraftAction;
+        if (!(pageId in state)) {
+            return state;
+        }
+        const next = {...state};
+        delete next[pageId];
+        return next;
+    }
+
+    // A deleted page takes its subtree's drafts with it: the pages are gone, so
+    // unpublished edits to them can never be published.
+    case PageTypes.DELETED_PAGE: {
+        const {pageIds} = action as unknown as DeletedPageAction;
+        const removed = pageIds.filter((id) => id in state);
+        if (removed.length === 0) {
+            return state;
+        }
+        const next = {...state};
+        removed.forEach((id) => delete next[id]);
+        return next;
+    }
+    case SpaceTypes.DELETED_SPACE: {
+        const {spaceId} = action as unknown as DeletedSpaceAction;
+        const remaining = Object.entries(state).filter(([, draft]) => draft.space_id !== spaceId);
+        return remaining.length === Object.keys(state).length ? state : Object.fromEntries(remaining);
+    }
+    default:
+        return state;
+    }
+}
+
+// Page ids of the caller's drafts, keyed by space id. Mirrors pagesInSpace so
+// "this space has no drafts" can be told from "not fetched yet".
+function draftsInSpace(state: Record<string, Set<string>> = {}, action: UnknownAction): Record<string, Set<string>> {
+    const withDraft = (current: Record<string, Set<string>>, draft: Draft | DraftSummary) => {
+        const set = new Set(current[draft.space_id]);
+        set.add(draft.page_id);
+        return {...current, [draft.space_id]: set};
+    };
+
+    switch (action.type) {
+    case DraftTypes.RECEIVED_DRAFTS: {
+        const {drafts: received, spaceId} = action as unknown as ReceivedDraftsAction;
+        if (received.length === 0 && (spaceId === undefined || spaceId in state)) {
+            return state;
+        }
+        let next = {...state};
+        if (spaceId !== undefined && !(spaceId in next)) {
+            next[spaceId] = new Set();
+        }
+        for (const draft of received) {
+            next = withDraft(next, draft);
+        }
+        return next;
+    }
+    case DraftTypes.RECEIVED_DRAFT: {
+        const {draft} = action as unknown as ReceivedDraftAction;
+        return state[draft.space_id]?.has(draft.page_id) ? state : withDraft(state, draft);
+    }
+    case DraftTypes.DELETED_DRAFT:
+    case DraftTypes.PUBLISHED_DRAFT: {
+        const {spaceId, pageId} = action as unknown as DeletedDraftAction;
+        const set = state[spaceId];
+        if (!set?.has(pageId)) {
+            return state;
+        }
+        const nextSet = new Set(set);
+        nextSet.delete(pageId);
+        return {...state, [spaceId]: nextSet};
+    }
+    case PageTypes.DELETED_PAGE: {
+        const {spaceId, pageIds} = action as unknown as DeletedPageAction;
+        const set = state[spaceId];
+        if (!set || !pageIds.some((id) => set.has(id))) {
+            return state;
+        }
+        const nextSet = new Set(set);
+        pageIds.forEach((id) => nextSet.delete(id));
+        return {...state, [spaceId]: nextSet};
+    }
+    case SpaceTypes.DELETED_SPACE: {
+        const {spaceId} = action as unknown as DeletedSpaceAction;
+        if (!(spaceId in state)) {
+            return state;
+        }
+        const next = {...state};
+        delete next[spaceId];
+        return next;
+    }
+    default:
+        return state;
+    }
+}
+
 // Normalized server entities, kept separate from view/UI state so future
 // top-level reducers (e.g. `views`) can sit beside this one.
-const entities = combineReducers({spaces, spacesInTeam, pages, pagesInSpace, spaceMembers});
+const entities = combineReducers({spaces, spacesInTeam, pages, pagesInSpace, spaceMembers, drafts, draftsInSpace});
 
 export default entities;

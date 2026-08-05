@@ -9,6 +9,7 @@ import type {GlobalState} from '@mattermost/types/store';
 import {getCurrentTeamId} from 'mattermost-redux/selectors/entities/teams';
 
 import type {Page, Space} from 'types/docs';
+import type {Draft} from 'types/drafts';
 
 import {collectSubtreeIds} from './entities';
 import type {DocsEntitiesState, DocsPluginState} from './types';
@@ -20,11 +21,14 @@ const EMPTY_PLUGIN_STATE: DocsPluginState = {
         pages: {},
         pagesInSpace: {},
         spaceMembers: {},
+        drafts: {},
+        draftsInSpace: {},
     },
 };
 
 const EMPTY_SPACES: Space[] = [];
 const EMPTY_PAGES: Page[] = [];
+const EMPTY_DRAFTS: Draft[] = [];
 
 // Assert known typing, mirroring the Playbooks pluginState selector — the host
 // store types plugin subtrees as `unknown`. Falls back to an empty slice so a
@@ -54,6 +58,15 @@ const resolvePages = (ids: Set<string> | undefined, byId: Record<string, Page>):
         return EMPTY_PAGES;
     }
     return compact([...ids].map((id) => byId[id])).sort(bySortOrder);
+};
+
+// Drafts have no sort_order to order by, so recency stands in — matching the
+// server's UpdateAt DESC collection order.
+const resolveDrafts = (ids: Set<string> | undefined, byId: Record<string, Draft>): Draft[] => {
+    if (!ids || ids.size === 0) {
+        return EMPTY_DRAFTS;
+    }
+    return compact([...ids].map((id) => byId[id])).sort((a, b) => b.update_at - a.update_at);
 };
 
 export const getSpacesById = (state: GlobalState): Record<string, Space> => entities(state).spaces;
@@ -133,6 +146,49 @@ export const areMembersLoadedForSpace = (state: GlobalState, spaceId: string): b
 // still in flight from one that doesn't belong here.
 export const arePagesLoadedForSpace = (state: GlobalState, spaceId: string): boolean =>
     spaceId in getPagesInSpaceIndex(state);
+
+export const getDraftsById = (state: GlobalState): Record<string, Draft> => entities(state).drafts;
+
+const getDraftsInSpaceIndex = (state: GlobalState): Record<string, Set<string>> => entities(state).draftsInSpace;
+
+// The caller's unpublished work on a page, if any. Keyed by page id, so this is
+// also how an orphan draft is reached — its page id is reserved, not published.
+export const getDraftForPage = (state: GlobalState, pageId: string): Draft | undefined =>
+    getDraftsById(state)[pageId];
+
+// Whether the caller has unpublished edits to an existing page. Distinct from
+// having a draft at all: an orphan draft is an unpublished *page*, not an edit.
+export const hasUnpublishedEdits = (state: GlobalState, pageId: string): boolean =>
+    pageId in getDraftsById(state) && pageId in getPagesById(state);
+
+// A space's drafts, newest first — the order the server's drafts collection uses,
+// and the only order available since drafts carry no sort_order.
+export const getDraftsForSpace = createSelector(
+    [getDraftsById, getDraftsInSpaceIndex, (_state: GlobalState, spaceId: string) => spaceId],
+    (byId, index, spaceId) => resolveDrafts(index[spaceId], byId),
+);
+
+/**
+ * A space's drafts that have no published page — unpublished new pages, which the
+ * tree renders as rows of their own.
+ *
+ * The complement (a draft whose page exists) must NOT get a row: its page is
+ * already in the tree, and adding one would render the same page twice. Encoded
+ * here once rather than at each call site, because that duplicate is the easy
+ * mistake to make.
+ */
+export const getOrphanDraftsForSpace = createSelector(
+    [getDraftsForSpace, getPagesById],
+    (spaceDrafts, pagesById) => {
+        const orphans = spaceDrafts.filter((draft) => !(draft.page_id in pagesById));
+        return orphans.length === 0 ? EMPTY_DRAFTS : orphans;
+    },
+);
+
+// Whether a space's drafts have been fetched (fetchDrafts seeds the index entry
+// even for a space with none), so "no drafts" is distinguishable from "not asked".
+export const areDraftsLoadedForSpace = (state: GlobalState, spaceId: string): boolean =>
+    spaceId in getDraftsInSpaceIndex(state);
 
 export type DocsSearchResults = {
     spaces: Space[];

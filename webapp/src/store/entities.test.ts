@@ -1,9 +1,9 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {PageTypes, SpaceTypes} from './action_types';
+import {DraftTypes, PageTypes, SpaceTypes} from './action_types';
 import reducer, {collectSubtreeIds, reindexAfterMove} from './entities';
-import {makePage, makeSpace} from './test_fixtures';
+import {makeDraft, makePage, makeSpace} from './test_fixtures';
 
 const withParent = (id: string, parentId: string, title: string, sortOrder: number) => ({
     ...makePage(id, 'space-a', title, sortOrder),
@@ -158,6 +158,97 @@ describe('pages', () => {
 
         expect(afterDelete.pages).toEqual({sibling});
         expect(afterDelete.pagesInSpace['space-a']).toEqual(new Set(['sibling']));
+    });
+});
+
+describe('drafts', () => {
+    const initialState = reducer(undefined, {type: '@@INIT'});
+
+    it('RECEIVED_DRAFTS keys drafts by page id and indexes them by space', () => {
+        const one = makeDraft('p1', 'space-a', 'One');
+        const two = makeDraft('p2', 'space-a', 'Two');
+
+        const next = reducer(initialState, {type: DraftTypes.RECEIVED_DRAFTS, drafts: [one, two], spaceId: 'space-a'});
+
+        expect(next.drafts).toEqual({p1: one, p2: two});
+        expect(next.draftsInSpace['space-a']).toEqual(new Set(['p1', 'p2']));
+    });
+
+    it('RECEIVED_DRAFTS marks a space loaded even when it has none', () => {
+        const next = reducer(initialState, {type: DraftTypes.RECEIVED_DRAFTS, drafts: [], spaceId: 'space-a'});
+
+        expect(next.draftsInSpace['space-a']).toEqual(new Set());
+    });
+
+    // The space list is a metadata projection with no body, so a refresh must not
+    // blank a body already fetched for that page.
+    it('RECEIVED_DRAFTS keeps a body the summary does not carry', () => {
+        const full = {...makeDraft('p1', 'space-a', 'One'), body: 'written'};
+        const loaded = reducer(initialState, {type: DraftTypes.RECEIVED_DRAFT, draft: full});
+
+        const summary = {...makeDraft('p1', 'space-a', 'One', 5)};
+        delete (summary as Partial<typeof summary>).body;
+        const next = reducer(loaded, {type: DraftTypes.RECEIVED_DRAFTS, drafts: [summary], spaceId: 'space-a'});
+
+        expect(next.drafts.p1.body).toBe('written');
+        expect(next.drafts.p1.update_at).toBe(5);
+    });
+
+    it('DELETED_DRAFT removes it from byId and the space index', () => {
+        const draft = makeDraft('p1', 'space-a', 'One');
+        const loaded = reducer(initialState, {type: DraftTypes.RECEIVED_DRAFTS, drafts: [draft], spaceId: 'space-a'});
+
+        const next = reducer(loaded, {type: DraftTypes.DELETED_DRAFT, spaceId: 'space-a', pageId: 'p1'});
+
+        expect(next.drafts).toEqual({});
+        expect(next.draftsInSpace['space-a']).toEqual(new Set());
+    });
+
+    // One action, so no render sees the draft and its page at once.
+    it('PUBLISHED_DRAFT removes the draft and adds the page together', () => {
+        const draft = makeDraft('p1', 'space-a', 'One');
+        const loaded = reducer(initialState, {type: DraftTypes.RECEIVED_DRAFTS, drafts: [draft], spaceId: 'space-a'});
+        const page = makePage('p1', 'space-a', 'One');
+
+        const next = reducer(loaded, {type: DraftTypes.PUBLISHED_DRAFT, spaceId: 'space-a', pageId: 'p1', page});
+
+        expect(next.drafts).toEqual({});
+        expect(next.draftsInSpace['space-a']).toEqual(new Set());
+        expect(next.pages).toEqual({p1: page});
+        expect(next.pagesInSpace['space-a']).toEqual(new Set(['p1']));
+    });
+
+    // Unpublished edits to a page that no longer exists can never be published.
+    it('DELETED_PAGE discards drafts for the deleted subtree', () => {
+        const parent = makePage('parent', 'space-a', 'Parent');
+        const child = {...makePage('child', 'space-a', 'Child'), parent_id: 'parent'};
+        const withPages = reducer(initialState, {type: PageTypes.RECEIVED_PAGES, pages: [parent, child], spaceId: 'space-a'});
+        const loaded = reducer(withPages, {
+            type: DraftTypes.RECEIVED_DRAFTS,
+            drafts: [makeDraft('child', 'space-a', 'Child edits', 0, 7)],
+            spaceId: 'space-a',
+        });
+
+        const next = reducer(loaded, {
+            type: PageTypes.DELETED_PAGE,
+            pageId: 'parent',
+            spaceId: 'space-a',
+            pageIds: [...collectSubtreeIds(loaded.pages, 'parent')],
+        });
+
+        expect(next.drafts).toEqual({});
+        expect(next.draftsInSpace['space-a']).toEqual(new Set());
+    });
+
+    it('DELETED_SPACE discards that space\'s drafts', () => {
+        const mine = makeDraft('p1', 'space-a', 'One');
+        const other = makeDraft('p2', 'space-b', 'Two');
+        const loaded = reducer(initialState, {type: DraftTypes.RECEIVED_DRAFTS, drafts: [mine, other]});
+
+        const next = reducer(loaded, {type: SpaceTypes.DELETED_SPACE, spaceId: 'space-a'});
+
+        expect(next.drafts).toEqual({p2: other});
+        expect(next.draftsInSpace['space-a']).toBeUndefined();
     });
 });
 
