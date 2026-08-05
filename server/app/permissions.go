@@ -5,6 +5,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -25,11 +26,35 @@ const (
 	ReadViaOpenFallthrough
 )
 
+// String names the resolution, so a log field or a failed test assertion reports how the read was
+// admitted rather than the underlying integer.
+func (r ReadResolution) String() string {
+	switch r {
+	case ReadDenied:
+		return "denied"
+	case ReadViaSysadmin:
+		return "sysadmin"
+	case ReadViaMember:
+		return "member"
+	case ReadViaOpenFallthrough:
+		return "open_fallthrough"
+	default:
+		return fmt.Sprintf("ReadResolution(%d)", int(r))
+	}
+}
+
 // existenceHidingForbidden is the shared 403 every enforcement helper returns on a lookup miss
 // or a denied check, so a caller cannot distinguish "doesn't exist", "not a member", and "no
 // longer a member" by status code or message.
 func existenceHidingForbidden(where string) *mmmodel.AppError {
 	return mmmodel.NewAppError(where, "app.space.access.forbidden.app_error", nil, "", http.StatusForbidden)
+}
+
+// ExistenceHidingForbidden is existenceHidingForbidden for the API layer, whose own gate helpers
+// have to deny in the same indistinguishable terms. Exported so that message stays defined in one
+// place: a second literal spelling of it elsewhere could drift and make the denials tellable apart.
+func ExistenceHidingForbidden(where string) *mmmodel.AppError {
+	return existenceHidingForbidden(where)
 }
 
 // isComplianceEnabled reports whether ComplianceSettings.Enable is set and true. A nil client (or
@@ -296,15 +321,16 @@ func (s *Service) RequireSpacePublish(where string, space *model.Space, userID s
 // generated user role) grants perm to a plain member — the auto-join admission test. Channel
 // without a scheme (ErrNotFound) reports false, not an error.
 func (s *Service) DefaultRolesGrantPermission(space *model.Space, perm *mmmodel.Permission) (bool, error) {
+	// Checked before the lookup below, which reaches through the client itself.
+	if s.client == nil || space == nil {
+		return false, nil
+	}
 	roles, err := s.getSchemeRolesForChannel(space.ChannelId)
 	if err != nil {
 		if store.IsErrNotFound(err) {
 			return false, nil
 		}
 		return false, err
-	}
-	if s.client == nil {
-		return false, nil
 	}
 	return s.client.User.RolesGrantPermission([]string{roles.UserRoleName}, perm.Id), nil
 }
@@ -330,8 +356,20 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 	if admittedVia != ReadViaOpenFallthrough {
 		return false, nil
 	}
+	if space == nil {
+		return false, existenceHidingForbidden("AutoJoinIfDefaultGranted")
+	}
 	if appErr := s.requireClient("AutoJoinIfDefaultGranted", "space_id", space.Id, "user_id", userID); appErr != nil {
 		return false, appErr
+	}
+
+	// A set of defaults that cannot grant perm can never admit this write, so the answer is settled
+	// before taking the space-keyed lock. The lock holds a dedicated connection and serializes every
+	// membership and scheme mutation on the space, so a caller looping writes it is not entitled to
+	// would otherwise contend with those mutations on every attempt. Only a clean negative
+	// short-circuits: a failed lookup falls through, leaving the in-lock check below authoritative.
+	if granted, grantErr := s.DefaultRolesGrantPermission(space, perm); grantErr == nil && !granted {
+		return false, nil
 	}
 
 	joined := false
@@ -367,8 +405,16 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 				return nil
 			}
 		}
-		if _, memErr := s.client.Channel.GetMember(fresh.ChannelId, userID); memErr == nil {
+		_, memErr := s.client.Channel.GetMember(fresh.ChannelId, userID)
+		if memErr == nil {
 			return nil // Already a member.
+		}
+		// Only an absence means "not a member yet". A failed lookup must not fall through to the add
+		// below: core returns the existing membership unchanged for an add of a current member, so
+		// this would report a join that never happened, and the undo paired with it would then
+		// remove a membership the caller already held.
+		if !errors.Is(memErr, pluginapi.ErrNotFound) {
+			return mmmodel.NewAppError("AutoJoinIfDefaultGranted", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memErr)
 		}
 		member, addErr := s.client.Channel.AddMember(fresh.ChannelId, userID)
 		if addErr != nil {

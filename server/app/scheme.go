@@ -114,6 +114,12 @@ func (s *Service) getRolePermissionsByName(roleName string) ([]string, error) {
 func (s *Service) getOrCreateSharedScheme(capabilities []string) (string, *schemeRoles, error) {
 	name := model.SharedSchemeNameForCapabilities(capabilities)
 	if scheme, err := s.client.Scheme.GetByName(name); err == nil {
+		// Logged because the configure that follows rewrites roles every space already on this
+		// scheme resolves against, not just this caller's space. The write is idempotent while the
+		// capability-to-permission mapping is correct, so a mapping regression is otherwise
+		// indistinguishable from ordinary traffic until its effects show up across those spaces.
+		s.log.Debug("resolved an existing pooled space scheme; its role write applies to every space sharing it",
+			"scheme_id", scheme.Id, "scheme_name", name)
 		return scheme.Id, rolesFromScheme(scheme), nil
 	} else if !errors.Is(err, pluginapi.ErrNotFound) {
 		return "", nil, err
@@ -149,7 +155,7 @@ func rolesFromScheme(scheme *mmmodel.Scheme) *schemeRoles {
 // roles are the names getOrCreateSharedScheme returned, so the writes land on the resolved scheme
 // rather than on whatever a channel currently points at.
 //
-// It must run only once a space backing channel already points at that scheme: core admits a role
+// It must run only once a space backing channel already points at that scheme: core allows a role
 // write carrying space permissions for a seeded preset's roles, or for a scheme a space backing
 // channel already references, and it does not accept a caller-chosen scheme name as proof.
 // Idempotent, so re-running it against an already-configured pooled scheme is a no-op in effect.

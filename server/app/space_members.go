@@ -117,9 +117,10 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 }
 
 // hasOtherAuthorizedAdmin reports whether space's backing channel still has a SchemeAdmin member
-// who can reach the space once excludeUserID is disregarded — the last-admin invariant's
-// admin-side counterpart to hasOtherAuthorizedMember. excludeUserID, when non-empty, is skipped, so
-// the answer describes what would remain after that user is demoted or removed.
+// who can reach the space once excludeUserID is disregarded. excludeUserID, when non-empty, is
+// skipped, so the answer describes what would remain after that user is demoted or removed. A
+// caller that also needs the any-member answer should use otherAuthorizedMembers, which resolves
+// both in one walk.
 func (s *Service) hasOtherAuthorizedAdmin(space *model.Space, excludeUserID string) (bool, error) {
 	return s.hasOtherAuthorizedMemberMatching(space, excludeUserID, func(cm *mmmodel.ChannelMember) bool { return cm.SchemeAdmin })
 }
@@ -296,19 +297,28 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 			return appErr
 		}
 
+		// Resolved before the scan below so an unauthorized caller is rejected without paying for it.
 		if target.SchemeAdmin {
 			if e := s.RequireSpaceAdminOrSysadmin("RemoveSpaceMember", space, actingUserID); e != nil {
 				appErr = e
 				return e
 			}
-			if e := s.requireNotLastAdmin("RemoveSpaceMember", space, userID); e != nil {
-				appErr = e
-				return e
-			}
 		}
-		hasOther, guardErr := s.hasOtherAuthorizedMember(space, userID)
+		// The last-admin and last-member invariants are answered from one walk: removing an admin
+		// needs both, and the admin set is a subset of the reachable set.
+		hasOther, hasOtherAdmin, guardErr := s.otherAuthorizedMembers(space, userID)
 		if guardErr != nil {
-			appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.remove_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(guardErr)
+			// Attributed to whichever invariant the caller is actually being held to, so the failure
+			// of the shared walk reports the same id each guard reported when it walked alone.
+			if target.SchemeAdmin {
+				appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.admin_count_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(guardErr)
+			} else {
+				appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.remove_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(guardErr)
+			}
+			return appErr
+		}
+		if target.SchemeAdmin && !hasOtherAdmin {
+			appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.last_admin.app_error", nil, "", http.StatusConflict)
 			return appErr
 		}
 		if !hasOther {

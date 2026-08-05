@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -140,11 +141,16 @@ func spaceHasMember(t *testing.T, ctx context.Context, admin actor, spaceID, use
 
 // deleteSpace deletes spaceID via the space admin actor. Called at the end of TestScenarios via a
 // shared t.Cleanup over every space id the scenarios accumulated in spacesToClean.
+// deleteSpace removes a space during teardown. A failure is reported and marks the test failed, but
+// does not abort the calling goroutine: teardown deletes a list of spaces, and require's FailNow
+// would skip every space after the first failure, leaving the rest behind.
 func deleteSpace(t *testing.T, ctx context.Context, admin actor, spaceID string) {
 	t.Helper()
 	status, body, err := doPluginRequest(ctx, admin.client, http.MethodDelete, "/spaces/"+spaceID, nil, nil)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, status, "cleanup: delete space %s: %s", spaceID, body)
+	if !assert.NoError(t, err) {
+		return
+	}
+	assert.Equal(t, http.StatusOK, status, "cleanup: delete space %s: %s", spaceID, body)
 }
 
 // pageDocBody is a minimal valid page body (see model.Page.IsValid — only size-limited, not

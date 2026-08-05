@@ -774,6 +774,53 @@ func TestServiceSetSpaceDefaultCapabilities_ConfigureFailureRollsBack(t *testing
 	mockAPI.AssertNotCalled(t, "DeleteScheme", mock.Anything)
 }
 
+// TestServiceSetSpaceDefaultCapabilities_ResponseReflectsRequestedNotStaleReadback covers the
+// projection guard: the response is built from the capability set written under the lock, not
+// from a fresh read of the roles that write just committed. GetRoleByName here always answers with
+// a role frozen on a pre-update permission set, standing in for a lagging-replica read of the
+// caller's own committed change; the response must still report the requested set.
+func TestServiceSetSpaceDefaultCapabilities_ResponseReflectsRequestedNotStaleReadback(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	sysadminID := mmmodel.NewId()
+	// Registered before the harness so the response's own-capability projection resolves via
+	// sysadmin (AdminEffectiveCapabilities), sidestepping the ReadViaMember channel-member lookup
+	// this test does not otherwise stub. mock.Mock matches expectations in registration order.
+	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true)
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
+
+	testutil.StubPooledSchemeMiss(mockAPI)
+	schemeID := mmmodel.NewId()
+	userRole, adminRole, guestRole := "stale_readback_user_role", "stale_readback_admin_role", "stale_readback_guest_role"
+	mockAPI.On("CreateScheme", mock.AnythingOfType("*model.Scheme")).Return(&mmmodel.Scheme{
+		Id:                      schemeID,
+		Name:                    model.SharedSchemeNamePrefix + mmmodel.NewId(),
+		Scope:                   mmmodel.SchemeScopeChannel,
+		DefaultChannelUserRole:  userRole,
+		DefaultChannelAdminRole: adminRole,
+		DefaultChannelGuestRole: guestRole,
+	}, nil)
+	testutil.RegisterSchemeRoles(schemeID, guestRole, userRole, adminRole)
+	// Frozen on a permission set that does not match the request below, and never updated by the
+	// PatchRole stub: a caller that re-read this role after the write would see the wrong set.
+	mockAPI.On("GetRoleByName", userRole).
+		Return(&mmmodel.Role{Id: mmmodel.NewId(), Name: userRole, Permissions: []string{model.CapabilityCommentPage}}, nil)
+	mockAPI.On("GetRoleByName", adminRole).Return(&mmmodel.Role{Id: mmmodel.NewId(), Name: adminRole}, nil)
+	mockAPI.On("GetRoleByName", guestRole).Return(&mmmodel.Role{Id: mmmodel.NewId(), Name: guestRole}, nil)
+	mockAPI.On("PatchRole", mock.AnythingOfType("string"), mock.AnythingOfType("*model.RolePatch")).
+		Return(&mmmodel.Role{}, nil)
+
+	space := mustCreateSpace(t, h.store, h.db, channelID)
+
+	updated, appErr := h.svc.SetSpaceDefaultCapabilities(space, []string{"create_page"}, sysadminID)
+	require.Nil(t, appErr)
+	require.NotNil(t, updated)
+	require.ElementsMatch(t, []string{"create_page"}, updated.DefaultCapabilities,
+		"the response must report the requested set, not a stale role read-back")
+}
+
 // TestServiceRestoreSpace_UnarchivesBackingChannel verifies a create→delete→restore round trip
 // un-archives the backing channel and brings the space back live.
 func TestServiceRestoreSpace_UnarchivesBackingChannel(t *testing.T) {

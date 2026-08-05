@@ -113,10 +113,42 @@ func (s *Service) hasOtherAuthorizedMemberMatching(space *model.Space, excludeUs
 	return found, nil
 }
 
-// hasOtherAuthorizedMember reports whether any backing-channel member other than excludeUserID can
-// still reach the space.
-func (s *Service) hasOtherAuthorizedMember(space *model.Space, excludeUserID string) (bool, error) {
-	return s.hasOtherAuthorizedMemberMatching(space, excludeUserID, func(*mmmodel.ChannelMember) bool { return true })
+// otherAuthorizedMembers answers both reachability questions the removal guards ask — is there
+// another member who can still reach the space, and is one of them an admin — in a single walk.
+// The admin set is a subset of the reachable set, so a caller needing both would otherwise pay two
+// full walks, each with its own per-member team lookup, while holding the space membership lock.
+// Iteration stops once both answers are known, and a row that cannot change either answer is
+// skipped before its team lookup.
+func (s *Service) otherAuthorizedMembers(space *model.Space, excludeUserID string) (anyMember, anyAdmin bool, err error) {
+	err = s.forEachChannelMember(space.ChannelId, func(cm *mmmodel.ChannelMember) (bool, error) {
+		if cm.UserId == excludeUserID {
+			return false, nil
+		}
+		// Once a reachable member is known, only an admin row can still teach us anything.
+		if anyMember && !cm.SchemeAdmin {
+			return false, nil
+		}
+		reachable := space.TeamId == ""
+		if !reachable {
+			active, activeErr := s.isActiveTeamMember(space.TeamId, cm.UserId)
+			if activeErr != nil {
+				return false, activeErr
+			}
+			reachable = active
+		}
+		if !reachable {
+			return false, nil
+		}
+		anyMember = true
+		if cm.SchemeAdmin {
+			anyAdmin = true
+		}
+		return anyMember && anyAdmin, nil
+	})
+	if err != nil {
+		return false, false, err
+	}
+	return anyMember, anyAdmin, nil
 }
 
 // archiveOrphanChannel archives a backing channel when a later step in space creation fails,
@@ -376,6 +408,16 @@ func (s *Service) defaultCapabilitiesForRoles(roles *schemeRoles) ([]string, err
 // capability set plus the caller's own truthful, current effective capabilities — never a
 // hypothetical post-join grant. A denied read yields the shared existence-hiding 403.
 func (s *Service) BuildSpaceWithAccess(space *model.Space, userID string) (*model.SpaceWithAccess, *mmmodel.AppError) {
+	return s.buildSpaceWithAccess(space, userID, nil)
+}
+
+// buildSpaceWithAccess is BuildSpaceWithAccess for a caller that already knows the space's default
+// capability set. knownDefaults, when non-nil, is used instead of reading the scheme's roles back:
+// a caller that just wrote those roles must not re-read them, since the read may be served by a
+// lagging replica still carrying the pre-write set and would report the caller's own committed
+// change as not having taken effect. The caller's effective capabilities are derived from the same
+// value, so both fields describe one consistent state.
+func (s *Service) buildSpaceWithAccess(space *model.Space, userID string, knownDefaults []string) (*model.SpaceWithAccess, *mmmodel.AppError) {
 	if space == nil {
 		return nil, mmmodel.NewAppError("BuildSpaceWithAccess", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -391,9 +433,13 @@ func (s *Service) BuildSpaceWithAccess(space *model.Space, userID string) (*mode
 	if resolution == ReadDenied {
 		return nil, existenceHidingForbidden("BuildSpaceWithAccess")
 	}
-	defaultCapabilities, err := s.spaceDefaultCapabilities(space)
-	if err != nil {
-		return nil, storeAppError("BuildSpaceWithAccess", err)
+	defaultCapabilities := knownDefaults
+	if defaultCapabilities == nil {
+		var err error
+		defaultCapabilities, err = s.spaceDefaultCapabilities(space)
+		if err != nil {
+			return nil, storeAppError("BuildSpaceWithAccess", err)
+		}
 	}
 
 	var capabilities []string
@@ -438,6 +484,9 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 	// Whether the scheme was actually repointed. Both no-op branches below leave it false, so a
 	// caller resubmitting the set the space already carries produces no space_updated broadcast.
 	var repointed bool
+	// The normalized set the space carries once this returns, carried out of the closure so the
+	// response is projected from it rather than re-read from the roles just written.
+	var requested []string
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
 		channel, chanErr := s.client.Channel.GetChannelOfType(space.ChannelId, mmmodel.ChannelTypeSpace)
 		if chanErr != nil {
@@ -452,7 +501,7 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 		// the no-op shortcut, so it is carried as a value rather than failing the whole operation.
 		liveCapabilities, liveCapabilitiesErr := s.spaceDefaultCapabilitiesFromChannel(space.ChannelId, channel)
 
-		requested := model.NormalizeCapabilitySet(capabilities)
+		requested = model.NormalizeCapabilitySet(capabilities)
 		_, requestedIsPreset := model.SchemeNameForDefaultCapabilities(requested)
 
 		// An unchanged non-preset set is settled here, on the projected capabilities, so the no-op
@@ -516,6 +565,11 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 		return nil, membershipLockAppError("SetSpaceDefaultCapabilities", lockErr)
 	}
 
+	// The response is projected from the set written under the lock, not read back from the roles
+	// this call just wrote: those reads go through core, which serves them from a replica that on a
+	// lagging one still carries the pre-update roles and would report the caller's own committed
+	// change as not having taken effect. Matches SetSpaceMemberCapabilities, which projects from the
+	// member its role update returned for the same reason.
 	fresh, getErr := s.GetSpace(space.Id)
 	if getErr != nil {
 		// The scheme repoint already committed, so re-reporting this as a failure would misreport
@@ -525,17 +579,12 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 		if repointed {
 			s.publishToChannels(wsEventSpaceUpdated, map[string]any{"space_id": space.Id}, space.ChannelId)
 		}
-		wrapper, buildErr := s.BuildSpaceWithAccess(space, actingUserID)
-		if buildErr != nil {
-			return nil, buildErr
-		}
-		wrapper.DefaultCapabilities = model.NormalizeCapabilitySet(capabilities)
-		return wrapper, nil
+		return s.buildSpaceWithAccess(space, actingUserID, requested)
 	}
 	if repointed {
 		s.publishToChannels(wsEventSpaceUpdated, map[string]any{"space_id": fresh.Id}, fresh.ChannelId)
 	}
-	return s.BuildSpaceWithAccess(fresh, actingUserID)
+	return s.buildSpaceWithAccess(fresh, actingUserID, requested)
 }
 
 // GetSpaceMembers, AddSpaceMember, SetSpaceMemberCapabilities, and RemoveSpaceMember live in
@@ -636,6 +685,12 @@ func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expec
 
 	s.log.Debug("Updating space", "space_id", space.Id)
 
+	// A private->private no-op (the patch re-asserts the current value) must not attach
+	// member_count: only a genuine open->private transition sheds no members but exposes an
+	// admin to a count they should act on. Compare against the live row's prior value, not
+	// just the patch value. Carried out of apply so the count lookup and the broadcast it feeds
+	// run after the lock is released.
+	var flippedToPrivate bool
 	apply := func() (*model.Space, *mmmodel.AppError) {
 		var live *model.Space
 		if patch.ViewAccess != nil {
@@ -654,12 +709,11 @@ func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expec
 		if err != nil {
 			return nil, storeAppError("UpdateSpace", err)
 		}
-		// A private->private no-op (the patch re-asserts the current value) must not attach
-		// member_count: only a genuine open->private transition sheds no members but exposes an
-		// admin to a count they should act on. Compare against the live row's prior value, not
-		// just the patch value.
-		flippedToPrivate := patch.ViewAccess != nil && *patch.ViewAccess == model.ViewAccessPrivate &&
+		flippedToPrivate = patch.ViewAccess != nil && *patch.ViewAccess == model.ViewAccessPrivate &&
 			live != nil && live.ViewAccess == model.ViewAccessOpen
+		// Stays under the lock: it projects the row this call just wrote onto the backing channel,
+		// so two concurrent updates must not interleave their syncs and leave the channel carrying
+		// the older title.
 		if updated.ChannelId != "" && s.client != nil {
 			if chanErr := s.syncSpaceChannelMetadata(updated.Id); chanErr != nil {
 				// Deliberately not returned: the space row (the source of truth) committed, so
@@ -670,8 +724,16 @@ func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expec
 				s.log.Error("UpdateSpace: failed to sync backing channel metadata; display name/header stale until the next update", "channel_id", updated.ChannelId, "space_id", updated.Id, "err", chanErr)
 			}
 		}
+		return updated, nil
+	}
+
+	// publish reports the update once the space-keyed lock is no longer held. The lock holds a
+	// dedicated connection for the whole closure, so the member-count lookup and the broadcast —
+	// neither of which the update's atomicity depends on — are kept out of it, matching every other
+	// membership-lock caller in this package.
+	publish := func(updated *model.Space) {
 		payload := map[string]any{"space_id": updated.Id}
-		if flippedToPrivate {
+		if flippedToPrivate && s.client != nil {
 			// Privatizing does not shed members: every existing member (including anyone
 			// auto-joined earlier) stays. Surface the current count so the admin is prompted to
 			// prune via RemoveSpaceMember.
@@ -686,11 +748,15 @@ func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expec
 			}
 		}
 		s.publishToChannels(wsEventSpaceUpdated, payload, updated.ChannelId)
-		return updated, nil
 	}
 
 	if space.ChannelId == "" {
-		return apply()
+		updated, appErr := apply()
+		if appErr != nil {
+			return nil, appErr
+		}
+		publish(updated)
+		return updated, nil
 	}
 	var result *model.Space
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
@@ -704,6 +770,7 @@ func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expec
 	if lockErr != nil {
 		return nil, membershipLockAppError("UpdateSpace", lockErr)
 	}
+	publish(result)
 	return result, nil
 }
 

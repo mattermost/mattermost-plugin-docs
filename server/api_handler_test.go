@@ -1647,6 +1647,60 @@ func TestHandler_DeletePage(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// TestHandler_DeletePage_OtherOwnerForbidden verifies the negative half of the own/any pair: a
+// contribute-default member holds only delete_own_page, so a delete request against a page owned
+// by someone else must be forbidden rather than falling through to the delete_page (any) grant it
+// does not hold.
+func TestHandler_DeletePage_OtherOwnerForbidden(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, h.db, channelID)
+	// Owned by someone else, so ownerMatches is false and the delete_own_page grant cannot apply.
+	page := testutil.MustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
+
+	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, nil)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+
+	rec = h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, nil)
+	require.Equal(t, http.StatusOK, rec.Code, "the page must still exist since the delete was denied")
+}
+
+// TestHandler_DeletePage_NonMemberAutoJoinsViaDeletePageDefault verifies requireDeleteOwnOrAnyFrom
+// attempts the auto-join pre-step against delete_page (any) first, unconditionally: a non-member
+// of an open space whose default capability set grants delete_page is auto-joined and can delete a
+// page it does not own, rather than being denied because only the narrower delete_own_page
+// attempt was tried.
+func TestHandler_DeletePage_NonMemberAutoJoinsViaDeletePageDefault(t *testing.T) {
+	mockAPI := newEnabledMockAPI()
+	stranger := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+
+	// The stranger is not yet a member: read_page is withheld so the read gate admits them only
+	// through the open-space fall-through, which is what the auto-join pre-step keys on. delete_page
+	// reflects what their post-join role would grant, standing in for the space's default
+	// capability set — the same way TestAutoJoin_JoinsWhenDefaultGrants' RolesGrantPermission stub
+	// does. Registered before openTestPlugin: mock.Mock matches expectations in registration order,
+	// and StubDefaultSpacePermissions' catch-all would otherwise grant read_page first.
+	mockAPI.On("HasPermissionToChannel", stranger, channelID, mmmodel.PermissionReadPage).Return(false)
+	mockAPI.On("HasPermissionToChannel", stranger, channelID, mmmodel.PermissionDeletePage).Return(true)
+	mockAPI.On("RolesGrantPermission", mock.Anything, mmmodel.PermissionDeletePage.Id).Return(true)
+	// Not yet a member: the join path runs only when the membership probe misses.
+	mockAPI.On("GetChannelMember", channelID, stranger).
+		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: http.StatusNotFound})
+	mockAPI.On("AddChannelMember", channelID, stranger).
+		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: stranger}, nil)
+
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, h.db, channelID)
+	// Owned by someone else: only the delete_page (any) grant, not delete_own_page, can admit this.
+	page := testutil.MustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
+
+	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, stranger, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	mockAPI.AssertCalled(t, "AddChannelMember", channelID, stranger)
+}
+
 // TestHandler_GetSpacePagesHasMoreBoundary pins the has_more transition exactly at the page-size
 // boundary: a window equal to the result count reports has_more=false; one smaller reports true.
 func TestHandler_GetSpacePagesHasMoreBoundary(t *testing.T) {

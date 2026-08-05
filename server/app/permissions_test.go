@@ -111,6 +111,10 @@ func TestAutoJoin_PrivateFlipAbortsJoin(t *testing.T) {
 	stubNonMember(mockAPI, userID)
 	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
 
+	// Granted, so the re-validation below is the only thing that can abort the join — the pre-step's
+	// own admission test must not be what makes this pass.
+	mockAPI.On("RolesGrantPermission", mock.Anything, mmmodel.PermissionCreatePage.Id).Return(true)
+
 	// The caller still holds the open-space record it was admitted against; the stored row has
 	// since flipped private, which is what the pre-step re-reads.
 	stale := *space
@@ -132,6 +136,9 @@ func TestAutoJoin_DeletedSpaceIsNoOp(t *testing.T) {
 	userID := mmmodel.NewId()
 	stubNonMember(mockAPI, userID)
 	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	// Granted, so the deleted-space branch below is the only thing that can prevent the join.
+	mockAPI.On("RolesGrantPermission", mock.Anything, mmmodel.PermissionCreatePage.Id).Return(true)
 
 	require.NoError(t, h.store.DeleteSpace(space.Id))
 
@@ -259,6 +266,54 @@ func TestRequireSpacePagePermissionFrom_FallthroughAdmitsRead(t *testing.T) {
 	appErr := h.svc.RequireSpacePagePermissionFrom("test", space, userID, mmmodel.PermissionReadPage, app.ReadViaOpenFallthrough)
 
 	require.Nil(t, appErr)
+}
+
+// TestRequireSpacePagePermission_FormerTeamMemberDenied verifies the same team-membership guard
+// evaluatePagePermission applies as readResolutionFrom (see
+// TestResolveSpaceRead_FormerTeamMemberDenied): a user who left the space's team is denied even
+// though their backing-channel ChannelMember row still exists, because active is false and the
+// `active &&` conjunct on the channel-permission check short-circuits before it is ever consulted.
+func TestRequireSpacePagePermission_FormerTeamMemberDenied(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	teamID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	// Registered before the harness, whose GetTeamMember catch-all returns an active membership:
+	// mock.Mock matches expectations in registration order.
+	mockAPI.On("GetTeamMember", teamID, userID).
+		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: userID, DeleteAt: 1}, nil)
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
+
+	appErr := h.svc.RequireSpacePagePermission("test", space, userID, mmmodel.PermissionReadPage)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+	// The team gate blocks before any channel-scoped permission is consulted, so the lingering
+	// ChannelMember row is irrelevant.
+	mockAPI.AssertNotCalled(t, "HasPermissionToChannel", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// TestResolveSpaceRead_ComplianceModeSuppressesOpenFallthrough verifies that the open-space
+// non-member read fall-through is suppressed under ComplianceSettings.Enable, even though the
+// caller holds the team read_public_channel grant hasOpenTeamFallthrough otherwise admits on.
+func TestResolveSpaceRead_ComplianceModeSuppressesOpenFallthrough(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	strangerID := mmmodel.NewId()
+	// Registered before the harness so it takes precedence over StubDefaultSpacePermissions'
+	// permissive catch-all: mock.Mock matches expectations in registration order.
+	mockAPI.On("HasPermissionToChannel", strangerID, mock.Anything, mmmodel.PermissionReadPage).Return(false)
+	mockAPI.On("GetConfig").
+		Return(&mmmodel.Config{ComplianceSettings: mmmodel.ComplianceSettings{Enable: mmmodel.NewPointer(true)}}).Once()
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	// The default space fixture is open, and the harness stubs GetTeamMember to an active
+	// membership, so the stranger clears the team gate and reaches the open-space fall-through.
+	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), mmmodel.NewId())
+
+	resolution, appErr := h.svc.ResolveSpaceRead("test", space, strangerID)
+	require.Nil(t, appErr)
+	require.Equal(t, app.ReadDenied, resolution,
+		"compliance mode must suppress the open-space non-member fall-through even though the caller holds read_public_channel")
 }
 
 // TestResolveSpaceRead_InvalidUserIDIsBadRequest keeps a malformed user id reporting as a caller

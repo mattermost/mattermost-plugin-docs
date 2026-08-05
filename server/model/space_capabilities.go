@@ -88,8 +88,9 @@ func stripReadPage(permissions []*mmmodel.Permission) []string {
 
 // spaceAdminEffectiveCapabilities is the full capability set a SchemeAdmin member effectively
 // holds, single-sourced from core's canonical admin permission slice (SpaceAdminRolePermissions,
-// which already includes read_page).
-var spaceAdminEffectiveCapabilities = mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions)
+// which already includes read_page). Stored already normalized, like presetCapabilitySets below,
+// so the accessor copies without re-deriving the canonical form on every call.
+var spaceAdminEffectiveCapabilities = NormalizeCapabilitySet(mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions))
 
 // presetCapabilitySets are the three seeded default-capability presets in wire form (read_page-
 // free — the baseline is implicit and never listed), single-sourced from core's canonical
@@ -209,7 +210,9 @@ func CapabilitiesFromMember(explicitRoles string, schemeAdmin, schemeGuest bool,
 // AdminEffectiveCapabilities returns the full capability set a SchemeAdmin effectively holds, wire
 // form, non-nil.
 func AdminEffectiveCapabilities() []string {
-	return NormalizeCapabilitySet(spaceAdminEffectiveCapabilities)
+	// Cloned, not returned directly: the set is package state a caller must not be able to mutate
+	// through the returned slice.
+	return slices.Clone(spaceAdminEffectiveCapabilities)
 }
 
 // DefaultCapabilitiesFromPermissions projects a pooled scheme's stored user-role permission set
@@ -253,9 +256,14 @@ const sharedSchemeDisplayNamePrefix = "Space defaults: "
 // rather than the tokens themselves, which keeps the name inside core's 64-character
 // [a-z0-9_] limit and — unlike a positional encoding — leaves existing names meaning what they
 // always meant when the capability vocabulary grows.
+// sharedSchemeNameDigestLength is how much of the digest the pool scheme name carries. Together
+// with SharedSchemeNamePrefix it fits core's 64-character limit with room to spare, and 64 bits is
+// far more than a vocabulary of a few tokens can collide within.
+const sharedSchemeNameDigestLength = 16
+
 func SharedSchemeNameForCapabilities(capabilities []string) string {
 	sum := sha256.Sum256([]byte(strings.Join(NormalizeCapabilitySet(capabilities), " ")))
-	return SharedSchemeNamePrefix + hex.EncodeToString(sum[:])[:16]
+	return SharedSchemeNamePrefix + hex.EncodeToString(sum[:])[:sharedSchemeNameDigestLength]
 }
 
 // SharedSchemeDisplayNameForCapabilities returns the operator-facing name of the pooled scheme for

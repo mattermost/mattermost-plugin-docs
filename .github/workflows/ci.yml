@@ -126,6 +126,17 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The pin is checked, not just documented: a floating tag (:master, :latest) would silently
+      # re-point this suite at whatever core published most recently, so an unrelated upstream
+      # change would surface here as a test failure with no corresponding commit in this repo.
+      - name: ci/verify-core-image-pin
+        run: |
+          if [[ ! "$CORE_IMAGE" =~ :([0-9a-f]{7,40}|v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "CORE_IMAGE must be pinned to a commit sha or a release tag; got '$CORE_IMAGE'." >&2
+            echo "Core CI publishes one image per commit as <repo>:<7-char-sha>." >&2
+            exit 1
+          fi
+
       - name: ci/setup
         uses: mattermost/actions/plugin-ci/setup@0256d363493a1e6b9e361ea788c62a0a73bc00be
         with:

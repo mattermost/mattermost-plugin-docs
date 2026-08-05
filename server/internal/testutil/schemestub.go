@@ -139,9 +139,8 @@ func StubPresetSchemes(mockAPI *plugintest.API) {
 // run packages in parallel.
 var roleRegistry = struct {
 	sync.RWMutex
-	byID   map[string]*mmmodel.Role
-	byName map[string]*mmmodel.Role
-}{byID: map[string]*mmmodel.Role{}, byName: map[string]*mmmodel.Role{}}
+	byID map[string]*mmmodel.Role
+}{byID: map[string]*mmmodel.Role{}}
 
 func roleByID(roleID string) (*mmmodel.Role, bool) {
 	roleRegistry.RLock()
@@ -263,7 +262,6 @@ func StubRole(mockAPI *plugintest.API, roleName string, permissions []string) *m
 	role := &mmmodel.Role{Id: mmmodel.NewId(), Name: roleName, Permissions: permissions}
 	roleRegistry.Lock()
 	roleRegistry.byID[role.Id] = role
-	roleRegistry.byName[role.Name] = role
 	roleRegistry.Unlock()
 	mockAPI.On("GetRoleByName", roleName).Return(role, nil).Maybe()
 	return role

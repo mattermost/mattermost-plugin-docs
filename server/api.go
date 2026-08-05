@@ -50,6 +50,9 @@ func (p *Plugin) initRouter() *mux.Router {
 	api.HandleFunc("/spaces/{space_id}/members", p.handleGetSpaceMembers).Methods(http.MethodGet)
 	api.HandleFunc("/spaces/{space_id}/members", p.handleAddSpaceMember).Methods(http.MethodPost)
 	api.HandleFunc("/spaces/{space_id}/members/{user_id}", p.handleRemoveSpaceMember).Methods(http.MethodDelete)
+	// Unlike PATCH /spaces/{space_id}, whose nil fields mean "leave unchanged", these two replace
+	// the capability set outright: the body carries the full set the target should end up with, and
+	// a token omitted from it is revoked. There is no add-one/remove-one form.
 	api.HandleFunc("/spaces/{space_id}/members/{user_id}/capabilities", p.handleSetSpaceMemberCapabilities).Methods(http.MethodPatch)
 	api.HandleFunc("/spaces/{space_id}/default-capabilities", p.handleSetSpaceDefaultCapabilities).Methods(http.MethodPatch)
 
@@ -116,7 +119,7 @@ func (p *Plugin) getSpaceForGate(w http.ResponseWriter, spaceID string, includeD
 	}
 	if appErr != nil {
 		if appErr.StatusCode == http.StatusNotFound {
-			p.writeAppError(w, mmmodel.NewAppError("getSpaceForGate", "app.space.access.forbidden.app_error", nil, "", http.StatusForbidden).Wrap(appErr))
+			p.writeAppError(w, app.ExistenceHidingForbidden("getSpaceForGate").Wrap(appErr))
 			return nil, false
 		}
 		p.writeAppError(w, appErr)
@@ -224,14 +227,23 @@ func (p *Plugin) requirePageWriteFrom(w http.ResponseWriter, space *model.Space,
 }
 
 // requireDeleteOwnOrAnyFrom gates a delete-class page operation: delete_page (any), or delete_own_page
-// when ownerID == userID. The auto-join pre-step runs against delete_own_page, gated on
-// ownership, since only that path can admit a non-member write. resolution is the read gate the
-// caller has already resolved for the same space and user, so it is not re-derived here.
+// when ownerID == userID. Both are grantable as space defaults, so the auto-join pre-step is
+// attempted against each in turn — delete_page first, unconditionally, then delete_own_page gated on
+// ownership. Attempting only the own-scoped one would deny a non-member the delete a space
+// defaulting to delete_page entitles them to. resolution is the read gate the caller has already
+// resolved for the same space and user, so it is not re-derived here.
 func (p *Plugin) requireDeleteOwnOrAnyFrom(w http.ResponseWriter, space *model.Space, userID, ownerID string, resolution app.ReadResolution) (joined, ok bool) {
-	joined, appErr := p.service.AutoJoinIfDefaultGranted(space, userID, resolution, mmmodel.PermissionDeleteOwnPage, func() (bool, error) { return ownerID == userID, nil })
+	joined, appErr := p.service.AutoJoinIfDefaultGranted(space, userID, resolution, mmmodel.PermissionDeletePage, nil)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return false, false
+	}
+	if !joined {
+		joined, appErr = p.service.AutoJoinIfDefaultGranted(space, userID, resolution, mmmodel.PermissionDeleteOwnPage, func() (bool, error) { return ownerID == userID, nil })
+		if appErr != nil {
+			p.writeAppError(w, appErr)
+			return false, false
+		}
 	}
 	if _, gateOK := p.requireOwnOrAnyFrom(w, "requireDeleteOwnOrAnyFrom", space, userID,
 		"api.page.delete", mmmodel.PermissionDeletePage,
@@ -272,7 +284,7 @@ func (p *Plugin) requireOwnOrAnyFrom(w http.ResponseWriter, where string, space 
 		return false, false
 	}
 	if !allowed {
-		p.writeAppError(w, mmmodel.NewAppError(where, "app.space.access.forbidden.app_error", nil, "", http.StatusForbidden))
+		p.writeAppError(w, app.ExistenceHidingForbidden(where))
 		return false, false
 	}
 	return ownOnly, true
@@ -288,7 +300,7 @@ func (p *Plugin) requireSpaceReadFrom(w http.ResponseWriter, where string, space
 		return app.ReadDenied, false
 	}
 	if resolution == app.ReadDenied {
-		p.writeAppError(w, mmmodel.NewAppError(where, "app.space.access.forbidden.app_error", nil, "", http.StatusForbidden))
+		p.writeAppError(w, app.ExistenceHidingForbidden(where))
 		return app.ReadDenied, false
 	}
 	return resolution, true
