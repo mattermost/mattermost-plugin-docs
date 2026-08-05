@@ -4,7 +4,7 @@
 import React from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 
-import {PrimaryButton, SecondaryButton} from 'components/form-controls/button';
+import {PrimaryButton, SecondaryButton} from 'components/form_controls/button';
 import GenericModal from 'components/generic_modal/generic_modal';
 
 import type {Page} from 'types/docs';

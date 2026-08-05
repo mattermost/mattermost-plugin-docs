@@ -25,7 +25,7 @@ const mockGetPage = getPage as jest.MockedFunction<typeof getPage>;
 const page = (id: string, editAt: number) => ({id, title: `${id} title`, body: `${id} body`, edit_at: editAt} as Page);
 const draft = (pageId: string, baseEditAt: number) => ({page_id: pageId, title: `${pageId} draft`, body: `${pageId} draft body`, base_edit_at: baseEditAt} as Draft);
 
-const notFound = () => Promise.reject(new RestError(404, null, 'not found'));
+const notFound = () => Promise.reject(new RestError('/pages', 404, 'not found', null));
 
 beforeEach(() => {
     mockGetDraft.mockReset();
