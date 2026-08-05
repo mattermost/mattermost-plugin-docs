@@ -6,6 +6,8 @@ import React from 'react';
 
 import SidebarItem from './sidebar_item';
 
+import {renderWithContext} from '../../../tests/react_testing_utils';
+
 describe('SidebarItem', () => {
     it('renders leading, label, and trailing content', () => {
         render(
@@ -48,5 +50,34 @@ describe('SidebarItem', () => {
         );
 
         expect(container.firstChild).toHaveClass('active');
+    });
+});
+
+// Rows that navigate are anchors, so they support new-tab, copy and middle-click;
+// rows that act (a toggle, a menu) stay buttons.
+describe('SidebarItem as a link', () => {
+    it('renders an anchor when given a destination', () => {
+        renderWithContext(
+            <SidebarItem
+                leading={null}
+                label='Engineering'
+                to='/myteam/spaces/eng'
+            />,
+        );
+
+        expect(screen.getByRole('link', {name: 'Engineering'})).toHaveAttribute('href', '/myteam/spaces/eng');
+        expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    });
+
+    it('stays a button without one', () => {
+        renderWithContext(
+            <SidebarItem
+                leading={null}
+                label='Engineering'
+                onClick={jest.fn()}
+            />,
+        );
+
+        expect(screen.getByRole('button', {name: 'Engineering'})).toBeInTheDocument();
     });
 });

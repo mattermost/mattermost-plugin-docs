@@ -21,10 +21,10 @@ type Props = {
 
     // Gates drag-to-reorder until sidebar ordering persists (see SpacesSidebar).
     dndEnabled: boolean;
-    onSelect: (id: string) => void;
+    href: string;
 };
 
-const SpaceItem = ({space, category, active, dndEnabled, onSelect}: Props) => {
+const SpaceItem = ({space, category, active, dndEnabled, href}: Props) => {
     const [element, setElement] = useState<HTMLDivElement | null>(null);
     const {dragging, closestEdge} = useSpaceDragDrop({spaceId: space.id, category, element, enabled: dndEnabled});
 
@@ -54,7 +54,10 @@ const SpaceItem = ({space, category, active, dndEnabled, onSelect}: Props) => {
                     <SpaceItemMenu space={space}/>
                 )}
                 revealTrailingOnHover={true}
-                onClick={() => onSelect(space.id)}
+                to={href}
+
+                // The row is a drag source; a link's native drag would pre-empt it.
+                draggable={false}
             />
             {closestEdge && (
                 <DropIndicator

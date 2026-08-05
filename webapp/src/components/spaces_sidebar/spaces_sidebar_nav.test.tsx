@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {fireEvent, screen} from '@testing-library/react';
+import {screen} from '@testing-library/react';
 import React from 'react';
 
 import SpacesSidebarNav from './spaces_sidebar_nav';
@@ -9,24 +9,24 @@ import SpacesSidebarNav from './spaces_sidebar_nav';
 import {renderWithContext} from '../../../tests/react_testing_utils';
 
 describe('SpacesSidebarNav', () => {
-    it('renders the Home entry and reports selection', () => {
-        const onSelect = jest.fn();
+    // A link, not a button: Home is an address, so it has to support opening in a
+    // new tab and copying like the rest of the product.
+    it('renders Home as a link to the product home', () => {
         renderWithContext(
             <SpacesSidebarNav
                 active={null}
-                onSelect={onSelect}
+                homeHref='/myteam/spaces'
             />,
         );
 
-        fireEvent.click(screen.getByRole('button', {name: 'Home'}));
-        expect(onSelect).toHaveBeenCalledWith('home');
+        expect(screen.getByRole('link', {name: 'Home'})).toHaveAttribute('href', '/myteam/spaces');
     });
 
     it('marks Home active', () => {
         const {container} = renderWithContext(
             <SpacesSidebarNav
                 active='home'
-                onSelect={jest.fn()}
+                homeHref='/myteam/spaces'
             />,
         );
 
