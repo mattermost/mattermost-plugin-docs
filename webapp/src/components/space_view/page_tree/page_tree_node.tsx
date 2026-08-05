@@ -7,7 +7,7 @@ import {useIsFavorite} from 'hooks/favorites';
 import {useTextOverflow} from 'hooks/text_overflow';
 import React, {useState} from 'react';
 import {createPortal} from 'react-dom';
-import {useIntl} from 'react-intl';
+import {FormattedMessage, useIntl} from 'react-intl';
 
 import ChevronDownIcon from '@mattermost/compass-icons/components/chevron-down';
 import ChevronRightIcon from '@mattermost/compass-icons/components/chevron-right';
@@ -56,34 +56,44 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
     const [titleOverflowing, titleRef] = useTextOverflow();
 
     // Narrow subscription: only this page's own favorite state re-renders the row.
-    const favorited = useIsFavorite('page', node.page.id);
-    const {page, children, depth} = node;
+    const favorited = useIsFavorite('page', node.id);
+    const {id, page, draft, children, depth} = node;
     const hasChildren = children.length > 0;
-    const isCollapsed = collapsed.has(page.id);
+    const isCollapsed = collapsed.has(id);
 
-    // A group only needs a trailing append strip when its last row is expanded:
-    // that row's own bottom edge would be drawn above its children while meaning
-    // "after them". Any other last row — a leaf, or a collapsed parent — has
+    // Published rows first, drafts after — kept apart so the append strip can sit
+    // between them (see the render below).
+    const publishedChildren = children.filter((child) => child.page);
+    const draftChildren = children.filter((child) => !child.page);
+
+    // A group only needs a trailing append strip when its last published row is
+    // expanded: that row's own bottom edge would be drawn above its children while
+    // meaning "after them". Any other last row — a leaf, or a collapsed parent — has
     // nothing below it, so its bottom edge already reads correctly.
-    const lastChild = children[children.length - 1];
-    const lastChildExpanded = Boolean(lastChild) && lastChild.children.length > 0 && !collapsed.has(lastChild.page.id);
+    const lastChild = publishedChildren[publishedChildren.length - 1];
+    const lastChildExpanded = Boolean(lastChild) && lastChild.children.length > 0 && !collapsed.has(lastChild.id);
 
     // A drag can never drop into its own subtree; those rows aren't drop targets
     // (truthful canDrop), so mark them as an invalid zone for the whole drag.
-    const inDraggedSubtree = draggingId !== null && draggingId !== page.id && (descendants.get(draggingId)?.has(page.id) ?? false);
-    const isActive = page.id === activePageId;
+    const inDraggedSubtree = draggingId !== null && draggingId !== id && (descendants.get(draggingId)?.has(id) ?? false);
+    const isActive = id === activePageId;
 
-    const toggleLabel = isCollapsed ? formatMessage({id: 'docs.pageTree.expand', defaultMessage: 'Expand {title}'}, {title: page.title}) : formatMessage({id: 'docs.pageTree.collapse', defaultMessage: 'Collapse {title}'}, {title: page.title});
-    const menuLabel = formatMessage({id: 'docs.pageTree.menu', defaultMessage: 'Page options for {title}'}, {title: page.title});
+    const toggleLabel = isCollapsed ? formatMessage({id: 'docs.pageTree.expand', defaultMessage: 'Expand {title}'}, {title: node.title}) : formatMessage({id: 'docs.pageTree.collapse', defaultMessage: 'Collapse {title}'}, {title: node.title});
+    const menuLabel = formatMessage({id: 'docs.pageTree.menu', defaultMessage: 'Page options for {title}'}, {title: node.title});
     const favoriteLabel = formatMessage({id: 'docs.pageTree.favorited', defaultMessage: 'Favorited'});
 
     const {dragging, dropTarget, blocked, previewContainer} = usePageDragDrop({
-        pageId: page.id,
+        pageId: id,
         element,
-        enabled: dndEnabled,
+
+        // An unpublished page is neither a drag source nor a drop target: it has no
+        // stored order to rewrite, it cannot be a parent, and a published page must
+        // not land after it. Disabling the row is what enforces all three — the
+        // positions around it simply aren't offered.
+        enabled: dndEnabled && Boolean(page),
         expanded: hasChildren && !isCollapsed,
         canDrop: (sourceId, mode) => {
-            if (descendants.get(sourceId)?.has(page.id)) {
+            if (descendants.get(sourceId)?.has(id)) {
                 return false;
             }
 
@@ -98,7 +108,7 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
     // Shift-click expands/collapses the whole subtree: apply this node's next
     // state to it and all of its descendants at once.
     const toggleRecursive = () => {
-        const ids = [page.id, ...(descendants.get(page.id) ?? [])];
+        const ids = [id, ...(descendants.get(id) ?? [])];
         onSetCollapsed(ids, !isCollapsed);
     };
 
@@ -107,7 +117,7 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
             toggleRecursive();
             return;
         }
-        onSelect(page.id);
+        onSelect(id);
     };
 
     const onChevronClick = (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -116,7 +126,7 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
             toggleRecursive();
             return;
         }
-        onToggle(page.id);
+        onToggle(id);
     };
 
     // Treeitems nest, so key and focus events from a descendant row bubble through
@@ -137,23 +147,43 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
             setMenuOpen(true);
             return;
         }
-        onRowKeyDown(event, page.id);
+        onRowKeyDown(event, id);
     };
 
     const onFocus = (event: React.FocusEvent<HTMLDivElement>) => {
         if (isOwnEvent(event)) {
-            onFocusRow(page.id);
+            onFocusRow(id);
         }
     };
+
+    const renderChild = (child: PageNode) => (
+        <PageTreeNode
+            key={child.id}
+            node={child}
+            activePageId={activePageId}
+            collapsed={collapsed}
+            descendants={descendants}
+            subtreeHeights={subtreeHeights}
+            draggingId={draggingId}
+            dndEnabled={dndEnabled}
+            tabStopId={tabStopId}
+            onSelect={onSelect}
+            onToggle={onToggle}
+            onSetCollapsed={onSetCollapsed}
+            onFocusRow={onFocusRow}
+            onRowKeyDown={onRowKeyDown}
+            registerRow={registerRow}
+        />
+    );
 
     // Three elements, three jobs: the hit wrapper is the drag/drop target (its box
     // includes the spacing around the row, so a drag between rows still lands in
     // one), the row inside it is what's painted, and the outer treeitem takes focus.
     const setRowElement = (next: HTMLDivElement | null) => setElement(next);
 
-    const setNodeElement = (next: HTMLDivElement | null) => registerRow(page.id, next);
+    const setNodeElement = (next: HTMLDivElement | null) => registerRow(id, next);
 
-    const PageGlyph = page.type === 'page_folder' ? FolderOutlineIcon : FileTextOutlineIcon;
+    const PageGlyph = page?.type === 'page_folder' ? FolderOutlineIcon : FileTextOutlineIcon;
 
     // Only a clipped title gets a tooltip; a fully visible one would just repeat
     // the text under the pointer. Suppressed for the whole tree during a drag: the
@@ -161,14 +191,14 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
     // over the drop indicator hides the thing the user is aiming with.
     const title = (
         <WithTooltip
-            title={page.title}
+            title={node.title}
             disabled={!titleOverflowing || draggingId !== null}
         >
             <span
                 ref={titleRef}
                 className={styles.title}
             >
-                {page.title}
+                {node.title}
             </span>
         </WithTooltip>
     );
@@ -183,7 +213,7 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
             ref={setNodeElement}
             className={styles.node}
             role='treeitem'
-            tabIndex={tabStopId === page.id ? 0 : -1}
+            tabIndex={tabStopId === id ? 0 : -1}
             aria-level={depth + 1}
             aria-selected={isActive}
             aria-expanded={hasChildren ? !isCollapsed : undefined}
@@ -229,7 +259,15 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
                         <PageGlyph size={16}/>
                     </span>
                     {title}
-                    {favorited && (
+                    {draft && (
+                        <span className={styles.draftBadge}>
+                            <FormattedMessage
+                                id='docs.pageTree.draft'
+                                defaultMessage='Draft'
+                            />
+                        </span>
+                    )}
+                    {favorited && page && (
                         <span
                             className={styles.favorite}
                             aria-label={favoriteLabel}
@@ -239,25 +277,31 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
                         </span>
                     )}
                     <Spacer/>
-                    <PageMenu
-                        spaceId={page.space_id}
-                        pageId={page.id}
-                        pageTitle={page.title}
-                        align='right'
-                        open={menuOpen}
-                        onOpenChange={setMenuOpen}
-                        trigger={(
-                            <button
-                                type='button'
-                                className={styles.menuTrigger}
-                                tabIndex={-1}
-                                aria-label={menuLabel}
-                                onClick={(event) => event.stopPropagation()}
-                            >
-                                <DotsHorizontalIcon size={16}/>
-                            </button>
-                        )}
-                    />
+
+                    {/* Every entry in the page menu — rename, favorite, copy link,
+                        delete — acts on a published page. An unpublished one is
+                        managed from the page itself, where Publish and Discard are. */}
+                    {page && (
+                        <PageMenu
+                            spaceId={page.space_id}
+                            pageId={id}
+                            pageTitle={node.title}
+                            align='right'
+                            open={menuOpen}
+                            onOpenChange={setMenuOpen}
+                            trigger={(
+                                <button
+                                    type='button'
+                                    className={styles.menuTrigger}
+                                    tabIndex={-1}
+                                    aria-label={menuLabel}
+                                    onClick={(event) => event.stopPropagation()}
+                                >
+                                    <DotsHorizontalIcon size={16}/>
+                                </button>
+                            )}
+                        />
+                    )}
                 </div>
                 {/* Indented to the destination's level: the line spans the hit
                     wrapper, which is full width, but the page would land as this
@@ -271,8 +315,8 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
             </div>
             {previewContainer && createPortal(
                 <PageDragPreview
-                    title={page.title}
-                    type={page.type}
+                    title={node.title}
+                    type={page?.type ?? 'page'}
                     childCount={children.length}
                 />,
                 previewContainer,
@@ -282,35 +326,23 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
                     className={styles.children}
                     role='group'
                 >
-                    {children.map((child) => (
-                        <PageTreeNode
-                            key={child.page.id}
-                            node={child}
-                            activePageId={activePageId}
-                            collapsed={collapsed}
-                            descendants={descendants}
-                            subtreeHeights={subtreeHeights}
-                            draggingId={draggingId}
-                            dndEnabled={dndEnabled}
-                            tabStopId={tabStopId}
-                            onSelect={onSelect}
-                            onToggle={onToggle}
-                            onSetCollapsed={onSetCollapsed}
-                            onFocusRow={onFocusRow}
-                            onRowKeyDown={onRowKeyDown}
-                            registerRow={registerRow}
-                        />
-                    ))}
+                    {publishedChildren.map(renderChild)}
+
+                    {/* Between the published rows and the drafts, not after both: a
+                        drop here appends to the published run, which is the only
+                        place a published page can go. Drawn below the drafts it
+                        would point at a position no page can take. */}
                     {lastChildExpanded && (
                         <PageTreeAppendZone
-                            parentId={page.id}
+                            parentId={id}
                             indent={(depth + 1) * INDENT_STEP}
                             enabled={dndEnabled}
-                            canDrop={(sourceId) => !descendants.get(sourceId)?.has(page.id) &&
-                                sourceId !== page.id &&
+                            canDrop={(sourceId) => !descendants.get(sourceId)?.has(id) &&
+                                sourceId !== id &&
                                 depth + 1 + (subtreeHeights.get(sourceId) ?? 0) <= MAX_PAGE_DEPTH}
                         />
                     )}
+                    {draftChildren.map(renderChild)}
                 </div>
             )}
         </div>

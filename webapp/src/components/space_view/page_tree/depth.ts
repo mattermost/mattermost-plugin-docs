@@ -18,7 +18,7 @@ export function buildSubtreeHeightMap(roots: PageNode[]): Map<string, number> {
         for (const child of node.children) {
             height = Math.max(height, measure(child) + 1);
         }
-        map.set(node.page.id, height);
+        map.set(node.id, height);
         return height;
     };
 

@@ -12,7 +12,8 @@ import PlusIcon from '@mattermost/compass-icons/components/plus';
 
 import {movePage} from 'store/actions';
 import {buildDescendantMap, buildPageTree} from 'store/page_tree';
-import {getPagesForSpace} from 'store/selectors';
+import type {PageNode} from 'store/page_tree';
+import {getOrphanDraftsForSpace, getPagesForSpace} from 'store/selectors';
 
 import {Button} from 'components/form_controls/button';
 import {announce} from 'components/readout';
@@ -46,15 +47,25 @@ const PageTreePanel = ({space}: {space: Space}) => {
     const createRootPage = useCreateRootPage(space.id);
 
     const pages = useAppSelector((state) => getPagesForSpace(state, space.id));
-    const roots = useMemo(() => buildPageTree(pages), [pages]);
+
+    // Only drafts with no published page get a row. Unpublished edits to a page
+    // already in the tree belong on that page's own row, not on a second one.
+    const orphanDrafts = useAppSelector((state) => getOrphanDraftsForSpace(state, space.id));
+    const roots = useMemo(() => buildPageTree(pages, orphanDrafts), [pages, orphanDrafts]);
     const descendants = useMemo(() => buildDescendantMap(roots), [roots]);
     const subtreeHeights = useMemo(() => buildSubtreeHeightMap(roots), [roots]);
     const visibleRows = useMemo(() => flattenVisibleRows(roots, collapsed), [roots, collapsed]);
 
+    // Published rows first, drafts after; split so the root append strip lands
+    // between them rather than below the drafts (see the render).
+    const publishedRoots = roots.filter((node) => node.page);
+    const draftRoots = roots.filter((node) => !node.page);
+
     // See the trailing append strip below: the root group needs one only when its
-    // last row is expanded, and so has children rendered beneath its bottom edge.
-    const lastRoot = roots[roots.length - 1];
-    const lastRootExpanded = Boolean(lastRoot) && lastRoot.children.length > 0 && !collapsed.has(lastRoot.page.id);
+    // last published row is expanded, and so has children rendered beneath its
+    // bottom edge.
+    const lastRoot = publishedRoots[publishedRoots.length - 1];
+    const lastRootExpanded = Boolean(lastRoot) && lastRoot.children.length > 0 && !collapsed.has(lastRoot.id);
 
     // The tree is a single tab stop (roving tabindex), so it tracks which row owns
     // it. Focus itself moves imperatively through the registry below rather than
@@ -100,7 +111,7 @@ const PageTreePanel = ({space}: {space: Space}) => {
     // back. It only ever reclaims focus the tree just lost, never steals it.
     // Layout effect so there's no painted frame without a focus ring.
     useLayoutEffect(() => {
-        const index = visibleRows.findIndex((row) => row.node.page.id === focusedId);
+        const index = visibleRows.findIndex((row) => row.node.id === focusedId);
         if (index !== -1) {
             focusIndex.current = index;
         }
@@ -118,7 +129,7 @@ const PageTreePanel = ({space}: {space: Space}) => {
             return;
         }
 
-        const targetId = target.node.page.id;
+        const targetId = target.node.id;
         setFocusedId(targetId);
         rowElements.current.get(targetId)?.focus();
     }, [visibleRows, focusedId]);
@@ -170,7 +181,7 @@ const PageTreePanel = ({space}: {space: Space}) => {
     // One handler for the whole tree: the panel is what knows the visible order,
     // so a row would only have to hand these decisions back anyway.
     const onRowKeyDown = useCallback((event: React.KeyboardEvent, rowId: string) => {
-        const index = visibleRows.findIndex((row) => row.node.page.id === rowId);
+        const index = visibleRows.findIndex((row) => row.node.id === rowId);
         if (index === -1) {
             return;
         }
@@ -189,19 +200,19 @@ const PageTreePanel = ({space}: {space: Space}) => {
         switch (event.key) {
         case 'ArrowDown':
             if (index < visibleRows.length - 1) {
-                focusRow(visibleRows[index + 1].node.page.id);
+                focusRow(visibleRows[index + 1].node.id);
             }
             break;
         case 'ArrowUp':
             if (index > 0) {
-                focusRow(visibleRows[index - 1].node.page.id);
+                focusRow(visibleRows[index - 1].node.id);
             }
             break;
         case 'Home':
-            focusRow(visibleRows[0].node.page.id);
+            focusRow(visibleRows[0].node.id);
             break;
         case 'End':
-            focusRow(visibleRows[visibleRows.length - 1].node.page.id);
+            focusRow(visibleRows[visibleRows.length - 1].node.id);
             break;
 
         // Expand, then step into the subtree — the first child is the next
@@ -210,7 +221,7 @@ const PageTreePanel = ({space}: {space: Space}) => {
             if (hasChildren && isCollapsed) {
                 toggle(rowId);
             } else if (hasChildren) {
-                focusRow(visibleRows[index + 1].node.page.id);
+                focusRow(visibleRows[index + 1].node.id);
             }
             break;
 
@@ -236,15 +247,35 @@ const PageTreePanel = ({space}: {space: Space}) => {
     // The row that owns the tab stop: wherever focus last was, else the routed
     // page, else the first row — so Tab always lands somewhere sensible.
     const tabStopId = useMemo(() => {
-        const isVisible = (id: string | null | undefined) => Boolean(id) && visibleRows.some((row) => row.node.page.id === id);
+        const isVisible = (id: string | null | undefined) => Boolean(id) && visibleRows.some((row) => row.node.id === id);
         if (focusedId && isVisible(focusedId)) {
             return focusedId;
         }
         if (isVisible(pageId)) {
             return pageId;
         }
-        return visibleRows[0]?.node.page.id;
+        return visibleRows[0]?.node.id;
     }, [focusedId, pageId, visibleRows]);
+
+    const renderRoot = (node: PageNode) => (
+        <PageTreeNode
+            key={node.id}
+            node={node}
+            activePageId={pageId}
+            collapsed={collapsed}
+            descendants={descendants}
+            subtreeHeights={subtreeHeights}
+            draggingId={draggingId}
+            dndEnabled={true}
+            tabStopId={tabStopId}
+            onSelect={(id) => goToPage(space.id, id)}
+            onToggle={toggle}
+            onSetCollapsed={setCollapsedFor}
+            onFocusRow={onFocusRow}
+            onRowKeyDown={onRowKeyDown}
+            registerRow={registerRow}
+        />
+    );
 
     return (
         <div className={styles.panel}>
@@ -257,29 +288,13 @@ const PageTreePanel = ({space}: {space: Space}) => {
                 aria-describedby={PAGES_KEYBOARD_HELP_ID}
                 onBlur={onTreeBlur}
             >
-                {roots.map((node) => (
-                    <PageTreeNode
-                        key={node.page.id}
-                        node={node}
-                        activePageId={pageId}
-                        collapsed={collapsed}
-                        descendants={descendants}
-                        subtreeHeights={subtreeHeights}
-                        draggingId={draggingId}
-                        dndEnabled={true}
-                        tabStopId={tabStopId}
-                        onSelect={(id) => goToPage(space.id, id)}
-                        onToggle={toggle}
-                        onSetCollapsed={setCollapsedFor}
-                        onFocusRow={onFocusRow}
-                        onRowKeyDown={onRowKeyDown}
-                        registerRow={registerRow}
-                    />
-                ))}
-                {/* Only when the last root is expanded: otherwise its own bottom
-                    edge already means "last at root" and is drawn in the right
-                    place. Appending at root puts the moved page at depth 0, so
-                    only its own subtree has to fit under the cap. */}
+                {publishedRoots.map(renderRoot)}
+
+                {/* Only when the last published root is expanded: otherwise its own
+                    bottom edge already means "last at root" and is drawn in the right
+                    place. Appending at root puts the moved page at depth 0, so only
+                    its own subtree has to fit under the cap. Placed before the draft
+                    rows, since that is where an appended page actually lands. */}
                 {lastRootExpanded && (
                     <PageTreeAppendZone
                         parentId=''
@@ -288,6 +303,7 @@ const PageTreePanel = ({space}: {space: Space}) => {
                         canDrop={(sourceId) => (subtreeHeights.get(sourceId) ?? 0) <= MAX_PAGE_DEPTH}
                     />
                 )}
+                {draftRoots.map(renderRoot)}
             </div>
 
             <p

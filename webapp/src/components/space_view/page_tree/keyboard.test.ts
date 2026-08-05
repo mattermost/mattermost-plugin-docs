@@ -2,7 +2,7 @@
 // See LICENSE.txt for license information.
 
 import {buildPageTree} from 'store/page_tree';
-import {makePage} from 'store/test_fixtures';
+import {makeDraft, makePage} from 'store/test_fixtures';
 
 import type {Page} from 'types/docs';
 
@@ -38,7 +38,7 @@ describe('flattenVisibleRows', () => {
     it('lists rows in visual order with their parent', () => {
         const {roots} = treeOf(pages);
 
-        expect(flattenVisibleRows(roots, new Set()).map((row) => [row.node.page.id, row.parentId])).toEqual([
+        expect(flattenVisibleRows(roots, new Set()).map((row) => [row.node.id, row.parentId])).toEqual([
             ['a', ''],
             ['a1', 'a'],
             ['a2', 'a'],
@@ -49,7 +49,7 @@ describe('flattenVisibleRows', () => {
     it('omits the subtree of a collapsed node', () => {
         const {roots} = treeOf(pages);
 
-        expect(flattenVisibleRows(roots, new Set(['a'])).map((row) => row.node.page.id)).toEqual(['a', 'b']);
+        expect(flattenVisibleRows(roots, new Set(['a'])).map((row) => row.node.id)).toEqual(['a', 'b']);
     });
 });
 
@@ -113,5 +113,49 @@ describe('resolveReorder', () => {
         const {roots, heights} = treeOf(pages);
 
         expect(resolveReorder(roots, heights, 'nope', 'up')).toEqual({blocked: 'boundary'});
+    });
+});
+
+describe('resolveReorder with drafts in the group', () => {
+    const draftRow = (pageId: string, parentId = '') => ({
+        ...makeDraft(pageId, 'space1', pageId),
+        parent_id: parentId,
+    });
+
+    const treeWithDrafts = (list: Page[], drafts: Array<ReturnType<typeof draftRow>>) => {
+        const roots = buildPageTree(list, drafts);
+        return {roots, heights: buildSubtreeHeightMap(roots)};
+    };
+
+    // Drafts hold the tail of the group. Letting a page move past one would claim a
+    // position the server cannot store, and publishing appends anyway.
+    it('stops a page moving down past the drafts', () => {
+        const {roots, heights} = treeWithDrafts(pages, [draftRow('d1')]);
+
+        // 'b' is the last published root, with a draft rendered after it.
+        expect(resolveReorder(roots, heights, 'b', 'down')).toEqual({blocked: 'boundary'});
+
+        // Moving up is unaffected — that stays inside the published run.
+        expect(resolveReorder(roots, heights, 'b', 'up')).toEqual({
+            move: {pageId: 'b', parentId: '', siblingIndex: 0},
+        });
+    });
+
+    // No stored order to write, and making room would move a published sibling.
+    // Reported as a boundary so the gesture is announced rather than ignored.
+    it('refuses to reorder a draft at all', () => {
+        const {roots, heights} = treeWithDrafts(pages, [draftRow('d1')]);
+
+        for (const intent of ['up', 'down', 'indent', 'outdent'] as const) {
+            expect(resolveReorder(roots, heights, 'd1', intent)).toEqual({blocked: 'boundary'});
+        }
+    });
+
+    it('leaves a group with no drafts reordering as before', () => {
+        const {roots, heights} = treeWithDrafts(pages, []);
+
+        expect(resolveReorder(roots, heights, 'a', 'down')).toEqual({
+            move: {pageId: 'a', parentId: '', siblingIndex: 1},
+        });
     });
 });
