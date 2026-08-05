@@ -184,8 +184,13 @@ const PageHeader = ({space, page, draft, treeOpen, editing, onTogglePages, onTog
                 )}
 
                 {/* Publish/Update sits before Close: the action that commits the
-                    work reads first, and leaving is the fallback beside it. */}
-                {editing && subject && (unpublished ? (
+                    work reads first, and leaving is the fallback beside it.
+
+                    Publish shows in both modes — an unpublished page is invisible to
+                    everyone else until it lands, so that stays offered while reading
+                    it. Update is an editing action: with the page already published
+                    there is nothing urgent to offer a reader. */}
+                {unpublished ? (
                     <Button
                         emphasis='primary'
                         size='sm'
@@ -197,7 +202,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, onTogglePages, onTog
                             defaultMessage='Publish'
                         />
                     </Button>
-                ) : (
+                ) : (editing && subject && (
                     <Button
                         emphasis='primary'
                         size='sm'

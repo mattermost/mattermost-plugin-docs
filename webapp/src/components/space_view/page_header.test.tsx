@@ -108,7 +108,15 @@ describe('PageHeader publish controls', () => {
         expect(screen.getByRole('button', {name: 'Update'})).toBeDisabled();
     });
 
-    it('shows neither while reading', () => {
+    // An unpublished page is invisible to everyone else until it lands, so the way
+    // out of that state stays offered without a trip through edit mode.
+    it('offers Publish while reading an unpublished page', () => {
+        renderHeader({page: undefined, draft: DRAFT});
+
+        expect(screen.getByRole('button', {name: 'Publish'})).toBeEnabled();
+    });
+
+    it('hides Update while reading a published page', () => {
         renderHeader({draft: DRAFT});
 
         expect(screen.queryByRole('button', {name: 'Update'})).not.toBeInTheDocument();
