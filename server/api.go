@@ -50,11 +50,13 @@ func (p *Plugin) initRouter() *mux.Router {
 	api.HandleFunc("/spaces/{space_id}/members", p.handleGetSpaceMembers).Methods(http.MethodGet)
 	api.HandleFunc("/spaces/{space_id}/members", p.handleAddSpaceMember).Methods(http.MethodPost)
 	api.HandleFunc("/spaces/{space_id}/members/{user_id}", p.handleRemoveSpaceMember).Methods(http.MethodDelete)
-	// Unlike PATCH /spaces/{space_id}, whose nil fields mean "leave unchanged", these two replace
-	// the capability set outright: the body carries the full set the target should end up with, and
-	// a token omitted from it is revoked. There is no add-one/remove-one form.
-	api.HandleFunc("/spaces/{space_id}/members/{user_id}/capabilities", p.handleSetSpaceMemberCapabilities).Methods(http.MethodPatch)
-	api.HandleFunc("/spaces/{space_id}/default-capabilities", p.handleSetSpaceDefaultCapabilities).Methods(http.MethodPatch)
+	// PUT, not PATCH: these two replace the capability set outright — the body carries the full set
+	// the target should end up with, and a token omitted from it is revoked. There is no
+	// add-one/remove-one form. PATCH on this API means "nil fields leave unchanged" (see
+	// PATCH /spaces/{space_id}), so a caller generalizing from that would read an omitted token as
+	// "leave it alone" and silently revoke it instead.
+	api.HandleFunc("/spaces/{space_id}/members/{user_id}/capabilities", p.handleSetSpaceMemberCapabilities).Methods(http.MethodPut)
+	api.HandleFunc("/spaces/{space_id}/default-capabilities", p.handleSetSpaceDefaultCapabilities).Methods(http.MethodPut)
 
 	// Page collection.
 	api.HandleFunc("/spaces/{space_id}/pages", p.handleGetSpacePages).Methods(http.MethodGet)

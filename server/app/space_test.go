@@ -1095,6 +1095,50 @@ func TestServiceRemoveSpaceMember_RemoveFails(t *testing.T) {
 	require.Equal(t, "app.space.remove_member.failed.app_error", appErr.Id)
 }
 
+// TestServiceRemoveSpaceMember_SelfNonMemberOnOpenSpaceIs404 covers a non-member's self-removal
+// from an open space. The read gate admits non-members to an open space by design, so the caller
+// can already see it exists and there is nothing left to hide: the absent membership reports as a
+// plain 404 rather than the existence-hiding 403, which would misreport a no-op as an
+// authorization failure.
+func TestServiceRemoveSpaceMember_SelfNonMemberOnOpenSpaceIs404(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+	space, _ := createSpaceForMemberTests(t, h, mockAPI)
+	require.Equal(t, model.ViewAccessOpen, space.ViewAccess, "fixture must be open for this case")
+
+	selfID := mmmodel.NewId()
+	mockAPI.On("GetChannelMember", space.ChannelId, selfID).
+		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: http.StatusNotFound})
+
+	appErr := h.svc.RemoveSpaceMember(space, selfID, selfID)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusNotFound, appErr.StatusCode)
+	require.Equal(t, "app.space.member.user_not_found.app_error", appErr.Id)
+}
+
+// TestServiceRemoveSpaceMember_SelfNonMemberOnPrivateSpaceIs403 is the other half of the split: on
+// a private space the same caller is a non-member the read gate denies, so reporting the absent
+// membership as 404 would confirm the space exists to someone who cannot read it. They get the
+// shared existence-hiding 403 instead.
+func TestServiceRemoveSpaceMember_SelfNonMemberOnPrivateSpaceIs403(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+	space, _ := createSpaceForMemberTests(t, h, mockAPI)
+
+	private := model.ViewAccessPrivate
+	updated, err := h.store.UpdateSpace(space.Id, &model.SpacePatch{ViewAccess: &private}, space.UpdateAt, false)
+	require.NoError(t, err)
+
+	selfID := mmmodel.NewId()
+	mockAPI.On("GetChannelMember", updated.ChannelId, selfID).
+		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: http.StatusNotFound})
+
+	appErr := h.svc.RemoveSpaceMember(updated, selfID, selfID)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+	require.Equal(t, "app.space.access.forbidden.app_error", appErr.Id)
+}
+
 // TestServiceRemoveSpaceMember_LastMemberRejected verifies the sole remaining member cannot be
 // removed: membership is the only gate on every space and page route, so a memberless space
 // would be permanently unreachable through the plugin API.

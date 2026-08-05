@@ -61,12 +61,13 @@ type Space struct {
 // effective set states what the caller may actually do rather than what was granted on top of the
 // baseline. Both are non-nil-on-empty.
 //
-// An endpoint returns this wrapper when it establishes access state (CreateSpace) or changes it
-// (SetSpaceDefaultCapabilities), and when it is read directly (GET /spaces/{id}). The endpoints
-// that return a bare Space do so because they cannot change either field: a space PATCH alters
-// metadata and view_access, neither of which moves the caller's capabilities or the space default,
-// and the team listing omits them because resolving a capability set per space would cost a
-// scheme-and-role lookup per row.
+// An endpoint returns this wrapper when it establishes access state (CreateSpace), changes it
+// (SetSpaceDefaultCapabilities), reads a space directly (GET /spaces/{id}), or patches one
+// (PATCH /spaces/{id}): a patch may alter view_access, which moves who may read the space, and
+// answering with the wrapper keeps a client refreshing its cached entry from dropping the
+// capability fields. The endpoints that return a bare Space are the restore route, which alters
+// neither field, and the team listing, which omits them because resolving a capability set per
+// space would cost a scheme-and-role lookup per row.
 //
 // Because the embed is flat, a bare Space and this wrapper are indistinguishable to a client that
 // types them alike: a client caching a space must merge a bare-Space response into its cached

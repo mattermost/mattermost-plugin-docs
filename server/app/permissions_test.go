@@ -316,6 +316,83 @@ func TestResolveSpaceRead_ComplianceModeSuppressesOpenFallthrough(t *testing.T) 
 		"compliance mode must suppress the open-space non-member fall-through even though the caller holds read_public_channel")
 }
 
+// teamManagerHarness seeds a space with the given view access whose acting user holds team
+// manage_space but is not a member of the backing channel — the actor RequireSpaceAdminOrTeamPerm's
+// read-gate conjunct exists to constrain.
+func teamManagerHarness(t *testing.T, viewAccess model.ViewAccess) (*testHarness, *model.Space, string) {
+	t.Helper()
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	teamID := mmmodel.NewId()
+	// Both registered before the harness, whose catch-alls would otherwise answer first:
+	// mock.Mock matches expectations in registration order.
+	stubNonMember(mockAPI, userID)
+	mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionAdminSpace).Return(false).Maybe()
+	mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionManageSpace).Return(true).Maybe()
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
+	if space.ViewAccess != viewAccess {
+		updated, err := h.store.UpdateSpace(space.Id, &model.SpacePatch{ViewAccess: &viewAccess}, space.UpdateAt, false)
+		require.NoError(t, err)
+		space = updated
+	}
+	return h, space, userID
+}
+
+// TestRequireSpaceAdminOrTeamPerm_TeamPermNeedsReadOnPrivateSpace pins the read-gate conjunct on the
+// team-permission branch: a team-wide manage_space grant authorizes managing only spaces the caller
+// can already read. Here the caller holds manage_space on the team but is not a backing-channel
+// member of a private space, so the read resolver denies them and the team grant must not admit
+// them anyway. Without the conjunct, any team manage_space holder could patch or delete every
+// private space in the team, including ones they cannot open.
+func TestRequireSpaceAdminOrTeamPerm_TeamPermNeedsReadOnPrivateSpace(t *testing.T) {
+	h, space, userID := teamManagerHarness(t, model.ViewAccessPrivate)
+
+	appErr := h.svc.RequireSpaceAdminOrTeamPerm("test", space, userID, mmmodel.PermissionManageSpace)
+	require.NotNil(t, appErr, "team manage_space must not admit a caller who cannot read the space")
+	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+	require.Equal(t, "app.space.access.forbidden.app_error", appErr.Id,
+		"the denial must be the shared existence-hiding 403, not a distinguishable one")
+}
+
+// TestRequireSpaceAdminOrTeamPerm_TeamPermAdmitsOnOpenSpace is the positive half of the pair above:
+// the same caller, the same team grant, on an open space the read resolver admits them to via the
+// non-member fall-through. Together the two pin the conjunct to the read gate specifically — this
+// case failing would mean the gate rejects callers it should serve, rather than the conjunct being
+// absent.
+func TestRequireSpaceAdminOrTeamPerm_TeamPermAdmitsOnOpenSpace(t *testing.T) {
+	h, space, userID := teamManagerHarness(t, model.ViewAccessOpen)
+
+	appErr := h.svc.RequireSpaceAdminOrTeamPerm("test", space, userID, mmmodel.PermissionManageSpace)
+	require.Nil(t, appErr, "team manage_space must admit a caller the read gate already admits")
+}
+
+// TestResolveSpaceRead_GuestDeniedOpenFallthrough covers the guest exclusion from the open-space
+// non-member read. Core's team_guest holds read_space but not read_public_channel, so a guest who
+// is not a backing-channel member has no path into an open space they were never added to —
+// unlike a plain team member, whom the fall-through admits.
+func TestResolveSpaceRead_GuestDeniedOpenFallthrough(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	guestID := mmmodel.NewId()
+	// Both registered before the harness: StubDefaultSpacePermissions grants read_page on the
+	// channel and read_public_channel on the team to any user, and mock.Mock matches expectations
+	// in registration order.
+	stubNonMember(mockAPI, guestID)
+	testutil.StubGuestTeamDefaults(mockAPI, guestID)
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	// The default fixture is open and the harness stubs an active team membership, so the guest
+	// clears the team gate and reaches the fall-through — where team_guest's missing
+	// read_public_channel is the only thing left to deny them.
+	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), mmmodel.NewId())
+
+	resolution, appErr := h.svc.ResolveSpaceRead("test", space, guestID)
+	require.Nil(t, appErr)
+	require.Equal(t, app.ReadDenied, resolution,
+		"a guest lacking team read_public_channel must not be admitted to an open space by the fall-through")
+}
+
 // TestResolveSpaceRead_InvalidUserIDIsBadRequest keeps a malformed user id reporting as a caller
 // fault. Collapsing it into the existence-hiding 403 every genuine denial returns would make a
 // plumbing bug indistinguishable from an ordinary authorization failure.

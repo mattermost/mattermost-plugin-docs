@@ -250,17 +250,17 @@ const SharedSchemeNamePrefix = "docs_space_default_"
 // the capability set the scheme grants.
 const sharedSchemeDisplayNamePrefix = "Space defaults: "
 
+// sharedSchemeNameDigestLength is how much of the digest the pool scheme name carries. Together
+// with SharedSchemeNamePrefix it fits core's 64-character limit with room to spare, and 64 bits is
+// far more than a vocabulary of a few tokens can collide within.
+const sharedSchemeNameDigestLength = 16
+
 // SharedSchemeNameForCapabilities returns the pool scheme name expressing capabilities: a
 // deterministic function of the capability set, so two spaces configured the same way resolve to
 // one shared scheme rather than each owning an identical private copy. The suffix is a digest
 // rather than the tokens themselves, which keeps the name inside core's 64-character
 // [a-z0-9_] limit and — unlike a positional encoding — leaves existing names meaning what they
 // always meant when the capability vocabulary grows.
-// sharedSchemeNameDigestLength is how much of the digest the pool scheme name carries. Together
-// with SharedSchemeNamePrefix it fits core's 64-character limit with room to spare, and 64 bits is
-// far more than a vocabulary of a few tokens can collide within.
-const sharedSchemeNameDigestLength = 16
-
 func SharedSchemeNameForCapabilities(capabilities []string) string {
 	sum := sha256.Sum256([]byte(strings.Join(NormalizeCapabilitySet(capabilities), " ")))
 	return SharedSchemeNamePrefix + hex.EncodeToString(sum[:])[:sharedSchemeNameDigestLength]

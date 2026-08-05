@@ -136,6 +136,33 @@ jobs:
             echo "Core CI publishes one image per commit as <repo>:<7-char-sha>." >&2
             exit 1
           fi
+          image_tag="${CORE_IMAGE##*:}"
+
+          # The shape check above cannot catch the drift that matters. go.mod pins server/public to a
+          # core commit; CORE_IMAGE is a separate repository variable a human sets. Nothing ties them
+          # together, so bumping the pin without updating the variable leaves this suite green against
+          # a core image that predates the very changes under test.
+          gomod_commit="$(grep -oE 'server/public v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+-[0-9a-f]+' go.mod | grep -oE '[0-9a-f]{12}$' || true)"
+          if [[ -z "$gomod_commit" ]]; then
+            echo "server/public is pinned to a released version, not a core commit; skipping the sha cross-check."
+            exit 0
+          fi
+          if [[ ! "$image_tag" =~ ^[0-9a-f]{7,40}$ ]]; then
+            echo "go.mod pins server/public to unreleased core commit ${gomod_commit}, but CORE_IMAGE is release tag '${image_tag}'." >&2
+            echo "A released image cannot carry that commit's changes. Point CORE_IMAGE at the core build for ${gomod_commit}." >&2
+            exit 1
+          fi
+          # Core CI tags images with a 7-char sha while go.mod carries 12, so compare on the shorter.
+          prefix_len=${#image_tag}
+          if (( ${#gomod_commit} < prefix_len )); then
+            prefix_len=${#gomod_commit}
+          fi
+          if [[ "${image_tag:0:$prefix_len}" != "${gomod_commit:0:$prefix_len}" ]]; then
+            echo "CORE_IMAGE sha '${image_tag}' does not match the core commit go.mod pins (${gomod_commit})." >&2
+            echo "Set CORE_IMAGE to the image core CI published for ${gomod_commit}, or repin go.mod." >&2
+            exit 1
+          fi
+          echo "CORE_IMAGE ${image_tag} matches the go.mod core pin ${gomod_commit}."
 
       - name: ci/setup
         uses: mattermost/actions/plugin-ci/setup@0256d363493a1e6b9e361ea788c62a0a73bc00be

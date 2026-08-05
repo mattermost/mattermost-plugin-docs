@@ -19,7 +19,7 @@ import (
 // like every other paginated method (page and perPage both clamped). The pluginapi member
 // listing is page-indexed rather than offset-based, so when the requested page comes back full a
 // one-row probe at the next page's first slot decides has-more. space is the caller's
-// already-fetched record (from its manage gate), so no re-read here.
+// already-fetched record, from its manage gate.
 func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int) ([]*model.SpaceMember, bool, *mmmodel.AppError) {
 	if space == nil {
 		return nil, false, mmmodel.NewAppError("GetSpaceMembers", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -70,8 +70,7 @@ func toSpaceMember(cm *mmmodel.ChannelMember, defaultCapabilities []string) *mod
 }
 
 // AddSpaceMember adds a user to space's backing channel at the space default (SchemeUser, no
-// per-member grants). space is the caller's already-fetched record (from its manage gate), so no
-// re-read here.
+// per-member grants). space is the caller's already-fetched record, from its manage gate.
 func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.SpaceMember, *mmmodel.AppError) {
 	if space == nil {
 		return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -168,7 +167,7 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 	// channel's scheme) or SetSpaceMemberCapabilities/RemoveSpaceMember (the last-admin invariant)
 	// call could change: a stale read taken before the lock lets a concurrent default-capabilities
 	// repoint write a superseded scheme's role name, or a concurrent promotion/demotion flip admin
-	// status, under this operation's feet — so every one of them runs inside the space-keyed
+	// status, mid-operation — so every one of them runs inside the space-keyed
 	// advisory lock, alongside the mutation itself.
 	var appErr *mmmodel.AppError
 	var newRoles string
@@ -257,7 +256,7 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 // resolves before the last-member/last-admin guards; an admin-target removal is additionally
 // escalation-guarded (RequireSpaceAdminOrSysadmin) and last-admin-guarded, both under the same
 // space-scoped advisory lock as SetSpaceMemberCapabilities' admin-revoke path. space is the
-// caller's already-fetched record (from its gate), so no re-read here.
+// caller's already-fetched record, from its gate.
 func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID string) *mmmodel.AppError {
 	if space == nil {
 		return mmmodel.NewAppError("RemoveSpaceMember", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -272,7 +271,7 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 	// The target lookup, its admin status, the escalation-guard decision, and the admin count all
 	// read state a concurrent SetSpaceMemberCapabilities/RemoveSpaceMember call could change
 	// (the last-admin invariant) — a stale admin-status read taken before the lock lets a
-	// concurrent promotion flip it under this operation's feet — so every one of them runs inside
+	// concurrent promotion flip it mid-operation — so every one of them runs inside
 	// the space-keyed advisory lock, alongside the mutation itself. This applies to self-removal
 	// too, since the last-admin invariant covers the sole admin's self-leave.
 	var appErr *mmmodel.AppError
@@ -283,13 +282,16 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 				appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memErr)
 				return appErr
 			}
-			// Non-member target: a manage-gated caller removing someone else has already proven
-			// manage authority over this space, so there is nothing left to existence-hide behind
-			// and it gets a plain 404, matching SetSpaceMemberCapabilities. Self-removal returns the
-			// shared existence-hiding 403 whatever the space's ViewAccess — keying the code on
-			// ViewAccess would let a caller read a space's exposure setting off the status alone,
-			// the distinction the rest of the surface exists to deny.
-			if userID != actingUserID {
+			// Non-member target. Removing someone else means the caller already cleared the manage
+			// gate, so the space is not hidden from them and it is a plain 404, matching
+			// SetSpaceMemberCapabilities.
+			//
+			// Self-removal splits on ViewAccess. On a private space the caller is a non-member the
+			// read gate would have denied, so the existence-hiding 403 is what they must see. On an
+			// open space that gate admitted them by design and they can already read the space, so
+			// there is no existence left to hide and reporting the absent membership as 404 is both
+			// accurate and what the caller can act on.
+			if userID != actingUserID || space.ViewAccess == model.ViewAccessOpen {
 				appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(memErr)
 			} else {
 				appErr = existenceHidingForbidden("RemoveSpaceMember")
@@ -297,7 +299,7 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 			return appErr
 		}
 
-		// Resolved before the scan below so an unauthorized caller is rejected without paying for it.
+		// Resolved before the scan below so an unauthorized caller is rejected without running it.
 		if target.SchemeAdmin {
 			if e := s.RequireSpaceAdminOrSysadmin("RemoveSpaceMember", space, actingUserID); e != nil {
 				appErr = e

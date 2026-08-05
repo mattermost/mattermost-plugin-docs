@@ -108,7 +108,7 @@ func TestScenarios(t *testing.T) {
 		addSpaceMember(t, ctx, spaceAdmin, space.Id, contrib.id)
 
 		var roResp pluginmodel.SpaceWithAccess
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPatch, "/spaces/"+space.Id+"/default-capabilities",
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/default-capabilities",
 			map[string][]string{"default_capabilities": {}}, &roResp)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "setting read-only default failed: %s", body)
@@ -136,7 +136,7 @@ func TestScenarios(t *testing.T) {
 
 		// The real grant surface: the space admin assigns create_page + edit_page to CONTRIB.
 		var grantResp pluginmodel.SpaceMember
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPatch, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
 			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityCreatePage, pluginmodel.CapabilityEditPage}}, &grantResp)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "granting CONTRIB capabilities: %s", body)
@@ -222,7 +222,7 @@ func TestScenarios(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusForbidden, status, "plain member create (comment default grants no create_page): %s", body)
 
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPatch, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
 			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityCreatePage}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "granting CONTRIB create_page: %s", body)
@@ -252,12 +252,12 @@ func TestScenarios(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusCreated, status, "admin seed page failed: %s", body)
 
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPatch, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
 			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityCreatePage}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "granting A create_page: %s", body)
 
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPatch, "/spaces/"+space.Id+"/members/"+member.id+"/capabilities",
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+member.id+"/capabilities",
 			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityEditPage}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "granting B edit_page: %s", body)
@@ -353,7 +353,7 @@ func TestScenarios(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusForbidden, status, "guest update: %s", body)
 
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPatch, "/spaces/"+space.Id+"/members/"+guestCandidate.id+"/capabilities",
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+guestCandidate.id+"/capabilities",
 			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityCreatePage}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusBadRequest, status, "granting a guest capabilities: %s", body)
@@ -382,12 +382,12 @@ func TestScenarios(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusCreated, status, "admin add member: %s", body)
 
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPatch, "/spaces/"+s7ID+"/members/"+contrib.id+"/capabilities",
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+s7ID+"/members/"+contrib.id+"/capabilities",
 			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityEditPage}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "admin set member capabilities: %s", body)
 
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPatch, "/spaces/"+s7ID+"/default-capabilities",
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+s7ID+"/default-capabilities",
 			map[string][]string{"default_capabilities": {pluginmodel.CapabilityCommentPage}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "admin set default capabilities: %s", body)
@@ -418,12 +418,12 @@ func TestScenarios(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusForbidden, status, "control add member")
 
-		status, _, err = doPluginRequest(ctx, member.client, http.MethodPatch, "/spaces/"+s7ID+"/members/"+contrib.id+"/capabilities",
+		status, _, err = doPluginRequest(ctx, member.client, http.MethodPut, "/spaces/"+s7ID+"/members/"+contrib.id+"/capabilities",
 			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityEditPage}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusForbidden, status, "control set member capabilities")
 
-		status, _, err = doPluginRequest(ctx, member.client, http.MethodPatch, "/spaces/"+s7ID+"/default-capabilities",
+		status, _, err = doPluginRequest(ctx, member.client, http.MethodPut, "/spaces/"+s7ID+"/default-capabilities",
 			map[string][]string{"default_capabilities": {pluginmodel.CapabilityCommentPage}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusForbidden, status, "control set default capabilities")
@@ -485,7 +485,7 @@ func TestScenarios(t *testing.T) {
 		// the pooled scheme it leaves behind stays for the next space to request the same set. The
 		// member loses create.
 		var roResp pluginmodel.SpaceWithAccess
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPatch, "/spaces/"+space.Id+"/default-capabilities",
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/default-capabilities",
 			map[string][]string{"default_capabilities": {}}, &roResp)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "switch custom→preset failed: %s", body)
@@ -543,7 +543,7 @@ func TestScenarios(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, status, "delete of an unowned page before the grant: %s", body)
 
 		var granted pluginmodel.SpaceMember
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPatch, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
 			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityDeletePage}}, &granted)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "granting delete_page: %s", body)

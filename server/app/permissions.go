@@ -71,21 +71,27 @@ func (s *Service) isComplianceEnabled() bool {
 }
 
 // hasOpenTeamFallthrough reports whether userID holds the non-member team read_public_channel
-// fall-through into teamID's open spaces. Suppressed under compliance mode.
-func (s *Service) hasOpenTeamFallthrough(userID, teamID string) bool {
-	return s.client.User.HasPermissionToTeam(userID, teamID, mmmodel.PermissionReadPublicChannel) && !s.isComplianceEnabled()
+// fall-through into teamID's open spaces. Suppressed under compliance mode. member is userID's
+// already-resolved membership in teamID; pass nil when the caller does not hold one and this
+// resolves the team row itself.
+func (s *Service) hasOpenTeamFallthrough(member *mmmodel.TeamMember, userID, teamID string) bool {
+	if s.isComplianceEnabled() {
+		return false
+	}
+	return s.teamPermGranted(member, userID, teamID, mmmodel.PermissionReadPublicChannel)
 }
 
 // readResolutionFrom evaluates the read gate against space for userID, given the caller's
-// already-resolved sysadmin and active-team-membership status.
-func (s *Service) readResolutionFrom(sysadmin, active bool, space *model.Space, userID string) ReadResolution {
+// already-resolved sysadmin status and team membership. A nil member means the caller is not an
+// active member of the space's team.
+func (s *Service) readResolutionFrom(sysadmin bool, member *mmmodel.TeamMember, space *model.Space, userID string) ReadResolution {
 	if sysadmin {
 		return ReadViaSysadmin
 	}
-	if active && s.client.User.HasPermissionToChannel(userID, space.ChannelId, mmmodel.PermissionReadPage) {
+	if member != nil && s.client.User.HasPermissionToChannel(userID, space.ChannelId, mmmodel.PermissionReadPage) {
 		return ReadViaMember
 	}
-	if space.ViewAccess == model.ViewAccessOpen && active && s.hasOpenTeamFallthrough(userID, space.TeamId) {
+	if space.ViewAccess == model.ViewAccessOpen && member != nil && s.hasOpenTeamFallthrough(member, userID, space.TeamId) {
 		return ReadViaOpenFallthrough
 	}
 	return ReadDenied
@@ -93,16 +99,16 @@ func (s *Service) readResolutionFrom(sysadmin, active bool, space *model.Space, 
 
 // ResolveSpaceRead resolves the read gate for space against userID, reporting how the read was
 // admitted so callers can gate auto-join to the fall-through case only. where identifies the
-// calling operation for the 500 an isActiveTeamMember lookup failure surfaces as. On that
+// calling operation for the 500 an activeTeamMember lookup failure surfaces as. On that
 // failure the returned resolution is ReadDenied but the error is non-nil, so callers must check
 // the error first — treating the resolution alone as authoritative would misreport an outage as
 // "not authorized".
 func (s *Service) ResolveSpaceRead(where string, space *model.Space, userID string) (ReadResolution, *mmmodel.AppError) {
-	active, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
+	member, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
 	if appErr != nil {
 		return ReadDenied, appErr
 	}
-	return s.readResolutionFrom(sysadmin, active, space, userID), nil
+	return s.readResolutionFrom(sysadmin, member, space, userID), nil
 }
 
 // requireActiveMemberGate performs the four checks that precede the permission-specific branches
@@ -111,28 +117,30 @@ func (s *Service) ResolveSpaceRead(where string, space *model.Space, userID stri
 // resolved): client wiring, existence-hiding on a nil space, the sysadmin override, and
 // active-team-membership resolution with its 500 on a genuine lookup failure. A non-nil appErr
 // must be returned by the caller immediately. Otherwise, when sysadmin is true the caller may
-// return nil immediately; when it is false the caller continues with active to evaluate its own
-// permission-specific branches.
-func (s *Service) requireActiveMemberGate(where string, space *model.Space, userID string) (active, sysadmin bool, appErr *mmmodel.AppError) {
+// return nil immediately; when it is false the caller continues with member to evaluate its own
+// permission-specific branches. A nil member means the caller is not an active team member; the
+// membership itself is returned rather than a bool so a caller needing a team permission resolves
+// it from these roles instead of re-reading the row.
+func (s *Service) requireActiveMemberGate(where string, space *model.Space, userID string) (member *mmmodel.TeamMember, sysadmin bool, appErr *mmmodel.AppError) {
 	if appErr = s.requireClient(where, "space_id", spaceIDOrEmpty(space), "user_id", userID); appErr != nil {
-		return false, false, appErr
+		return nil, false, appErr
 	}
 	// A malformed user id is a caller fault, not a denial: it reports as a 400 so it stays
 	// distinguishable from the existence-hiding 403 every genuine denial returns.
 	if !mmmodel.IsValidId(userID) {
-		return false, false, mmmodel.NewAppError(where, "app.space.access.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
+		return nil, false, mmmodel.NewAppError(where, "app.space.access.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	if space == nil {
-		return false, false, existenceHidingForbidden(where)
+		return nil, false, existenceHidingForbidden(where)
 	}
 	if s.client.User.HasPermissionTo(userID, mmmodel.PermissionManageSystem) {
-		return false, true, nil
+		return nil, true, nil
 	}
-	active, err := s.isActiveTeamMember(space.TeamId, userID)
+	member, err := s.activeTeamMember(space.TeamId, userID)
 	if err != nil {
-		return false, false, mmmodel.NewAppError(where, "app.space.access.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+		return nil, false, mmmodel.NewAppError(where, "app.space.access.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
-	return active, false, nil
+	return member, false, nil
 }
 
 // RequireSpacePagePermission gates a page-scoped operation on perm: sysadmin override, then
@@ -141,26 +149,27 @@ func (s *Service) requireActiveMemberGate(where string, space *model.Space, user
 // (including a nil space, mirroring a lookup miss upstream) yields the shared existence-hiding
 // 403.
 func (s *Service) RequireSpacePagePermission(where string, space *model.Space, userID string, perm *mmmodel.Permission) *mmmodel.AppError {
-	active, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
+	member, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
 	if appErr != nil {
 		return appErr
 	}
 	if sysadmin {
 		return nil
 	}
-	return s.evaluatePagePermission(where, space, userID, perm, active)
+	return s.evaluatePagePermission(where, space, userID, perm, member != nil, member)
 }
 
 // evaluatePagePermission grants perm to an active member holding it on the backing channel, or —
 // for a read permission on an open space only — to an active team member via the non-member
 // fall-through. Any other case yields the shared existence-hiding 403. active is the caller's
-// already-resolved team-membership status.
-func (s *Service) evaluatePagePermission(where string, space *model.Space, userID string, perm *mmmodel.Permission, active bool) *mmmodel.AppError {
+// already-resolved team-membership status; member is the membership behind it when the caller
+// holds one, and nil when active was established without reading the row.
+func (s *Service) evaluatePagePermission(where string, space *model.Space, userID string, perm *mmmodel.Permission, active bool, member *mmmodel.TeamMember) *mmmodel.AppError {
 	if active && s.client.User.HasPermissionToChannel(userID, space.ChannelId, perm) {
 		return nil
 	}
 	if perm.Id == mmmodel.PermissionReadPage.Id && space.ViewAccess == model.ViewAccessOpen && active &&
-		s.hasOpenTeamFallthrough(userID, space.TeamId) {
+		s.hasOpenTeamFallthrough(member, userID, space.TeamId) {
 		return nil
 	}
 	return existenceHidingForbidden(where)
@@ -188,7 +197,7 @@ func (s *Service) RequireSpacePagePermissionFrom(where string, space *model.Spac
 	if space == nil {
 		return existenceHidingForbidden(where)
 	}
-	return s.evaluatePagePermission(where, space, userID, perm, true)
+	return s.evaluatePagePermission(where, space, userID, perm, true, nil)
 }
 
 // ResolveSpacePageOwnOrAny decides a page operation that is granted by either of two permissions:
@@ -233,18 +242,18 @@ func (s *Service) ResolveSpacePageOwnOrAny(space *model.Space, userID, anyWhere 
 // the caller can already read. Callers pass the operation's own team permission: manage_space for
 // the manage tier, delete_space for delete/restore.
 func (s *Service) RequireSpaceAdminOrTeamPerm(where string, space *model.Space, userID string, teamPerm *mmmodel.Permission) *mmmodel.AppError {
-	active, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
+	member, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
 	if appErr != nil {
 		return appErr
 	}
 	if sysadmin {
 		return nil
 	}
-	if active && s.client.User.HasPermissionToChannel(userID, space.ChannelId, mmmodel.PermissionAdminSpace) {
+	if member != nil && s.client.User.HasPermissionToChannel(userID, space.ChannelId, mmmodel.PermissionAdminSpace) {
 		return nil
 	}
-	if s.readResolutionFrom(false, active, space, userID) != ReadDenied &&
-		s.client.User.HasPermissionToTeam(userID, space.TeamId, teamPerm) {
+	if s.readResolutionFrom(false, member, space, userID) != ReadDenied &&
+		s.teamPermGranted(member, userID, space.TeamId, teamPerm) {
 		return nil
 	}
 	return existenceHidingForbidden(where)
@@ -254,14 +263,14 @@ func (s *Service) RequireSpaceAdminOrTeamPerm(where string, space *model.Space, 
 // capabilities) and admin-affecting member changes: sysadmin, or channel admin_space plus active
 // team membership. No team-manage_space branch — those knobs are stricter than ordinary manage.
 func (s *Service) RequireSpaceAdminOrSysadmin(where string, space *model.Space, userID string) *mmmodel.AppError {
-	active, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
+	member, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
 	if appErr != nil {
 		return appErr
 	}
 	if sysadmin {
 		return nil
 	}
-	if active && s.client.User.HasPermissionToChannel(userID, space.ChannelId, mmmodel.PermissionAdminSpace) {
+	if member != nil && s.client.User.HasPermissionToChannel(userID, space.ChannelId, mmmodel.PermissionAdminSpace) {
 		return nil
 	}
 	return existenceHidingForbidden(where)
@@ -282,8 +291,7 @@ func (s *Service) requirePageWriteFrom(where string, space *model.Space, userID 
 // page-edit authority in the space. A draft is a pending page private to its author, so this
 // establishes only that the caller may contribute pages here at all; the exact permission the
 // content needs is enforced at publish (RequireSpacePublish), the point where the draft becomes
-// state other users can see. Checking the looser pair here also keeps autosave off the page-liveness
-// lookup that the precise choice would require.
+// state other users can see.
 func (s *Service) RequireSpaceDraftWrite(where string, space *model.Space, userID string, admittedVia ReadResolution) (joined bool, appErr *mmmodel.AppError) {
 	createJoined, createErr := s.requirePageWriteFrom(where, space, userID, mmmodel.PermissionCreatePage, admittedVia)
 	if createErr == nil {
@@ -364,10 +372,9 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 	}
 
 	// A set of defaults that cannot grant perm can never admit this write, so the answer is settled
-	// before taking the space-keyed lock. The lock holds a dedicated connection and serializes every
-	// membership and scheme mutation on the space, so a caller looping writes it is not entitled to
-	// would otherwise contend with those mutations on every attempt. Only a clean negative
-	// short-circuits: a failed lookup falls through, leaving the in-lock check below authoritative.
+	// before taking the space-keyed lock, which holds a dedicated connection and serializes every
+	// membership and scheme mutation on the space. Only a clean negative short-circuits: a failed
+	// lookup falls through, leaving the in-lock check below authoritative.
 	if granted, grantErr := s.DefaultRolesGrantPermission(space, perm); grantErr == nil && !granted {
 		return false, nil
 	}

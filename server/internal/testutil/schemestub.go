@@ -336,7 +336,10 @@ func resolveChannelRoles(channel *mmmodel.Channel) (string, string, string, *mmm
 	}
 	roles, ok := rolesForScheme(*channel.SchemeId)
 	if !ok {
-		return "", "", "", mmmodel.NewAppError("resolveChannelRoles", "app.scheme.get.app_error", nil, "", http.StatusNotFound)
+		// Built as a literal, like the other stand-ins for this core error above: the id belongs to
+		// core, and constructing it through NewAppError would enter the plugin's own translation
+		// file as an untranslated string it never emits.
+		return "", "", "", &mmmodel.AppError{Id: "app.scheme.get.app_error", StatusCode: http.StatusNotFound}
 	}
 	return roles.Guest, roles.User, roles.Admin, nil
 }

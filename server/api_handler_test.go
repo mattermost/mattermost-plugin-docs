@@ -1873,7 +1873,7 @@ func TestHandler_SetSpaceMemberCapabilities_Forbidden(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	space := seedSpace(t, h.store, h.db, channelID)
 
-	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", mmmodel.NewId(), map[string]any{
+	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", mmmodel.NewId(), map[string]any{
 		"granted_capabilities": []string{"create_page"},
 	})
 	require.Equal(t, http.StatusForbidden, rec.Code)
@@ -1895,7 +1895,7 @@ func TestHandler_SetSpaceMemberCapabilities_GuestTargetRejected(t *testing.T) {
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, h.db, channelID)
 
-	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
+	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
 		"granted_capabilities": []string{"create_page"},
 	})
 	require.Equal(t, http.StatusBadRequest, rec.Code)
@@ -1928,7 +1928,7 @@ func TestHandler_SetSpaceMemberCapabilities_InvalidCapability(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
+			rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
 				"granted_capabilities": tc.capabilities,
 			})
 			require.Equal(t, http.StatusBadRequest, rec.Code)
@@ -1969,7 +1969,7 @@ func TestHandler_SetSpaceMemberCapabilities_Grant(t *testing.T) {
 	space, err := h.store.CreateSpace(&model.Space{ChannelId: channelID, TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "RO Space", ViewAccess: model.ViewAccessOpen})
 	require.NoError(t, err)
 
-	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
+	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
 		"granted_capabilities": []string{"create_page"},
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -1999,7 +1999,7 @@ func TestHandler_SetSpaceMemberCapabilities_OmissionRevokesAdminForbidden(t *tes
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, h.db, channelID)
 
-	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
+	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
 		"granted_capabilities": []string{},
 	})
 	require.Equal(t, http.StatusForbidden, rec.Code)
@@ -2019,7 +2019,7 @@ func TestHandler_SetSpaceMemberCapabilities_SelfTargetForbidden(t *testing.T) {
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, h.db, channelID)
 
-	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+callerID+"/capabilities", callerID, map[string]any{
+	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+callerID+"/capabilities", callerID, map[string]any{
 		"granted_capabilities": []string{"create_page"},
 	})
 	require.Equal(t, http.StatusForbidden, rec.Code)
@@ -2044,7 +2044,7 @@ func TestHandler_SetSpaceMemberCapabilities_LastAdminConflict(t *testing.T) {
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, h.db, channelID)
 
-	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
+	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
 		"granted_capabilities": []string{},
 	})
 	require.Equal(t, http.StatusConflict, rec.Code)
@@ -2075,7 +2075,7 @@ func TestHandler_SetSpaceMemberCapabilities_EmptyDoesNotDemoteBelowDefault(t *te
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, h.db, channelID)
 
-	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
+	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
 		"granted_capabilities": []string{},
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -2108,7 +2108,7 @@ func TestHandler_SetSpaceMemberCapabilities_PublishesEvent(t *testing.T) {
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, h.db, channelID)
 
-	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
+	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
 		"granted_capabilities": []string{"create_page"},
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -2201,7 +2201,7 @@ func TestHandler_SetSpaceDefaultCapabilities_Forbidden(t *testing.T) {
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
 
-	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
+	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
 		"default_capabilities": []string{"create_page"},
 	})
 	require.Equal(t, http.StatusForbidden, rec.Code)
@@ -2220,7 +2220,7 @@ func TestHandler_SetSpaceDefaultCapabilities_Allowed(t *testing.T) {
 		h := openTestPlugin(t, mockAPI)
 		space := seedSpace(t, h.store, h.db, channelID)
 
-		rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
+		rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
 			"default_capabilities": []string{"comment_page"},
 		})
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -2236,7 +2236,7 @@ func TestHandler_SetSpaceDefaultCapabilities_Allowed(t *testing.T) {
 		h := openTestPlugin(t, mockAPI)
 		space := seedSpace(t, h.store, h.db, channelID)
 
-		rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
+		rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
 			"default_capabilities": []string{"comment_page"},
 		})
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -2265,7 +2265,7 @@ func TestHandler_SetSpaceDefaultCapabilities_InvalidCapability(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
+			rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
 				"default_capabilities": tc.capabilities,
 			})
 			require.Equal(t, http.StatusBadRequest, rec.Code)
@@ -2288,7 +2288,7 @@ func TestHandler_SetSpaceDefaultCapabilities_CreatesPooledScheme(t *testing.T) {
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, h.db, channelID)
 
-	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
+	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
 		"default_capabilities": []string{"create_page"},
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -2327,7 +2327,7 @@ func TestHandler_SetSpaceDefaultCapabilities_ReusesPooledScheme(t *testing.T) {
 
 	setDefaults := func(capabilities []string) {
 		t.Helper()
-		rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
+		rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
 			"default_capabilities": capabilities,
 		})
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -2371,7 +2371,7 @@ func TestHandler_SetSpaceDefaultCapabilities_ResubmitCurrentSetIsNoOp(t *testing
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, h.db, channelID)
 
-	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
+	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
 		"default_capabilities": []string{"edit_page", "comment_page", "comment_page", "create_page", "delete_own_page"},
 	})
 	require.Equal(t, http.StatusOK, rec.Code)

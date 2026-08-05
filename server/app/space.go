@@ -10,7 +10,6 @@ import (
 	"unicode/utf8"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
-	"github.com/mattermost/mattermost/server/public/pluginapi"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
@@ -27,128 +26,6 @@ func validateSpaceMutableFields(where, description, icon string) *mmmodel.AppErr
 		return mmmodel.NewAppError(where, "app.shared.icon_too_large.app_error", map[string]any{"MaxBytes": model.SpaceIconMaxBytes}, "", http.StatusBadRequest)
 	}
 	return nil
-}
-
-// requireClient rejects the operation when the pluginapi client is not wired, which every
-// membership-gated space operation depends on. where identifies the calling operation for the
-// log line and the returned AppError; kv are its extra log context pairs.
-func (s *Service) requireClient(where string, kv ...any) *mmmodel.AppError {
-	if s.client != nil {
-		return nil
-	}
-	s.log.Warn("pluginapi client not wired; denying access", append([]any{"operation", where}, kv...)...)
-	return mmmodel.NewAppError(where, "app.space.client_not_wired.app_error", nil, "", http.StatusInternalServerError)
-}
-
-// isActiveTeamMember reports whether userID currently belongs to teamID. Core keeps removed
-// team members as rows with DeleteAt set — and GetMember returns such a row without error — so
-// a missing row and a soft-deleted row both read as "not a member". Space access must check
-// this, not just backing-channel membership: leaving a team does not remove a user from the
-// team's space channels, so channel membership alone would let a former team member keep using
-// known space and page IDs.
-func (s *Service) isActiveTeamMember(teamID, userID string) (bool, error) {
-	member, err := s.client.Team.GetMember(teamID, userID)
-	if err != nil {
-		if errors.Is(err, pluginapi.ErrNotFound) {
-			return false, nil
-		}
-		return false, err
-	}
-	return member.DeleteAt == 0, nil
-}
-
-// forEachChannelMember visits every member of channelID page by page. Iteration ends early
-// when visit returns stop=true or an error; the error is returned as-is.
-func (s *Service) forEachChannelMember(channelID string, visit func(cm *mmmodel.ChannelMember) (stop bool, err error)) error {
-	for page := 0; ; page++ {
-		members, err := s.client.Channel.ListMembers(channelID, page, PerPageMaximum)
-		if err != nil {
-			return err
-		}
-		for _, cm := range members {
-			stop, visitErr := visit(cm)
-			if visitErr != nil {
-				return visitErr
-			}
-			if stop {
-				return nil
-			}
-		}
-		if len(members) < PerPageMaximum {
-			return nil
-		}
-	}
-}
-
-// hasOtherAuthorizedMemberMatching reports whether space has at least one backing-channel member
-// other than excludeUserID that satisfies matches and can still reach the space — one who is also
-// an active member of the space's team. Former team members keep their channel-member rows after
-// leaving the team, so counting raw rows would let the last reachable member be removed and leave
-// the space stranded behind members who all fail the team half of the access gate. Iteration stops
-// at the first match. The no-team branch below is unreachable through CreateSpace, which requires
-// a team id.
-func (s *Service) hasOtherAuthorizedMemberMatching(space *model.Space, excludeUserID string, matches func(cm *mmmodel.ChannelMember) bool) (bool, error) {
-	found := false
-	err := s.forEachChannelMember(space.ChannelId, func(cm *mmmodel.ChannelMember) (bool, error) {
-		if cm.UserId == excludeUserID || !matches(cm) {
-			return false, nil
-		}
-		if space.TeamId == "" {
-			found = true
-			return true, nil
-		}
-		active, activeErr := s.isActiveTeamMember(space.TeamId, cm.UserId)
-		if activeErr != nil {
-			return false, activeErr
-		}
-		if active {
-			found = true
-			return true, nil
-		}
-		return false, nil
-	})
-	if err != nil {
-		return false, err
-	}
-	return found, nil
-}
-
-// otherAuthorizedMembers answers both reachability questions the removal guards ask — is there
-// another member who can still reach the space, and is one of them an admin — in a single walk.
-// The admin set is a subset of the reachable set, so a caller needing both would otherwise pay two
-// full walks, each with its own per-member team lookup, while holding the space membership lock.
-// Iteration stops once both answers are known, and a row that cannot change either answer is
-// skipped before its team lookup.
-func (s *Service) otherAuthorizedMembers(space *model.Space, excludeUserID string) (anyMember, anyAdmin bool, err error) {
-	err = s.forEachChannelMember(space.ChannelId, func(cm *mmmodel.ChannelMember) (bool, error) {
-		if cm.UserId == excludeUserID {
-			return false, nil
-		}
-		// Once a reachable member is known, only an admin row can still teach us anything.
-		if anyMember && !cm.SchemeAdmin {
-			return false, nil
-		}
-		reachable := space.TeamId == ""
-		if !reachable {
-			active, activeErr := s.isActiveTeamMember(space.TeamId, cm.UserId)
-			if activeErr != nil {
-				return false, activeErr
-			}
-			reachable = active
-		}
-		if !reachable {
-			return false, nil
-		}
-		anyMember = true
-		if cm.SchemeAdmin {
-			anyAdmin = true
-		}
-		return anyMember && anyAdmin, nil
-	})
-	if err != nil {
-		return false, false, err
-	}
-	return anyMember, anyAdmin, nil
 }
 
 // archiveOrphanChannel archives a backing channel when a later step in space creation fails,
@@ -231,19 +108,19 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultCapabili
 	// Reject a creator who isn't an active member of the target team before standing up a backing
 	// channel there — otherwise any authenticated user could create a real, visible channel in any
 	// team by supplying its id.
-	active, memberErr := s.isActiveTeamMember(space.TeamId, userID)
+	member, memberErr := s.activeTeamMember(space.TeamId, userID)
 	if memberErr != nil {
 		// A transient/backend failure must not be misreported as "not a team member".
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memberErr)
 	}
-	if !active {
+	if member == nil {
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.not_team_member.app_error", nil, "", http.StatusForbidden)
 	}
 	// Team membership alone does not authorize creating a space in it: the caller must also hold
 	// create_space on the team (or be sysadmin). Unlike the read/manage/delete gates, no space
 	// exists yet here, so there is nothing to existence-hide behind — a plain 403 is correct.
 	if !s.client.User.HasPermissionTo(userID, mmmodel.PermissionManageSystem) &&
-		!s.client.User.HasPermissionToTeam(userID, space.TeamId, mmmodel.PermissionCreateSpace) {
+		!s.teamPermGranted(member, userID, space.TeamId, mmmodel.PermissionCreateSpace) {
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.forbidden.app_error", nil, "", http.StatusForbidden)
 	}
 	// Sanitize before it's used as the channel Header below — Space.PreSave sanitizes it again on
@@ -606,18 +483,21 @@ func (s *Service) GetSpacesForTeam(teamID, userID string, page, perPage int) ([]
 	if appErr := s.requireClient("GetSpacesForTeam", "team_id", teamID, "user_id", userID); appErr != nil {
 		return nil, false, appErr
 	}
-	active, memberErr := s.isActiveTeamMember(teamID, userID)
+	// One team-row read answers all three questions below. Core resolves HasPermissionToTeam by
+	// re-reading the team membership from the master DB on every call, so asking it twice more here
+	// would cost this listing three master reads of the same row per page.
+	member, memberErr := s.activeTeamMember(teamID, userID)
 	if memberErr != nil {
 		return nil, false, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memberErr)
 	}
-	if !active {
+	if member == nil {
 		return nil, false, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.not_team_member.app_error", nil, "", http.StatusForbidden)
 	}
 	if !s.client.User.HasPermissionTo(userID, mmmodel.PermissionManageSystem) &&
-		!s.client.User.HasPermissionToTeam(userID, teamID, mmmodel.PermissionReadSpace) {
+		!s.teamPermGranted(member, userID, teamID, mmmodel.PermissionReadSpace) {
 		return nil, false, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.forbidden.app_error", nil, "", http.StatusForbidden)
 	}
-	callerHasOpenFallthrough := active && s.hasOpenTeamFallthrough(userID, teamID)
+	callerHasOpenFallthrough := s.hasOpenTeamFallthrough(member, userID, teamID)
 	spaces, err := s.store.GetSpacesForTeam(teamID, userID, callerHasOpenFallthrough, offset, limit)
 	if err != nil {
 		return nil, false, storeAppError("GetSpacesForTeam", err)

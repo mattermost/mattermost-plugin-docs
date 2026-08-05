@@ -223,7 +223,7 @@ func (p *Plugin) handleAddSpaceMember(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, member)
 }
 
-// handleSetSpaceMemberCapabilities handles PATCH /api/v1/spaces/{space_id}/members/{user_id}/capabilities.
+// handleSetSpaceMemberCapabilities handles PUT /api/v1/spaces/{space_id}/members/{user_id}/capabilities.
 func (p *Plugin) handleSetSpaceMemberCapabilities(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	vars := mux.Vars(r)
@@ -247,7 +247,7 @@ func (p *Plugin) handleSetSpaceMemberCapabilities(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, member)
 }
 
-// handleSetSpaceDefaultCapabilities handles PATCH /api/v1/spaces/{space_id}/default-capabilities.
+// handleSetSpaceDefaultCapabilities handles PUT /api/v1/spaces/{space_id}/default-capabilities.
 func (p *Plugin) handleSetSpaceDefaultCapabilities(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]

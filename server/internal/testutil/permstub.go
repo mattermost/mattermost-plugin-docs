@@ -46,6 +46,19 @@ func StubDefaultSpacePermissions(mockAPI *plugintest.API) {
 		mockAPI.On("HasPermissionToTeam", mock.Anything, mock.Anything, p).Return(false).Maybe()
 	}
 	mockAPI.On("HasPermissionTo", mock.Anything, mmmodel.PermissionManageSystem).Return(false).Maybe()
+	// teamPermGranted consults the resolved team roles before falling back to HasPermissionToTeam.
+	// The stubbed team memberships carry no roles, so this arm decides nothing and the
+	// HasPermissionToTeam expectations above remain the ones that express a test's team grants.
+	//
+	// Scoped to the team permissions rather than registered as a catch-all: RolesGrantPermission is
+	// also how DefaultRolesGrantPermission resolves a space's *page* defaults, and a catch-all here
+	// would match those first and shadow the per-test expectations that drive the auto-join paths.
+	for _, p := range []*mmmodel.Permission{
+		mmmodel.PermissionReadSpace, mmmodel.PermissionCreateSpace, mmmodel.PermissionReadPublicChannel,
+		mmmodel.PermissionManageSpace, mmmodel.PermissionDeleteSpace,
+	} {
+		mockAPI.On("RolesGrantPermission", mock.Anything, p.Id).Return(false).Maybe()
+	}
 }
 
 // StubGuestTeamDefaults narrows guestUserID's team grants to what core's team_guest actually holds:
