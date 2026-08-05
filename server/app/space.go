@@ -407,7 +407,18 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 			return schemeAppError("SetSpaceDefaultCapabilities", schemeErr)
 		}
 		if targetSchemeID == currentSchemeID {
-			// No-op: requested set already matches the live default.
+			// The channel already points at the target scheme, so there is no repoint to perform.
+			// The roles behind that scheme are not necessarily written, though: an earlier run
+			// interrupted between the repoint below and its configure leaves the space resolving
+			// against core's default channel baseline, and every later submission of the same set
+			// would take this branch and never reach that configure. Running it here is what lets
+			// resubmitting the intended set recover such a space; it is a no-op in effect once the
+			// permission sets already match.
+			if pooledRoles != nil {
+				if cfgErr := s.configureSharedScheme(pooledRoles, requested); cfgErr != nil {
+					return schemeAppError("SetSpaceDefaultCapabilities", cfgErr)
+				}
+			}
 			return nil
 		}
 
@@ -481,8 +492,8 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 // GetSpacesForTeam returns one page of a team's live spaces, plus whether more exist beyond it.
 // userID must be an active team member holding team read_space (the list-entry gate; every
 // team_user holds it by default). The result is the union of spaces the caller is a
-// backing-channel member of and open spaces the caller can reach via the same team
-// read_public_channel/compliance-mode conjunct as single-space read.
+// backing-channel member of and open spaces the caller can reach on the same terms single-space
+// read admits them: the caller holds team read_public_channel, and compliance mode is off.
 func (s *Service) GetSpacesForTeam(teamID, userID string, page, perPage int) ([]*model.Space, bool, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(teamID) {
 		return nil, false, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.invalid_team_id.app_error", nil, "", http.StatusBadRequest)

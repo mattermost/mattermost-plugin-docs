@@ -139,7 +139,8 @@ func membershipLockAppError(where string, lockErr error) *mmmodel.AppError {
 // schemeAppError maps a scheme-resolution failure to an *AppError. Resolution reaches core through
 // the pluginapi client rather than the plugin's own store, so the error may already be an
 // *AppError carrying the status core chose — a license denial for a custom scheme, or the refusal
-// the scheme API returns while core's permissions migration is still running. Those are surfaced
+// the scheme API returns until core finishes the asynchronous permissions migration it runs at
+// startup, during which no scheme can be resolved or created. Those are surfaced
 // unchanged; storeAppError would collapse both to a 500 because neither is a store sentinel.
 //
 // A missing preset scheme is separated out because storeAppError renders every not-found with the

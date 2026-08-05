@@ -34,8 +34,9 @@ func permissionSetsEqual(a, b []string) bool {
 // deleted — nothing owns it — so there is no retirement, no reference counting, and no residue
 // from an interrupted create.
 //
-// Core accepts a scheme name as proof of space scope only for the three reserved preset names; a
-// pooled scheme proves its scope by having a space backing channel point at it instead.
+// Core accepts a scheme name as proof of space scope only for the reserved preset names
+// (model.SchemeNameForDefaultCapabilities recognizes them); a pooled scheme proves its scope by
+// having a space backing channel point at it instead.
 
 // schemeRoles is the generated channel-scheme role names governing one backing channel's scheme.
 // Space capability grants reference these generated names, not the literal
@@ -171,8 +172,9 @@ func rolesFromScheme(scheme *mmmodel.Scheme) *schemeRoles {
 // rather than on whatever a channel currently points at.
 //
 // It must run only once a space backing channel already points at that scheme: core allows a role
-// write carrying space permissions for a seeded preset's roles, or for a scheme a space backing
-// channel already references, and it does not accept a caller-chosen scheme name as proof.
+// write carrying space permissions for the roles of a reserved preset scheme (see the pool comment
+// above), or for a scheme a space backing channel already references, and it does not accept a
+// caller-chosen scheme name as proof.
 // Idempotent, so re-running it against an already-configured pooled scheme is a no-op in effect.
 func (s *Service) configureSharedScheme(roles *schemeRoles, capabilities []string) error {
 	capabilities = model.NormalizeCapabilitySet(capabilities)

@@ -35,7 +35,7 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int) ([]*mod
 	perPage = ClampPerPage(perPage)
 	channelMembers, err := s.client.Channel.ListMembers(space.ChannelId, page, perPage)
 	if err != nil {
-		return nil, false, mmmodel.NewAppError("GetSpaceMembers", "app.space.list_members.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+		return nil, false, mmmodel.NewAppError("GetSpaceMembers", "app.space.get_members.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
 	members := make([]*model.SpaceMember, 0, len(channelMembers))
 	for _, cm := range channelMembers {
@@ -48,7 +48,7 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int) ([]*mod
 		// beyond the current window.
 		probe, probeErr := s.client.Channel.ListMembers(space.ChannelId, (page+1)*perPage, 1)
 		if probeErr != nil {
-			return nil, false, mmmodel.NewAppError("GetSpaceMembers", "app.space.list_members.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(probeErr)
+			return nil, false, mmmodel.NewAppError("GetSpaceMembers", "app.space.get_members.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(probeErr)
 		}
 		hasMore = len(probe) > 0
 	}

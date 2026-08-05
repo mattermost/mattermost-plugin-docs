@@ -817,6 +817,57 @@ func TestServiceSetSpaceDefaultCapabilities_ConfigureFailureRollsBack(t *testing
 	mockAPI.AssertNotCalled(t, "DeleteScheme", mock.Anything)
 }
 
+// TestServiceSetSpaceDefaultCapabilities_SameSchemeStillConfiguresRoles covers the recovery path for
+// a space already pointing at the scheme its requested set resolves to, whose roles were never
+// written — the state an earlier run interrupted between the channel repoint and the role write
+// leaves behind. There is no repoint to perform, so the operation could return having done nothing,
+// and every later submission of the intended set would do the same, leaving the space permanently on
+// core's default channel baseline with no way to move off it. Resubmitting must write the roles.
+func TestServiceSetSpaceDefaultCapabilities_SameSchemeStillConfiguresRoles(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	sysadminID := mmmodel.NewId()
+	// Registered before the harness so the response's own-capability projection resolves via
+	// sysadmin, sidestepping the ReadViaMember channel-member lookup this test does not stub.
+	// mock.Mock matches expectations in registration order.
+	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true)
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	capabilities := []string{model.CapabilityCreatePage}
+	pooledName := model.SharedSchemeNameForCapabilities(capabilities)
+	schemeID := mmmodel.NewId()
+	userRole, adminRole, guestRole := pooledName+"_user", pooledName+"_admin", pooledName+"_guest"
+	mockAPI.On("GetSchemeByName", pooledName).Return(&mmmodel.Scheme{
+		Id:                      schemeID,
+		Name:                    pooledName,
+		Scope:                   mmmodel.SchemeScopeChannel,
+		DefaultChannelUserRole:  userRole,
+		DefaultChannelAdminRole: adminRole,
+		DefaultChannelGuestRole: guestRole,
+	}, nil)
+	testutil.RegisterSchemeRoles(schemeID, guestRole, userRole, adminRole)
+	// Empty permission sets stand in for core's default channel baseline: the roles core generated
+	// alongside the scheme, never given the grants configureSharedScheme writes.
+	unconfiguredUserRole := testutil.StubRole(mockAPI, userRole, nil)
+	testutil.StubRole(mockAPI, adminRole, nil)
+	testutil.StubRole(mockAPI, guestRole, nil)
+	testutil.StubPatchRole(mockAPI)
+
+	// The channel already points at that scheme, so the repoint branch is skipped entirely.
+	channelID := mmmodel.NewId()
+	testutil.StubChannelScheme(mockAPI, channelID, &mmmodel.Channel{
+		Id: channelID, Type: mmmodel.ChannelTypeSpace, SchemeId: &schemeID,
+	})
+	space := mustCreateSpace(t, h.store, h.db, channelID)
+
+	updated, appErr := h.svc.SetSpaceDefaultCapabilities(space, capabilities, sysadminID)
+
+	require.Nil(t, appErr)
+	require.Equal(t, capabilities, updated.DefaultCapabilities)
+	require.ElementsMatch(t, []string{model.CapabilityReadPage, model.CapabilityCreatePage},
+		unconfiguredUserRole.Permissions,
+		"resubmitting the set a space already resolves to must write the roles it was left without")
+}
+
 // TestServiceSetSpaceDefaultCapabilities_ResponseReflectsRequestedNotStaleReadback covers the
 // projection guard: the response is built from the capability set written under the lock, not
 // from a fresh read of the roles that write just committed. GetRoleByName here always answers with
@@ -1062,7 +1113,7 @@ func createSpaceForMemberTests(t *testing.T, h *testHarness, mockAPI *plugintest
 }
 
 // TestServiceGetSpaceMembers_ListFails verifies that a failed member listing on the backing
-// channel propagates as a 500 with the list_members error key.
+// channel propagates as a 500 with the get_members error key.
 func TestServiceGetSpaceMembers_ListFails(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
@@ -1074,7 +1125,7 @@ func TestServiceGetSpaceMembers_ListFails(t *testing.T) {
 	_, _, appErr := h.svc.GetSpaceMembers(space, 0, 60)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
-	require.Equal(t, "app.space.list_members.failed.app_error", appErr.Id)
+	require.Equal(t, "app.space.get_members.failed.app_error", appErr.Id)
 }
 
 // TestServiceDefaultRolesGrantPermission_ChannelWithoutScheme covers schemeRolesFromChannel's

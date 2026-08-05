@@ -57,15 +57,16 @@ func ExistenceHidingForbidden(where string) *mmmodel.AppError {
 	return existenceHidingForbidden(where)
 }
 
-// isComplianceEnabled reports whether ComplianceSettings.Enable is set and true. A nil client (or
-// nil config) reports false, matching core's own SafeDereference default.
+// isComplianceEnabled reports whether ComplianceSettings.Enable is set and true. When the setting
+// cannot be read at all — no client, or no config — it reports true, so the fall-through this
+// guards is suppressed rather than admitted: an undeterminable setting must not widen access.
 func (s *Service) isComplianceEnabled() bool {
 	if s.client == nil {
-		return false
+		return true
 	}
 	cfg := s.client.Configuration.GetConfig()
 	if cfg == nil {
-		return false
+		return true
 	}
 	return mmmodel.SafeDereference(cfg.ComplianceSettings.Enable)
 }

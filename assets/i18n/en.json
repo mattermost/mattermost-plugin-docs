@@ -508,12 +508,12 @@
     "translation": "Unable to verify team membership."
   },
   {
-    "id": "app.space.get_pages.invalid_space_id.app_error",
-    "translation": "Invalid space ID."
+    "id": "app.space.get_members.failed.app_error",
+    "translation": "Unable to list the members of the space."
   },
   {
-    "id": "app.space.list_members.failed.app_error",
-    "translation": "Unable to list the members of the space."
+    "id": "app.space.get_pages.invalid_space_id.app_error",
+    "translation": "Invalid space ID."
   },
   {
     "id": "app.space.lock_timeout.app_error",

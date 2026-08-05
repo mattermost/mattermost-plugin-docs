@@ -64,9 +64,10 @@ func TestAutoJoin_NotFallthroughIsNoOp(t *testing.T) {
 	}
 }
 
-// TestAutoJoin_JoinsWhenDefaultGrants is the successful pre-step: a non-member admitted via the
-// open-space fall-through, whose space default grants the permission, is added to the backing
-// channel and the membership-added event is published.
+// TestAutoJoin_JoinsWhenDefaultGrants covers the success path of the auto-join pre-step — the step
+// that runs ahead of a write gate and can add the caller to the backing channel so the gate then
+// passes. A non-member admitted via the open-space fall-through, whose space default grants the
+// permission, is added to the channel and the membership-added event is published.
 func TestAutoJoin_JoinsWhenDefaultGrants(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	userID := mmmodel.NewId()
@@ -353,9 +354,32 @@ func TestResolveSpaceRead_ComplianceModeSuppressesOpenFallthrough(t *testing.T) 
 		"compliance mode must suppress the open-space non-member fall-through even though the caller holds read_public_channel")
 }
 
+// TestResolveSpaceRead_UnreadableConfigSuppressesOpenFallthrough covers the fail-closed direction of
+// the compliance check: a config that cannot be read at all suppresses the open-space non-member
+// fall-through rather than admitting it. Reading an absent config as "compliance off" would widen
+// access on exactly the signal that says the access policy is unknown.
+func TestResolveSpaceRead_UnreadableConfigSuppressesOpenFallthrough(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	strangerID := mmmodel.NewId()
+	// Both registered before the harness, whose catch-alls would otherwise answer first: mock.Mock
+	// matches expectations in registration order.
+	mockAPI.On("HasPermissionToChannel", strangerID, mock.Anything, mmmodel.PermissionReadPage).Return(false)
+	mockAPI.On("GetConfig").Return((*mmmodel.Config)(nil)).Once()
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	// The default space fixture is open, and the harness stubs GetTeamMember to an active
+	// membership, so the stranger clears the team gate and reaches the open-space fall-through.
+	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), mmmodel.NewId())
+
+	resolution, appErr := h.svc.ResolveSpaceRead("test", space, strangerID)
+	require.Nil(t, appErr)
+	require.Equal(t, app.ReadDenied, resolution,
+		"an unreadable config must suppress the open-space non-member fall-through, not admit it")
+}
+
 // teamManagerHarness seeds a space with the given view access whose acting user holds team
-// manage_space but is not a member of the backing channel — the actor RequireSpaceAdminOrTeamPerm's
-// read-gate conjunct exists to constrain.
+// manage_space but is not a member of the backing channel — exactly the caller
+// RequireSpaceAdminOrTeamPerm's read-gate conjunct exists to constrain.
 func teamManagerHarness(t *testing.T, viewAccess model.ViewAccess) (*testHarness, *model.Space, string) {
 	t.Helper()
 	mockAPI := &plugintest.API{}
@@ -403,6 +427,60 @@ func TestRequireSpaceAdminOrTeamPerm_TeamPermAdmitsOnOpenSpace(t *testing.T) {
 
 	appErr := h.svc.RequireSpaceAdminOrTeamPerm("test", space, userID, mmmodel.PermissionManageSpace)
 	require.Nil(t, appErr, "team manage_space must admit a caller the read gate already admits")
+}
+
+// formerAdminHarness seeds an open space whose acting user left the team but whose backing-channel
+// state still grants them everything the elevated gates check: admin_space on the channel and
+// manage_space on the team. Every grant the gates consult is stubbed true, so a denial can only come
+// from the team-active conjunct — which is what these tests exist to pin.
+func formerAdminHarness(t *testing.T) (*testHarness, *model.Space, string, *plugintest.API) {
+	t.Helper()
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	teamID := mmmodel.NewId()
+	// All registered before the harness, whose catch-alls would otherwise answer first: mock.Mock
+	// matches expectations in registration order.
+	mockAPI.On("GetTeamMember", teamID, userID).
+		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: userID, DeleteAt: 1}, nil)
+	mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionAdminSpace).Return(true).Maybe()
+	mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionManageSpace).Return(true).Maybe()
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
+	return h, space, userID, mockAPI
+}
+
+// TestRequireSpaceAdminOrTeamPerm_FormerTeamMemberDenied pins the team-active conjunct on the
+// channel-admin branch, the counterpart to TestRequireSpacePagePermission_FormerTeamMemberDenied on
+// the page gate. Leaving a team does not remove the user's backing-channel rows, so a former member
+// can still hold admin_space there. Without the conjunct that stale grant would keep admitting them
+// to the manage tier — patch and delete on a space in a team they no longer belong to.
+func TestRequireSpaceAdminOrTeamPerm_FormerTeamMemberDenied(t *testing.T) {
+	h, space, userID, mockAPI := formerAdminHarness(t)
+
+	appErr := h.svc.RequireSpaceAdminOrTeamPerm("test", space, userID, mmmodel.PermissionManageSpace)
+	require.NotNil(t, appErr, "a former team member must not reach the manage tier through a stale channel admin_space grant")
+	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+	require.Equal(t, "app.space.access.forbidden.app_error", appErr.Id,
+		"the denial must be the shared existence-hiding 403, not a distinguishable one")
+	// The team gate blocks before either elevated branch is consulted, so neither the lingering
+	// channel grant nor the team manage_space grant is ever reached.
+	mockAPI.AssertNotCalled(t, "HasPermissionToChannel", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// TestRequireSpaceAdminOrSysadmin_FormerTeamMemberDenied is the same guard on the stricter gate:
+// the space-wide exposure knobs (ViewAccess, default capabilities) and admin-affecting member
+// changes. This gate has no team-permission branch at all, so its channel-admin branch is the only
+// non-sysadmin way in — making the team-active conjunct the whole of its membership requirement.
+func TestRequireSpaceAdminOrSysadmin_FormerTeamMemberDenied(t *testing.T) {
+	h, space, userID, mockAPI := formerAdminHarness(t)
+
+	appErr := h.svc.RequireSpaceAdminOrSysadmin("test", space, userID)
+	require.NotNil(t, appErr, "a former team member must not reach the admin tier through a stale channel admin_space grant")
+	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+	require.Equal(t, "app.space.access.forbidden.app_error", appErr.Id,
+		"the denial must be the shared existence-hiding 403, not a distinguishable one")
+	mockAPI.AssertNotCalled(t, "HasPermissionToChannel", mock.Anything, mock.Anything, mock.Anything)
 }
 
 // TestResolveSpaceRead_GuestDeniedOpenFallthrough covers the guest exclusion from the open-space
