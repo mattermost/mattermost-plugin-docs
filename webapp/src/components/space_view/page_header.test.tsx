@@ -23,18 +23,23 @@ jest.mock('hooks/favorites', () => ({
 const SPACE = makeSpace('eng', 'Engineering');
 const PAGE = makePage('runbook', 'eng', 'Runbook');
 
-const renderHeader = (props: Partial<React.ComponentProps<typeof PageHeader>> = {}) =>
+const PAGE_URL = '/myteam/spaces/eng/runbook';
+
+const renderHeader = (props: Partial<React.ComponentProps<typeof PageHeader>> = {}, route = PAGE_URL) =>
     renderWithContext(
         <PageHeader
             space={SPACE}
             page={PAGE}
             treeOpen={false}
             editing={false}
+            commentsOpen={false}
             onTogglePages={jest.fn()}
+            onToggleComments={jest.fn()}
             onToggleEdit={jest.fn()}
             onPublish={jest.fn()}
             {...props}
         />,
+        {route},
     );
 
 describe('PageHeader edit control', () => {
@@ -132,3 +137,29 @@ describe('PageHeader publish controls', () => {
         expect(onPublish).toHaveBeenCalled();
     });
 });
+
+describe('PageHeader comments control', () => {
+    it('reports a click on the control', () => {
+        const onToggleComments = jest.fn();
+        renderHeader({onToggleComments});
+
+        fireEvent.click(screen.getByRole('button', {name: 'Comments'}));
+
+        expect(onToggleComments).toHaveBeenCalledTimes(1);
+    });
+
+    // The panel it opens is elsewhere on screen, so the control carries whether it
+    // is showing rather than leaving that to be inferred.
+    it('reports the open panel', () => {
+        renderHeader({commentsOpen: true});
+
+        expect(screen.getByRole('button', {name: 'Comments'})).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    it('offers no comments control on the space home, where no page is routed', () => {
+        renderHeader({page: undefined});
+
+        expect(screen.queryByRole('button', {name: 'Comments'})).not.toBeInTheDocument();
+    });
+});
+

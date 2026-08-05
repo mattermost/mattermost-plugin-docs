@@ -5,12 +5,14 @@ import {usePageDraft, usePublishDraft} from 'hooks/drafts';
 import {useDocsNavigation, useTogglePageEditMode} from 'hooks/navigation';
 import {useDefaultPagePath} from 'hooks/pages';
 import {useAppSelector} from 'hooks/redux';
+import {useRhs} from 'hooks/rhs';
 import {useSpaceStats} from 'hooks/spaces';
 import React, {useCallback, useState} from 'react';
 import {Redirect} from 'react-router-dom';
 
 import {arePagesLoadedForSpace, getPageInSpace} from 'store/selectors';
 
+import CommentsPanel from 'components/comments/comments_panel';
 import SpaceInfoPanel from 'components/space_info/space_info_panel';
 import type {SpaceInfoView} from 'components/space_info/space_info_panel';
 
@@ -46,12 +48,18 @@ const SpaceView = ({space}: {space: Space}) => {
     const {pageCount, memberCount} = useSpaceStats(space.id);
     const defaultPagePath = useDefaultPagePath(space);
     const [treeOpen, setTreeOpen] = useState(true);
-    const [infoView, setInfoView] = useState<SpaceInfoView | null>(null);
+
+    // Which panel sits in the right column, from the URL — see useRhs for why
+    // opening one replaces the history entry rather than pushing it.
+    const {rhs, openRhs, closeRhs, toggleRhs} = useRhs();
 
     const togglePages = useCallback(() => setTreeOpen((open) => !open), []);
-    const toggleInfo = useCallback(() => setInfoView((view) => (view ? null : 'root')), []);
-    const closeInfo = useCallback(() => setInfoView(null), []);
-    const showMembers = useCallback(() => setInfoView('members'), []);
+    const toggleInfo = useCallback(() => toggleRhs('info'), [toggleRhs]);
+    const toggleComments = useCallback(() => toggleRhs('comments'), [toggleRhs]);
+    const showMembers = useCallback(() => openRhs('info', 'members'), [openRhs]);
+
+    // 'root' is the panel's default screen, so it stays out of the URL.
+    const showInfoView = useCallback((view: SpaceInfoView) => openRhs('info', view === 'root' ? undefined : view), [openRhs]);
 
     // A space with a default page opens on that page; `<Redirect>` replaces the
     // space-home entry rather than pushing one.
@@ -87,7 +95,7 @@ const SpaceView = ({space}: {space: Space}) => {
                 <SpaceHeader
                     space={space}
                     memberCount={memberCount}
-                    infoOpen={infoView !== null}
+                    infoOpen={rhs?.id === 'info'}
                     onToggleInfo={toggleInfo}
                     onShowMembers={showMembers}
                 />
@@ -97,7 +105,9 @@ const SpaceView = ({space}: {space: Space}) => {
                     draft={draft}
                     treeOpen={treeOpen}
                     editing={isEditing}
+                    commentsOpen={rhs?.id === 'comments'}
                     onTogglePages={togglePages}
+                    onToggleComments={toggleComments}
                     onToggleEdit={toggleEdit}
                     onPublish={onPublish}
                 />
@@ -127,14 +137,15 @@ const SpaceView = ({space}: {space: Space}) => {
                     </div>
                 </div>
             </div>
-            {infoView && (
+            {rhs?.id === 'info' && (
                 <SpaceInfoPanel
                     space={space}
-                    view={infoView}
-                    onViewChange={setInfoView}
-                    onClose={closeInfo}
+                    view={rhs.view === 'members' ? 'members' : 'root'}
+                    onViewChange={showInfoView}
+                    onClose={closeRhs}
                 />
             )}
+            {rhs?.id === 'comments' && <CommentsPanel onClose={closeRhs}/>}
         </div>
     );
 };

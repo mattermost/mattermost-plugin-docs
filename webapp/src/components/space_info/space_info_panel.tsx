@@ -4,17 +4,14 @@
 import classNames from 'classnames';
 import {useSpaceMemberProfiles} from 'hooks/members';
 import {useAppDispatch} from 'hooks/redux';
-import {useSidebarWidth} from 'hooks/sidebar_width';
 import {useSpaceStats} from 'hooks/spaces';
-import React, {useCallback, useState} from 'react';
+import React, {useCallback} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {SpaceIcon} from 'utils/space_icon';
 import {SPACE_DESCRIPTION_MAX_LENGTH} from 'validation/space_schema';
 import {Timestamp} from 'webapp_globals';
 import type {TimestampUnit} from 'webapp_globals';
 
-import ChevronLeftIcon from '@mattermost/compass-icons/components/chevron-left';
-import CloseIcon from '@mattermost/compass-icons/components/close';
 import PencilOutlineIcon from '@mattermost/compass-icons/components/pencil-outline';
 
 import {updateSpace} from 'store/actions';
@@ -22,19 +19,14 @@ import {useSpacePermissions} from 'store/permissions';
 
 import BasicInputModal from 'components/basic_input_modal/basic_input_modal';
 import {Button} from 'components/form_controls/button';
-import Header from 'components/header/header';
 import {openDocsModal} from 'components/modals';
-import ResizableDivider from 'components/resizable_divider/resizable_divider';
+import RhsPanel from 'components/rhs/rhs_panel';
 
 import type {Space} from 'types/docs';
 
 import SpaceInfoMembers from './space_info_members';
 import SpaceInfoMenu from './space_info_menu';
 import styles from './space_info_panel.module.scss';
-
-const DEFAULT_INFO_WIDTH = 400;
-const MIN_INFO_WIDTH = 304;
-const MAX_INFO_WIDTH = 776;
 
 // Relative "Created …" buckets for the host Timestamp, mirroring the page header's
 // relative spec but reaching back far enough for an old space.
@@ -58,22 +50,18 @@ type Props = {
     onClose: () => void;
 };
 
-// Right-hand panel mirroring core's Channel Info RHS: a full-height column whose
-// header shares the product header chrome (so it lines up with the space header),
-// over the space identity, its inline-editable description, an action menu, the
-// member list, and a small meta area. The description is the only field editable
-// from here; everything else is read-only and lives in Space Settings.
+// The Space Info RHS, mirroring core's Channel Info: the space identity, its
+// inline-editable description, an action menu, the member list, and a small meta
+// area — or, drilled in, the full member list on its own. The description is the
+// only field editable from here; everything else is read-only and lives in Space
+// Settings.
 const SpaceInfoPanel = ({space, view, onViewChange, onClose}: Props) => {
     const {formatMessage} = useIntl();
     const {pageCount, memberCount} = useSpaceStats(space.id);
     const members = useSpaceMemberProfiles(space.id);
-    const {width, setWidth, commitWidth} = useSidebarWidth('spaceInfo', DEFAULT_INFO_WIDTH);
-    const [resizing, setResizing] = useState(false);
     const dispatch = useAppDispatch();
     const {canManageMembers} = useSpacePermissions(space.id);
 
-    const closeLabel = formatMessage({id: 'docs.spaceInfo.close', defaultMessage: 'Close info'});
-    const backLabel = formatMessage({id: 'docs.spaceInfo.back', defaultMessage: 'Back to space info'});
     const editDescriptionLabel = formatMessage({id: 'docs.spaceInfo.editDescription', defaultMessage: 'Edit description'});
 
     // The description is the one field editable from here; everything else lives
@@ -108,77 +96,22 @@ const SpaceInfoPanel = ({space, view, onViewChange, onClose}: Props) => {
     /* eslint-enable react/style-prop-object */
 
     return (
-        <aside
-            className={classNames(styles.panel, {[styles.resizing]: resizing})}
-            style={{width}}
-            aria-label={formatMessage({id: 'docs.spaceInfo.title', defaultMessage: 'Space info'})}
+        <RhsPanel
+            name={formatMessage({id: 'docs.spaceInfo.title', defaultMessage: 'Space info'})}
+            title={view === 'members' ? (
+                <FormattedMessage
+                    id='docs.spaceInfo.members'
+                    defaultMessage='Members'
+                />
+            ) : undefined}
+            widthKey='spaceInfo'
+            onBack={view === 'root' ? undefined : () => onViewChange('root')}
+            onClose={onClose}
         >
-            <ResizableDivider
-                ariaLabel={formatMessage({id: 'docs.spaceInfo.resize', defaultMessage: 'Resize space info'})}
-                side='right'
-                width={width}
-                minWidth={MIN_INFO_WIDTH}
-                maxWidth={MAX_INFO_WIDTH}
-                defaultWidth={DEFAULT_INFO_WIDTH}
-                onResize={(next) => {
-                    setResizing(true);
-                    setWidth(next);
-                }}
-                onResizeEnd={(next) => {
-                    setResizing(false);
-                    commitWidth(next);
-                }}
-            />
-            <Header
-                left={(
-                    <>
-                        {view !== 'root' && (
-                            <Button
-                                emphasis='quaternary'
-                                size='sm'
-                                className='btn-icon'
-                                tooltip={backLabel}
-                                onClick={() => onViewChange('root')}
-                            >
-                                <ChevronLeftIcon size={18}/>
-                            </Button>
-                        )}
-                        <h2 className={styles.headerTitle}>
-                            {view === 'members' ? (
-                                <FormattedMessage
-                                    id='docs.spaceInfo.members'
-                                    defaultMessage='Members'
-                                />
-                            ) : (
-                                <FormattedMessage
-                                    id='docs.spaceInfo.title'
-                                    defaultMessage='Space info'
-                                />
-                            )}
-                        </h2>
-                    </>
-                )}
-                right={(
-                    <Button
-                        emphasis='quaternary'
-                        size='sm'
-                        className='btn-icon'
-                        aria-label={closeLabel}
-                        onClick={onClose}
-                    >
-                        <CloseIcon size={18}/>
-                    </Button>
-                )}
-            />
-
-            {view === 'members' && (
-                <div className={styles.body}>
-                    <SpaceInfoMembers members={members}/>
-                </div>
-            )}
+            {view === 'members' && <SpaceInfoMembers members={members}/>}
 
             {view === 'root' && (
-                <div className={styles.body}>
+                <>
                     <div className={styles.identity}>
                         <span
                             className={styles.icon}
@@ -255,9 +188,9 @@ const SpaceInfoPanel = ({space, view, onViewChange, onClose}: Props) => {
                             </div>
                         </dl>
                     </section>
-                </div>
+                </>
             )}
-        </aside>
+        </RhsPanel>
     );
 };
 

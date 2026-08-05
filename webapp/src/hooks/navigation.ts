@@ -5,6 +5,7 @@ import {useTeamContext} from 'hooks/team';
 import {useCallback} from 'react';
 import {useHistory, useLocation, useRouteMatch} from 'react-router-dom';
 import {DOCS_DRAFT_ROUTE, DOCS_ROUTE, DOCS_SPACE_OVERVIEW_ROUTE, EDIT_QUERY, docsHomePath, docsPath, draftPath, editPagePath, overviewPath, pagePath, spacePath} from 'routing/paths';
+import {withQuery} from 'routing/query';
 
 type DocsRouteParams = {
     team?: string;
@@ -110,6 +111,7 @@ export function useDocsNavigation() {
  */
 export function useTogglePageEditMode(spaceId: string) {
     const history = useHistory();
+    const {search} = useLocation();
     const {pageId, isDraft, isEditing, paths} = useDocsNavigation();
 
     return useCallback(() => {
@@ -117,6 +119,15 @@ export function useTogglePageEditMode(spaceId: string) {
             return;
         }
         const base = isDraft ? paths.draft(spaceId, pageId) : paths.page(spaceId, pageId);
-        history.push(isEditing ? base : `${base}?${EDIT_QUERY}=1`);
-    }, [history, isDraft, isEditing, pageId, spaceId, paths]);
+
+        // Other queries ride along: an open right-hand panel is one of them, and
+        // entering or leaving the editor shouldn't close it.
+        history.push(withQuery(base, search, (params) => {
+            if (isEditing) {
+                params.delete(EDIT_QUERY);
+            } else {
+                params.set(EDIT_QUERY, '1');
+            }
+        }));
+    }, [history, search, isDraft, isEditing, pageId, spaceId, paths]);
 }

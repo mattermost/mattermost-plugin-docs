@@ -65,6 +65,12 @@ export const draftPath = (teamName: string, spaceId: string, pageId: string): st
 // published version yet.
 export const EDIT_QUERY = 'edit';
 
+// Which right-hand panel is open, and which of its screens. A query for the same
+// reason edit mode is one: the panel is a view of the routed page rather than a
+// place of its own, so the path keeps naming the page.
+export const RHS_QUERY = 'rhs';
+export const RHS_VIEW_QUERY = 'rhsView';
+
 export const editPagePath = (teamName: string, spaceId: string, pageId: string): string =>
     `${pagePath(teamName, spaceId, pageId)}?${EDIT_QUERY}=1`;
 

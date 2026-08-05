@@ -65,15 +65,17 @@ type Props = {
     draft?: Draft;
     treeOpen: boolean;
     editing: boolean;
+    commentsOpen: boolean;
     onTogglePages: () => void;
+    onToggleComments: () => void;
     onToggleEdit: () => void;
     onPublish: () => void;
 };
 
-// Comments, overflow and expand are visual scaffolding wired in later passes; the
-// pages toggle drives the page tree panel, and Edit/Close plus Publish/Update are
-// live.
-const PageHeader = ({space, page, draft, treeOpen, editing, onTogglePages, onToggleEdit, onPublish}: Props) => {
+// Overflow and expand are visual scaffolding wired in later passes; the pages toggle
+// drives the page tree panel, Comments opens its right-hand panel, and Edit/Close
+// plus Publish/Update are live.
+const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogglePages, onToggleComments, onToggleEdit, onPublish}: Props) => {
     const {formatMessage} = useIntl();
     const createRootPage = useCreateRootPage(space.id);
     const [publishing, setPublishing] = useState(false);
@@ -176,10 +178,12 @@ const PageHeader = ({space, page, draft, treeOpen, editing, onTogglePages, onTog
                     <Button
                         emphasis='quaternary'
                         size='sm'
-                        className='btn-icon'
+                        className={classNames('btn-icon', {active: commentsOpen})}
                         badge={true}
                         tooltip={commentsLabel}
+                        aria-pressed={commentsOpen}
                         leadingIcon={<MessageTextOutlineIcon size={18}/>}
+                        onClick={onToggleComments}
                     />
                 )}
 
