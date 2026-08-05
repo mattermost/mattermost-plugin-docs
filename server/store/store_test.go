@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -573,6 +574,57 @@ func TestFetchDescendantRowsDepthAtCapAllowed(t *testing.T) {
 	descendants, err := s.FetchDescendantRowsForTest(root.Id)
 	require.NoError(t, err, "a subtree exactly at the depth cap must not error")
 	require.Len(t, descendants, store.MaxPageHierarchyDepth)
+}
+
+// TestFetchDescendantRowsByteBudgetExceeded verifies FetchDescendantRowsForTest returns
+// ErrLimitExceeded (with ReasonSubtreeTotalBytesExceeded) rather than materializing the full
+// result set when the subtree's combined Body+SearchText size exceeds
+// MaxPageDescendantsTotalBytes, even though the row count itself stays well under
+// MaxPageDescendantsLimit.
+func TestFetchDescendantRowsByteBudgetExceeded(t *testing.T) {
+	s := openTestDB(t)
+	channelID, root := seedSpaceAndPage(t, s)
+
+	largeBody := strings.Repeat("a", model.PageBodyMaxBytes)
+	largeSearchText := strings.Repeat("a", model.PageSearchTextMaxBytes)
+	perPageBytes := len(largeBody) + len(largeSearchText)
+	pageCount := store.MaxPageDescendantsTotalBytes/perPageBytes + 2
+
+	require.Less(t, pageCount, store.MaxPageDescendantsLimit, "test must exceed the byte budget without also exceeding the row-count cap")
+
+	for range pageCount {
+		child := newPage(root.SpaceId, channelID, mmmodel.NewId(), root.Id)
+		child.Body = largeBody
+		child.SearchText = largeSearchText
+		_, err := s.CreatePage(child, testDefaultMaxDepth)
+		require.NoError(t, err)
+	}
+
+	_, err := s.FetchDescendantRowsForTest(root.Id)
+	require.Error(t, err)
+	require.True(t, store.IsErrLimitExceeded(err), "expected ErrLimitExceeded, got %T: %v", err, err)
+	var limErr *store.ErrLimitExceeded
+	require.True(t, errors.As(err, &limErr))
+	require.Equal(t, store.ReasonSubtreeTotalBytesExceeded, limErr.Reason)
+}
+
+// TestFetchDescendantRowsByteBudgetAllowed verifies a subtree comfortably under
+// MaxPageDescendantsTotalBytes (and MaxPageDescendantsLimit) is returned in full, so the new
+// byte guard does not interfere with ordinary subtree fetches.
+func TestFetchDescendantRowsByteBudgetAllowed(t *testing.T) {
+	s := openTestDB(t)
+	channelID, root := seedSpaceAndPage(t, s)
+
+	for i := range 3 {
+		child := newPage(root.SpaceId, channelID, mmmodel.NewId(), root.Id)
+		child.Body = fmt.Sprintf("small body %d", i)
+		_, err := s.CreatePage(child, testDefaultMaxDepth)
+		require.NoError(t, err)
+	}
+
+	descendants, err := s.FetchDescendantRowsForTest(root.Id)
+	require.NoError(t, err)
+	require.Len(t, descendants, 3)
 }
 
 // TestOptimisticLockConflict verifies that Update with a stale EditAt fails as ErrConflict.
