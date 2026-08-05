@@ -199,8 +199,9 @@ const (
 // IdentifierPattern is the ASCII contract every non-empty external identifier must match. Every
 // identifier the authoritative producer emits fits this set, so bounding it keeps index sizing
 // deterministic and rejects incompatible future producer identifiers until the contract is
-// deliberately revised.
-var IdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9._:@-]+$`)
+// deliberately revised. '~' is included because Confluence keys personal spaces as
+// "~username"/"~accountid"; omitting it would reject every personal-space bundle outright.
+var IdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9._:@~-]+$`)
 
 // IsValidIdentifier reports whether id is non-empty, no longer than maxBytes, and matches the
 // contract pattern. Callers that allow absence check for "" themselves.

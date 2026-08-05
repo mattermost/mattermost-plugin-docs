@@ -6,10 +6,12 @@ package importer
 import (
 	"archive/zip"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"path"
 	"strings"
 )
@@ -41,10 +43,6 @@ const (
 	// MaxPages bounds the number of page lines. It also fixes the result-ordinal ranges: page
 	// ordinals occupy 0..MaxPages-1 and stale results start at MaxPages.
 	MaxPages = 5_000
-	// MaxTipTapNodes bounds the number of nodes in a single page's TipTap document.
-	MaxTipTapNodes = 250_000
-	// MaxTipTapDepth bounds TipTap nesting depth.
-	MaxTipTapDepth = 100
 	// MaxManifestUsers bounds the manifest user list, which is persisted per job.
 	MaxManifestUsers = 50_000
 )
@@ -112,10 +110,23 @@ func OpenArchive(r io.ReaderAt, n int64) (*Archive, error) {
 	if n > MaxBundleUploadBytes {
 		return nil, archiveErr(ArchiveErrTooLarge, "archive is %d bytes, limit is %d", n, MaxBundleUploadBytes)
 	}
+	// Bound the entry count from the central-directory *header* before constructing the reader.
+	// zip.NewReader eagerly materializes a struct per entry, so checking len(zr.File) afterwards is
+	// too late: an archive whose 250 MiB is spent on millions of tiny central-directory records would
+	// already have consumed gigabytes by then.
+	declaredEntries, err := archiveEntryCount(r, n)
+	if err != nil {
+		return nil, err
+	}
+	if declaredEntries > MaxArchiveEntries {
+		return nil, archiveErr(ArchiveErrTooManyEntries, "archive declares %d entries, limit is %d", declaredEntries, MaxArchiveEntries)
+	}
+
 	zr, err := zip.NewReader(r, n)
 	if err != nil {
 		return nil, archiveErr(ArchiveErrUnreadable, "failed to read zip archive: %v", err)
 	}
+	// Defensive: the header is attacker-controlled, so re-check what the reader actually parsed.
 	if len(zr.File) > MaxArchiveEntries {
 		return nil, archiveErr(ArchiveErrTooManyEntries, "archive has %d entries, limit is %d", len(zr.File), MaxArchiveEntries)
 	}
@@ -183,6 +194,81 @@ func OpenArchive(r io.ReaderAt, n int64) (*Archive, error) {
 		return nil, archiveErr(ArchiveErrMissingManifest, "archive is missing required import-manifest.json")
 	}
 	return archive, nil
+}
+
+// ZIP structural constants used to read the entry count out of the archive trailer.
+const (
+	eocdSignature       = 0x06054b50 // "PK\x05\x06" end of central directory
+	eocdLen             = 22
+	zip64LocatorSig     = 0x07064b50 // "PK\x06\x07" ZIP64 EOCD locator
+	zip64LocatorLen     = 20
+	zip64EOCDSig        = 0x06064b50 // "PK\x06\x06" ZIP64 end of central directory
+	zip64EOCDMinLen     = 56
+	maxZipCommentLen    = 65535
+	zip16BitEntrySignal = 0xFFFF // total-entries value meaning "see the ZIP64 record"
+)
+
+// archiveEntryCount reads the declared total number of central-directory entries from the archive
+// trailer, following the ZIP64 records when the 16-bit field is saturated. It reads at most ~64 KiB
+// plus one ZIP64 record, so it can bound the entry count before any per-entry allocation happens.
+func archiveEntryCount(r io.ReaderAt, n int64) (uint64, error) {
+	if n < eocdLen {
+		return 0, archiveErr(ArchiveErrUnreadable, "archive is too small to be a zip file")
+	}
+	tailLen := min(int64(maxZipCommentLen+eocdLen), n)
+	tail := make([]byte, tailLen)
+	if _, err := r.ReadAt(tail, n-tailLen); err != nil {
+		return 0, archiveErr(ArchiveErrUnreadable, "failed to read zip trailer: %v", err)
+	}
+
+	// Scan backwards for the last EOCD whose declared comment length matches the remaining bytes; a
+	// later false positive inside a comment would otherwise win.
+	eocd := -1
+	for i := len(tail) - eocdLen; i >= 0; i-- {
+		if binary.LittleEndian.Uint32(tail[i:]) != eocdSignature {
+			continue
+		}
+		commentLen := int(binary.LittleEndian.Uint16(tail[i+20:]))
+		if i+eocdLen+commentLen == len(tail) {
+			eocd = i
+			break
+		}
+	}
+	if eocd < 0 {
+		return 0, archiveErr(ArchiveErrUnreadable, "archive has no end-of-central-directory record")
+	}
+
+	entries := uint64(binary.LittleEndian.Uint16(tail[eocd+10:]))
+	if entries != zip16BitEntrySignal {
+		return entries, nil
+	}
+
+	// Saturated 16-bit count: the real total lives in the ZIP64 end-of-central-directory record, found
+	// through the locator that sits immediately before the EOCD.
+	locator := eocd - zip64LocatorLen
+	if locator < 0 || binary.LittleEndian.Uint32(tail[locator:]) != zip64LocatorSig {
+		// No locator: trust the saturated value, which already exceeds any sane entry limit.
+		return entries, nil
+	}
+	zip64Offset := binary.LittleEndian.Uint64(tail[locator+8:])
+	// Reject anything that cannot be a valid in-file offset before using it. Comparing in int64 space
+	// (rather than widening n) keeps the conversion provably safe: the archive is already bounded to
+	// MaxBundleUploadBytes, so any offset at or above MaxInt64 is nonsense.
+	if zip64Offset > math.MaxInt64 {
+		return 0, archiveErr(ArchiveErrUnreadable, "archive zip64 directory offset is out of range")
+	}
+	recordOffset := int64(zip64Offset)
+	if n < zip64EOCDMinLen || recordOffset > n-zip64EOCDMinLen {
+		return 0, archiveErr(ArchiveErrUnreadable, "archive zip64 directory offset is out of range")
+	}
+	record := make([]byte, zip64EOCDMinLen)
+	if _, err := r.ReadAt(record, recordOffset); err != nil {
+		return 0, archiveErr(ArchiveErrUnreadable, "failed to read zip64 directory: %v", err)
+	}
+	if binary.LittleEndian.Uint32(record) != zip64EOCDSig {
+		return 0, archiveErr(ArchiveErrUnreadable, "archive zip64 directory record is malformed")
+	}
+	return binary.LittleEndian.Uint64(record[32:]), nil
 }
 
 // ReadManifest returns the decompressed manifest, enforcing MaxManifestBytes while reading. The

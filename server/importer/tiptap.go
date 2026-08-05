@@ -6,9 +6,7 @@ package importer
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"regexp"
 	"strings"
 
@@ -29,17 +27,18 @@ func tiptapErr(code, format string, args ...any) *TipTapError {
 
 // Stable TipTap rejection codes.
 const (
-	TipTapErrInvalidJSON    = "tiptap_invalid_json"
-	TipTapErrNotDoc         = "tiptap_not_doc"
-	TipTapErrMissingType    = "tiptap_missing_type"
-	TipTapErrBadContent     = "tiptap_bad_content"
-	TipTapErrBadMarks       = "tiptap_bad_marks"
-	TipTapErrBadText        = "tiptap_bad_text"
-	TipTapErrUnstorableText = "tiptap_unstorable_text"
-	TipTapErrTooManyNodes   = "tiptap_too_many_nodes"
-	TipTapErrTooDeep        = "tiptap_too_deep"
-	TipTapErrBodyTooLarge   = "tiptap_body_too_large"
-	TipTapErrSearchTooLarge = "tiptap_search_text_too_large"
+	TipTapErrInvalidJSON       = "tiptap_invalid_json"
+	TipTapErrNotDoc            = "tiptap_not_doc"
+	TipTapErrMissingType       = "tiptap_missing_type"
+	TipTapErrBadContent        = "tiptap_bad_content"
+	TipTapErrBadMarks          = "tiptap_bad_marks"
+	TipTapErrBadText           = "tiptap_bad_text"
+	TipTapErrUnstorableText    = "tiptap_unstorable_text"
+	TipTapErrSanitizerRejected = "tiptap_sanitizer_rejected"
+	TipTapErrTooManyNodes      = "tiptap_too_many_nodes"
+	TipTapErrTooDeep           = "tiptap_too_deep"
+	TipTapErrBodyTooLarge      = "tiptap_body_too_large"
+	TipTapErrSearchTooLarge    = "tiptap_search_text_too_large"
 )
 
 // Node/mark type names with SearchText significance.
@@ -64,47 +63,57 @@ var blockSeparatorTypes = map[string]struct{}{
 	"tableRow":    {},
 }
 
-// CanonicalizeAndExtractSearchText validates a TipTap document (a JSON string), returning its
-// compact canonical re-marshaling, the derived plain-text SearchText, and any placeholder links
-// discovered in approved attributes. Unknown node/mark types and attributes are preserved.
+// CanonicalizeAndExtractSearchText sanitizes a TipTap document (a JSON string) through the
+// repository's shared sanitizer, then returns its compact canonical re-marshaling, the derived
+// plain-text SearchText, and any placeholder links discovered in approved attributes.
 //
-// The canonical body is a deterministic compact re-marshaling (Go sorts object keys), so it is
-// stable for hashing regardless of the producer's original key order.
+// Sanitization is not optional and is not reimplemented here: model.ParseTipTapDocument is the
+// declared invariant for anything stored as page content (see model/page_content.go), and the import
+// path writes pages through a dedicated store path that bypasses the interactive one. Running the
+// same sanitizer means imported content cannot carry a javascript: href, an event-handler attribute,
+// or a node/mark type the editor schema does not define — a bundle is external, untrusted input and
+// gets exactly the same treatment as a browser payload.
+//
+// Note that this deliberately overrides the plan's earlier "preserve unknown node/mark types"
+// instruction: preserving an unknown type is precisely what would let unsanitized content through.
+// Every node and mark the authoritative producer emits is on the sanitizer's allowlist.
+//
+// The canonical body is a deterministic compact re-marshaling of the *sanitized* document (Go sorts
+// object keys), so it is stable for hashing and always reflects what will actually be stored.
 func CanonicalizeAndExtractSearchText(body string) (canonicalBody string, searchText string, links []DiscoveredLink, err error) {
-	dec := json.NewDecoder(strings.NewReader(body))
-	dec.UseNumber()
-
-	var root any
-	if decErr := dec.Decode(&root); decErr != nil {
-		return "", "", nil, tiptapErr(TipTapErrInvalidJSON, "content is not valid JSON: %v", decErr)
-	}
-	// Reject trailing data after the first JSON value. json.Decoder.More() cannot be used here: it
-	// returns false before a closing "]"/"}" delimiter, so "{...}]" would slip through. Decoding a
-	// second value and requiring io.EOF rejects any trailing token while still tolerating trailing
-	// whitespace.
-	if decErr := dec.Decode(&struct{}{}); !errors.Is(decErr, io.EOF) {
-		return "", "", nil, tiptapErr(TipTapErrInvalidJSON, "content has trailing data after the root JSON value")
+	// An absent body is a producer error rather than an empty page: ParseTipTapDocument would
+	// helpfully turn "" into an empty doc, which would silently import a blank page.
+	if strings.TrimSpace(body) == "" {
+		return "", "", nil, tiptapErr(TipTapErrInvalidJSON, "content is empty")
 	}
 
-	rootObj, ok := root.(map[string]any)
-	if !ok {
-		return "", "", nil, tiptapErr(TipTapErrNotDoc, "content root is not a JSON object")
-	}
-	if t, _ := rootObj["type"].(string); t != nodeTypeDoc {
-		return "", "", nil, tiptapErr(TipTapErrNotDoc, "content root type is not %q", nodeTypeDoc)
-	}
-
-	w := &tiptapWalker{}
-	if walkErr := w.walkNode(rootObj, 0); walkErr != nil {
-		return "", "", nil, walkErr
+	doc, parseErr := model.ParseTipTapDocument(body)
+	if parseErr != nil {
+		// The sanitizer returns plain errors (its failures are parse-level, with no per-field i18n
+		// key), so they are wrapped in one stable code here. Its message is safe to surface: it names
+		// node/mark types and limits, never content.
+		return "", "", nil, tiptapErr(TipTapErrSanitizerRejected, "content rejected by the page sanitizer: %v", parseErr)
 	}
 
-	compact, marshalErr := json.Marshal(rootObj)
+	compact, marshalErr := json.Marshal(doc)
 	if marshalErr != nil {
-		return "", "", nil, tiptapErr(TipTapErrInvalidJSON, "failed to re-marshal content: %v", marshalErr)
+		return "", "", nil, tiptapErr(TipTapErrInvalidJSON, "failed to re-marshal sanitized content: %v", marshalErr)
 	}
 	if len(compact) > model.PageBodyMaxBytes {
 		return "", "", nil, tiptapErr(TipTapErrBodyTooLarge, "canonical body is %d bytes, limit is %d", len(compact), model.PageBodyMaxBytes)
+	}
+
+	// Walk the sanitized document for SearchText and placeholder links. The traversal also enforces
+	// the two text-shape rules the sanitizer does not check (a text node must carry a string "text"),
+	// and rejects NUL/invalid UTF-8, which PostgreSQL cannot store.
+	w := &tiptapWalker{}
+	for _, node := range doc.Content {
+		if node == nil {
+			return "", "", nil, tiptapErr(TipTapErrBadContent, "sanitized content contains a null node")
+		}
+		if walkErr := w.walkNode(node, 1); walkErr != nil {
+			return "", "", nil, walkErr
+		}
 	}
 
 	st := normalizeSearchText(w.search.String())
@@ -123,14 +132,16 @@ type tiptapWalker struct {
 	nodeCount int
 }
 
-// walkNode processes one node object at the given nesting depth (root doc is depth 0).
+// walkNode processes one node object at the given nesting depth (the doc root is depth 0, so its
+// direct children start at 1). The node has already been sanitized; these checks are the text-shape
+// and storability rules the sanitizer does not cover, plus defence-in-depth bounds.
 func (w *tiptapWalker) walkNode(node map[string]any, depth int) error {
 	w.nodeCount++
-	if w.nodeCount > MaxTipTapNodes {
-		return tiptapErr(TipTapErrTooManyNodes, "document has more than %d nodes", MaxTipTapNodes)
+	if w.nodeCount > model.MaxTipTapNodes {
+		return tiptapErr(TipTapErrTooManyNodes, "document has more than %d nodes", model.MaxTipTapNodes)
 	}
-	if depth > MaxTipTapDepth {
-		return tiptapErr(TipTapErrTooDeep, "document nesting exceeds depth %d", MaxTipTapDepth)
+	if depth > model.MaxTipTapDepth {
+		return tiptapErr(TipTapErrTooDeep, "document nesting exceeds depth %d", model.MaxTipTapDepth)
 	}
 
 	// Every node must carry a non-empty string type. A missing or empty type is not an "unknown

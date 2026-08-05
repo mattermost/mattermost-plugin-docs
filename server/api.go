@@ -41,6 +41,7 @@ func (p *Plugin) initRouter() *mux.Router {
 	api.HandleFunc("/imports", p.handleListImports).Methods(http.MethodGet)
 	api.HandleFunc("/imports/{job_id}", p.handleGetImport).Methods(http.MethodGet)
 	api.HandleFunc("/imports/{job_id}/issues", p.handleGetImportIssues).Methods(http.MethodGet)
+	api.HandleFunc("/imports/{job_id}/cancel", p.handleCancelImport).Methods(http.MethodPost)
 
 	// Space CRUD.
 	api.HandleFunc("/spaces/{space_id}", p.handleGetSpace).Methods(http.MethodGet)

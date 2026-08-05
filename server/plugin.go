@@ -4,9 +4,11 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gorilla/mux"
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -49,10 +51,39 @@ type Plugin struct {
 	inspectionClosed    bool
 	inspectionWG        sync.WaitGroup
 	inspectionSemaphore chan struct{}
+
+	// The maintenance goroutine runs the hourly import sweep (expiry, staged-body purge, retention
+	// deletion). It is the seed of the single import worker: phase 4 extends this same loop with job
+	// processing, which is why cleanup and future work share one goroutine rather than racing.
+	maintenanceCancel context.CancelFunc
+	maintenanceWG     sync.WaitGroup
 }
 
 // importInspectionSlots is the number of concurrent bundle inspections allowed per process.
 const importInspectionSlots = 1
+
+// importMaintenanceInterval is how often the maintenance sweep runs.
+const importMaintenanceInterval = time.Hour
+
+// startImportMaintenance launches the hourly import maintenance loop. One pass runs immediately so a
+// restart after downtime reclaims capacity from work abandoned while the server was down, rather than
+// waiting a full interval.
+func (p *Plugin) startImportMaintenance() {
+	ctx, cancel := context.WithCancel(context.Background())
+	p.maintenanceCancel = cancel
+	p.maintenanceWG.Go(func() {
+		ticker := time.NewTicker(importMaintenanceInterval)
+		defer ticker.Stop()
+		for {
+			p.service.LogImportMaintenance(p.service.RunImportMaintenance())
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	})
+}
 
 // initImportAdmission opens the import inspection gate. It must run before the router serves any
 // request: with a nil semaphore every upload would be rejected as busy.
@@ -115,6 +146,7 @@ func (p *Plugin) OnActivate() error {
 
 	// The inspection gate must exist before the router accepts requests.
 	p.initImportAdmission()
+	p.startImportMaintenance()
 
 	p.router = p.initRouter()
 
@@ -132,6 +164,13 @@ func (p *Plugin) OnDeactivate() error {
 	p.inspectionClosed = true
 	p.inspectionMu.Unlock()
 	p.inspectionWG.Wait()
+
+	// Stop maintenance and wait for the in-flight pass: it runs database transactions, so the store
+	// must outlive it.
+	if p.maintenanceCancel != nil {
+		p.maintenanceCancel()
+	}
+	p.maintenanceWG.Wait()
 
 	if p.store != nil {
 		if err := p.store.Close(); err != nil {

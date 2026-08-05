@@ -30,6 +30,16 @@ const MaxManifestWarnings = 1000
 // package dependency-light; the model constant is the canonical one and both must move together.
 const MaxHierarchyDepth = model.MaxPageDepth
 
+// MaxComments bounds how many comment lines a bundle may declare. Comments are counted but never
+// staged, yet every comment's source id is held in memory to enforce uniqueness and reply ordering,
+// so the count must be bounded even though nothing is persisted per comment.
+const MaxComments = 50_000
+
+// maxIssueTextBytes bounds a generated issue message or remediation string. Producer-supplied text
+// (a manifest warning) is truncated to fit rather than rejected: a verbose warning should not fail an
+// otherwise valid bundle.
+const maxIssueTextBytes = 2048
+
 // Manifest mirrors the fields of the producer's import-manifest.json that the importer reads.
 // Unknown fields are ignored (forward-compatible).
 type Manifest struct {
@@ -114,6 +124,8 @@ const (
 	InspectErrPayloadMismatch      = "jsonl_payload_mismatch"
 	InspectErrVersionValue         = "jsonl_unsupported_version"
 	InspectErrTooManyPages         = "jsonl_too_many_pages"
+	InspectErrTooManyComments      = "jsonl_too_many_comments"
+	InspectErrRestrictionInvalid   = "manifest_restriction_invalid"
 	InspectErrPageMissingID        = "page_missing_external_id"
 	InspectErrPageInvalidID        = "page_invalid_external_id"
 	InspectErrDuplicatePageID      = "page_duplicate_external_id"
@@ -330,14 +342,17 @@ func Inspect(a *Archive, opts InspectOptions, sink StreamSink) (*InspectionSumma
 		JSONLSha256:    jsonlSha,
 	}
 
-	if err := emitManifestIssues(manifest, sink); err != nil {
-		return nil, err
+	if issueErr := emitManifestIssues(manifest, sink); issueErr != nil {
+		return nil, issueErr
 	}
-	if err := emitManifestUsers(manifest, sink); err != nil {
-		return nil, err
+	if userErr := emitManifestUsers(manifest, sink); userErr != nil {
+		return nil, userErr
 	}
 
-	restricted := restrictedIDSet(manifest)
+	restricted, err := restrictedIDSet(manifest)
+	if err != nil {
+		return nil, err
+	}
 	summary.Restricted.ManifestTotal = len(restricted)
 
 	emittedRestricted := make(map[string]struct{}, len(restricted))
@@ -388,8 +403,10 @@ func parseManifest(b []byte) (*Manifest, error) {
 	if m.Version != ManifestVersion {
 		return nil, inspectErr(InspectErrManifestVersion, "manifest version %q is unsupported; require %q", m.Version, ManifestVersion)
 	}
-	if m.Source.Type != "" && m.Source.Type != model.ImportSourceTypeConfluence {
-		return nil, inspectErr(InspectErrManifestSourceType, "manifest source type %q is unsupported", m.Source.Type)
+	// The source type is required, not merely checked when present: an absent type means the bundle
+	// never declared what it came from, and this importer only understands Confluence.
+	if m.Source.Type != model.ImportSourceTypeConfluence {
+		return nil, inspectErr(InspectErrManifestSourceType, "manifest source type %q is unsupported; require %q", m.Source.Type, model.ImportSourceTypeConfluence)
 	}
 	return &m, nil
 }
@@ -408,7 +425,7 @@ func emitManifestIssues(manifest *Manifest, sink StreamSink) error {
 			return inspectErr(InspectErrUnstorableText, "a manifest warning contains invalid UTF-8 or a NUL character")
 		}
 		if err := sink.Issue(&InspectionIssue{
-			Severity: SeverityWarning, Code: IssueManifestWarning, Message: w,
+			Severity: SeverityWarning, Code: IssueManifestWarning, Message: truncateIssueText(w),
 			Remediation: "Review the producer warning; it does not block import.",
 		}); err != nil {
 			return err
@@ -474,22 +491,33 @@ func emitManifestUsers(manifest *Manifest, sink StreamSink) error {
 	return nil
 }
 
-// restrictedIDSet returns the deduplicated manifest restriction identities.
-func restrictedIDSet(manifest *Manifest) map[string]string {
+// restrictedIDSet returns the deduplicated manifest restriction identities, validating each one. Both
+// the id and the title are persisted (as an issue's external id and title), so an out-of-contract id
+// or NUL-bearing title has to be rejected here rather than surfacing as an opaque database failure.
+func restrictedIDSet(manifest *Manifest) (map[string]string, error) {
 	set := make(map[string]string, len(manifest.RestrictedPages))
 	for _, rp := range manifest.RestrictedPages {
+		if !IsValidIdentifier(rp.ID, ExternalIDMaxBytes) {
+			return nil, inspectErr(InspectErrRestrictionInvalid, "manifest restriction id %q is not a valid bounded identifier", rp.ID)
+		}
+		if !IsStorableText(rp.Title) {
+			return nil, inspectErr(InspectErrUnstorableText, "manifest restriction %q has a title containing invalid UTF-8 or a NUL character", rp.ID)
+		}
 		if _, dup := set[rp.ID]; dup {
 			continue
 		}
 		set[rp.ID] = rp.Title
 	}
-	return set
+	return set, nil
 }
 
 // emitManifestOnlyRestrictions reports each restriction identity that never matched an emitted page,
 // in deterministic id order.
 func emitManifestOnlyRestrictions(manifest *Manifest, emitted map[string]struct{}, sink StreamSink) error {
-	all := restrictedIDSet(manifest)
+	all, err := restrictedIDSet(manifest)
+	if err != nil {
+		return err
+	}
 	ids := make([]string, 0, len(all))
 	for id := range all {
 		if _, ok := emitted[id]; !ok {
@@ -944,6 +972,9 @@ func (p *streamParser) handleCommentLine(c *PageCommentData, lineNo int) error {
 			return inspectErr(InspectErrCommentInvalid, "line %d: comment %q replies to %q which has not appeared earlier", lineNo, commentID, parent)
 		}
 	}
+	if p.summary.CommentCount >= MaxComments {
+		return inspectErr(InspectErrTooManyComments, "bundle has more than %d comments", MaxComments)
+	}
 	p.commentIDs[commentID] = struct{}{}
 	p.summary.CommentCount++
 	return nil
@@ -1086,4 +1117,18 @@ func lineHasForeignPayload(l *Line, declaredType string) bool {
 // plausibleTimestamp reports whether ms is a positive epoch-millis value at or below futureCeiling.
 func plausibleTimestamp(ms, futureCeiling int64) bool {
 	return ms > 0 && ms <= futureCeiling
+}
+
+// truncateIssueText clips producer-supplied text to the issue-text bound, marking that it was cut so
+// a reader knows the message is partial.
+func truncateIssueText(s string) string {
+	if len(s) <= maxIssueTextBytes {
+		return s
+	}
+	// Trim to a rune boundary so the stored text stays valid UTF-8.
+	cut := maxIssueTextBytes - 3
+	for cut > 0 && !utf8.ValidString(s[:cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }

@@ -13,6 +13,8 @@ import (
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
+	"github.com/mattermost/mattermost/server/public/pluginapi"
+
 	"github.com/mattermost/mattermost-plugin-docs/server/importer"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
@@ -336,6 +338,7 @@ var importContentLimitCodes = map[string]struct{}{
 	importer.InspectErrDepthExceeded:    {},
 	importer.InspectErrPageTitleTooLong: {},
 	importer.TipTapErrTooManyNodes:      {},
+	importer.TipTapErrSanitizerRejected: {},
 	importer.TipTapErrTooDeep:           {},
 	importer.TipTapErrBodyTooLarge:      {},
 	importer.TipTapErrSearchTooLarge:    {},
@@ -387,12 +390,86 @@ func importFailureCode(err error) string {
 // GetImportJob returns the actor's own job. Job visibility is actor-only in V1, and another user's
 // job is reported as not found rather than forbidden so the endpoint cannot be used to probe for the
 // existence of someone else's import.
+//
+// Ownership alone is not sufficient to see the whole job: an actor who has since been deactivated or
+// lost access to the target team/Space gets a minimal projection carrying only the fields they need
+// to understand that the import stopped (id, state, error code, timestamps). Everything target- or
+// source-identifying is omitted, because a job record must not become a way to read Space metadata
+// after losing access to that Space.
 func (s *Service) GetImportJob(jobID, actorID string) (*model.ImportJobView, *mmmodel.AppError) {
 	job, appErr := s.getOwnImportJob(jobID, actorID)
 	if appErr != nil {
 		return nil, appErr
 	}
+	entitled, appErr := s.actorStillEntitled(job, actorID)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if !entitled {
+		return minimalImportJobView(job), nil
+	}
 	return s.BuildImportJobView(job)
+}
+
+// actorStillEntitled reports whether the actor remains an active user who may still reach the job's
+// target. It mirrors the gate the upload passed: current Space membership for an existing target, or
+// active team membership plus Space-creation permission for a new one. A backend failure is returned
+// as an error rather than silently downgrading the response, so a transient outage never looks like
+// revoked access.
+func (s *Service) actorStillEntitled(job *model.ImportJob, actorID string) (bool, *mmmodel.AppError) {
+	if appErr := s.requireClient("actorStillEntitled", "actor_id", actorID); appErr != nil {
+		return false, appErr
+	}
+	user, err := s.client.User.Get(actorID)
+	if err != nil {
+		if errors.Is(err, pluginapi.ErrNotFound) {
+			return false, nil
+		}
+		return false, mmmodel.NewAppError("actorStillEntitled", "app.import.entitlement.lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+	}
+	if user == nil || user.DeleteAt != 0 {
+		return false, nil
+	}
+
+	if job.TargetSpaceExisted {
+		// CheckSpaceMembership covers both halves of the access gate (active team member plus backing
+		// channel member) and yields 403 for any failure, which here simply means "not entitled".
+		if _, spaceErr := s.CheckSpaceMembership(job.TargetSpaceId, actorID, false); spaceErr != nil {
+			if spaceErr.StatusCode == http.StatusForbidden || spaceErr.StatusCode == http.StatusNotFound {
+				return false, nil
+			}
+			return false, spaceErr
+		}
+		return true, nil
+	}
+
+	// A new-Space job has no Space to check yet, so the entitlement is the one that authorized it.
+	active, memberErr := s.isActiveTeamMember(job.TeamId, actorID)
+	if memberErr != nil {
+		return false, mmmodel.NewAppError("actorStillEntitled", "app.import.entitlement.lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memberErr)
+	}
+	if !active {
+		return false, nil
+	}
+	return s.client.User.HasPermissionToTeam(actorID, job.TeamId, mmmodel.PermissionCreatePublicChannel), nil
+}
+
+// minimalImportJobView is the access-loss projection: enough for the owning actor to see that their
+// import exists and why it stopped, with no target, source, bundle, or report detail.
+func minimalImportJobView(job *model.ImportJob) *model.ImportJobView {
+	view := &model.ImportJobView{
+		Id:                       job.Id,
+		State:                    job.State,
+		SourceCandidates:         []model.ImportSourceCandidate{},
+		RequiredAcknowledgements: []string{},
+		CreateAt:                 job.CreateAt,
+		UpdateAt:                 job.UpdateAt,
+		FinishedAt:               job.FinishedAt,
+	}
+	if job.ErrorCode != "" {
+		view.Error = &model.ImportPublicError{Code: job.ErrorCode}
+	}
+	return view
 }
 
 // getOwnImportJob loads a job and enforces actor-only visibility.
@@ -431,6 +508,16 @@ func (s *Service) GetImportJobsForActor(actorID, teamID string, page, perPage in
 
 	views := make([]*model.ImportJobView, 0, len(jobs))
 	for _, job := range jobs {
+		// Jobs whose target the actor can no longer reach are omitted entirely rather than downgraded:
+		// a list is a discovery surface, and a placeholder row would still disclose that an import
+		// exists for a Space the caller has lost access to.
+		entitled, appErr := s.actorStillEntitled(job, actorID)
+		if appErr != nil {
+			return nil, false, appErr
+		}
+		if !entitled {
+			continue
+		}
 		// The list view omits source candidates: they are a per-job interactive concern, and querying
 		// them per row would turn one listing into N queries.
 		views = append(views, buildImportJobViewWithoutCandidates(job))
@@ -440,8 +527,18 @@ func (s *Service) GetImportJobsForActor(actorID, teamID string, page, perPage in
 
 // GetImportIssues returns one page of a job's persisted issues, for the actor that owns the job.
 func (s *Service) GetImportIssues(jobID, actorID, stage, severity string, page, perPage int) ([]*model.ImportIssue, bool, *mmmodel.AppError) {
-	if _, appErr := s.getOwnImportJob(jobID, actorID); appErr != nil {
+	job, appErr := s.getOwnImportJob(jobID, actorID)
+	if appErr != nil {
 		return nil, false, appErr
+	}
+	// Issues name pages, titles, and local IDs from the target Space, so losing access to that target
+	// hides them entirely. 404 rather than 403, matching how another user's job reads.
+	entitled, appErr := s.actorStillEntitled(job, actorID)
+	if appErr != nil {
+		return nil, false, appErr
+	}
+	if !entitled {
+		return nil, false, mmmodel.NewAppError("GetImportIssues", "app.store.not_found.app_error", nil, "", http.StatusNotFound)
 	}
 	if appErr := validateIssueFilters(stage, severity); appErr != nil {
 		return nil, false, appErr

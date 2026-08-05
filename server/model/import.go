@@ -294,13 +294,37 @@ const (
 	// ImportMaxMappingsPerSource caps retained mappings per ImportSource so stale anti-joins,
 	// terminal stale rows, and restart work stay bounded.
 	ImportMaxMappingsPerSource = 5000
+
+	// ImportDetailsMaxBytes bounds the serialized Details JSON on a result or issue row, so a single
+	// finding cannot grow a report without limit.
+	ImportDetailsMaxBytes = 4 * 1024
+	// ImportIssueTextMaxBytes bounds a generated message or remediation string.
+	ImportIssueTextMaxBytes = 2 * 1024
 )
+
+// validateImportDetails enforces the serialized-size bound on a result/issue Details map.
+func validateImportDetails(where, field string, details mmmodel.StringInterface) *mmmodel.AppError {
+	if len(details) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(details)
+	if err != nil {
+		return mmmodel.NewAppError(where, "model.import_details.invalid.app_error", map[string]any{"Field": field}, "", http.StatusBadRequest)
+	}
+	if len(raw) > ImportDetailsMaxBytes {
+		return mmmodel.NewAppError(where, "model.import_details.too_large.app_error",
+			map[string]any{"Field": field, "MaxBytes": ImportDetailsMaxBytes}, "", http.StatusBadRequest)
+	}
+	return nil
+}
 
 // importIdentifierPattern is the ASCII contract every non-empty external identifier must match.
 // Confluence page IDs, Atlassian account IDs, organization IDs, and Space keys emitted by the
 // authoritative producer all fit this set, so bounding it keeps index sizing deterministic and
 // rejects incompatible future producer identifiers until the contract is deliberately revised.
-var importIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9._:@-]+$`)
+// '~' is included because Confluence keys personal spaces as "~username"/"~accountid"; omitting it
+// would reject every personal-space bundle outright.
+var importIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9._:@~-]+$`)
 
 // IsValidImportIdentifier reports whether id is a non-empty, contract-conforming identifier no
 // longer than maxBytes. Callers that permit absence check for "" separately.
@@ -1038,7 +1062,18 @@ func (r *ImportIssueRecord) IsValid() *mmmodel.AppError {
 	if r.ExternalId != "" && !IsValidImportIdentifier(r.ExternalId, ImportExternalIDMaxBytes) {
 		return mmmodel.NewAppError(where, "model.import_issue.is_valid.external_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	return nil
+	if r.LocalId != "" && !mmmodel.IsValidId(r.LocalId) {
+		return mmmodel.NewAppError(where, "model.import_issue.is_valid.local_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	if len(r.Message) > ImportIssueTextMaxBytes || len(r.Remediation) > ImportIssueTextMaxBytes {
+		return mmmodel.NewAppError(where, "model.import_issue.is_valid.text_too_long.app_error",
+			map[string]any{"MaxBytes": ImportIssueTextMaxBytes}, "", http.StatusBadRequest)
+	}
+	if utf8.RuneCountInString(r.Title) > PageTitleMaxRunes {
+		return mmmodel.NewAppError(where, "model.import_issue.is_valid.title_too_long.app_error",
+			map[string]any{"MaxLength": PageTitleMaxRunes}, "", http.StatusBadRequest)
+	}
+	return validateImportDetails(where, "issue details", r.Details)
 }
 
 // IsValid checks a result row's stage, action, and outcome enumerations.
@@ -1059,5 +1094,23 @@ func (r *ImportResultRecord) IsValid() *mmmodel.AppError {
 	if !IsValidImportIdentifier(r.ExternalId, ImportExternalIDMaxBytes) {
 		return mmmodel.NewAppError(where, "model.import_result.is_valid.external_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	return nil
+	// A result row is the durable record of what happened to one entity, so an empty outcome would
+	// persist a checkpoint that says nothing — the one thing reports must never contain.
+	if r.Outcome == "" {
+		return mmmodel.NewAppError(where, "model.import_result.is_valid.outcome_required.app_error", nil, "", http.StatusBadRequest)
+	}
+	if r.LocalId != "" && !mmmodel.IsValidId(r.LocalId) {
+		return mmmodel.NewAppError(where, "model.import_result.is_valid.local_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	if utf8.RuneCountInString(r.Title) > PageTitleMaxRunes {
+		return mmmodel.NewAppError(where, "model.import_result.is_valid.title_too_long.app_error",
+			map[string]any{"MaxLength": PageTitleMaxRunes}, "", http.StatusBadRequest)
+	}
+	if r.CreateAt == 0 || r.UpdateAt == 0 {
+		return mmmodel.NewAppError(where, "model.import_result.is_valid.timestamps.app_error", nil, "", http.StatusBadRequest)
+	}
+	if r.EntityType != "" && r.EntityType != ImportEntityTypePage {
+		return mmmodel.NewAppError(where, "model.import_result.is_valid.entity_type.app_error", nil, "", http.StatusBadRequest)
+	}
+	return validateImportDetails(where, "result details", r.Details)
 }
