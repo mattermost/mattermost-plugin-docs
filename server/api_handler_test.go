@@ -853,6 +853,37 @@ func TestHandler_MovePageToSpace(t *testing.T) {
 	require.Equal(t, spaceB.Id, moved.SpaceId)
 }
 
+// TestHandler_MovePageToSpace_OwnPathRejectsUnownedDescendant drives the own-path subtree-ownership
+// rule through the real HTTP route. The default harness grants delete_own_page but not delete_page,
+// so the caller is admitted by the own permission, and the move must then require ownership of every
+// live page in the moved subtree rather than of the reparented root alone. A descendant owned by
+// another user rejects the move.
+//
+// The route is exercised end to end instead of calling MovePageToSpace with a hand-supplied owner
+// id, so the own-versus-any resolution is itself under test: an admission reported as the any-page
+// path carries no owner requirement into the store, and this move would then succeed.
+func TestHandler_MovePageToSpace_OwnPathRejectsUnownedDescendant(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	user := mmmodel.NewId()
+	other := mmmodel.NewId()
+	channelA := mmmodel.NewId()
+	spaceA := seedSpace(t, h.store, h.db, channelA)
+	root := testutil.MustCreatePage(t, h.store, spaceA.Id, channelA, user, "")
+	testutil.MustCreatePage(t, h.store, spaceA.Id, channelA, other, root.Id)
+
+	spaceB, err := h.store.CreateSpace(&model.Space{ChannelId: mmmodel.NewId(), TeamId: spaceA.TeamId, CreatorId: user, Title: "B", ViewAccess: model.ViewAccessOpen})
+	require.NoError(t, err)
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+root.Id+"/move-to-space", user, map[string]any{
+		"target_space_id":    spaceB.Id,
+		"expected_update_at": root.UpdateAt,
+	})
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	var appErr mmmodel.AppError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+	require.Equal(t, "app.page.move_to_space.subtree_not_owned.app_error", appErr.Id)
+}
+
 // TestHandler_MovePageToSpace_MissingTargetSpaceId verifies that omitting target_space_id returns
 // the handler-specific 400 before any app-layer call is made.
 func TestHandler_MovePageToSpace_MissingTargetSpaceId(t *testing.T) {

@@ -26,7 +26,7 @@ func (s *Service) requireClient(where string, kv ...any) *mmmodel.AppError {
 	if s.client != nil {
 		return nil
 	}
-	s.log.Warn("pluginapi client not wired; denying access", append([]any{"operation", where}, kv...)...)
+	s.log.Error("pluginapi client not wired; denying access", append([]any{"operation", where}, kv...)...)
 	return mmmodel.NewAppError(where, "app.space.client_not_wired.app_error", nil, "", http.StatusInternalServerError)
 }
 
@@ -63,11 +63,10 @@ func (s *Service) isActiveTeamMember(teamID, userID string) (bool, error) {
 // teamPermGranted reports whether userID holds perm on teamID, answering from member's roles when
 // that already settles it. member is a membership the caller has resolved, or nil.
 //
-// Core's HasPermissionToTeam re-reads the team row from the master DB on every call, so a caller
-// holding the membership would pay for the same row twice. Resolving the roles in memory answers
-// the granting case without that read. A negative is not conclusive — core also honours a
-// system-role grant the team roles cannot express — so it defers to core rather than denying,
-// which keeps the outcome identical to calling HasPermissionToTeam directly.
+// The roles on an already-resolved membership answer the granting case directly. A negative is not
+// conclusive — core also honours a system-role grant the team roles cannot express — so it defers
+// to core rather than denying, which keeps the outcome identical to calling HasPermissionToTeam
+// directly.
 func (s *Service) teamPermGranted(member *mmmodel.TeamMember, userID, teamID string, perm *mmmodel.Permission) bool {
 	if member != nil && s.client.User.RolesGrantPermission(member.GetRoles(), perm.Id) {
 		return true
@@ -98,45 +97,13 @@ func (s *Service) forEachChannelMember(channelID string, visit func(cm *mmmodel.
 	}
 }
 
-// hasOtherAuthorizedMemberMatching reports whether space has at least one backing-channel member
-// other than excludeUserID that satisfies matches and can still reach the space — one who is also
-// an active member of the space's team. Former team members keep their channel-member rows after
-// leaving the team, so counting raw rows would let the last reachable member be removed and leave
-// the space stranded behind members who all fail the team half of the access gate. Iteration stops
-// at the first match. The no-team branch below is unreachable through CreateSpace, which requires
-// a team id.
-func (s *Service) hasOtherAuthorizedMemberMatching(space *model.Space, excludeUserID string, matches func(cm *mmmodel.ChannelMember) bool) (bool, error) {
-	found := false
-	err := s.forEachChannelMember(space.ChannelId, func(cm *mmmodel.ChannelMember) (bool, error) {
-		if cm.UserId == excludeUserID || !matches(cm) {
-			return false, nil
-		}
-		if space.TeamId == "" {
-			found = true
-			return true, nil
-		}
-		active, activeErr := s.isActiveTeamMember(space.TeamId, cm.UserId)
-		if activeErr != nil {
-			return false, activeErr
-		}
-		if active {
-			found = true
-			return true, nil
-		}
-		return false, nil
-	})
-	if err != nil {
-		return false, err
-	}
-	return found, nil
-}
-
-// otherAuthorizedMembers answers both reachability questions the removal guards ask — is there
-// another member who can still reach the space, and is one of them an admin — in a single walk.
-// The admin set is a subset of the reachable set, so a caller needing both would otherwise pay two
-// full walks, each with its own per-member team lookup, while holding the space membership lock.
-// Iteration stops once both answers are known, and a row that cannot change either answer is
-// skipped before its team lookup.
+// otherAuthorizedMembers answers both reachability questions the membership guards ask — is there
+// another member who can still reach the space, and is one of them an admin — in a single walk,
+// disregarding excludeUserID (the member being demoted or removed). Former team members keep their
+// channel-member rows after leaving the team, so counting raw rows would let the last reachable
+// member be removed and leave the space stranded behind members who all fail the team half of the
+// access gate. Iteration stops once both answers are known, and a row that cannot change either
+// answer is skipped before its team lookup.
 func (s *Service) otherAuthorizedMembers(space *model.Space, excludeUserID string) (anyMember, anyAdmin bool, err error) {
 	err = s.forEachChannelMember(space.ChannelId, func(cm *mmmodel.ChannelMember) (bool, error) {
 		if cm.UserId == excludeUserID {
@@ -146,15 +113,11 @@ func (s *Service) otherAuthorizedMembers(space *model.Space, excludeUserID strin
 		if anyMember && !cm.SchemeAdmin {
 			return false, nil
 		}
-		reachable := space.TeamId == ""
-		if !reachable {
-			active, activeErr := s.isActiveTeamMember(space.TeamId, cm.UserId)
-			if activeErr != nil {
-				return false, activeErr
-			}
-			reachable = active
+		active, activeErr := s.isActiveTeamMember(space.TeamId, cm.UserId)
+		if activeErr != nil {
+			return false, activeErr
 		}
-		if !reachable {
+		if !active {
 			return false, nil
 		}
 		anyMember = true

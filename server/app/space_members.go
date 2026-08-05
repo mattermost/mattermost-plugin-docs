@@ -86,14 +86,12 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 	// it as an opaque failure; checking here keeps the status code honest and guarantees every
 	// space member can pass the team half of the access gate — which the last-authorized-member
 	// guard in RemoveSpaceMember relies on when deciding who can still reach the space.
-	if space.TeamId != "" {
-		active, memberErr := s.isActiveTeamMember(space.TeamId, userID)
-		if memberErr != nil {
-			return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.member.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memberErr)
-		}
-		if !active {
-			return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.member.not_team_member.app_error", nil, "", http.StatusForbidden)
-		}
+	active, memberErr := s.isActiveTeamMember(space.TeamId, userID)
+	if memberErr != nil {
+		return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.member.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memberErr)
+	}
+	if !active {
+		return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.member.not_team_member.app_error", nil, "", http.StatusForbidden)
 	}
 	defaultCapabilities, err := s.spaceDefaultCapabilities(space)
 	if err != nil {
@@ -115,21 +113,12 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 	return toSpaceMember(member, defaultCapabilities), nil
 }
 
-// hasOtherAuthorizedAdmin reports whether space's backing channel still has a SchemeAdmin member
-// who can reach the space once excludeUserID is disregarded. excludeUserID, when non-empty, is
-// skipped, so the answer describes what would remain after that user is demoted or removed. A
-// caller that also needs the any-member answer should use otherAuthorizedMembers, which resolves
-// both in one walk.
-func (s *Service) hasOtherAuthorizedAdmin(space *model.Space, excludeUserID string) (bool, error) {
-	return s.hasOtherAuthorizedMemberMatching(space, excludeUserID, func(cm *mmmodel.ChannelMember) bool { return cm.SchemeAdmin })
-}
-
 // requireNotLastAdmin rejects an operation that would leave space without an admin who can still
 // reach it, disregarding excludeUserID (the member being demoted or removed). Callers run it inside
 // the space-keyed membership lock, alongside the mutation it guards. where attributes both the
 // lookup failure and the rejection to the calling operation.
 func (s *Service) requireNotLastAdmin(where string, space *model.Space, excludeUserID string) *mmmodel.AppError {
-	otherAdmin, err := s.hasOtherAuthorizedAdmin(space, excludeUserID)
+	_, otherAdmin, err := s.otherAuthorizedMembers(space, excludeUserID)
 	if err != nil {
 		return mmmodel.NewAppError(where, "app.space.member.admin_count_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}

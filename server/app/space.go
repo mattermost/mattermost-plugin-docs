@@ -483,9 +483,7 @@ func (s *Service) GetSpacesForTeam(teamID, userID string, page, perPage int) ([]
 	if appErr := s.requireClient("GetSpacesForTeam", "team_id", teamID, "user_id", userID); appErr != nil {
 		return nil, false, appErr
 	}
-	// One team-row read answers all three questions below. Core resolves HasPermissionToTeam by
-	// re-reading the team membership from the master DB on every call, so asking it twice more here
-	// would cost this listing three master reads of the same row per page.
+	// The membership resolved here answers all three questions below.
 	member, memberErr := s.activeTeamMember(teamID, userID)
 	if memberErr != nil {
 		return nil, false, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memberErr)

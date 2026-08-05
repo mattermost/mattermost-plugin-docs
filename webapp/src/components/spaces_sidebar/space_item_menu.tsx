@@ -36,7 +36,9 @@ const SpaceItemMenu = ({space}: Props) => {
         // preferences (spec §4, Phase B).
         // {
         //     id: 'favorite',
-        //     label: <FormattedMessage id='docs.sidebar.space.favorite' defaultMessage='Add to favorites'/>,
+        //     label: isFavorite ?
+        //         <FormattedMessage id='docs.sidebar.space.unfavorite' defaultMessage='Remove from favorites'/> :
+        //         <FormattedMessage id='docs.sidebar.space.favorite' defaultMessage='Add to favorites'/>,
         //     leadingIcon: <StarOutlineIcon size={18}/>,
         //     onClick: () => onToggleFavorite(space.id),
         // },
