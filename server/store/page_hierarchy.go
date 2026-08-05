@@ -14,6 +14,12 @@ const MaxPageHierarchyDepth = 50
 // MaxPageDescendantsLimit is the maximum number of descendants returned by a subtree fetch.
 const MaxPageDescendantsLimit = 5000
 
+// MaxPageDescendantsTotalBytes caps the combined Body+SearchText size of a subtree fetch,
+// independent of row count, so a subtree of large pages still stays within a bounded memory
+// footprint. Sized generously above typical subtree sizes but well below a dangerous
+// multi-gigabyte allocation.
+const MaxPageDescendantsTotalBytes = 256 * 1024 * 1024
+
 // MaxPageSiblingsLimit caps a single parent's direct live children so any reposition
 // operation (which renumbers the whole group atomically) stays bounded.
 // Matches MaxPageDescendantsLimit so a full-fan-out subtree still fits the descendant cap.

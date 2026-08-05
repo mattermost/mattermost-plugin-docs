@@ -4,6 +4,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 
@@ -661,10 +662,12 @@ func (s *Store) GetPageChildren(pageID, spaceID string, offset, limit int) ([]*m
 
 // fetchDescendantRows runs the descendants CTE and its cap checks against e (a db handle or
 // transaction). Returns ErrLimitExceeded rather than silently truncating when the subtree
-// exceeds MaxPageDescendantsLimit (too many rows) or extends more than MaxPageHierarchyDepth
+// exceeds MaxPageDescendantsLimit (too many rows), extends more than MaxPageHierarchyDepth
 // levels below the requested page (too deep — depth counts edges below the page, so a direct
 // child is depth 1; the CTE recurses one level past the cap so an over-deep subtree surfaces a
-// depth > MaxPageHierarchyDepth row, not a drop).
+// depth > MaxPageHierarchyDepth row, not a drop), or its combined Body+SearchText size exceeds
+// MaxPageDescendantsTotalBytes. Rows are scanned one at a time rather than bulk-loaded so the
+// byte budget check can abort before the full result set is materialized in memory.
 func (s *Store) fetchDescendantRows(e sqlx.ExtContext, pageID string) ([]*model.Page, error) {
 	if pageID == "" {
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "pageID", Value: pageID}
@@ -672,25 +675,49 @@ func (s *Store) fetchDescendantRows(e sqlx.ExtContext, pageID string) ([]*model.
 
 	query := pageDescendantsCTE +
 		fmt.Sprintf(" LIMIT %d", MaxPageDescendantsLimit+1)
+	query = e.Rebind(query)
 
-	var rows []struct {
-		model.Page
-		Depth int `db:"depth"`
-	}
-	if err := s.selectAll(e, &rows, query, pageID); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	defer cancel()
+
+	sqlRows, err := e.QueryxContext(ctx, query, pageID)
+	if err != nil {
 		return nil, errors.Wrapf(err, "failed to find descendants for page_id=%s", pageID)
 	}
-	if len(rows) > MaxPageDescendantsLimit {
-		return nil, &ErrLimitExceeded{Resource: "Page descendants for page_id=" + pageID, Limit: MaxPageDescendantsLimit}
-	}
+	defer sqlRows.Close()
 
-	pages := make([]*model.Page, len(rows))
-	for i := range rows {
-		if rows[i].Depth > MaxPageHierarchyDepth {
+	var pages []*model.Page
+	var totalBytes int
+	for sqlRows.Next() {
+		var row struct {
+			model.Page
+			Depth int `db:"depth"`
+		}
+		if err := sqlRows.StructScan(&row); err != nil {
+			return nil, errors.Wrapf(err, "failed to scan descendant for page_id=%s", pageID)
+		}
+
+		if len(pages) >= MaxPageDescendantsLimit {
+			return nil, &ErrLimitExceeded{Resource: "Page descendants for page_id=" + pageID, Limit: MaxPageDescendantsLimit}
+		}
+		if row.Depth > MaxPageHierarchyDepth {
 			return nil, &ErrLimitExceeded{Resource: "Page descendants for page_id=" + pageID + " (depth)", Limit: MaxPageHierarchyDepth}
 		}
-		page := rows[i].Page
-		pages[i] = &page
+
+		totalBytes += len(row.Page.Body) + len(row.Page.SearchText)
+		if totalBytes > MaxPageDescendantsTotalBytes {
+			return nil, &ErrLimitExceeded{
+				Resource: "Page descendants for page_id=" + pageID + " (bytes)",
+				Limit:    MaxPageDescendantsTotalBytes,
+				Reason:   ReasonSubtreeTotalBytesExceeded,
+			}
+		}
+
+		page := row.Page
+		pages = append(pages, &page)
+	}
+	if err := sqlRows.Err(); err != nil {
+		return nil, errors.Wrapf(err, "failed to find descendants for page_id=%s", pageID)
 	}
 
 	return pages, nil
