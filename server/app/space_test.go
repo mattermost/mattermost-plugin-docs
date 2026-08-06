@@ -585,15 +585,18 @@ func TestServiceCreateSpace_AddMemberFailedCompensates(t *testing.T) {
 	require.Empty(t, spaces)
 }
 
-// stubCustomSchemeCreate wires the mock calls a non-preset default-capability set needs: a
-// CreateScheme returning a scheme with three generated roles, those roles registered so a channel
-// repointed at the scheme resolves them, and a PatchRole that applies the plugin's writes. Returns
-// the new scheme's id.
-func stubCustomSchemeCreate(t *testing.T, mockAPI *plugintest.API) string {
+// stubSchemeCreate wires the mock calls a non-preset default-capability set needs: a CreateScheme
+// returning a scheme with three roles named off rolePrefix, those roles registered so a channel
+// repointed at the scheme resolves them, and a PatchRole. When patchErr is non-nil every role
+// patch fails with it, so the configure step a freshly created scheme needs cannot complete.
+// Returns the new scheme's id.
+func stubSchemeCreate(t *testing.T, mockAPI *plugintest.API, rolePrefix string, patchErr *mmmodel.AppError) string {
 	t.Helper()
 	testutil.StubPooledSchemeMiss(mockAPI)
 	schemeID := mmmodel.NewId()
-	userRole, adminRole, guestRole := "custom_user_role", "custom_admin_role", "custom_guest_role"
+	userRole := rolePrefix + "_user_role"
+	adminRole := rolePrefix + "_admin_role"
+	guestRole := rolePrefix + "_guest_role"
 	mockAPI.On("CreateScheme", mock.AnythingOfType("*model.Scheme")).Return(&mmmodel.Scheme{
 		Id:                      schemeID,
 		Name:                    model.SharedSchemeNamePrefix + mmmodel.NewId(),
@@ -606,7 +609,12 @@ func stubCustomSchemeCreate(t *testing.T, mockAPI *plugintest.API) string {
 	testutil.StubRole(mockAPI, userRole, nil)
 	testutil.StubRole(mockAPI, adminRole, nil)
 	testutil.StubRole(mockAPI, guestRole, nil)
-	testutil.StubPatchRole(mockAPI)
+	if patchErr != nil {
+		mockAPI.On("PatchRole", mock.AnythingOfType("string"), mock.AnythingOfType("*model.RolePatch")).
+			Return(nil, patchErr)
+	} else {
+		testutil.StubPatchRole(mockAPI)
+	}
 	return schemeID
 }
 
@@ -624,7 +632,7 @@ func TestServiceCreateSpace_PooledSchemeSurvivesAbandon(t *testing.T) {
 	backingChannelID := mmmodel.NewId()
 
 	channel := testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
-	pooledSchemeID := stubCustomSchemeCreate(t, mockAPI)
+	pooledSchemeID := stubSchemeCreate(t, mockAPI, "custom", nil)
 	// CreateChannel attaches the pooled scheme, which is what lets core admit the role writes.
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Run(func(args mock.Arguments) {
@@ -645,7 +653,8 @@ func TestServiceCreateSpace_PooledSchemeSurvivesAbandon(t *testing.T) {
 
 	mockAPI.AssertCalled(t, "DeleteChannel", backingChannelID)
 	mockAPI.AssertNotCalled(t, "DeleteScheme", mock.Anything)
-	require.NotEmpty(t, pooledSchemeID)
+	require.NotNil(t, channel.SchemeId, "the doomed channel must have carried the pooled scheme")
+	require.Equal(t, pooledSchemeID, *channel.SchemeId)
 }
 
 // TestServiceCreateSpace_PresetSchemeSurvivesAbandon is the negative half of the case above: a
@@ -703,7 +712,7 @@ func TestServiceCreateSpace_CustomSchemeConfiguredAfterChannelAttach(t *testing.
 		}).
 		Return(&mmmodel.Role{}, nil)
 
-	customSchemeID := stubCustomSchemeCreate(t, mockAPI)
+	customSchemeID := stubSchemeCreate(t, mockAPI, "custom", nil)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Run(func(args mock.Arguments) {
 			created, ok := args.Get(0).(*mmmodel.Channel)
@@ -728,31 +737,6 @@ func TestServiceCreateSpace_CustomSchemeConfiguredAfterChannelAttach(t *testing.
 	require.ElementsMatch(t, mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions), patched["custom_admin_role"])
 }
 
-// stubCustomSchemeCreateFailingPatch is stubCustomSchemeCreate with a PatchRole that always fails,
-// so the configure step a freshly created custom scheme needs cannot complete. Returns the new
-// scheme's id.
-func stubCustomSchemeCreateFailingPatch(t *testing.T, mockAPI *plugintest.API) string {
-	t.Helper()
-	testutil.StubPooledSchemeMiss(mockAPI)
-	schemeID := mmmodel.NewId()
-	userRole, adminRole, guestRole := "unconfigurable_user_role", "unconfigurable_admin_role", "unconfigurable_guest_role"
-	mockAPI.On("CreateScheme", mock.AnythingOfType("*model.Scheme")).Return(&mmmodel.Scheme{
-		Id:                      schemeID,
-		Name:                    model.SharedSchemeNamePrefix + mmmodel.NewId(),
-		Scope:                   mmmodel.SchemeScopeChannel,
-		DefaultChannelUserRole:  userRole,
-		DefaultChannelAdminRole: adminRole,
-		DefaultChannelGuestRole: guestRole,
-	}, nil)
-	testutil.RegisterSchemeRoles(schemeID, guestRole, userRole, adminRole)
-	testutil.StubRole(mockAPI, userRole, nil)
-	testutil.StubRole(mockAPI, adminRole, nil)
-	testutil.StubRole(mockAPI, guestRole, nil)
-	mockAPI.On("PatchRole", mock.AnythingOfType("string"), mock.AnythingOfType("*model.RolePatch")).
-		Return(nil, &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
-	return schemeID
-}
-
 // TestServiceCreateSpace_PooledSchemeConfigureFailureAbandons covers the CreateSpace branch that
 // runs when the role writes fail after the backing channel already carries the pooled scheme: the
 // create fails and the channel is archived, while the pooled scheme stays — it is shared, so a
@@ -767,7 +751,7 @@ func TestServiceCreateSpace_PooledSchemeConfigureFailureAbandons(t *testing.T) {
 	backingChannelID := mmmodel.NewId()
 
 	channel := testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
-	customSchemeID := stubCustomSchemeCreateFailingPatch(t, mockAPI)
+	customSchemeID := stubSchemeCreate(t, mockAPI, "unconfigurable", &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Run(func(args mock.Arguments) {
 			created, ok := args.Get(0).(*mmmodel.Channel)
@@ -803,7 +787,7 @@ func TestServiceSetSpaceDefaultCapabilities_ConfigureFailureRollsBack(t *testing
 
 	channelID := mmmodel.NewId()
 	channel := testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
-	pooledSchemeID := stubCustomSchemeCreateFailingPatch(t, mockAPI)
+	pooledSchemeID := stubSchemeCreate(t, mockAPI, "unconfigurable", &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
 
 	space := mustCreateSpace(t, h.store, h.db, channelID)
 	_, appErr := h.svc.SetSpaceDefaultCapabilities(space, []string{"create_page"}, mmmodel.NewId())

@@ -13,6 +13,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -139,7 +140,7 @@ func startEnv() (*testEnv, error) {
 }
 
 // waitForPhase2Migration polls a Phase2-migration-gated endpoint until it stops reporting
-// "not completed", or the deadline passes.
+// "not completed", the deadline passes, or it fails for any other reason.
 func waitForPhase2Migration(ctx context.Context, adminClient *mmmodel.Client4) error {
 	deadline := time.Now().Add(2 * time.Minute)
 	var lastErr error
@@ -147,6 +148,13 @@ func waitForPhase2Migration(ctx context.Context, adminClient *mmmodel.Client4) e
 		_, _, err := adminClient.GetSchemes(ctx, "", 0, 1)
 		if err == nil {
 			return nil
+		}
+		// Only the pending migration is worth waiting out. A bad token, a 500 or a dropped
+		// connection will not resolve on its own, so it is surfaced now rather than after two
+		// minutes of polling that would report it as a migration that never finished.
+		var appErr *mmmodel.AppError
+		if !errors.As(err, &appErr) || !strings.Contains(appErr.Id, "is_phase_2_migration_completed") {
+			return fmt.Errorf("polling for the advanced-permissions phase-2 migration failed: %w", err)
 		}
 		lastErr = err
 		select {

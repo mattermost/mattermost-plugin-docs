@@ -146,15 +146,15 @@ func (h *apiTestHarness) do(t *testing.T, method, path, userID string, body any)
 	return rec
 }
 
-func seedSpace(t *testing.T, s *store.Store, db *sql.DB, channelID string) *model.Space {
+func seedSpace(t *testing.T, s *store.Store, channelID string) *model.Space {
 	t.Helper()
-	return seedSpaceInTeam(t, s, db, channelID, mmmodel.NewId())
+	return seedSpaceInTeam(t, s, channelID, mmmodel.NewId())
 }
 
 // seedSpaceInTeam creates a space via the store directly. Its channel resolves to the contribute
 // preset through the generic catch-all (testutil.StubDefaultChannelScheme, wired in
 // openTestPlugin), so no per-channel scheme stub is registered here.
-func seedSpaceInTeam(t *testing.T, s *store.Store, db *sql.DB, channelID, teamID string) *model.Space {
+func seedSpaceInTeam(t *testing.T, s *store.Store, channelID, teamID string) *model.Space {
 	t.Helper()
 	return testutil.MustCreateSpace(t, s, channelID, teamID)
 }
@@ -264,7 +264,7 @@ func TestHandler_SpaceAndPageRoundTrip(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	t.Run("get space", func(t *testing.T) {
 		rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id, user, nil)
@@ -294,7 +294,7 @@ func TestHandler_SpaceAndPageRoundTrip(t *testing.T) {
 
 	t.Run("get page in wrong space is 404", func(t *testing.T) {
 		page := seedPage(t, h.store, space.Id, channelID, "")
-		otherSpace := seedSpace(t, h.store, h.db, mmmodel.NewId())
+		otherSpace := seedSpace(t, h.store, mmmodel.NewId())
 		rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+otherSpace.Id+"/pages/"+page.Id, user, nil)
 		require.Equal(t, http.StatusNotFound, rec.Code)
 	})
@@ -330,7 +330,7 @@ func TestHandler_UpdateSpace(t *testing.T) {
 	adminID := mmmodel.NewId()
 	grantSpaceManage(mockAPI, adminID)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	space := seedSpace(t, h.store, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, adminID, map[string]any{
 		"title":              "Renamed",
@@ -355,7 +355,7 @@ func TestHandler_UpdateSpace(t *testing.T) {
 // (no manage_space/admin_space grant) cannot update a space's mutable fields.
 func TestHandler_UpdateSpace_NonManageMemberForbidden(t *testing.T) {
 	h := openTestPlugin(t, nil)
-	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	space := seedSpace(t, h.store, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, mmmodel.NewId(), map[string]any{
 		"title":              "Renamed",
@@ -372,7 +372,7 @@ func TestHandler_DeleteSpace(t *testing.T) {
 	user := mmmodel.NewId()
 	grantSpaceDelete(mockAPI, user)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	space := seedSpace(t, h.store, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id, user, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -388,7 +388,7 @@ func TestHandler_RestoreSpace(t *testing.T) {
 	user := mmmodel.NewId()
 	grantSpaceDelete(mockAPI, user)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	space := seedSpace(t, h.store, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id, user, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -413,7 +413,7 @@ func TestHandler_RestoreSpace(t *testing.T) {
 func TestHandler_GetSpacePages(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	seedPage(t, h.store, space.Id, channelID, "")
 	seedPage(t, h.store, space.Id, channelID, "")
 
@@ -433,7 +433,7 @@ func TestHandler_PageCollectionsReturnMetadataOnly(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	userID := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	parentInput := testutil.NewPage(space.Id, channelID, userID, "")
 	parentInput.Title = "Parent"
@@ -506,7 +506,7 @@ func TestHandler_GetSpaceMembers(t *testing.T) {
 		Return(mmmodel.ChannelMembers{{ChannelId: channelID, UserId: memberUserID}}, nil)
 	h := openTestPlugin(t, mockAPI)
 
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/members", adminID, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -541,7 +541,7 @@ func TestHandler_GetSpaceMembers_HasMore(t *testing.T) {
 		Return(mmmodel.ChannelMembers{{ChannelId: channelID, UserId: secondMember}}, nil)
 	h := openTestPlugin(t, mockAPI)
 
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/members?per_page=1", adminID, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -570,7 +570,7 @@ func TestHandler_AddSpaceMember(t *testing.T) {
 		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: targetUserID}, nil)
 	h := openTestPlugin(t, mockAPI)
 
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/members", adminID, map[string]any{
 		"user_id": targetUserID,
@@ -590,7 +590,7 @@ func TestHandler_AddSpaceMember_NonManageMemberForbidden(t *testing.T) {
 	targetUserID := mmmodel.NewId()
 
 	h := openTestPlugin(t, nil)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/members", mmmodel.NewId(), map[string]any{
 		"user_id": targetUserID,
@@ -619,7 +619,7 @@ func TestHandler_RemoveSpaceMember(t *testing.T) {
 	mockAPI.On("DeleteChannelMember", channelID, targetUserID).Return(nil)
 	h := openTestPlugin(t, mockAPI)
 
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID, adminID, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -633,7 +633,7 @@ func TestHandler_RemoveSpaceMember_NonManageMemberForbidden(t *testing.T) {
 	targetUserID := mmmodel.NewId()
 
 	h := openTestPlugin(t, nil)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID, mmmodel.NewId(), nil)
 	require.Equal(t, http.StatusForbidden, rec.Code)
@@ -655,7 +655,7 @@ func TestHandler_RemoveSpaceMember_Self(t *testing.T) {
 	mockAPI.On("DeleteChannelMember", channelID, selfID).Return(nil)
 	h := openTestPlugin(t, mockAPI)
 
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/members/"+selfID, selfID, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -672,7 +672,7 @@ func TestHandler_GetTeamSpaces(t *testing.T) {
 	mockAPI.On("GetTeamMember", teamID, caller).Return(&mmmodel.TeamMember{}, nil)
 	h := openTestPlugin(t, mockAPI)
 
-	seedSpaceInTeam(t, h.store, h.db, channelID, teamID)
+	seedSpaceInTeam(t, h.store, channelID, teamID)
 	testutil.MustAddChannelMember(t, h.db, channelID, caller)
 
 	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
@@ -687,7 +687,7 @@ func TestHandler_UpdatePage(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	// SearchText is derived from the body server-side, so only the body is supplied; a
@@ -728,7 +728,7 @@ func TestHandler_UpdatePage_BaselineRequired(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, map[string]any{
@@ -755,7 +755,7 @@ func TestHandler_UpdatePage_Props(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	body := map[string]any{
@@ -775,7 +775,7 @@ func TestHandler_RestorePage(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	// Owned by the acting user: a contribute-default member holds only delete_own_page, not
 	// delete_page (any).
 	page := testutil.MustCreatePage(t, h.store, space.Id, channelID, user, "")
@@ -799,7 +799,7 @@ func TestHandler_GetPageChildren(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	parent := seedPage(t, h.store, space.Id, channelID, "")
 	childA := seedPage(t, h.store, space.Id, channelID, parent.Id)
 	childB := seedPage(t, h.store, space.Id, channelID, parent.Id)
@@ -821,8 +821,8 @@ func TestHandler_GetPageChildren_WrongSpaceIs404(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
-	otherSpace := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	space := seedSpace(t, h.store, channelID)
+	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
 	parent := seedPage(t, h.store, space.Id, channelID, "")
 	seedPage(t, h.store, space.Id, channelID, parent.Id)
 
@@ -835,7 +835,7 @@ func TestHandler_MovePageToSpace(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, h.db, channelA)
+	spaceA := seedSpace(t, h.store, channelA)
 	// Owned by the acting user: move-to-space's source-side own-path requires ownership of the
 	// entire moved subtree, and a contribute-default member holds only delete_own_page.
 	page := testutil.MustCreatePage(t, h.store, spaceA.Id, channelA, user, "")
@@ -867,7 +867,7 @@ func TestHandler_MovePageToSpace_OwnPathRejectsUnownedDescendant(t *testing.T) {
 	user := mmmodel.NewId()
 	other := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, h.db, channelA)
+	spaceA := seedSpace(t, h.store, channelA)
 	root := testutil.MustCreatePage(t, h.store, spaceA.Id, channelA, user, "")
 	testutil.MustCreatePage(t, h.store, spaceA.Id, channelA, other, root.Id)
 
@@ -890,7 +890,7 @@ func TestHandler_MovePageToSpace_MissingTargetSpaceId(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, h.db, channelA)
+	spaceA := seedSpace(t, h.store, channelA)
 	page := seedPage(t, h.store, spaceA.Id, channelA, "")
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/move-to-space", user, map[string]any{
@@ -908,7 +908,7 @@ func TestHandler_MovePageToSpace_InvalidTargetSpaceId(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, h.db, channelA)
+	spaceA := seedSpace(t, h.store, channelA)
 	page := seedPage(t, h.store, spaceA.Id, channelA, "")
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/move-to-space", user, map[string]any{
@@ -927,11 +927,11 @@ func TestHandler_MovePageToSpace_CrossTeamRejected(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, h.db, channelA)
+	spaceA := seedSpace(t, h.store, channelA)
 	page := seedPage(t, h.store, spaceA.Id, channelA, "")
 
 	// A second space in a different team (seedSpace randomizes the team id per call).
-	spaceB := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	spaceB := seedSpace(t, h.store, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/move-to-space", user, map[string]any{
 		"target_space_id":    spaceB.Id,
@@ -950,7 +950,7 @@ func TestHandler_MovePageToSpace_DepthExceeded(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, h.db, channelA)
+	spaceA := seedSpace(t, h.store, channelA)
 	// Owned by the acting user: move-to-space's source-side own-path requires ownership of the
 	// entire moved subtree, and a contribute-default member holds only delete_own_page.
 	page := testutil.MustCreatePage(t, h.store, spaceA.Id, channelA, user, "")
@@ -982,7 +982,7 @@ func TestHandler_MovePageToSpace_RejectsCycle(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, h.db, channelA)
+	spaceA := seedSpace(t, h.store, channelA)
 	// Owned by the acting user: a contribute-default member holds only delete_own_page, so the
 	// same-space move requires ownership of the reparented page before the cycle check is reached.
 	root := testutil.MustCreatePage(t, h.store, spaceA.Id, channelA, user, "")
@@ -1005,7 +1005,7 @@ func TestHandler_MovePageToSpace_ParentInWrongSpace(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, h.db, channelA)
+	spaceA := seedSpace(t, h.store, channelA)
 	page := seedPage(t, h.store, spaceA.Id, channelA, "")
 	parentInA := seedPage(t, h.store, spaceA.Id, channelA, "")
 
@@ -1029,7 +1029,7 @@ func TestHandler_MovePage_MaxDepthExceeded(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	parentID := ""
 	for range model.MaxPageDepth {
@@ -1054,7 +1054,7 @@ func TestHandler_MovePage_CircularReference(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	t.Run("self as parent", func(t *testing.T) {
 		page := seedPage(t, h.store, space.Id, channelID, "")
@@ -1089,11 +1089,11 @@ func TestHandler_MovePage_ParentInDifferentSpace(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, h.db, channelA)
+	spaceA := seedSpace(t, h.store, channelA)
 	page := seedPage(t, h.store, spaceA.Id, channelA, "")
 
 	channelB := mmmodel.NewId()
-	spaceB := seedSpace(t, h.store, h.db, channelB)
+	spaceB := seedSpace(t, h.store, channelB)
 	parentInB := seedPage(t, h.store, spaceB.Id, channelB, "")
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/move", user, map[string]any{
@@ -1111,7 +1111,7 @@ func TestHandler_DuplicatePage(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id+"/duplicate", user, nil)
@@ -1126,7 +1126,7 @@ func TestHandler_DuplicatePage_WithChildren(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	parent := seedPage(t, h.store, space.Id, channelID, "")
 	seedPage(t, h.store, space.Id, channelID, parent.Id)
 
@@ -1144,7 +1144,7 @@ func TestHandler_DuplicatePage_CrossSpace(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, h.db, channelA)
+	spaceA := seedSpace(t, h.store, channelA)
 	page := seedPage(t, h.store, spaceA.Id, channelA, "")
 
 	spaceB, err := h.store.CreateSpace(&model.Space{ChannelId: mmmodel.NewId(), TeamId: spaceA.TeamId, CreatorId: user, Title: "B", ViewAccess: model.ViewAccessOpen})
@@ -1165,7 +1165,7 @@ func TestHandler_DuplicatePage_InvalidTargetSpaceId(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, h.db, channelA)
+	spaceA := seedSpace(t, h.store, channelA)
 	page := seedPage(t, h.store, spaceA.Id, channelA, "")
 
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/duplicate", user, map[string]any{
@@ -1182,7 +1182,7 @@ func TestHandler_DuplicatePage_WithParent(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	parent := seedPage(t, h.store, space.Id, channelID, "")
 	page := seedPage(t, h.store, space.Id, channelID, "")
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id+"/duplicate", user, map[string]any{
@@ -1199,9 +1199,9 @@ func TestHandler_DuplicatePage_WrongSpaceIs404(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
-	otherSpace := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+otherSpace.Id+"/pages/"+page.Id+"/duplicate", user, nil)
 	require.Equal(t, http.StatusNotFound, rec.Code)
@@ -1212,9 +1212,9 @@ func TestHandler_UpdatePage_WrongSpaceIs404(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
-	otherSpace := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+otherSpace.Id+"/pages/"+page.Id, user, map[string]any{
 		"title":        "New Title",
@@ -1228,9 +1228,9 @@ func TestHandler_DeletePage_WrongSpaceIs404(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
-	otherSpace := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+otherSpace.Id+"/pages/"+page.Id, user, nil)
 	require.Equal(t, http.StatusNotFound, rec.Code)
@@ -1241,9 +1241,9 @@ func TestHandler_RestorePage_WrongSpaceIs404(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
-	otherSpace := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	otherSpace := seedSpace(t, h.store, mmmodel.NewId())
 
 	// Soft-delete the page so restore has something to act on.
 	_, delErr := h.store.DeletePage(page.Id, space.Id, user)
@@ -1326,7 +1326,7 @@ func TestHandler_TeamSpacesPrivacy(t *testing.T) {
 	teamID := mmmodel.NewId()
 	visibleChannelID := mmmodel.NewId()
 	hiddenChannelID := mmmodel.NewId()
-	visible := seedSpaceInTeam(t, h.store, h.db, visibleChannelID, teamID)
+	visible := seedSpaceInTeam(t, h.store, visibleChannelID, teamID)
 	_, err := h.store.CreateSpace(&model.Space{ChannelId: hiddenChannelID, TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "Hidden", ViewAccess: model.ViewAccessPrivate})
 	require.NoError(t, err)
 	caller := mmmodel.NewId()
@@ -1357,7 +1357,7 @@ func TestHandler_TeamSpacesHiddenPageBoundary(t *testing.T) {
 	hidden2ChannelID := mmmodel.NewId()
 	caller := mmmodel.NewId()
 
-	visible := seedSpaceInTeam(t, h.store, h.db, visibleChannelID, teamID)
+	visible := seedSpaceInTeam(t, h.store, visibleChannelID, teamID)
 	// Private, not merely non-member: an open space the caller can't reach as a member is still
 	// listed via the list-for-team predicate's open-space branch.
 	_, err := h.store.CreateSpace(&model.Space{ChannelId: hidden1ChannelID, TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "Hidden 1", ViewAccess: model.ViewAccessPrivate})
@@ -1392,7 +1392,7 @@ func TestHandler_TeamSpacesPagination(t *testing.T) {
 	caller := mmmodel.NewId()
 	for range 3 {
 		channelID := mmmodel.NewId()
-		_ = seedSpaceInTeam(t, h.store, h.db, channelID, teamID)
+		_ = seedSpaceInTeam(t, h.store, channelID, teamID)
 		testutil.MustAddChannelMember(t, h.db, channelID, caller)
 	}
 
@@ -1421,7 +1421,7 @@ func TestHandler_TeamSpacesNotTeamMember(t *testing.T) {
 		Return(nil, &mmmodel.AppError{StatusCode: http.StatusNotFound})
 
 	h := openTestPlugin(t, mockAPI)
-	_ = seedSpaceInTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
+	_ = seedSpaceInTeam(t, h.store, mmmodel.NewId(), teamID)
 
 	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
 	require.Equal(t, http.StatusForbidden, rec.Code)
@@ -1440,7 +1440,7 @@ func TestHandler_TeamSpacesTeamLookupError(t *testing.T) {
 		Return(nil, &mmmodel.AppError{StatusCode: http.StatusInternalServerError})
 
 	h := openTestPlugin(t, mockAPI)
-	_ = seedSpaceInTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
+	_ = seedSpaceInTeam(t, h.store, mmmodel.NewId(), teamID)
 
 	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
@@ -1449,7 +1449,7 @@ func TestHandler_TeamSpacesTeamLookupError(t *testing.T) {
 // TestHandler_InvalidJSON returns 400 on a malformed request body.
 func TestHandler_InvalidJSON(t *testing.T) {
 	h := openTestPlugin(t, nil)
-	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	space := seedSpace(t, h.store, mmmodel.NewId())
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages", bytes.NewReader([]byte("{not json")))
 	req.Header.Set("Mattermost-User-ID", mmmodel.NewId())
@@ -1465,7 +1465,7 @@ func TestHandler_RequestTooLarge(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	// A well-formed JSON document whose "content" field alone exceeds maxPageBodyBytes, so the
@@ -1523,7 +1523,7 @@ func TestHandler_MovePage_InvalidParentID(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	bad := "not-a-valid-id"
@@ -1543,7 +1543,7 @@ func TestHandler_CreatePage_InvalidParentID(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	bad := "not-a-valid-id"
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages", user, map[string]any{
@@ -1562,7 +1562,7 @@ func TestHandler_DuplicatePage_InvalidParentID(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	bad := "not-a-valid-id"
@@ -1581,7 +1581,7 @@ func TestHandler_MovePageToSpace_InvalidParentID(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelA := mmmodel.NewId()
-	spaceA := seedSpace(t, h.store, h.db, channelA)
+	spaceA := seedSpace(t, h.store, channelA)
 	page := seedPage(t, h.store, spaceA.Id, channelA, "")
 
 	spaceB, err := h.store.CreateSpace(&model.Space{ChannelId: mmmodel.NewId(), TeamId: spaceA.TeamId, CreatorId: user, Title: "B", ViewAccess: model.ViewAccessOpen})
@@ -1604,7 +1604,7 @@ func TestHandler_GetSpace(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id, user, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -1621,7 +1621,7 @@ func TestHandler_GetPage(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 
 	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, user, nil)
@@ -1640,7 +1640,7 @@ func TestHandler_CreatePage(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages", user, map[string]any{
 		"title": "Brand New Page",
@@ -1666,7 +1666,7 @@ func TestHandler_DeletePage(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	// Owned by the acting user: a contribute-default member holds only delete_own_page, not
 	// delete_page (any).
 	page := testutil.MustCreatePage(t, h.store, space.Id, channelID, user, "")
@@ -1686,7 +1686,7 @@ func TestHandler_DeletePage_OtherOwnerForbidden(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	// Owned by someone else, so ownerMatches is false and the delete_own_page grant cannot apply.
 	page := testutil.MustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
@@ -1723,7 +1723,7 @@ func TestHandler_DeletePage_NonMemberAutoJoinsViaDeletePageDefault(t *testing.T)
 		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: stranger}, nil)
 
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	// Owned by someone else: only the delete_page (any) grant, not delete_own_page, can admit this.
 	page := testutil.MustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
@@ -1738,7 +1738,7 @@ func TestHandler_GetSpacePagesHasMoreBoundary(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	for range 3 {
 		seedPage(t, h.store, space.Id, channelID, "")
 	}
@@ -1764,7 +1764,7 @@ func TestHandler_GetPageChildrenHasMoreBoundary(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	user := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	parent := seedPage(t, h.store, space.Id, channelID, "")
 	for range 3 {
 		seedPage(t, h.store, space.Id, channelID, parent.Id)
@@ -1801,7 +1801,7 @@ func TestHandler_CreatePage_PublishesCreatedEvent(t *testing.T) {
 	mockAPI.On("PublishWebSocketEvent", "page_created", mock.Anything, mock.Anything).Return().Once()
 	h := openTestPlugin(t, mockAPI)
 
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages", mmmodel.NewId(), map[string]any{
 		"title": "Evented Page",
 	})
@@ -1855,7 +1855,7 @@ func TestHandler_AddSpaceMember_GuestProjectsReadOnly(t *testing.T) {
 	h := openTestPlugin(t, mockAPI)
 
 	// The contribute-preset default (seeded by seedSpace) must not leak into a guest's projection.
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/members", adminID, map[string]any{
 		"user_id": targetUserID,
@@ -1902,7 +1902,7 @@ func TestHandler_SetSpaceMemberCapabilities_Forbidden(t *testing.T) {
 	targetUserID := mmmodel.NewId()
 
 	h := openTestPlugin(t, nil)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", mmmodel.NewId(), map[string]any{
 		"granted_capabilities": []string{"create_page"},
@@ -1924,7 +1924,7 @@ func TestHandler_SetSpaceMemberCapabilities_GuestTargetRejected(t *testing.T) {
 	mockAPI.On("GetChannelMember", channelID, targetUserID).
 		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: targetUserID, SchemeGuest: true}, nil)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
 		"granted_capabilities": []string{"create_page"},
@@ -1948,7 +1948,7 @@ func TestHandler_SetSpaceMemberCapabilities_InvalidCapability(t *testing.T) {
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	cases := []struct {
 		name         string
@@ -2028,7 +2028,7 @@ func TestHandler_SetSpaceMemberCapabilities_OmissionRevokesAdminForbidden(t *tes
 	mockAPI.On("GetChannelMember", channelID, targetUserID).
 		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: targetUserID, SchemeAdmin: true}, nil)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
 		"granted_capabilities": []string{},
@@ -2048,7 +2048,7 @@ func TestHandler_SetSpaceMemberCapabilities_SelfTargetForbidden(t *testing.T) {
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+callerID+"/capabilities", callerID, map[string]any{
 		"granted_capabilities": []string{"create_page"},
@@ -2073,7 +2073,7 @@ func TestHandler_SetSpaceMemberCapabilities_LastAdminConflict(t *testing.T) {
 	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).
 		Return(mmmodel.ChannelMembers{{ChannelId: channelID, UserId: targetUserID, SchemeAdmin: true}}, nil)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
 		"granted_capabilities": []string{},
@@ -2118,7 +2118,7 @@ func TestHandler_SetSpaceMemberCapabilities_OtherAdminAllowsDemote(t *testing.T)
 			{ChannelId: channelID, UserId: otherAdminID, SchemeAdmin: true},
 		}, nil)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
 		"granted_capabilities": []string{},
@@ -2143,7 +2143,7 @@ func TestHandler_SetSpaceMemberCapabilities_EmptyDoesNotDemoteBelowDefault(t *te
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
 		"granted_capabilities": []string{},
@@ -2176,7 +2176,7 @@ func TestHandler_SetSpaceMemberCapabilities_PublishesEvent(t *testing.T) {
 		Return(&mmmodel.ChannelMember{}, nil).Maybe()
 	mockAPI.On("PublishWebSocketEvent", "space_member_capabilities_updated", mock.Anything, mock.Anything).Return()
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
 		"granted_capabilities": []string{"create_page"},
@@ -2269,7 +2269,7 @@ func TestHandler_SetSpaceDefaultCapabilities_Forbidden(t *testing.T) {
 	// team-manage_space branch, so this stub is optional, not asserted.
 	mockAPI.On("HasPermissionToTeam", userID, mock.Anything, mmmodel.PermissionManageSpace).Return(true).Maybe()
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	space := seedSpace(t, h.store, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
 		"default_capabilities": []string{"create_page"},
@@ -2288,7 +2288,7 @@ func TestHandler_SetSpaceDefaultCapabilities_Allowed(t *testing.T) {
 		grantSpaceAdmin(mockAPI, channelID, userID)
 		stubSpaceSchemeRepoint(t, mockAPI, channelID)
 		h := openTestPlugin(t, mockAPI)
-		space := seedSpace(t, h.store, h.db, channelID)
+		space := seedSpace(t, h.store, channelID)
 
 		rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
 			"default_capabilities": []string{"comment_page"},
@@ -2304,7 +2304,7 @@ func TestHandler_SetSpaceDefaultCapabilities_Allowed(t *testing.T) {
 		grantSysadmin(mockAPI, userID)
 		stubSpaceSchemeRepoint(t, mockAPI, channelID)
 		h := openTestPlugin(t, mockAPI)
-		space := seedSpace(t, h.store, h.db, channelID)
+		space := seedSpace(t, h.store, channelID)
 
 		rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
 			"default_capabilities": []string{"comment_page"},
@@ -2323,7 +2323,7 @@ func TestHandler_SetSpaceDefaultCapabilities_InvalidCapability(t *testing.T) {
 	mockAPI := newEnabledMockAPI()
 	grantSpaceAdmin(mockAPI, channelID, userID)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	cases := []struct {
 		name         string
@@ -2356,7 +2356,7 @@ func TestHandler_SetSpaceDefaultCapabilities_CreatesPooledScheme(t *testing.T) {
 	channel := stubSpaceSchemeRepoint(t, mockAPI, channelID)
 	customSchemeID := stubSpaceCustomSchemeCreate(t, mockAPI)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
 		"default_capabilities": []string{"create_page"},
@@ -2393,7 +2393,7 @@ func TestHandler_SetSpaceDefaultCapabilities_ReusesPooledScheme(t *testing.T) {
 	channel := stubSpaceSchemeRepoint(t, mockAPI, channelID)
 	testutil.StubSchemePool(mockAPI)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	setDefaults := func(capabilities []string) {
 		t.Helper()
@@ -2439,7 +2439,7 @@ func TestHandler_SetSpaceDefaultCapabilities_ResubmitCurrentSetIsNoOp(t *testing
 	channel := stubSpaceSchemeRepoint(t, mockAPI, channelID)
 	contributeID := testutil.PresetSchemeID(mmmodel.SchemeNameSpaceContribute)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/default-capabilities", userID, map[string]any{
 		"default_capabilities": []string{"edit_page", "comment_page", "comment_page", "create_page", "delete_own_page"},
@@ -2459,7 +2459,7 @@ func TestHandler_UpdateSpace_ViewAccessRequiresAdmin(t *testing.T) {
 	userID := mmmodel.NewId()
 	grantSpaceManage(mockAPI, userID)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	space := seedSpace(t, h.store, mmmodel.NewId())
 	require.Equal(t, model.ViewAccessOpen, space.ViewAccess)
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, userID, map[string]any{
@@ -2484,7 +2484,7 @@ func TestHandler_UpdateSpace_ViewAccessForceRejected(t *testing.T) {
 	userID := mmmodel.NewId()
 	grantSpaceManage(mockAPI, userID)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	space := seedSpace(t, h.store, mmmodel.NewId())
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, userID, map[string]any{
 		"view_access": "open",
@@ -2511,7 +2511,7 @@ func TestHandler_UpdateSpace_ViewAccessAdminSucceedsMemberRetained(t *testing.T)
 	mockAPI.On("AddChannelMember", channelID, memberID).
 		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: memberID}, nil)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/members", adminID, map[string]any{"user_id": memberID})
 	require.Equal(t, http.StatusCreated, rec.Code)
@@ -2538,7 +2538,7 @@ func TestHandler_UpdateSpace_ViewAccessInvalidValue(t *testing.T) {
 	mockAPI := newEnabledMockAPI()
 	grantSpaceAdmin(mockAPI, channelID, adminID)
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, adminID, map[string]any{
 		"view_access":        "bogus",
@@ -2564,7 +2564,7 @@ func TestHandler_OpenSpaceReadFallthrough_VisibleWithReadPublicChannel(t *testin
 	mockAPI.On("GetTeamMember", teamID, caller).Return(&mmmodel.TeamMember{}, nil)
 	h := openTestPlugin(t, mockAPI)
 
-	space := seedSpaceInTeam(t, h.store, h.db, channelID, teamID)
+	space := seedSpaceInTeam(t, h.store, channelID, teamID)
 	require.Equal(t, model.ViewAccessOpen, space.ViewAccess)
 
 	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
@@ -2596,7 +2596,7 @@ func TestHandler_OpenSpaceReadFallthrough_HiddenWithoutReadPublicChannel(t *test
 	mockAPI.On("GetTeamMember", teamID, caller).Return(&mmmodel.TeamMember{}, nil)
 	h := openTestPlugin(t, mockAPI)
 
-	space := seedSpaceInTeam(t, h.store, h.db, channelID, teamID)
+	space := seedSpaceInTeam(t, h.store, channelID, teamID)
 
 	rec := h.do(t, http.MethodGet, "/api/v1/teams/"+teamID+"/spaces", caller, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -2625,7 +2625,7 @@ func TestHandler_DraftWritesRequireContributeCapability(t *testing.T) {
 	mockAPI.On("HasPermissionToChannel", reader, channelID, mmmodel.PermissionEditPage).Return(false)
 
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	page := seedPage(t, h.store, space.Id, channelID, "")
 	testutil.MustAddChannelMember(t, h.db, channelID, reader)
 
@@ -2678,7 +2678,7 @@ func TestHandler_PublishGatesOnTargetKind(t *testing.T) {
 	mockAPI.On("HasPermissionToChannel", author, channelID, mmmodel.PermissionEditPage).Return(false)
 
 	h := openTestPlugin(t, mockAPI)
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	testutil.MustAddChannelMember(t, h.db, channelID, author)
 
 	// New-page path: reserve an id, autosave into it, publish. create_page alone carries this.

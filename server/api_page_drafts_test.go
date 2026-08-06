@@ -26,7 +26,7 @@ import (
 func TestHandler_DraftLifecycle(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 	base := "/api/v1/spaces/" + space.Id
 
@@ -61,7 +61,7 @@ func TestHandler_DraftLifecycle(t *testing.T) {
 // endpoint, and it omits draft bodies so the listing does not ship whole documents.
 func TestHandler_ListSpaceDrafts(t *testing.T) {
 	h := openTestPlugin(t, nil)
-	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	space := seedSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 	base := "/api/v1/spaces/" + space.Id
 
@@ -96,7 +96,7 @@ func TestHandler_ListSpaceDrafts(t *testing.T) {
 func TestHandler_PublishMalformedBodyReturns400(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 	base := "/api/v1/spaces/" + space.Id
 
@@ -121,7 +121,7 @@ func TestHandler_PublishMalformedBodyReturns400(t *testing.T) {
 // that has no existing draft must return 404 rather than silently creating one.
 func TestHandler_UpdatePageDraftRequiresExistingDraft(t *testing.T) {
 	h := openTestPlugin(t, nil)
-	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	space := seedSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	// No draft has been created for this page id — the PATCH must be rejected.
@@ -136,7 +136,7 @@ func TestHandler_UpdatePageDraftRequiresExistingDraft(t *testing.T) {
 // root), while omitting parent_id entirely must leave the parent unchanged.
 func TestHandler_UpdatePageDraftClearsParentWhenParentIdIsEmptyString(t *testing.T) {
 	h := openTestPlugin(t, nil)
-	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	space := seedSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 	base := "/api/v1/spaces/" + space.Id
 
@@ -181,7 +181,7 @@ func TestHandler_UpdatePageDraftClearsParentWhenParentIdIsEmptyString(t *testing
 func TestHandler_UpdatePageDraftCreatesForExistingPage(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 	base := "/api/v1/spaces/" + space.Id
 
@@ -241,7 +241,7 @@ func TestHandler_UpdatePageDraftCreatesForExistingPage(t *testing.T) {
 func TestHandler_PublishConflict409(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	userA := mmmodel.NewId()
 	userB := mmmodel.NewId()
 	base := "/api/v1/spaces/" + space.Id
@@ -298,7 +298,7 @@ func TestHandler_PublishConflict409(t *testing.T) {
 // afterwards, and 404 when no draft exists.
 func TestHandler_DeletePageDraft(t *testing.T) {
 	h := openTestPlugin(t, nil)
-	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	space := seedSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 	base := "/api/v1/spaces/" + space.Id
 
@@ -326,8 +326,8 @@ func TestHandler_DeletePageDraft(t *testing.T) {
 // leak: a page in one space must not be reachable through another space's active-editors route.
 func TestHandler_ActiveEditorsWrongSpaceReturns404(t *testing.T) {
 	h := openTestPlugin(t, nil)
-	spaceA := seedSpace(t, h.store, h.db, mmmodel.NewId())
-	spaceB := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	spaceA := seedSpace(t, h.store, mmmodel.NewId())
+	spaceB := seedSpace(t, h.store, mmmodel.NewId())
 	pageInB := seedPage(t, h.store, spaceB.Id, spaceB.ChannelId, "")
 	userID := mmmodel.NewId()
 
@@ -342,7 +342,7 @@ func TestHandler_ActiveEditorsWrongSpaceReturns404(t *testing.T) {
 // an empty list when no draft is open, and the editor's user ID when they have an active draft.
 func TestHandler_ActiveEditorsResponseBody(t *testing.T) {
 	h := openTestPlugin(t, nil)
-	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	space := seedSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 	base := "/api/v1/spaces/" + space.Id
 
@@ -392,7 +392,7 @@ func TestHandler_ActiveEditorsResponseBody(t *testing.T) {
 // as absent, an empty object clears all keys, and a populated object replaces the whole map.
 func TestHandler_UpdatePageDraftPropsPointerIntent(t *testing.T) {
 	h := openTestPlugin(t, nil)
-	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	space := seedSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 	base := "/api/v1/spaces/" + space.Id
 
@@ -462,7 +462,7 @@ func TestHandler_UpdatePageDraftPropsPointerIntent(t *testing.T) {
 func TestHandler_UpdatePageDraftPropsBaselineNoLongerHonored(t *testing.T) {
 	h := openTestPlugin(t, nil)
 	channelID := mmmodel.NewId()
-	space := seedSpace(t, h.store, h.db, channelID)
+	space := seedSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 	base := "/api/v1/spaces/" + space.Id
 
@@ -491,7 +491,7 @@ func TestHandler_UpdatePageDraftPropsBaselineNoLongerHonored(t *testing.T) {
 // router: a stale-baseline publish that 409s without it succeeds when the request carries force.
 func TestHandler_PublishForceOverHTTP(t *testing.T) {
 	h := openTestPlugin(t, nil)
-	space := seedSpace(t, h.store, h.db, mmmodel.NewId())
+	space := seedSpace(t, h.store, mmmodel.NewId())
 	userA := mmmodel.NewId()
 	userB := mmmodel.NewId()
 	base := "/api/v1/spaces/" + space.Id

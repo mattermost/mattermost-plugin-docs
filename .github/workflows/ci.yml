@@ -142,9 +142,19 @@ jobs:
           # core commit; CORE_IMAGE is a separate repository variable a human sets. Nothing ties them
           # together, so bumping the pin without updating the variable leaves this suite green against
           # a core image that predates the very changes under test.
-          gomod_commit="$(grep -oE 'server/public v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+-[0-9a-f]+' go.mod | grep -oE '[0-9a-f]{12}$' || true)"
+          gomod_version="$(grep -oE 'server/public v[^[:space:]]+' go.mod | head -1 | awk '{print $2}')"
+          if [[ -z "$gomod_version" ]]; then
+            echo "no server/public requirement found in go.mod; the pin cross-check cannot run." >&2
+            exit 1
+          fi
+          # Every pseudo-version ends in <14-digit timestamp>-<12-hex revision>, whatever its base
+          # version is, so matching that trailing pair covers all three shapes `go mod tidy` writes:
+          # the tagless v0.0.0-<ts>-<sha>, and the -0.<ts>-<sha> / -<pre>.0.<ts>-<sha> forms that
+          # carry a base tag. The separator before the timestamp is a '-' only in the tagless shape;
+          # the other two put a '.' there. Anything without that pair is a released version.
+          gomod_commit="$(printf '%s' "$gomod_version" | grep -oE '[-.][0-9]{14}-[0-9a-f]{12}$' | grep -oE '[0-9a-f]{12}$' || true)"
           if [[ -z "$gomod_commit" ]]; then
-            echo "server/public is pinned to a released version, not a core commit; skipping the sha cross-check."
+            echo "server/public is pinned to released version ${gomod_version}, not a core commit; skipping the sha cross-check."
             exit 0
           fi
           if [[ ! "$image_tag" =~ ^[0-9a-f]{7,40}$ ]]; then

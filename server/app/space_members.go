@@ -29,7 +29,7 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int) ([]*mod
 	}
 	defaultCapabilities, err := s.spaceDefaultCapabilities(space)
 	if err != nil {
-		return nil, false, storeAppError("GetSpaceMembers", err)
+		return nil, false, schemeAppError("GetSpaceMembers", err)
 	}
 	page = ClampPage(page)
 	perPage = ClampPerPage(perPage)
@@ -95,7 +95,7 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 	}
 	defaultCapabilities, err := s.spaceDefaultCapabilities(space)
 	if err != nil {
-		return nil, storeAppError("AddSpaceMember", err)
+		return nil, schemeAppError("AddSpaceMember", err)
 	}
 	member, err := s.client.Channel.AddMember(space.ChannelId, userID)
 	if err != nil {
@@ -166,7 +166,7 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 		var rolesErr error
 		resolvedRoles, rolesErr = s.getSchemeRolesForChannel(space.ChannelId)
 		if rolesErr != nil {
-			return storeAppError("SetSpaceMemberCapabilities", rolesErr)
+			return schemeAppError("SetSpaceMemberCapabilities", rolesErr)
 		}
 		newRoles, newSchemeAdmin = model.RolesForCapabilities(capabilities, resolvedRoles.UserRoleName)
 
@@ -214,7 +214,7 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 	// space-keyed lock, so the default capability set is projected from them rather than re-read.
 	defaultCapabilities, defErr := s.defaultCapabilitiesForRoles(resolvedRoles)
 	if defErr != nil {
-		return nil, storeAppError("SetSpaceMemberCapabilities", defErr)
+		return nil, schemeAppError("SetSpaceMemberCapabilities", defErr)
 	}
 	// The response is projected from the member the role update returned. Re-reading it would go to
 	// a replica, which on a lagging one still carries the pre-update roles and would report the

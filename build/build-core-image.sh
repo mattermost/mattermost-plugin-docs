@@ -135,7 +135,7 @@ CMD ["mattermost", "server"]
 DOCKEREOF
 
 # ── Build the image ───────────────────────────────────────────────────────────────
-IMAGE_TAG="${CORE_IMAGE:-mm-docs-rbac-core:dev}"
+IMAGE_TAG="$CORE_IMAGE"
 echo "Building Docker image $IMAGE_TAG from $BUILD_CTX ..."
 docker build -t "$IMAGE_TAG" "$BUILD_CTX"
 

@@ -114,7 +114,8 @@ func addSpaceMember(t *testing.T, ctx context.Context, admin actor, spaceID, use
 // spaceMembersResponse is the paginated member-list shape handleGetSpaceMembers writes (see
 // paginatedResponse in server/api.go) — redeclared here since that type is unexported.
 type spaceMembersResponse struct {
-	Items []*spaceMemberJSON `json:"items"`
+	Items   []*spaceMemberJSON `json:"items"`
+	HasMore bool               `json:"has_more"`
 }
 
 // spaceMemberJSON is a minimal decode target for the member-list response; only user_id is needed
@@ -131,6 +132,9 @@ func spaceHasMember(t *testing.T, ctx context.Context, admin actor, spaceID, use
 	status, body, err := doPluginRequest(ctx, admin.client, http.MethodGet, "/spaces/"+spaceID+"/members", nil, &resp)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, status, "list members of space %s: %s", spaceID, body)
+	// The request asks for the default page, so a member past it would read as absent here. The
+	// scenarios use a handful of actors; this fails loudly if one ever outgrows a page.
+	require.False(t, resp.HasMore, "space %s holds more members than one page; this helper only reads the first", spaceID)
 	for _, m := range resp.Items {
 		if m.UserId == userID {
 			return true

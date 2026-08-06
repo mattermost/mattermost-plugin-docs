@@ -33,8 +33,9 @@ Requires Docker.
 make test-e2e
 ```
 
-This builds the core image (`build/build-core-image.sh`), ensures the plugin bundle exists
-(`make dist` if missing), then runs:
+This ensures the plugin bundle exists (`make dist` if it is missing or carries no linux binary for
+the Docker daemon's architecture), builds the core image with `build/build-core-image.sh` unless
+`CORE_IMAGE` is namespaced, then runs:
 
 ```sh
 go test -tags e2e -count=1 -v ./server/e2e/...

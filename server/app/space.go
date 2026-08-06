@@ -326,7 +326,7 @@ func (s *Service) buildSpaceWithAccess(space *model.Space, userID string, knownD
 		var err error
 		defaultCapabilities, err = s.spaceDefaultCapabilities(space)
 		if err != nil {
-			return nil, storeAppError("BuildSpaceWithAccess", err)
+			return nil, schemeAppError("BuildSpaceWithAccess", err)
 		}
 	}
 
