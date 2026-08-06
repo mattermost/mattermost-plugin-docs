@@ -1,29 +1,26 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import type {MemberProfile} from 'hooks/members';
 import {useSpaceMemberProfiles} from 'hooks/members';
 import {useDocsNavigation} from 'hooks/navigation';
-import {useAppSelector} from 'hooks/redux';
-import React, {useMemo, useState} from 'react';
+import {useManageSpaceMembers} from 'hooks/space_members';
+import React, {useMemo} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {copyToClipboard} from 'utils/clipboard';
-import {Avatar} from 'webapp_globals';
 
 import ChevronDownIcon from '@mattermost/compass-icons/components/chevron-down';
 import ContentCopyIcon from '@mattermost/compass-icons/components/content-copy';
 import GlobeIcon from '@mattermost/compass-icons/components/globe';
 
-import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
-
 import {useSpacePermissions} from 'store/permissions';
 
 import {Button, SecondaryButton} from 'components/form_controls/button';
 import GenericModal from 'components/generic_modal/generic_modal';
+import {AddMembersField, MemberList} from 'components/space_members';
+import type {MemberListActions} from 'components/space_members';
 
 import type {Space} from 'types/docs';
 
-import PeoplePicker from './people_picker';
 import styles from './share_space_modal.module.scss';
 
 type Props = {
@@ -31,30 +28,22 @@ type Props = {
     onClose: () => void;
 };
 
-// Members come from the real member API and Copy link is functional. Roles and
-// space visibility (Admin / Public / Can View) are capability/view-access
-// features from PR #10, so those dropdowns are visual scaffolding.
-//
-// Adding people needs a server add-member API (also PR #10). The people-search
-// combobox and its live search pipeline are built, but gated on the
-// canManageMembers permission so we don't ship an "add people" control whose
-// selections can't persist (they'd only live client-side).
+// Members, add and remove are real. The visibility and role dropdowns are
+// scaffolding for PR #10's view_access and capabilities.
 const ShareSpaceModal = ({space, onClose}: Props) => {
     const {formatMessage} = useIntl();
     const {paths} = useDocsNavigation();
     const members = useSpaceMemberProfiles(space.id);
-    const currentUserId = useAppSelector(getCurrentUserId);
     const {canManageMembers} = useSpacePermissions(space.id);
+    const {addMembers, removeMember, leave, busy} = useManageSpaceMembers(space);
 
-    // People chosen from the search picker. There's no add-member API yet
-    // (roles/view-access land with PR #10), so they stay as pending chips in the
-    // picker rather than joining the member list.
-    const [pending, setPending] = useState<MemberProfile[]>([]);
+    const memberIds = useMemo(() => members.map((member) => member.id), [members]);
 
-    const excludeIds = useMemo(
-        () => [...members.map((member) => member.id), ...pending.map((user) => user.id)],
-        [members, pending],
-    );
+    const actions: MemberListActions | undefined = canManageMembers ? {
+        onRemove: removeMember,
+        onLeave: () => leave().then(onClose),
+        disabled: busy,
+    } : undefined;
 
     const copyLink = () => copyToClipboard(`${window.location.origin}${paths.space(space.id)}`);
 
@@ -128,59 +117,18 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
         >
             <div className={styles.body}>
                 {canManageMembers && (
-                    <PeoplePicker
-                        selected={pending}
-                        excludeIds={excludeIds}
-                        onChange={setPending}
+                    <AddMembersField
+                        excludeIds={memberIds}
+                        onAdd={addMembers}
+                        disabled={busy}
                     />
                 )}
-                <div className={styles.memberList}>
-                    {members.map((member) => (
-                        <div
-                            key={member.id}
-                            className={styles.memberRow}
-                        >
-                            <Avatar
-                                url={member.avatarUrl}
-                                username={member.username}
-                                size='md'
-                                name=''
-                            />
-                            <span className={styles.memberInfo}>
-                                <span className={styles.memberName}>{member.displayName}</span>
-                                {member.username && (
-                                    <span className={styles.memberUsername}>
-                                        <FormattedMessage
-                                            id='docs.share.handle'
-                                            defaultMessage='@{username}'
-                                            values={{username: member.username}}
-                                        />
-                                    </span>
-                                )}
-                                {member.id === currentUserId && (
-                                    <span className={styles.you}>
-                                        <FormattedMessage
-                                            id='docs.share.you'
-                                            defaultMessage='(You)'
-                                        />
-                                    </span>
-                                )}
-                            </span>
-                            <Button
-                                type='button'
-                                emphasis='quaternary'
-                                size='sm'
-                                className={styles.roleTrigger}
-                            >
-                                <FormattedMessage
-                                    id='docs.share.role.admin'
-                                    defaultMessage='Admin'
-                                />
-                                <ChevronDownIcon size={16}/>
-                            </Button>
-                        </div>
-                    ))}
-                </div>
+                <MemberList
+                    members={members}
+                    avatarSize='md'
+                    showYouBadge={true}
+                    actions={actions}
+                />
             </div>
         </GenericModal>
     );
