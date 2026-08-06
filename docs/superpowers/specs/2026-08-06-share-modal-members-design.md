@@ -25,8 +25,10 @@ In scope:
 
 - `addSpaceMember` on the data source, over the existing POST route.
 - Store action types and reducer cases for adding and removing one member.
-- Thunks for both, plus a hook that owns the fan-out, the toasts and the busy state.
-- An `Add` button in the Share modal, and a per-row menu offering Remove (or Leave on your own row).
+- Thunks for both, plus a hook that owns the toasts and the busy state.
+- Adding on select in the Share modal's picker, and a per-row menu offering Remove (or Leave on
+  your own row).
+- Reducing `PeoplePicker` from multi-select-with-chips to single-select.
 - Correcting the two stale comments.
 
 Out of scope:
@@ -141,23 +143,26 @@ strip a space from everyone's store or leave a departed user's own store stale.
 
 ```ts
 useManageSpaceMembers(space: Space): {
-    // Returns the users that FAILED, so the caller can keep exactly those chips.
-    addMembers: (users: MemberProfile[]) => Promise<MemberProfile[]>;
+    addMember: (user: MemberProfile) => Promise<void>;
     removeMember: (userId: string) => Promise<void>;
     leave: () => Promise<void>;
     busy: boolean;
 }
 ```
 
-- `addMembers` fans out over `Promise.allSettled` — one POST per user, concurrently — dispatching
-  per success. A single failure must not sink the rest of the batch. It returns the failures so the
-  modal can keep their chips and drop the others.
+- `addMember` adds one user. One member is the whole action: it is the unit the server route accepts
+  and the unit the reducer splices, so nothing about it is a fragment of something larger. A bulk
+  operation can be layered on later as a wrapper over this primitive — `allSettled` over N calls,
+  plus whatever partial-failure reporting that surface wants — without this signature changing.
+  Because it is whole, its failure is whole too: one user, one reason, one toast.
 - `removeMember` is a single call; it distinguishes the 409 via the existing `isLastSpaceMemberError`.
 - `leave` delegates to `useLeaveSpace(space)`, inheriting its last-member message and its
   navigate-home behaviour rather than restating either.
-- `busy` is true while any mutation is in flight. It disables the Add button and the menus' action
-  item (Remove / Leave). It does **not** disable the menu trigger — the menu still opens, so the
-  role items remain readable and the disabled action is visibly the thing that is unavailable.
+- `busy` is true while a remove or leave is in flight, and disables the menus' action item
+  (Remove / Leave) so it cannot be double-fired. It does **not** disable the menu trigger — the menu
+  still opens, so the role items remain readable and the disabled action is visibly the thing that is
+  unavailable. It does **not** gate the picker: selections are independent, so picking two people in
+  quick succession issues two independent adds that resolve on their own.
 - Toasts are raised here, not in the component, so the space-info panel can adopt the hook without
   duplicating the error vocabulary.
 
@@ -165,11 +170,30 @@ useManageSpaceMembers(space: Space): {
 
 `components/share_space_modal/share_space_modal.tsx`:
 
-- An `Add` button below the picker, enabled when `pending.length > 0 && !busy`. On click it calls
-  `addMembers(pending)` and sets `pending` to the returned failures — landed chips disappear,
-  failed ones stay visible next to the toast that explains them.
+- Picking a person calls `addMember(user)` directly. There is no Add button and no `pending` state —
+  both are deleted. The member list is the feedback: on success the row appears, on failure a toast
+  explains why and nothing changed.
+- `excludeIds` reduces to the current member ids. It no longer has to union in pending selections,
+  because a successful add makes that person a member, which excludes them from suggestions on the
+  next render.
 - The two stale comments about there being no add-member API are removed. The remaining comment
   narrows to what is still true: roles and view-access are PR #10 scaffolding.
+
+`components/share_space_modal/people_picker.tsx` drops to single-select:
+
+```ts
+type Props = {
+    excludeIds: string[];
+    onSelect: (user: MemberProfile) => void;
+};
+```
+
+`Combobox.Root` loses `multiple`, and `Combobox.Chips` / `Chip` / `ChipRemove` go with it — with no
+pending set to render there is nothing for a chip to represent. On select the handler fires
+`onSelect` and clears the query so the field is ready for the next person. Base UI's Combobox holds
+the selected value, so the component keeps `value={null}` and treats selection as an event rather
+than state; that reset is the one implementation detail worth verifying against Base UI's controlled
+behaviour during the build. `people_picker.module.scss` loses its chip rules.
 
 `components/share_space_modal/member_row_menu.tsx`, new. Wraps the row's existing `Admin ▾` trigger
 in `components/menu`:
@@ -189,20 +213,16 @@ alongside layout and identity display.
 
 | Case | Surface |
 | --- | --- |
-| Add, one user, target not an active team member (403) | Toast: "{name} isn't a member of this team." |
-| Add, one user, unknown user (404) or other | Toast: generic failure |
-| Add, several users, any failures | One toast naming the failed count, not each reason; failed chips stay |
+| Add: target not an active team member (403) | Toast: "{name} isn't a member of this team." |
+| Add: unknown user (404), or anything else | Toast: "Couldn't add {name}. Please try again." |
 | Remove: last member with access (409) | Toast reusing the existing `docs.leaveSpace.error.lastMember` string |
 | Remove: anything else | Toast: generic failure |
 | Leave | Inherited from `useLeaveSpace` — its own 409 message, navigate home |
 
-Distinguishing the 403 by message is worth the effort because it is the one failure the user can
-act on: the person they picked has to join the team first. Everything else is either a race or a
-server fault, where a generic message is honest and a specific one would be guesswork.
-
-A batch collapses to a count rather than one toast per user. Stacking N toasts for a single click is
-worse than one that says how many did not land, and the failed chips staying in the picker is what
-identifies *which* — the toast does not have to carry that.
+Every add failure can name its user, because an add is always one user. Distinguishing the 403 by
+message on top of that is worth the effort because it is the one failure the user can act on: the
+person they picked has to join the team first. Everything else is either a race or a server fault,
+where a generic message is honest and a specific one would be guesswork.
 
 ## Testing
 
@@ -210,14 +230,22 @@ identifies *which* — the toast does not have to carry that.
   returns the identical state object for a no-op; add does not seed an absent space entry.
 - `store/actions.test.ts` — both thunks dispatch the right action on success and reject on failure,
   through the existing `jest.mock('data')` harness.
-- `hooks/space_members.test.tsx` — `addMembers` returns only the failures from a mixed
-  `allSettled`; a 409 from `removeMember` produces the last-member message rather than the generic
-  one; `leave` delegates to `useLeaveSpace`.
-- `components/share_space_modal/share_space_modal.test.tsx` — Add is disabled with no chips and
-  while busy; clicking it calls the hook with the pending users; a row for another user offers
+- `hooks/space_members.test.tsx` — `addMember` dispatches on success; a 403 names the user and a
+  409 from `removeMember` produces the last-member message rather than the generic one; `leave`
+  delegates to `useLeaveSpace`.
+- `components/share_space_modal/share_space_modal.test.tsx` — selecting a person calls `addMember`
+  with that user; a failed add leaves the member list unchanged; a row for another user offers
   Remove; the current user's row offers Leave.
+- `components/share_space_modal/people_picker.test.tsx` — selecting fires `onSelect` once with the
+  picked profile and clears the query; existing members are absent from the suggestions.
 
 ## Consequences
+
+Adding on select means there is no review step: a mis-click grants access immediately, and the only
+correction is Remove. That is the accepted trade for a whole, simple action — an Add button would
+have bought a moment to reconsider at the cost of pending state, batch semantics and partial-failure
+reporting. Remove is one menu item away on the row that just appeared, so the mistake is cheap to
+undo.
 
 Adding a member writes real backing-channel membership. Under the current access model that
 membership is also what makes the space visible in the team listing, so adding someone is
