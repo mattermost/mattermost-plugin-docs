@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {act, renderHook, waitFor} from '@testing-library/react';
+import {act, fireEvent, renderHook, screen, waitFor} from '@testing-library/react';
 import {PublishConflictError} from 'data/publish_conflict';
 import React from 'react';
 import {IntlProvider} from 'react-intl';
@@ -9,6 +9,8 @@ import {Provider} from 'react-redux';
 
 import {makeDraft, makePage} from 'store/test_fixtures';
 
+import {DocsModalController, closeAllDocsModals} from 'components/modals';
+import {getDocsModalStack} from 'components/modals/modal_store';
 import {toast} from 'components/toast';
 
 import type {Page} from 'types/docs';
@@ -42,6 +44,8 @@ jest.mock('hooks/navigation', () => ({
 
 jest.mock('components/toast', () => ({toast: {error: jest.fn()}}));
 
+// The controller is mounted so the publish-conflict modal, which is opened
+// imperatively rather than rendered by the hook's caller, has somewhere to land.
 const wrapperWith = (store: ReturnType<typeof makeTestStore>) =>
     ({children}: {children: React.ReactNode}) => (
         <Provider store={store}>
@@ -50,6 +54,7 @@ const wrapperWith = (store: ReturnType<typeof makeTestStore>) =>
                 messages={{}}
             >
                 {children}
+                <DocsModalController/>
             </IntlProvider>
         </Provider>
     );
@@ -59,6 +64,10 @@ beforeEach(() => {
     mockFetchResult = Promise.resolve(undefined);
     mockPublishResult = Promise.resolve(makePage('new', 'eng', 'New'));
 });
+
+afterEach(() => act(() => {
+    closeAllDocsModals();
+}));
 
 describe('usePageDraft', () => {
     const renderDraft = (spaceId?: string, pageId?: string, drafts = {}) => {
@@ -115,8 +124,60 @@ describe('usePublishDraft', () => {
             await publish.current('new');
         });
 
-        expect(mockPublishDraft).toHaveBeenCalledWith('eng', 'new');
+        expect(mockPublishDraft).toHaveBeenCalledWith('eng', 'new', false);
         expect(mockGoToPage).toHaveBeenCalledWith('eng', 'new', {replace: true});
+    });
+
+    // Retrying a conflict reissues the same refused request, so the user is offered
+    // the overwrite instead of a message that can never come true.
+    it('offers to publish anyway when the page changed underneath the draft', async () => {
+        const conflict = new PublishConflictError({
+            error: {id: 'page_changed', message: 'conflict', status_code: 409},
+            current_page: makePage('new', 'eng', 'Their version'),
+        });
+        mockPublishResult = Promise.reject(conflict);
+
+        const publish = renderPublish();
+
+        await act(async () => {
+            await publish.current('new');
+        });
+
+        expect(await screen.findByText('Publish anyway')).toBeInTheDocument();
+        expect(toast.error).not.toHaveBeenCalled();
+
+        mockPublishResult = Promise.resolve(makePage('new', 'eng', 'Mine'));
+
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', {name: 'Publish anyway'}));
+        });
+
+        await waitFor(() => expect(mockPublishDraft).toHaveBeenCalledWith('eng', 'new', true));
+        await waitFor(() => expect(mockGoToPage).toHaveBeenCalledWith('eng', 'new', {replace: true}));
+
+        // The modal runs the confirm handler instead of its own onClose, so a
+        // confirm that forgets to close leaves an entry on the stack forever.
+        await waitFor(() => expect(getDocsModalStack()).toHaveLength(0));
+    });
+
+    it('leaves the draft alone when the conflict is dismissed', async () => {
+        mockPublishResult = Promise.reject(new PublishConflictError({
+            error: {id: 'page_changed', message: 'conflict', status_code: 409},
+            current_page: makePage('new', 'eng', 'Their version'),
+        }));
+
+        const publish = renderPublish();
+
+        await act(async () => {
+            await publish.current('new');
+        });
+
+        await act(async () => {
+            fireEvent.click(await screen.findByRole('button', {name: 'Cancel'}));
+        });
+
+        expect(mockPublishDraft).toHaveBeenCalledTimes(1);
+        expect(mockGoToPage).not.toHaveBeenCalled();
     });
 
     // force cannot fix an unpublished parent, so this conflict gets the instruction

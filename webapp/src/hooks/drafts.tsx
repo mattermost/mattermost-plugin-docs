@@ -2,12 +2,14 @@
 // See LICENSE.txt for license information.
 
 import {PublishConflictError} from 'data/publish_conflict';
-import {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {useIntl} from 'react-intl';
 
 import {fetchPageDraft, publishDraft} from 'store/actions';
 import {getDraftForPage} from 'store/selectors';
 
+import {openDocsModal} from 'components/modals';
+import PublishConflictModal from 'components/publish_conflict_modal/publish_conflict_modal';
 import {toast} from 'components/toast';
 
 import {ConflictReason} from 'types/drafts';
@@ -74,10 +76,24 @@ export function usePublishDraft(spaceId: string) {
     const {formatMessage} = useIntl();
     const {goToPage} = useDocsNavigation();
 
+    const publish = useCallback(async (pageId: string, force: boolean) => {
+        const page = await dispatch(publishDraft(spaceId, pageId, force));
+        goToPage(spaceId, page.id, {replace: true});
+    }, [dispatch, spaceId, goToPage]);
+
+    const reportFailure = useCallback((error: unknown) => {
+        toast.error(formatMessage({
+            id: 'docs.publish.failed',
+            defaultMessage: 'Could not publish the page. Please try again.',
+        }));
+
+        // eslint-disable-next-line no-console
+        console.error('Docs: failed to publish draft', error);
+    }, [formatMessage]);
+
     return useCallback(async (pageId: string) => {
         try {
-            const page = await dispatch(publishDraft(spaceId, pageId));
-            goToPage(spaceId, page.id, {replace: true});
+            await publish(pageId, false);
         } catch (error) {
             // A parent that isn't published yet is the one conflict force can't
             // resolve, so it gets the instruction that actually helps instead of a
@@ -89,13 +105,24 @@ export function usePublishDraft(spaceId: string) {
                 }));
                 return;
             }
-            toast.error(formatMessage({
-                id: 'docs.publish.failed',
-                defaultMessage: 'Could not publish the page. Please try again.',
-            }));
 
-            // eslint-disable-next-line no-console
-            console.error('Docs: failed to publish draft', error);
+            // Retrying a conflict reissues the same refused request, so the only way
+            // out is to overwrite deliberately. Offer that rather than a dead end.
+            if (error instanceof PublishConflictError && error.isForceable) {
+                openDocsModal((modal) => (
+                    <PublishConflictModal
+                        currentPage={error.currentPage}
+                        onConfirm={() => {
+                            modal.close();
+                            publish(pageId, true).catch(reportFailure);
+                        }}
+                        onCancel={modal.close}
+                    />
+                ));
+                return;
+            }
+
+            reportFailure(error);
         }
-    }, [dispatch, spaceId, goToPage, formatMessage]);
+    }, [publish, reportFailure, formatMessage]);
 }
