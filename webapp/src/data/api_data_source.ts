@@ -50,6 +50,9 @@ export const apiDataSource: DocsDataSource = {
 
     deleteSpace: (spaceId) => restDelete<void>(`${apiUrl()}/spaces/${seg(spaceId)}`),
 
+    addSpaceMember: (spaceId, userId) =>
+        restPost<SpaceMember>(`${apiUrl()}/spaces/${seg(spaceId)}/members`, {user_id: userId}),
+
     removeSpaceMember: (spaceId, userId) => restDelete<void>(`${apiUrl()}/spaces/${seg(spaceId)}/members/${seg(userId)}`),
 
     listSpaceMembers: (spaceId) => listAll<SpaceMember>((query) => `${apiUrl()}/spaces/${seg(spaceId)}/members?${query}`),

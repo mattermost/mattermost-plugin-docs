@@ -285,6 +285,60 @@ export function fetchSpaceMembers(spaceId: string): DocsThunkAction<Promise<void
     };
 }
 
+/**
+ * Adds one member to a space.
+ *
+ * Rejects on failure: only the caller can tell the server's 403 ("not a member of
+ * this team") apart from a fault that deserves a generic message.
+ *
+ * Not `leaveSpace`, which removes the *current* user and drops the whole space from
+ * the store. This only edits the member array.
+ */
+export function addSpaceMember(spaceId: string, userId: string): DocsThunkAction<Promise<void>> {
+    return async (dispatch) => {
+        await docsDataSource.addSpaceMember(spaceId, userId);
+        dispatch({type: SpaceTypes.ADDED_SPACE_MEMBER, spaceId, userId});
+    };
+}
+
+/**
+ * Removes one member from a space. Rejects on failure so the caller can recognise
+ * the last-member 409 (see isLastSpaceMemberError).
+ *
+ * Not `leaveSpace`: that removes the current user and prunes the space. This leaves
+ * the space in place and only edits its member array.
+ */
+export function removeSpaceMember(spaceId: string, userId: string): DocsThunkAction<Promise<void>> {
+    return async (dispatch) => {
+        await docsDataSource.removeSpaceMember(spaceId, userId);
+        dispatch({type: SpaceTypes.REMOVED_SPACE_MEMBER, spaceId, userId});
+    };
+}
+
+export type FailedMemberAdd = {userId: string; error: unknown};
+
+/**
+ * Adds several members by dispatching addSpaceMember once per user, concurrently.
+ *
+ * Never rejects. A batch has no single outcome to reject with, so the result is the
+ * users that failed and why — an empty array means every add landed. Each success has
+ * already dispatched by the time this resolves, so the store is right even for a
+ * batch that partly failed.
+ *
+ * The raw `error` is passed back rather than a message: choosing wording belongs with
+ * the other message selection, in useManageSpaceMembers.
+ */
+export function addSpaceMembers(spaceId: string, userIds: string[]): DocsThunkAction<Promise<FailedMemberAdd[]>> {
+    return async (dispatch) => {
+        const settled = await Promise.allSettled(
+            userIds.map((userId) => dispatch(addSpaceMember(spaceId, userId))),
+        );
+        return settled.flatMap((result, i) => (
+            result.status === 'rejected' ? [{userId: userIds[i], error: result.reason}] : []
+        ));
+    };
+}
+
 // Creates a space in the current team and returns the server-assigned entity
 // (rejects on failure so the form can surface it).
 export function createSpace(input: CreateSpaceInput): DocsThunkAction<Promise<Space>> {
@@ -324,6 +378,13 @@ export function deleteSpace(spaceId: string): DocsThunkAction<Promise<void>> {
 // has to recognize it by.
 export function isLastSpaceMemberError(error: unknown): boolean {
     return error instanceof ClientError && error.status_code === 409;
+}
+
+// The add route answers 403 when the target isn't an active member of the space's
+// team. That is the one add failure a user can act on, so it gets its own message;
+// like isLastSpaceMemberError, the status is all the REST layer preserves.
+export function isNotTeamMemberError(error: unknown): boolean {
+    return error instanceof ClientError && error.status_code === 403;
 }
 
 // Leaving a space is removing yourself from its membership. The server rejects

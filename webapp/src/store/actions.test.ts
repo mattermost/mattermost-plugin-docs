@@ -7,14 +7,17 @@ import {ClientError} from '@mattermost/client';
 
 import {makePage} from 'store/test_fixtures';
 
-import {isLastSpaceMemberError, leaveSpace, movePage} from './actions';
+import {addSpaceMember, addSpaceMembers, isLastSpaceMemberError, isNotTeamMemberError, leaveSpace, movePage, removeSpaceMember} from './actions';
+import {SpaceTypes} from './action_types';
 
+const mockAddSpaceMember = jest.fn();
 const mockRemoveSpaceMember = jest.fn();
 const mockMovePage = jest.fn();
 const mockListPages = jest.fn();
 
 jest.mock('data', () => ({
     docsDataSource: {
+        addSpaceMember: (...args: unknown[]) => mockAddSpaceMember(...args as []),
         removeSpaceMember: (...args: unknown[]) => mockRemoveSpaceMember(...args as []),
         movePage: (...args: unknown[]) => mockMovePage(...args as []),
         listPages: (...args: unknown[]) => mockListPages(...args as []),
@@ -104,5 +107,100 @@ describe('movePage', () => {
         await result;
 
         expect(mockMovePage).not.toHaveBeenCalled();
+    });
+});
+
+const added = (userId: string) => ({type: SpaceTypes.ADDED_SPACE_MEMBER, spaceId: 'space1', userId});
+
+describe('addSpaceMember', () => {
+    beforeEach(() => jest.clearAllMocks());
+
+    it('dispatches the add once the server accepts it', async () => {
+        mockAddSpaceMember.mockResolvedValue({user_id: 'u1'});
+
+        const {result, dispatch} = run((d, g) => addSpaceMember('space1', 'u1')(d as never, g as never, undefined as never));
+        await result;
+
+        expect(mockAddSpaceMember).toHaveBeenCalledWith('space1', 'u1');
+        expect(dispatch).toHaveBeenCalledWith(added('u1'));
+    });
+
+    // It rejects rather than swallowing, because only the caller can tell a 403
+    // ("not on this team") apart from a fault worth a generic message.
+    it('rejects and dispatches nothing when the server refuses', async () => {
+        mockAddSpaceMember.mockRejectedValue(new Error('nope'));
+
+        const {result, dispatch} = run((d, g) => addSpaceMember('space1', 'u1')(d as never, g as never, undefined as never));
+
+        await expect(result).rejects.toThrow('nope');
+        expect(dispatch).not.toHaveBeenCalledWith(added('u1'));
+    });
+});
+
+describe('removeSpaceMember', () => {
+    beforeEach(() => jest.clearAllMocks());
+
+    it('dispatches the removal once the server accepts it', async () => {
+        mockRemoveSpaceMember.mockResolvedValue(undefined);
+
+        const {result, dispatch} = run((d, g) => removeSpaceMember('space1', 'u1')(d as never, g as never, undefined as never));
+        await result;
+
+        expect(mockRemoveSpaceMember).toHaveBeenCalledWith('space1', 'u1');
+        expect(dispatch).toHaveBeenCalledWith({type: SpaceTypes.REMOVED_SPACE_MEMBER, spaceId: 'space1', userId: 'u1'});
+    });
+
+    it('rejects when the server refuses, leaving the store alone', async () => {
+        mockRemoveSpaceMember.mockRejectedValue(new Error('nope'));
+
+        const {result, dispatch} = run((d, g) => removeSpaceMember('space1', 'u1')(d as never, g as never, undefined as never));
+
+        await expect(result).rejects.toThrow('nope');
+        expect(dispatch).not.toHaveBeenCalledWith({type: SpaceTypes.REMOVED_SPACE_MEMBER, spaceId: 'space1', userId: 'u1'});
+    });
+});
+
+describe('addSpaceMembers', () => {
+    beforeEach(() => jest.clearAllMocks());
+
+    // A partly-failed batch has no single outcome, so the successes have already
+    // landed by the time the wrapper resolves with the failures.
+    it('resolves with only the failures and still dispatches the successes', async () => {
+        const refusal = new Error('not on this team');
+        mockAddSpaceMember.
+            mockResolvedValueOnce({user_id: 'u1'}).
+            mockRejectedValueOnce(refusal).
+            mockResolvedValueOnce({user_id: 'u3'});
+
+        const {result, dispatch} = run((d, g) => addSpaceMembers('space1', ['u1', 'u2', 'u3'])(d as never, g as never, undefined as never));
+        const failed = await result;
+
+        expect(failed).toEqual([{userId: 'u2', error: refusal}]);
+        expect(dispatch).toHaveBeenCalledWith(added('u1'));
+        expect(dispatch).toHaveBeenCalledWith(added('u3'));
+        expect(dispatch).not.toHaveBeenCalledWith(added('u2'));
+    });
+
+    it('never rejects, even when every add fails', async () => {
+        mockAddSpaceMember.mockRejectedValue(new Error('nope'));
+
+        const {result} = run((d, g) => addSpaceMembers('space1', ['u1', 'u2'])(d as never, g as never, undefined as never));
+
+        await expect(result).resolves.toHaveLength(2);
+    });
+
+    it('resolves empty for an empty batch without calling the server', async () => {
+        const {result} = run((d, g) => addSpaceMembers('space1', [])(d as never, g as never, undefined as never));
+
+        await expect(result).resolves.toEqual([]);
+        expect(mockAddSpaceMember).not.toHaveBeenCalled();
+    });
+});
+
+describe('isNotTeamMemberError', () => {
+    it('recognises the server 403 and nothing else', () => {
+        expect(isNotTeamMemberError(new ClientError('', {message: 'nope', status_code: 403, url: '/x'}))).toBe(true);
+        expect(isNotTeamMemberError(new ClientError('', {message: 'nope', status_code: 409, url: '/x'}))).toBe(false);
+        expect(isNotTeamMemberError(new Error('boom'))).toBe(false);
     });
 });

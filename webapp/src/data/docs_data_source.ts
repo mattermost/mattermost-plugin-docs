@@ -40,6 +40,11 @@ export interface DocsDataSource {
     // manage the space; the caller surfaces that.
     deleteSpace(spaceId: string): Promise<void>;
 
+    // Adds a user to a space. The server requires the target to be an active member
+    // of the space's team (403 otherwise) and rejects an unknown user (404). There is
+    // no bulk route: adding several people is several calls.
+    addSpaceMember(spaceId: string, userId: string): Promise<SpaceMember>;
+
     // Removes a member from a space. Leaving a space is removing yourself; the
     // server rejects removing the last authorized member (409).
     removeSpaceMember(spaceId: string, userId: string): Promise<void>;
