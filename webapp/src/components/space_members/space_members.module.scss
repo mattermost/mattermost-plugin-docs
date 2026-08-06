@@ -1,0 +1,42 @@
+.memberList {
+    display: flex;
+    flex-direction: column;
+}
+
+.memberRow {
+    display: flex;
+    min-height: 48px;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 0;
+}
+
+.memberInfo {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.memberName {
+    color: var(--center-channel-color);
+    font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.memberUsername,
+.you {
+    overflow: hidden;
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+    font-size: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.roleTrigger {
+    gap: 4px;
+    color: var(--link-color);
+    font-weight: 600;
+}
