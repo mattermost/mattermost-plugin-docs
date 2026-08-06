@@ -127,6 +127,7 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
                     members={members}
                     avatarSize='md'
                     showYouBadge={true}
+                    spaceTitle={space.title}
                     actions={actions}
                 />
             </div>

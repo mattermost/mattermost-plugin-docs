@@ -1,10 +1,12 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {fireEvent, screen, waitFor} from '@testing-library/react';
+import {act, fireEvent, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 
 import {makeSpace} from 'store/test_fixtures';
+
+import {DocsModalController, closeAllDocsModals} from 'components/modals';
 
 import PermissionsTab from './permissions_tab';
 
@@ -39,42 +41,63 @@ jest.mock('hooks/user_search', () => ({
 
 const space = makeSpace('space-1', 'Engineering');
 
+// Removing and leaving confirm first, and the confirmation is rendered by the
+// imperative modal layer rather than inline, so it needs the controller mounted.
+const renderTab = (onClose = jest.fn(), state?: Record<string, unknown>) => renderWithContext(
+    <>
+        <PermissionsTab
+            space={space}
+            onClose={onClose}
+        />
+        <DocsModalController/>
+    </>,
+    state ? {state} : undefined,
+);
+
+const confirm = async (name: RegExp) => {
+    fireEvent.click(await screen.findByRole('button', {name}));
+};
+
 describe('PermissionsTab', () => {
     beforeEach(() => jest.clearAllMocks());
 
+    afterEach(() => act(() => {
+        closeAllDocsModals();
+    }));
+
     // The tab used to fake this with an aria-disabled div; it is a real control now.
     it('offers a working add control', () => {
-        renderWithContext(
-            <PermissionsTab
-                space={space}
-                onClose={jest.fn()}
-            />,
-        );
+        renderTab();
 
         expect(screen.getByRole('button', {name: 'Add'})).toBeInTheDocument();
     });
 
-    it('removes a member through the hook', async () => {
-        renderWithContext(
-            <PermissionsTab
-                space={space}
-                onClose={jest.fn()}
-            />,
-        );
+    it('removes a member through the hook once confirmed', async () => {
+        renderTab();
 
         fireEvent.click(screen.getByRole('button', {name: /Ada/}));
         fireEvent.click(await screen.findByRole('menuitem', {name: 'Remove from space'}));
 
-        expect(mockRemoveMember).toHaveBeenCalledWith('u2');
+        // The mutation waits on the confirmation.
+        expect(mockRemoveMember).not.toHaveBeenCalled();
+
+        await confirm(/Yes, remove/);
+
+        await waitFor(() => expect(mockRemoveMember).toHaveBeenCalledWith('u2'));
+    });
+
+    it('does not remove a member when the confirmation is cancelled', async () => {
+        renderTab();
+
+        fireEvent.click(screen.getByRole('button', {name: /Ada/}));
+        fireEvent.click(await screen.findByRole('menuitem', {name: 'Remove from space'}));
+        await confirm(/Cancel/);
+
+        expect(mockRemoveMember).not.toHaveBeenCalled();
     });
 
     it('keeps the space-access scaffolding in place', () => {
-        renderWithContext(
-            <PermissionsTab
-                space={space}
-                onClose={jest.fn()}
-            />,
-        );
+        renderTab();
 
         expect(screen.getByText('Public')).toBeInTheDocument();
         expect(screen.getByText('External sharing')).toBeInTheDocument();
@@ -82,22 +105,20 @@ describe('PermissionsTab', () => {
 
     // Leaving destroys your access to what is behind this tab, so the settings
     // modal must close too rather than sit open on a space you just left.
-    it('leaves and closes the modal from your own row', async () => {
+    it('leaves and closes the modal from your own row once confirmed', async () => {
         mockLeave.mockResolvedValue(undefined);
         const onClose = jest.fn();
 
-        renderWithContext(
-            <PermissionsTab
-                space={space}
-                onClose={onClose}
-            />,
-            {state: {currentUser: {id: 'me', username: 'caleb'}}},
-        );
+        renderTab(onClose, {currentUser: {id: 'me', username: 'caleb'}});
 
         fireEvent.click(screen.getByRole('button', {name: /Caleb/}));
         fireEvent.click(await screen.findByRole('menuitem', {name: 'Leave space'}));
 
-        expect(mockLeave).toHaveBeenCalled();
+        expect(mockLeave).not.toHaveBeenCalled();
+
+        await confirm(/Yes, leave space/);
+
+        await waitFor(() => expect(mockLeave).toHaveBeenCalled());
         await waitFor(() => expect(onClose).toHaveBeenCalled());
     });
 });

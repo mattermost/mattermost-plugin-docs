@@ -95,6 +95,7 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                 <MemberList
                     members={members}
                     avatarSize='sm'
+                    spaceTitle={space.title}
                     actions={actions}
                 />
             </Section>

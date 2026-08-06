@@ -1,10 +1,12 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {fireEvent, screen, waitFor} from '@testing-library/react';
+import {act, fireEvent, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 
 import {makeSpace} from 'store/test_fixtures';
+
+import {DocsModalController, closeAllDocsModals} from 'components/modals';
 
 import ShareSpaceModal from './share_space_modal';
 
@@ -44,55 +46,77 @@ jest.mock('hooks/user_search', () => ({
 const space = makeSpace('space-1', 'Engineering');
 const state = {currentUser: {id: 'me', username: 'caleb'}};
 
+// Removing and leaving confirm first, and the confirmation is rendered by the
+// imperative modal layer rather than inline, so it needs the controller mounted.
+const renderModal = (onClose = jest.fn()) => renderWithContext(
+    <>
+        <ShareSpaceModal
+            space={space}
+            onClose={onClose}
+        />
+        <DocsModalController/>
+    </>,
+    {state},
+);
+
+const confirm = async (name: RegExp) => {
+    fireEvent.click(await screen.findByRole('button', {name}));
+};
+
 describe('ShareSpaceModal', () => {
     beforeEach(() => jest.clearAllMocks());
 
+    afterEach(() => act(() => {
+        closeAllDocsModals();
+    }));
+
     it('lists the members with the current user marked', () => {
-        renderWithContext(
-            <ShareSpaceModal
-                space={space}
-                onClose={jest.fn()}
-            />,
-            {state},
-        );
+        renderModal();
 
         expect(screen.getByText('Caleb')).toBeInTheDocument();
         expect(screen.getByText('(You)')).toBeInTheDocument();
         expect(screen.getByText('Ada')).toBeInTheDocument();
     });
 
-    it('removes another member through the hook', async () => {
-        renderWithContext(
-            <ShareSpaceModal
-                space={space}
-                onClose={jest.fn()}
-            />,
-            {state},
-        );
+    it('removes another member through the hook once confirmed', async () => {
+        renderModal();
 
         fireEvent.click(screen.getByRole('button', {name: /Ada/}));
         fireEvent.click(await screen.findByRole('menuitem', {name: 'Remove from space'}));
 
-        expect(mockRemoveMember).toHaveBeenCalledWith('u2');
+        // The mutation waits on the confirmation.
+        expect(mockRemoveMember).not.toHaveBeenCalled();
+
+        await confirm(/Yes, remove/);
+
+        await waitFor(() => expect(mockRemoveMember).toHaveBeenCalledWith('u2'));
+    });
+
+    it('does not remove a member when the confirmation is cancelled', async () => {
+        renderModal();
+
+        fireEvent.click(screen.getByRole('button', {name: /Ada/}));
+        fireEvent.click(await screen.findByRole('menuitem', {name: 'Remove from space'}));
+        await confirm(/Cancel/);
+
+        expect(mockRemoveMember).not.toHaveBeenCalled();
     });
 
     // Leaving destroys your access to what is behind the modal, so the modal goes too.
-    it('leaves and closes the modal from your own row', async () => {
+    it('leaves and closes the modal from your own row once confirmed', async () => {
         mockLeave.mockResolvedValue(undefined);
         const onClose = jest.fn();
 
-        renderWithContext(
-            <ShareSpaceModal
-                space={space}
-                onClose={onClose}
-            />,
-            {state},
-        );
+        renderModal(onClose);
 
         fireEvent.click(screen.getByRole('button', {name: /Caleb/}));
         fireEvent.click(await screen.findByRole('menuitem', {name: 'Leave space'}));
 
-        expect(mockLeave).toHaveBeenCalled();
+        expect(mockLeave).not.toHaveBeenCalled();
+
+        await confirm(/Yes, leave space/);
+
+        await waitFor(() => expect(mockLeave).toHaveBeenCalled());
         await waitFor(() => expect(onClose).toHaveBeenCalled());
     });
 });
