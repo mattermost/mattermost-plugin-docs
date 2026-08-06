@@ -158,7 +158,6 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 	// repoint write a superseded scheme's role name, or a concurrent promotion/demotion flip admin
 	// status, mid-operation — so every one of them runs inside the space-keyed
 	// advisory lock, alongside the mutation itself.
-	var appErr *mmmodel.AppError
 	var newRoles string
 	var newSchemeAdmin bool
 	var resolvedRoles *schemeRoles
@@ -167,36 +166,30 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 		var rolesErr error
 		resolvedRoles, rolesErr = s.getSchemeRolesForChannel(space.ChannelId)
 		if rolesErr != nil {
-			appErr = storeAppError("SetSpaceMemberCapabilities", rolesErr)
-			return appErr
+			return storeAppError("SetSpaceMemberCapabilities", rolesErr)
 		}
 		newRoles, newSchemeAdmin = model.RolesForCapabilities(capabilities, resolvedRoles.UserRoleName)
 
 		target, memErr := s.client.Channel.GetMember(space.ChannelId, targetUserID)
 		if memErr != nil {
 			if errors.Is(memErr, pluginapi.ErrNotFound) {
-				appErr = mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(memErr)
-				return appErr
+				return mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(memErr)
 			}
-			appErr = mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memErr)
-			return appErr
+			return mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memErr)
 		}
 		if target.SchemeGuest {
-			appErr = mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.member.guest_not_assignable.app_error", nil, "", http.StatusBadRequest)
-			return appErr
+			return mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.member.guest_not_assignable.app_error", nil, "", http.StatusBadRequest)
 		}
 
 		adminAffected := target.SchemeAdmin || requestedAdmin
 		if adminAffected || selfTargeted {
 			if e := s.RequireSpaceAdminOrSysadmin("SetSpaceMemberCapabilities", space, actingUserID); e != nil {
-				appErr = e
 				return e
 			}
 		}
 
 		if target.SchemeAdmin && !newSchemeAdmin {
 			if e := s.requireNotLastAdmin("SetSpaceMemberCapabilities", space, targetUserID); e != nil {
-				appErr = e
 				return e
 			}
 		}
@@ -207,17 +200,13 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 		}
 		member, updErr := s.client.Channel.UpdateChannelMemberRoles(space.ChannelId, targetUserID, roles)
 		if updErr != nil {
-			appErr = mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.member.update_capabilities_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(updErr)
-			return appErr
+			return mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.member.update_capabilities_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(updErr)
 		}
 		updatedMember = member
 		return nil
 	})
 	if lockErr != nil {
-		if appErr != nil {
-			return nil, appErr
-		}
-		return nil, storeAppError("SetSpaceMemberCapabilities", lockErr)
+		return nil, membershipLockAppError("SetSpaceMemberCapabilities", lockErr)
 	}
 
 	// The scheme roles read under the lock still describe this channel: only
@@ -263,13 +252,11 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 	// concurrent promotion flip it mid-operation — so every one of them runs inside
 	// the space-keyed advisory lock, alongside the mutation itself. This applies to self-removal
 	// too, since the last-admin invariant covers the sole admin's self-leave.
-	var appErr *mmmodel.AppError
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
 		target, memErr := s.client.Channel.GetMember(space.ChannelId, userID)
 		if memErr != nil {
 			if !errors.Is(memErr, pluginapi.ErrNotFound) {
-				appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memErr)
-				return appErr
+				return mmmodel.NewAppError("RemoveSpaceMember", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memErr)
 			}
 			// Non-member target. Removing someone else means the caller already cleared the manage
 			// gate, so the space is not hidden from them and it is a plain 404, matching
@@ -281,17 +268,14 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 			// there is no existence left to hide and reporting the absent membership as 404 is both
 			// accurate and what the caller can act on.
 			if userID != actingUserID || space.ViewAccess == model.ViewAccessOpen {
-				appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(memErr)
-			} else {
-				appErr = existenceHidingForbidden("RemoveSpaceMember")
+				return mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(memErr)
 			}
-			return appErr
+			return existenceHidingForbidden("RemoveSpaceMember")
 		}
 
 		// Resolved before the scan below so an unauthorized caller is rejected without running it.
 		if target.SchemeAdmin {
 			if e := s.RequireSpaceAdminOrSysadmin("RemoveSpaceMember", space, actingUserID); e != nil {
-				appErr = e
 				return e
 			}
 		}
@@ -302,37 +286,28 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 			// Attributed to whichever invariant the caller is actually being held to, so the failure
 			// of the shared walk reports the same id each guard reported when it walked alone.
 			if target.SchemeAdmin {
-				appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.admin_count_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(guardErr)
-			} else {
-				appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.remove_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(guardErr)
+				return mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.admin_count_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(guardErr)
 			}
-			return appErr
+			return mmmodel.NewAppError("RemoveSpaceMember", "app.space.remove_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(guardErr)
 		}
 		if target.SchemeAdmin && !hasOtherAdmin {
-			appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.last_admin.app_error", nil, "", http.StatusConflict)
-			return appErr
+			return mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.last_admin.app_error", nil, "", http.StatusConflict)
 		}
 		if !hasOther {
-			appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.remove_member.last_member.app_error", nil, "", http.StatusConflict)
-			return appErr
+			return mmmodel.NewAppError("RemoveSpaceMember", "app.space.remove_member.last_member.app_error", nil, "", http.StatusConflict)
 		}
 		if err := s.client.Channel.DeleteMember(space.ChannelId, userID); err != nil {
 			if errors.Is(err, pluginapi.ErrNotFound) {
-				appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(err)
-				return appErr
+				return mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(err)
 			}
-			appErr = mmmodel.NewAppError("RemoveSpaceMember", "app.space.remove_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
-			return appErr
+			return mmmodel.NewAppError("RemoveSpaceMember", "app.space.remove_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 		}
 		return nil
 	})
 	if lockErr != nil {
-		if appErr != nil {
-			return appErr
-		}
 		// The store's own errors — notably the retryable ErrConflict a lock-acquisition timeout
 		// yields — keep their conventional status codes rather than collapsing to a 500.
-		return storeAppError("RemoveSpaceMember", lockErr)
+		return membershipLockAppError("RemoveSpaceMember", lockErr)
 	}
 	payload := map[string]any{"space_id": space.Id, "user_id": userID}
 	s.publishToChannels(wsEventSpaceMemberRemoved, payload, space.ChannelId)
