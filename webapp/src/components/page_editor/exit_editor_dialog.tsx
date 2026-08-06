@@ -24,6 +24,7 @@ const ExitEditorDialog = ({onPublish, onSaveDraft, onDiscard, onClose, busy = fa
     return (
         <GenericModal
             onClose={onClose}
+            headerDivider={false}
             ariaLabel={formatMessage({id: 'docs.editor.exit.title', defaultMessage: 'Save your changes?'})}
             title={
                 <FormattedMessage
@@ -64,7 +65,7 @@ const ExitEditorDialog = ({onPublish, onSaveDraft, onDiscard, onClose, busy = fa
                 </div>
             }
         >
-            <p>
+            <p className={styles.body}>
                 <FormattedMessage
                     id='docs.editor.exit.body'
                     defaultMessage='Publishing makes your changes visible to everyone with access to this space. A draft stays visible only to you.'

@@ -31,6 +31,7 @@ const PublishConflictDialog = ({currentPage, reason, onForcePublish, onClose, bu
     return (
         <GenericModal
             onClose={onClose}
+            headerDivider={false}
             ariaLabel={formatMessage({id: 'docs.editor.conflict.title', defaultMessage: 'This page changed while you were editing'})}
             title={
                 <FormattedMessage
@@ -61,7 +62,7 @@ const PublishConflictDialog = ({currentPage, reason, onForcePublish, onClose, bu
                 </div>
             }
         >
-            <p>
+            <p className={styles.body}>
                 {autosaveConflict ? (
                     <FormattedMessage
                         id='docs.editor.conflict.autosaveBody'

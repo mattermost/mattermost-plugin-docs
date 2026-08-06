@@ -7,6 +7,11 @@ import {useEffect, useMemo, useState} from 'react';
 
 import type {PageActiveEditors} from 'types/drafts';
 
+// A page with no editors serializes as null on some server builds, so never trust
+// the field to be an array.
+const editorsOf = (snapshot: PageActiveEditors): string[] =>
+    (Array.isArray(snapshot.active_editors) ? snapshot.active_editors : []);
+
 export function usePagePresence(spaceId: string, pageId: string, currentUserId: string): string[] {
     const [snapshot, setSnapshot] = useState<PageActiveEditors | null>(null);
 
@@ -39,7 +44,7 @@ export function usePagePresence(spaceId: string, pageId: string, currentUserId: 
                 return current;
             }
             return {
-                active_editors: event.active_editors,
+                active_editors: editorsOf(event),
                 snapshot_at: event.snapshot_at,
                 active_timeout_ms: event.active_timeout_ms,
             };
@@ -47,7 +52,7 @@ export function usePagePresence(spaceId: string, pageId: string, currentUserId: 
     }), [pageId]);
 
     useEffect(() => {
-        if (!snapshot || snapshot.active_timeout_ms <= 0 || snapshot.active_editors.length === 0) {
+        if (!snapshot || snapshot.active_timeout_ms <= 0 || editorsOf(snapshot).length === 0) {
             return undefined;
         }
 
@@ -68,6 +73,6 @@ export function usePagePresence(spaceId: string, pageId: string, currentUserId: 
             return [];
         }
 
-        return snapshot.active_editors.filter((id) => id !== currentUserId);
+        return editorsOf(snapshot).filter((id) => id !== currentUserId);
     }, [snapshot, now, currentUserId]);
 }
