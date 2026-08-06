@@ -3,10 +3,8 @@
 
 import type {MemberProfile} from 'hooks/members';
 import React from 'react';
-import {FormattedMessage} from 'react-intl';
-import {Avatar} from 'webapp_globals';
 
-import styles from './space_info_panel.module.scss';
+import {MemberList} from 'components/space_members';
 
 type Props = {
     members: MemberProfile[];
@@ -15,35 +13,14 @@ type Props = {
 /**
  * The panel's members view, reached from the info menu. Mirrors core's channel
  * members RHS: the roster on its own screen rather than inline on the root.
+ *
+ * Read-only — it passes no actions, so the shared roster renders no row menus.
  */
 const SpaceInfoMembers = ({members}: Props) => (
-    <div className={styles.memberList}>
-        {members.map((member) => (
-            <div
-                key={member.id}
-                className={styles.memberRow}
-            >
-                <Avatar
-                    url={member.avatarUrl}
-                    username={member.username}
-                    size='sm'
-                    name=''
-                />
-                <span className={styles.memberInfo}>
-                    <span className={styles.memberName}>{member.displayName}</span>
-                    {member.username && (
-                        <span className={styles.memberUsername}>
-                            <FormattedMessage
-                                id='docs.spaceInfo.handle'
-                                defaultMessage='@{username}'
-                                values={{username: member.username}}
-                            />
-                        </span>
-                    )}
-                </span>
-            </div>
-        ))}
-    </div>
+    <MemberList
+        members={members}
+        avatarSize='sm'
+    />
 );
 
 export default SpaceInfoMembers;

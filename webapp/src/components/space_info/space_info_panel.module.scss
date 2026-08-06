@@ -114,43 +114,6 @@
     transition: opacity 150ms ease;
 }
 
-.memberList {
-    display: flex;
-    flex-direction: column;
-}
-
-.memberRow {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 6px 0;
-}
-
-.memberInfo {
-    display: flex;
-    flex: 1 1 auto;
-    min-width: 0;
-    align-items: baseline;
-    gap: 6px;
-}
-
-.memberName {
-    overflow: hidden;
-    color: var(--center-channel-color);
-    font-size: 14px;
-    font-weight: 600;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.memberUsername {
-    overflow: hidden;
-    color: rgba(var(--center-channel-color-rgb), 0.64);
-    font-size: 14px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
 .meta {
     display: flex;
     flex-direction: column;
