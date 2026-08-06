@@ -1,4 +1,4 @@
-# Share modal: add and remove space members
+# Space members: add and remove, shared across surfaces
 
 Date: 2026-08-06
 Status: approved, ready for implementation planning
@@ -16,6 +16,18 @@ member. Member rows carry an `Admin ▾` trigger that is inert, and there is no 
 Two comments in `share_space_modal.tsx` state that the add-member API does not exist yet and is
 waiting on PR #10; both are wrong, and they are the reason the wiring was never done.
 
+The same roster has been written three times, and none of the copies work:
+
+- `share_space_modal.tsx` — rows with an inert `Admin ▾`, a real `PeoplePicker` wired to nothing.
+- `space_settings_modal.tsx`'s `PermissionsTab` — its own row markup, its own `@{username}` message
+  id, its own inert role trigger, and a search field that is a `div` with `aria-disabled` rather
+  than a combobox at all.
+- `space_info_members.tsx` — read-only rows, a third set of message ids and styles.
+
+So this is two jobs, and the second is why the first is worth doing carefully: make membership work,
+and make it work *once*. The membership internals become a single core that each surface wraps with
+its own chrome and its own affordances.
+
 This spec covers only membership: adding people, removing people, and leaving. Roles and space
 view-access remain scaffolding for PR #10 (MM-69269).
 
@@ -27,7 +39,10 @@ In scope:
 - Store action types and reducer cases for adding and removing one member.
 - A singular thunk for each mutation, plus a separate bulk add thunk composed from the singular one.
 - A hook that owns the toasts and the busy state.
-- An `Add` button in the Share modal, and a per-row menu offering Remove (or Leave on your own row).
+- A shared `components/space_members/` core: the roster, the row, the row menu, and the add field.
+- Three wrappers over that core — Share modal, Space Settings → Permissions, space info panel —
+  each with its own chrome, and only the Share modal and Permissions tab getting write affordances.
+- Extracting `PermissionsTab` out of the 592-line `space_settings_modal.tsx` into its own file.
 - Correcting the two stale comments.
 
 Out of scope:
@@ -36,12 +51,13 @@ Out of scope:
 - Space view-access — the `Public` / `Can View` footer controls (PR #10 `view_access`).
 - Flipping `canManageMembers`. It is already `true` via the dev override, and that override's
   comment stays accurate as the thing to revisit when real capabilities arrive.
-- `PeoplePicker` and its stylesheet. The multi-select chip UI it already has is exactly what this
-  flow needs; it is not touched.
+- `PeoplePicker`'s internals. Its multi-select chip UI is exactly what this flow needs; it moves
+  into the shared core unchanged apart from its import path.
 - Bulk remove. The bulk add thunk establishes the composition pattern; a bulk remove can follow the
   same shape if a surface ever needs it.
-- The space-info panel's member list. The hook is designed so that surface can reuse it later, but
-  this change does not touch it.
+- The Permissions tab's other sections — the public/private selector and the external-sharing
+  toggle. Both stay scaffolding for PR #10; only the people section is rebuilt on the core.
+- Anything in the settings modal's dirty/save flow. See "Immediacy" below.
 
 ## Server contract, as it exists today
 
@@ -202,37 +218,135 @@ useManageSpaceMembers(space: Space): {
 - `busy` is true while any mutation is in flight. It disables the Add button and the menus' action
   item (Remove / Leave). It does **not** disable the menu trigger — the menu still opens, so the
   role items remain readable and the disabled action is visibly the thing that is unavailable.
-- Toasts are raised here, not in the component, so the space-info panel can adopt the hook without
-  duplicating the error vocabulary.
+- Toasts are raised here, not in the components, so both writing surfaces get one error vocabulary
+  without either of them restating it.
 
 The hook is the only layer that knows about both profiles and messages. The thunks deal in ids and
-errors; the component deals in chips.
+errors; the core components deal in chips and rows.
 
-### Components
+Each writing wrapper calls the hook once and threads its returned functions into the core as
+`onAdd` / `actions`. The core never calls the hook itself — that keeps it a presentation layer with
+no opinion on where its data comes from, which is what lets the read-only panel use the same roster
+with no hook at all.
 
-`components/share_space_modal/share_space_modal.tsx`:
+### The shared core — `components/space_members/`
 
-- An `Add` button below the picker, enabled when `pending.length > 0 && !busy`. On click it calls
-  `addMembers(pending)` and sets `pending` to the returned failures — landed chips disappear,
-  failed ones stay visible next to the toast that explains them.
-- `excludeIds` keeps its current union of member ids and pending selections, so neither a current
-  member nor an already-picked person appears in the suggestions.
-- The two stale comments about there being no add-member API are removed. The remaining comment
-  narrows to what is still true: roles and view-access are PR #10 scaffolding.
+One place that knows what a space member looks like and what you can do to one. Each part answers a
+single question, and none of them know which surface is rendering them.
 
-`components/share_space_modal/member_row_menu.tsx`, new. Wraps the row's existing `Admin ▾` trigger
-in `components/menu`:
+```
+components/space_members/
+  member_list.tsx        roster: maps profiles to rows, owns the empty state
+  member_row.tsx         one member: avatar, name, @handle, (You), trailing slot
+  member_row_menu.tsx    the Admin ▾ menu: disabled roles + Remove / Leave
+  add_members_field.tsx  PeoplePicker + Add button + pending state
+  people_picker.tsx      moved from share_space_modal/, otherwise unchanged
+  space_members.module.scss
+  index.ts
+```
+
+`MemberList` takes the data and a description of the row's affordances, not a surface name:
+
+```ts
+type MemberListProps = {
+    members: MemberProfile[];
+    avatarSize: 'sm' | 'md';
+    showYouBadge?: boolean;
+
+    // Absent = read-only roster (the space info panel). Present = each row gets
+    // the role/remove menu, driven by these.
+    actions?: {
+        onRemove: (userId: string) => void;
+        onLeave: () => void;
+        disabled: boolean;
+    };
+};
+```
+
+Passing `actions` as an optional bag rather than a `readOnly` boolean is deliberate: a read-only
+roster is one that was given no actions, so there is no way to render a menu with nothing behind it,
+and no surface flag for the row to branch on.
+
+`AddMembersField` owns the whole add interaction — the picker, the chips, the `pending` state, the
+`Add` button, and putting failures back into `pending`:
+
+```ts
+type AddMembersFieldProps = {
+    excludeIds: string[];
+    onAdd: (users: MemberProfile[]) => Promise<MemberProfile[]>;  // resolves to failures
+    disabled: boolean;
+};
+```
+
+`onAdd` is `useManageSpaceMembers().addMembers` at both call sites. The field is what unions
+`excludeIds` with its own pending selections, so a consumer passes only the member ids and never has
+to know that pending selections exist.
+
+`MemberRowMenu` wraps the row's `Admin ▾` trigger in `components/menu`:
 
 - Role items (`Admin`, `Can edit`, `Can view`) render with `disabled`, carrying a comment that they
   light up with PR #10's capabilities. They are shown rather than hidden so the menu does not
   visibly change shape when that lands.
 - `Menu.Separator`, then the action: `Remove from space` with `destructive`, or `Leave space` on the
   current user's own row.
-- Leaving closes the modal on success; `useLeaveSpace` handles the navigation.
 
-The role labels currently sit inline in the modal's row markup. Moving them into this component is
-the only restructuring in this change, and it keeps the row from taking on a third responsibility
-alongside layout and identity display.
+#### i18n consolidation
+
+The core owns one set of message ids under `docs.spaceMembers.*`. The three per-surface duplicates
+of the same strings — `docs.share.handle`, `docs.spaceSettings.permissions.handle`,
+`docs.spaceInfo.handle`, and likewise for the role labels — are deleted. This is a deliberate
+translation-key change: the English defaults are identical, so nothing reads differently, but any
+existing translations for the old ids will need re-keying.
+
+### Wrappers
+
+What differs per surface is only chrome and which affordances are handed in:
+
+| | Share modal | Settings → Permissions | Space info panel |
+| --- | --- | --- | --- |
+| Add field | yes | yes, replacing the fake search `div` | no |
+| Row menu | yes | yes | no — read-only |
+| Avatar size | `md` | `sm` | `sm` |
+| `(You)` badge | yes | no | no |
+| Surrounding chrome | modal body | `<Section>` inside the tab | panel scroll area |
+| Leave closes | the modal | the modal | n/a |
+
+`components/share_space_modal/share_space_modal.tsx` becomes an `AddMembersField` plus a
+`MemberList` with actions. Its inline row markup, role trigger and chip wiring all move to the core.
+The two stale comments about there being no add-member API are removed; the remaining comment
+narrows to what is still true, that roles and view-access are PR #10 scaffolding.
+
+`components/space_settings_modal/permissions_tab.tsx`, extracted from the 592-line modal file.
+Same two components, wrapped in the existing `Section`. Its hand-rolled member rows and its
+`aria-disabled` pretend-search are deleted, which is the point of the port: the tab gains a working
+add and remove by using the core rather than by growing a second implementation of it. The
+public/private selector and external-sharing toggle above and below it are untouched.
+
+`components/space_info/space_info_members.tsx` becomes a `MemberList` with no `actions` — the
+read-only case that proves the core does not assume write affordances. This is the third duplicate;
+leaving it behind would mean shipping the consolidation and the thing it was meant to remove.
+
+#### Immediacy
+
+Membership changes apply immediately and must **not** join the settings modal's dirty/save flow. That
+footer is driven by `useInfoTab`, whose fields are edits to the space row that the user saves or
+discards as a set. A member add is a completed server action the moment it returns; routing it
+through `SaveChangesBar` would imply it could be discarded, which it cannot. The Permissions tab
+therefore never marks the modal dirty.
+
+### Sequencing
+
+The core is built with its first consumer, not before it and not after both:
+
+1. Data source, action types, reducer, thunks, hook — no UI.
+2. The core components, together with the Share modal wrapper. Building the core against one real
+   consumer keeps its props honest; building it speculatively invites a shape nothing needs.
+3. Port the Permissions tab. This is where the props get their second opinion — anything that turns
+   out to be Share-specific surfaces here and moves out of the core.
+4. Port the space info panel, exercising the no-`actions` path.
+
+Steps 3 and 4 are ports, not rewrites: if they need core changes beyond passing different props,
+that is a signal step 2 guessed wrong, and the fix belongs in the core.
 
 ## Error handling
 
@@ -266,9 +380,20 @@ fault, where a generic message is honest and a specific one would be guesswork.
 - `hooks/space_members.test.tsx` — `addMembers` maps failed ids back to the profiles it was given; a
   single 403 names the user while a multi-failure batch reports a count; a 409 from `removeMember`
   produces the last-member message rather than the generic one; `leave` delegates to `useLeaveSpace`.
-- `components/share_space_modal/share_space_modal.test.tsx` — Add is disabled with no chips and while
-  busy; clicking it calls the hook with the pending users; failed users remain as chips and
-  successful ones do not; a row for another user offers Remove; the current user's row offers Leave.
+- `components/space_members/member_list.test.tsx` — with `actions` each row has a menu; without
+  `actions` no menu renders anywhere; the `(You)` badge follows `showYouBadge`.
+- `components/space_members/add_members_field.test.tsx` — Add is disabled with no chips and while
+  disabled; clicking it calls `onAdd` with the pending users; failed users remain as chips and
+  successful ones do not; pending selections are excluded from suggestions alongside `excludeIds`.
+- `components/space_members/member_row_menu.test.tsx` — role items are disabled; another user's row
+  offers Remove, the current user's row offers Leave.
+- `components/share_space_modal/share_space_modal.test.tsx` — trimmed to the wrapper's own job: it
+  renders the add field and a roster with actions, and Leave closes the modal. The row and chip
+  behaviour is covered by the core's tests rather than re-asserted here.
+- `components/space_settings_modal/permissions_tab.test.tsx` — renders the add field and an
+  actionable roster; adding or removing a member does not mark the modal dirty (no `SaveChangesBar`).
+- The existing `space_settings_modal.test.tsx` keeps passing unchanged, which is the check that
+  extracting the tab into its own file changed nothing observable.
 
 ## Consequences
 
@@ -285,3 +410,14 @@ does not move.
 
 WebSocket events for both mutations are published server-side but the webapp registers no handlers
 yet, so a second client sees the change on its next fetch. That gap is not addressed here.
+
+Space Settings → Permissions gains working add and remove as a side effect of the port. That is
+intended — it is the same capability the Share modal gets, reached from a different place — but it
+does mean the Permissions tab stops being purely scaffolding, so its "Coming soon" affordances now
+sit next to controls that really work. The public/private selector and external-sharing toggle keep
+their disabled state and their coming-soon labels, which is what distinguishes them.
+
+Three surfaces now share one roster, so a change to the row — a role dropdown coming alive in
+PR #10, an avatar tweak, a new badge — lands everywhere at once. That is the payoff, and also the
+new risk: the core has no per-surface escape hatch by design, so a genuinely surface-specific need
+has to either become a prop or stay out of the core.
