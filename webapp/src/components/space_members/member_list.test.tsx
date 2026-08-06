@@ -66,4 +66,29 @@ describe('MemberList', () => {
 
         expect(screen.queryByText('@ada')).not.toBeInTheDocument();
     });
+
+    it('gives every row a menu when actions are supplied', () => {
+        renderWithContext(
+            <MemberList
+                members={members}
+                avatarSize='sm'
+                actions={{onRemove: jest.fn(), onLeave: jest.fn(), disabled: false}}
+            />,
+        );
+
+        expect(screen.getAllByRole('button', {name: /Ada|Grace/})).toHaveLength(2);
+    });
+
+    // Read-only is the absence of actions, not a flag — so there is no way to render
+    // a menu with nothing behind it.
+    it('renders no menu at all without actions', () => {
+        renderWithContext(
+            <MemberList
+                members={members}
+                avatarSize='sm'
+            />,
+        );
+
+        expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    });
 });

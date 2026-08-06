@@ -2,3 +2,4 @@
 // See LICENSE.txt for license information.
 
 export {default as MemberList} from './member_list';
+export type {MemberListActions} from './member_list';
