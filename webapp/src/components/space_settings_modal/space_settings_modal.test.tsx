@@ -35,6 +35,22 @@ jest.mock('hooks/members', () => ({
     useSpaceMemberProfiles: () => [],
 }));
 
+jest.mock('hooks/space_members', () => ({
+    useManageSpaceMembers: () => ({
+        addMembers: jest.fn(),
+        removeMember: jest.fn(),
+        leave: jest.fn(),
+        busy: false,
+    }),
+}));
+
+// AddMembersField (rendered by the extracted PermissionsTab) pulls in the real
+// PeoplePicker, which reaches mattermost-redux's ESM user-search actions that Jest
+// can't transform. Stub at the hook boundary, as share_space_modal.test.tsx does.
+jest.mock('hooks/user_search', () => ({
+    useUserSearch: () => ({results: [], loading: false}),
+}));
+
 const space = makeSpace('space-1', 'Project Avalanche');
 
 describe('SpaceSettingsModal', () => {

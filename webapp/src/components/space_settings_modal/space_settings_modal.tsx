@@ -1,23 +1,17 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {useSpaceMemberProfiles} from 'hooks/members';
 import {useDocsNavigation} from 'hooks/navigation';
 import {useAppDispatch, useAppSelector} from 'hooks/redux';
 import React, {useEffect, useMemo, useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {SpaceIcon} from 'utils/space_icon';
-import {Avatar} from 'webapp_globals';
 
 import ArchiveOutlineIcon from '@mattermost/compass-icons/components/archive-outline';
-import ChevronDownIcon from '@mattermost/compass-icons/components/chevron-down';
 import CogOutlineIcon from '@mattermost/compass-icons/components/cog-outline';
 import FileTextOutlineIcon from '@mattermost/compass-icons/components/file-text-outline';
-import GlobeIcon from '@mattermost/compass-icons/components/globe';
 import HomeVariantOutlineIcon from '@mattermost/compass-icons/components/home-variant-outline';
 import InformationOutlineIcon from '@mattermost/compass-icons/components/information-outline';
-import LockOutlineIcon from '@mattermost/compass-icons/components/lock-outline';
-import MagnifyIcon from '@mattermost/compass-icons/components/magnify';
 import type IconProps from '@mattermost/compass-icons/components/props';
 import ShieldOutlineIcon from '@mattermost/compass-icons/components/shield-outline';
 
@@ -26,7 +20,6 @@ import {getPagesForSpace, getSpace} from 'store/selectors';
 
 import ConfirmModal from 'components/confirm_modal/confirm_modal';
 import {Button, DestructiveButton} from 'components/form_controls/button';
-import PublicPrivateSelector from 'components/form_controls/public_private_selector';
 import Select from 'components/form_controls/select';
 import type {SelectOption} from 'components/form_controls/select';
 import TextArea from 'components/form_controls/text_area';
@@ -38,6 +31,7 @@ import {Tab, TabList, TabPanel, Tabs, TabsSeparator} from 'components/tabs/tabs'
 import {SPACE_PROP_DEFAULT_PAGE_ID} from 'types/docs';
 import type {Space} from 'types/docs';
 
+import PermissionsTab from './permissions_tab';
 import styles from './space_settings_modal.module.scss';
 
 export type SpaceSettingsTab = 'info' | 'permissions' | 'configuration' | 'archive';
@@ -195,7 +189,7 @@ const SpaceSettingsModal = ({space, onClose, initialTab = 'info'}: Props) => {
     );
 };
 
-const Section = ({title, children}: {title: React.ReactNode; children: React.ReactNode}) => (
+export const Section = ({title, children}: {title: React.ReactNode; children: React.ReactNode}) => (
     <section className={styles.section}>
         <h2 className={styles.sectionTitle}>{title}</h2>
         {children}
@@ -371,134 +365,6 @@ const InfoTab = ({space, info, url}: {space: Space; info: InfoTabState; url: str
 
             {info.error && <div className={styles.error}>{info.error}</div>}
         </Section>
-    );
-};
-
-const PermissionsTab = ({space}: {space: Space}) => {
-    const {formatMessage} = useIntl();
-    const members = useSpaceMemberProfiles(space.id);
-
-    // Scaffolding: view-access and per-member capabilities land with PR #10, so
-    // the selector, search and role dropdowns are visual only.
-    const accessOptions = useMemo(() => [
-        {
-            value: 'public',
-            icon: <GlobeIcon size={20}/>,
-            title: formatMessage({id: 'docs.spaceSettings.permissions.public.title', defaultMessage: 'Public'}),
-            description: formatMessage({id: 'docs.spaceSettings.permissions.public.description', defaultMessage: 'Anyone in the team can find and view this space.'}),
-        },
-        {
-            value: 'private',
-            icon: <LockOutlineIcon size={20}/>,
-            title: formatMessage({id: 'docs.spaceSettings.permissions.private.title', defaultMessage: 'Private'}),
-            description: formatMessage({id: 'docs.spaceSettings.permissions.private.description', defaultMessage: 'Only invited members can view this space.'}),
-            disabled: true,
-            disabledReason: formatMessage({id: 'docs.spaceSettings.permissions.private.comingSoon', defaultMessage: 'Coming soon'}),
-        },
-    ], [formatMessage]);
-
-    return (
-        <>
-            <Section
-                title={(
-                    <FormattedMessage
-                        id='docs.spaceSettings.permissions.accessHeading'
-                        defaultMessage='Space access'
-                    />
-                )}
-            >
-                <PublicPrivateSelector
-                    ariaLabel={formatMessage({id: 'docs.spaceSettings.permissions.accessLabel', defaultMessage: 'Space access'})}
-                    options={accessOptions}
-                    value='public'
-                    onChange={() => {}}
-                />
-            </Section>
-
-            <Section
-                title={(
-                    <FormattedMessage
-                        id='docs.spaceSettings.permissions.peopleHeading'
-                        defaultMessage='People and groups with access'
-                    />
-                )}
-            >
-                <div
-                    className={styles.search}
-                    aria-disabled={true}
-                >
-                    <span className={styles.mutedIcon}>
-                        <MagnifyIcon size={16}/>
-                    </span>
-                    <FormattedMessage
-                        id='docs.spaceSettings.permissions.searchPlaceholder'
-                        defaultMessage='Add people, groups or channels'
-                    />
-                </div>
-                <div className={styles.memberList}>
-                    {members.map((member) => (
-                        <div
-                            key={member.id}
-                            className={styles.memberRow}
-                        >
-                            <Avatar
-                                url={member.avatarUrl}
-                                username={member.username}
-                                size='sm'
-                                name=''
-                            />
-                            <span className={styles.memberInfo}>
-                                <span className={styles.memberName}>{member.displayName}</span>
-                                {member.username && (
-                                    <span className={styles.memberUsername}>
-                                        <FormattedMessage
-                                            id='docs.spaceSettings.permissions.handle'
-                                            defaultMessage='@{username}'
-                                            values={{username: member.username}}
-                                        />
-                                    </span>
-                                )}
-                            </span>
-                            <span
-                                className={styles.roleTrigger}
-                                aria-disabled={true}
-                            >
-                                <FormattedMessage
-                                    id='docs.spaceSettings.permissions.role.admin'
-                                    defaultMessage='Admin'
-                                />
-                                <ChevronDownIcon size={12}/>
-                            </span>
-                        </div>
-                    ))}
-                </div>
-            </Section>
-
-            <section className={styles.section}>
-                <div className={styles.toggleRow}>
-                    <span className={styles.toggleText}>
-                        <span className={styles.toggleTitle}>
-                            <FormattedMessage
-                                id='docs.spaceSettings.permissions.externalSharing.title'
-                                defaultMessage='External sharing'
-                            />
-                        </span>
-                        <span className={styles.helper}>
-                            <FormattedMessage
-                                id='docs.spaceSettings.permissions.externalSharing.description'
-                                defaultMessage='Let people outside the team access this space with a link.'
-                            />
-                        </span>
-                    </span>
-                    <span className={styles.comingSoonPill}>
-                        <FormattedMessage
-                            id='docs.spaceSettings.permissions.externalSharing.comingSoon'
-                            defaultMessage='Coming soon'
-                        />
-                    </span>
-                </div>
-            </section>
-        </>
     );
 };
 
