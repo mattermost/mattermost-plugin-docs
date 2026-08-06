@@ -458,6 +458,11 @@ func TestHandleCancelImport_ReleasesAdmissionCapacity(t *testing.T) {
 	before, err := h.store.GetImportCapacity()
 	require.NoError(t, err)
 	require.Greater(t, before.ReservedStagedBytes, int64(0))
+	require.Greater(t, before.ReservedRetainedBytes, int64(0))
+
+	staged, err := h.store.CountImportStagedPages(jobID)
+	require.NoError(t, err)
+	require.Equal(t, 3, staged)
 
 	cancel := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/cancel", actorID, nil)
 	require.Equal(t, http.StatusAccepted, cancel.Code, cancel.Body.String())
@@ -469,7 +474,7 @@ func TestHandleCancelImport_ReleasesAdmissionCapacity(t *testing.T) {
 	require.Equal(t, int64(0), after.ReservedStagedBytes)
 
 	// The bodies are gone but the job and its issues survive for the report.
-	staged, err := h.store.CountImportStagedPages(jobID)
+	staged, err = h.store.CountImportStagedPages(jobID)
 	require.NoError(t, err)
 	require.Zero(t, staged)
 	job, err := h.store.GetImportJob(jobID)
@@ -477,6 +482,37 @@ func TestHandleCancelImport_ReleasesAdmissionCapacity(t *testing.T) {
 	require.Equal(t, model.ImportStateCanceled, job.State)
 	require.Equal(t, model.ImportIntentCanceled, job.TerminalIntent)
 	require.Zero(t, job.StagedBytes)
+
+	// Every staged page has a durable not-attempted outcome recorded before its identity was deleted:
+	// without this the report of a canceled job could not say which pages the bundle contained.
+	rows, err := h.db.Query(
+		`SELECT Ordinal, ExternalId, Title, ActualAction, Outcome FROM DOCS_ImportResult
+		   WHERE JobId = $1 AND Stage = 'execution' ORDER BY Ordinal`, jobID)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, rows.Close()) }()
+	seen := 0
+	for rows.Next() {
+		var ordinal int
+		var externalID, title, actualAction, outcome string
+		require.NoError(t, rows.Scan(&ordinal, &externalID, &title, &actualAction, &outcome))
+		require.Equal(t, seen, ordinal)
+		require.NotEmpty(t, externalID)
+		require.NotEmpty(t, title)
+		require.Equal(t, string(model.ImportActionNotAttempted), actualAction)
+		require.Equal(t, string(model.ImportOutcomeNotAttemptedCancel), outcome)
+		seen++
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, 3, seen)
+	require.Equal(t, 3, job.FinalSummary.Actions.NotAttempted)
+	require.Equal(t, 3, job.FinalSummary.Outcomes[string(model.ImportOutcomeNotAttemptedCancel)])
+
+	// The retained reservation is trued up to what the job actually holds. Leaving the full
+	// execution-sized reservation in place would keep the per-user budget occupied for the whole
+	// ninety-day retention window even though the job can never write another row.
+	require.Equal(t, job.RetainedBytes, job.RetainedReservedBytes)
+	require.Less(t, job.RetainedReservedBytes, before.ReservedRetainedBytes/10)
+	require.Equal(t, job.RetainedBytes, after.ReservedRetainedBytes)
 
 	// Cancelling twice is a conflict, not a second release.
 	again := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/cancel", actorID, nil)
@@ -512,6 +548,32 @@ func TestHandleCreateImport_AdmissionLimitsConcurrentJobs(t *testing.T) {
 	require.Equal(t, http.StatusCreated, retry.Code, retry.Body.String())
 }
 
+// TestHandleCancelImport_RepeatedCyclesDoNotExhaustRetainedBudget pins the failure mode that made
+// cancellation a slower version of the leak it was meant to fix: canceled jobs stay terminal for ninety
+// days and the per-actor retained sum has no state filter, so a reservation left at its admitted size
+// would lock the user out after roughly twenty upload/cancel cycles despite holding no live job at all.
+// Thirty cycles is comfortably past that threshold.
+func TestHandleCancelImport_RepeatedCyclesDoNotExhaustRetainedBudget(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+
+	for cycle := range 30 {
+		rec := h.uploadFixture(t, actorID, newTargetRequest(mmmodel.NewId()), importfixture.Options{Pages: 1})
+		require.Equal(t, http.StatusCreated, rec.Code, "cycle %d: %s", cycle, rec.Body.String())
+		jobID := decodeJobView(t, rec).Id
+		cancel := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/cancel", actorID, nil)
+		require.Equal(t, http.StatusAccepted, cancel.Code, "cycle %d: %s", cycle, cancel.Body.String())
+	}
+
+	// Thirty canceled jobs together hold less than a single one used to reserve, and staged capacity is
+	// back to zero.
+	capacity, err := h.store.GetImportCapacity()
+	require.NoError(t, err)
+	require.Zero(t, capacity.ReservedStagedBytes)
+	require.Less(t, capacity.ReservedRetainedBytes, int64(1024*1024))
+}
+
 func TestImportMaintenance_ExpiresAndReleases(t *testing.T) {
 	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
 	h := openTestPlugin(t, api)
@@ -536,11 +598,16 @@ func TestImportMaintenance_ExpiresAndReleases(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, counts.ExpiredJobs)
 	require.Greater(t, counts.ReleasedStagedBytes, int64(0))
+	// Expiry inherits cancellation's retained true-up, so an abandoned upload does not keep an
+	// execution-sized reservation alive for the terminal retention window.
+	require.Greater(t, counts.ReleasedRetainedBytes, int64(0))
 
 	job, err := h.store.GetImportJob(jobID)
 	require.NoError(t, err)
 	require.Equal(t, model.ImportStateCanceled, job.State)
 	require.Zero(t, job.StagedBytes)
+	// Expiry records the same durable outcomes an explicit cancel does.
+	require.Equal(t, 2, job.FinalSummary.Actions.NotAttempted)
 
 	capacity, err := h.store.GetImportCapacity()
 	require.NoError(t, err)

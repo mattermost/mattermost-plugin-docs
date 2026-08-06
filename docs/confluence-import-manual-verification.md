@@ -162,17 +162,28 @@ curl -sS -X POST "$API/imports/$JOB/cancel" -H "$AUTH" | jq '{id, state}'   # 20
 ```
 
 Uploading a fourth concurrent bundle returns `429` with `Retry-After`; cancelling one lets the next
-upload through. Cancelling deletes the staged page bodies and releases the reservation while keeping
-the job and its issues, so the report still reads back.
+upload through. Cancelling does three things worth checking separately:
+
+1. **It records what the bundle held before throwing it away.** Every staged page gets a durable
+   `execution` result row with outcome `not_attempted_canceled`, and the job's `FinalSummary` counts
+   them. Without this the staged rows — the only record of which pages the bundle contained — would be
+   deleted with no outcome behind them, and a canceled job's report could not name a single page.
+2. **It releases the staged reservation** and deletes the page bodies, while keeping the job, its
+   issues, and now its outcomes, so the report still reads back.
+3. **It trues the retained reservation down to actual usage.** Admission reserves a full execution's
+   worth of report rows up front; a terminal job can never write them, so holding that reservation for
+   the ninety-day retention window would lock the user out after roughly twenty upload/cancel cycles
+   despite them holding no live job. Repeat the upload/cancel pair thirty times and every upload must
+   still return `201`.
 
 The hourly maintenance sweep does the same automatically: any pre-execution job past its seven-day
-deadline is canceled with `job_expired`, terminal staged bodies are purged after seven days, and jobs
-are deleted after ninety — each step releasing what it held. One pass also runs at activation, so a
-restart reclaims anything abandoned while the server was down. Watch for:
+deadline is canceled with `job_expired` (outcomes and true-up included), terminal staged bodies are
+purged after seven days, and jobs are deleted after ninety — each step releasing what it held. One pass
+also runs at activation, so a restart reclaims anything abandoned while the server was down. Watch for:
 
 ```text
 Import maintenance pass completed  expired_jobs=1 purged_staged_jobs=0 deleted_jobs=0
-  released_staged_bytes=20480
+  released_staged_bytes=20480 released_retained_bytes=61411520
 ```
 
 ## 5. Verify the rejection paths
@@ -250,7 +261,8 @@ server hashed are the bytes you sent.
   received the upload:
 
 ```sql
-SELECT State, TerminalIntent, TargetKind, ProgressTotal, StagedBytes, RetainedReservedBytes
+SELECT State, TerminalIntent, TargetKind, ProgressTotal, StagedBytes, RetainedBytes,
+       RetainedReservedBytes
   FROM DOCS_ImportJob;
 SELECT COUNT(*) FROM DOCS_ImportStagedPage WHERE JobId = '<job id>';
 SELECT Ordinal, SourceLine, ExternalId, Restricted FROM DOCS_ImportStagedPage
@@ -258,8 +270,13 @@ SELECT Ordinal, SourceLine, ExternalId, Restricted FROM DOCS_ImportStagedPage
 -- Manifest users are worker input and must survive the request that uploaded them.
 SELECT Ordinal, AccountId, MattermostUsername FROM DOCS_ImportManifestUser WHERE JobId = '<job id>';
 SELECT Stage, Severity, Code FROM DOCS_ImportIssue WHERE JobId = '<job id>' ORDER BY Ordinal;
+-- After a cancel: one durable outcome per staged page, recorded before the pages were deleted.
+SELECT Ordinal, ExternalId, ActualAction, Outcome FROM DOCS_ImportResult
+  WHERE JobId = '<job id>' AND Stage = 'execution' ORDER BY Ordinal;
 -- Admission reserved this job's bytes on the shared singleton row.
--- Reservations must return to zero once every job is canceled, purged, or deleted.
+-- Reservations must return to zero once every job is canceled, purged, or deleted. A canceled job
+-- keeps only RetainedBytes: RetainedReservedBytes is trued up to match it, and the difference comes
+-- back to ReservedRetainedBytes here.
 SELECT * FROM DOCS_ImportCapacity;
 ```
 

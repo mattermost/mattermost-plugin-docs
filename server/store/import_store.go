@@ -5,6 +5,7 @@ package store
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"slices"
 
 	"github.com/jmoiron/sqlx"
@@ -78,20 +79,48 @@ const importRowBatchRows = 200
 // because three 512-byte identifiers alone would exceed any plausible flat figure.
 const importStagedRowOverheadBytes = 256
 
-// importRetainedRowBytes is the conservative budget for one durable report row (a result or an issue,
-// including its bounded Details JSON).
-const importRetainedRowBytes = 1024
+// importMandatoryResultsPerEntity is how many durable result rows one page or mapping is guaranteed to
+// need: a preflight outcome and an execution outcome. These are unconditional — a terminal job must
+// carry an outcome for every entity even when it never ran — so they are reserved at the worst-case row
+// size the model admits (model.ImportRetainedResultRowMaxBytes), never at an average.
+const importMandatoryResultsPerEntity = 2
 
-// importRetainedRowsPerEntity is how many durable rows one page or mapping may eventually produce:
-// a preflight result, an execution result, and a bounded number of issues in each of those two
-// stages. Reserving this per entity is what makes the "an admitted job can always record its
-// terminal outcome" guarantee real rather than aspirational.
-const importRetainedRowsPerEntity = 2 + 2*importRetainedIssuesPerEntity
+// importRetainedIssueBudgetBytes is the flat per-job allowance for the *discretionary* retained rows:
+// the preflight and execution issues explaining those outcomes. It is a budget, not an estimate, and
+// model.ImportJob.RetainedRemaining is what makes it binding — a report writer that would exceed it
+// aggregates instead of emitting more rows.
+//
+// It is flat rather than per-entity on purpose. Reserving the model's hard per-page issue cap
+// (model.ImportMaxIssueCodesPerPage codes in each of two stages) at worst-case row size would need
+// hundreds of megabytes for a single large bundle, which no admission budget could grant; a flat
+// allowance large enough for tens of thousands of realistic issues, with visible truncation past it,
+// is both honest and admissible.
+const importRetainedIssueBudgetBytes = int64(16 * 1024 * 1024)
 
-// importRetainedIssuesPerEntity is the per-entity, per-stage issue allowance folded into the
-// reservation. It is below the model's hard per-page code cap because aggregating repeated findings by
-// stable code keeps the realistic count small.
-const importRetainedIssuesPerEntity = 4
+// retainedIssueRowBytes returns the measured retained cost of one issue row. Measuring beats charging a
+// flat figure: issue text spans three orders of magnitude, so a flat charge would either exhaust the
+// budget on short rows or silently overrun it on long ones.
+func retainedIssueRowBytes(i *model.ImportIssueRecord, detailsBytes int) int64 {
+	return int64(len(i.Code) + len(i.EntityType) + len(i.ExternalId) + len(i.LocalId) +
+		len(i.Title) + len(i.Message) + len(i.Remediation) + detailsBytes + importRetainedRowFixedBytes)
+}
+
+// retainedManifestUserRowBytes returns the measured retained cost of one manifest-user row.
+func retainedManifestUserRowBytes(u *model.ImportManifestUser) int64 {
+	return int64(len(u.AccountId) + len(u.ConfluenceUsername) + len(u.MattermostUsername) +
+		importRetainedRowFixedBytes)
+}
+
+// retainedResultRowBytes returns the measured retained cost of one result row.
+func retainedResultRowBytes(r *model.ImportResultRecord, detailsBytes int) int64 {
+	return int64(len(r.EntityType) + len(r.ExternalId) + len(r.LocalId) + len(r.Title) +
+		len(r.PlannedAction) + len(r.ActualAction) + len(r.Outcome) + detailsBytes +
+		importRetainedRowFixedBytes)
+}
+
+// importRetainedRowFixedBytes is the per-row fixed cost added to every measured retained row: page
+// header share, job id, ordinal, and timestamps.
+const importRetainedRowFixedBytes = 128
 
 // ImportAdmissionLimits bounds aggregate import resource use. These are availability controls, not
 // worker coordination: exceeding one rejects a *new* upload but can never strand an already admitted
@@ -104,8 +133,13 @@ type ImportAdmissionLimits struct {
 	MaxStagedBytesPerTarget     int64
 	MaxStagedBytesGlobal        int64
 	// Retained bytes are the durable manifest-user, result, issue, and summary rows that outlive
-	// staged-body cleanup. They are reserved up front so an admitted job always has room for the
-	// mandatory terminal outcome it will eventually need to record.
+	// staged-body cleanup. The mandatory part — one outcome per entity, at the worst-case row size the
+	// model admits — is reserved up front, so an admitted job always has room to record what happened
+	// to every page it staged. The discretionary part (explanatory issues) is a flat allowance the
+	// report writers must charge against; see importRetainedIssueBudgetBytes.
+	//
+	// Terminal jobs are trued up to their measured usage (finalizeRetainedReservation), so a reservation
+	// this large is only ever held by jobs that could still write.
 	MaxRetainedBytesPerJob   int64
 	MaxRetainedBytesPerActor int64
 	MaxRetainedBytesGlobal   int64
@@ -195,6 +229,11 @@ type importStagingWriter struct {
 	issueRows  int
 	issueCount int
 
+	// retainedBytes is the measured size of the durable rows this upload wrote (manifest users and
+	// inspection issues). Unlike stagedBytes it is never released by cleanup, so the reservation the
+	// job carries for the rest of its life is built on top of it.
+	retainedBytes int64
+
 	maxStagedBytesPerJob int64
 }
 
@@ -264,6 +303,7 @@ func (w *importStagingWriter) AddManifestUser(u *model.ImportManifestUser) error
 	w.userBatch = w.userBatch.Values(w.jobID, u.Ordinal, u.AccountId, u.ConfluenceUsername, u.MattermostUsername)
 	w.userRows++
 	w.userCount++
+	w.retainedBytes += retainedManifestUserRowBytes(u)
 	if w.userRows >= importRowBatchRows {
 		return w.flushUsers()
 	}
@@ -293,12 +333,17 @@ func (w *importStagingWriter) AddIssue(i *model.ImportIssueRecord) error {
 	if validErr := i.IsValid(); validErr != nil {
 		return &ErrInvalidInput{Entity: "ImportIssue", Field: "IsValid", Value: validErr.Error(), Reason: validErr.Id}
 	}
+	detailsBytes, err := jsonByteLen(jsonbMap(i.Details))
+	if err != nil {
+		return err
+	}
 	w.issueBatch = w.issueBatch.Values(
 		w.jobID, string(i.Stage), i.Ordinal, string(i.Severity), i.Code,
 		i.EntityType, i.ExternalId, i.LocalId, i.Title, i.Message, i.Remediation, jsonbMap(i.Details),
 	)
 	w.issueRows++
 	w.issueCount++
+	w.retainedBytes += retainedIssueRowBytes(i, detailsBytes)
 	if w.issueRows >= importRowBatchRows {
 		return w.flushIssues()
 	}
@@ -342,6 +387,24 @@ func jsonByteLen(m mmmodel.StringInterface) (int, error) {
 		return len(t), nil
 	case []byte:
 		return len(t), nil
+	default:
+		return 0, nil
+	}
+}
+
+// summaryByteLen returns the serialized length of a jsonb summary column, for retained accounting. The
+// summaries are durable report content that outlives staged-body cleanup, so leaving them uncounted
+// would understate what a job permanently occupies.
+func summaryByteLen(v driver.Valuer) (int64, error) {
+	raw, err := v.Value()
+	if err != nil {
+		return 0, errors.Wrap(err, "unable_to_size_import_summary")
+	}
+	switch t := raw.(type) {
+	case string:
+		return int64(len(t)), nil
+	case []byte:
+		return int64(len(t)), nil
 	default:
 		return 0, nil
 	}
@@ -409,14 +472,26 @@ func (s *Store) CreateImportJobStreaming(
 	}
 	job.BundleSummary = summary
 
-	// Reserve a conservative retained budget covering every durable row this job may still write: a
-	// preflight and an execution result plus their issues for each staged page, and the same for the
-	// stale entries a full mapping set could contribute. Add what upload already retained (manifest
-	// users and inspection issues) so the reservation is never smaller than the actual usage.
+	// Reserve the retained budget. It has three parts, and only the first is already spent:
+	//
+	//  1. what this upload actually retained — measured manifest-user and inspection-issue rows plus
+	//     the serialized bundle summary, not a row count times a flat figure;
+	//  2. the mandatory per-entity outcomes still to come, at the worst-case row size the model
+	//     admits, for every staged page and for the stale entries a full mapping set could contribute;
+	//  3. one flat discretionary allowance for the issues that will explain those outcomes.
+	//
+	// Parts 2 and 3 are what make the "an admitted job always has room for its terminal outcome"
+	// guarantee real: part 2 can never be short, and part 3 is enforced by RetainedRemaining rather
+	// than assumed.
+	summaryBytes, err := summaryByteLen(job.BundleSummary)
+	if err != nil {
+		return nil, nil, err
+	}
 	job.StagedBytes = w.stagedBytes
-	job.RetainedBytes = int64(w.userCount+w.issueCount) * importRetainedRowBytes
-	job.RetainedReservedBytes = job.RetainedBytes +
-		int64(w.pageCount+model.ImportMaxMappingsPerSource)*importRetainedRowsPerEntity*importRetainedRowBytes
+	job.RetainedBytes = w.retainedBytes + summaryBytes
+	job.RetainedReservedBytes = job.RetainedBytes + importRetainedIssueBudgetBytes +
+		int64(w.pageCount+model.ImportMaxMappingsPerSource)*
+			importMandatoryResultsPerEntity*model.ImportRetainedResultRowMaxBytes
 	job.ProgressTotal = int64(w.pageCount)
 
 	if err = s.admitImportCapacity(tx, job, limits); err != nil {
@@ -753,23 +828,25 @@ var _ ImportStagingWriter = (*importStagingWriter)(nil)
 
 // --- cancellation, expiry, and capacity release ---
 
-// cancelableImportStates are the pre-execution states a job may be canceled from today. They are the
-// only states reachable in this milestone, and none of them can have written a page, so cancellation
-// reduces to marking the job canceled and releasing its staged reservation.
+// cancelableImportStates are the pre-execution states a job may be canceled from today. None of them
+// can have written a page, so cancellation never has to undo work — but it does still have to record
+// what the bundle contained before it throws the staged rows away.
 //
 // Once execution states exist, cancellation instead routes through terminalizing so the terminalizer
-// can record a durable not-attempted outcome for every staged page before the job becomes terminal;
-// this method deliberately refuses those states rather than short-circuiting that guarantee.
+// can also reconcile partially applied pages; this method deliberately refuses those states rather
+// than short-circuiting that reconciliation.
 var cancelableImportStates = []string{
 	string(model.ImportStateAwaitingSource),
 	string(model.ImportStateQueuedPreflight),
 	string(model.ImportStateAwaitingConfirmation),
 }
 
-// CancelImportJob transitions a pre-execution job to canceled, deletes its staged page bodies, and
-// releases the staged bytes it reserved — all in one transaction, so capacity is never lost to a
-// half-applied cancel. It returns ErrConflict when the job is not in a cancelable state (for example
-// because the worker already advanced it), which the caller surfaces as a 409.
+// CancelImportJob transitions a pre-execution job to canceled: it records a durable not-attempted
+// outcome for every staged page, writes the final summary, deletes the staged page bodies, and trues up
+// both reservations — all in one transaction, so capacity is never lost to a half-applied cancel and a
+// canceled job's report is never left unable to say which pages it held. It returns ErrConflict when the
+// job is not in a cancelable state (for example because the worker already advanced it), which the
+// caller surfaces as a 409.
 func (s *Store) CancelImportJob(jobID, actorID, errorCode string) (_ *model.ImportJob, err error) {
 	if jobID == "" {
 		return nil, &ErrInvalidInput{Entity: "ImportJob", Field: "id", Value: jobID}
@@ -800,7 +877,30 @@ func (s *Store) CancelImportJob(jobID, actorID, errorCode string) (_ *model.Impo
 	}
 
 	now := mmmodel.GetMillis()
+
+	// Record the durable outcomes first: releaseStagedBytes deletes the staged rows, and with them the
+	// only record of which pages the bundle contained. Every staged page must have a terminal outcome
+	// before the job becomes terminal, so this cannot be deferred to a later sweep.
+	notAttempted, err := s.recordNotAttemptedOutcomes(tx, &job, errorCode, now)
+	if err != nil {
+		return nil, err
+	}
+	finalSummary := model.ImportFinalSummary{
+		Manifest: job.BundleSummary.Counts,
+		Actions:  model.ImportActionCounts{NotAttempted: notAttempted},
+	}
+	if notAttempted > 0 {
+		finalSummary.Outcomes = map[string]int{string(model.ImportOutcomeNotAttemptedCancel): notAttempted}
+	}
+
 	if err = s.releaseStagedBytes(tx, &job, now); err != nil {
+		return nil, err
+	}
+
+	// Trueing up the retained reservation is what keeps cancellation from trading a fast capacity leak
+	// for a slow one: the job keeps only what it actually retained, so a canceled job no longer holds a
+	// whole execution's worth of budget for the ninety-day retention window.
+	if err = s.finalizeRetainedReservation(tx, &job, now); err != nil {
 		return nil, err
 	}
 
@@ -808,6 +908,7 @@ func (s *Store) CancelImportJob(jobID, actorID, errorCode string) (_ *model.Impo
 		Update("DOCS_ImportJob").
 		Set("State", string(model.ImportStateCanceled)).
 		Set("TerminalIntent", string(model.ImportIntentCanceled)).
+		Set("FinalSummary", finalSummary).
 		Set("CancelRequestedAt", now).
 		Set("FinishedAt", now).
 		Set("UpdateAt", monotonicBump("UpdateAt", now)).
@@ -826,9 +927,132 @@ func (s *Store) CancelImportJob(jobID, actorID, errorCode string) (_ *model.Impo
 
 	job.State = model.ImportStateCanceled
 	job.TerminalIntent = model.ImportIntentCanceled
+	job.FinalSummary = finalSummary
 	job.FinishedAt = now
 	job.StagedBytes = 0
 	return &job, nil
+}
+
+// importResultColumns are the DOCS_ImportResult columns, in insert order.
+var importResultColumns = []string{
+	"JobId", "Stage", "Ordinal", "EntityType", "ExternalId", "LocalId", "Title",
+	"PlannedAction", "ActualAction", "Outcome", "Details", "CreateAt", "UpdateAt",
+}
+
+// importStagedPageIdentity is the subset of a staged page needed to record its terminal outcome. Only
+// these columns are read so terminalizing a five-thousand-page job never pulls its bodies into memory.
+type importStagedPageIdentity struct {
+	Ordinal       int
+	ExternalId    string
+	Title         string
+	PlannedAction string
+}
+
+// recordNotAttemptedOutcomes writes one execution-stage not-attempted result for every staged page of a
+// job being canceled, and charges their measured size against the job's retained total. It returns how
+// many it wrote. Must be called inside tx, and before the staged rows are deleted.
+//
+// The rows are read and written in bounded batches keyed on Ordinal so the whole page set is never
+// materialized at once. Ordinal is the result table's key for the execution stage, so the ordinals carry
+// straight across and stay stable for a later report read.
+func (s *Store) recordNotAttemptedOutcomes(tx sqlx.ExtContext, job *model.ImportJob, errorCode string, now int64) (int, error) {
+	details := mmmodel.StringInterface{"canceled_from_state": string(job.State)}
+	if errorCode != "" {
+		details["reason"] = errorCode
+	}
+	detailsBytes, err := jsonByteLen(details)
+	if err != nil {
+		return 0, err
+	}
+
+	written := 0
+	lastOrdinal := -1
+	for {
+		var pages []importStagedPageIdentity
+		pageBuilder := s.getQueryBuilder().
+			Select("Ordinal", "ExternalId", "Title", "PlannedAction").
+			From("DOCS_ImportStagedPage").
+			Where(sq.Eq{"JobId": job.Id}).
+			Where(sq.Gt{"Ordinal": lastOrdinal}).
+			OrderBy("Ordinal ASC")
+		pageBuilder = applyLimitOffset(pageBuilder, 0, importRowBatchRows)
+		if err = s.selectBuilder(tx, &pages, pageBuilder); err != nil {
+			return written, errors.Wrap(err, "unable_to_list_import_staged_page_identities")
+		}
+		if len(pages) == 0 {
+			return written, nil
+		}
+
+		batch := s.getQueryBuilder().Insert("DOCS_ImportResult").Columns(importResultColumns...)
+		for _, p := range pages {
+			record := &model.ImportResultRecord{
+				JobId:         job.Id,
+				Stage:         model.ImportStageExecution,
+				Ordinal:       p.Ordinal,
+				EntityType:    model.ImportEntityTypePage,
+				ExternalId:    p.ExternalId,
+				Title:         p.Title,
+				PlannedAction: model.ImportAction(p.PlannedAction),
+				ActualAction:  model.ImportActionNotAttempted,
+				Outcome:       model.ImportOutcomeNotAttemptedCancel,
+				Details:       details,
+				CreateAt:      now,
+				UpdateAt:      now,
+			}
+			if validErr := record.IsValid(); validErr != nil {
+				return written, &ErrInvalidInput{Entity: "ImportResult", Field: "IsValid", Value: validErr.Error(), Reason: validErr.Id}
+			}
+			batch = batch.Values(
+				record.JobId, string(record.Stage), record.Ordinal, record.EntityType,
+				record.ExternalId, record.LocalId, record.Title,
+				string(record.PlannedAction), string(record.ActualAction), string(record.Outcome),
+				jsonbMap(record.Details), record.CreateAt, record.UpdateAt,
+			)
+			job.RetainedBytes += retainedResultRowBytes(record, detailsBytes)
+			lastOrdinal = p.Ordinal
+			written++
+		}
+		if _, err = s.execBuilder(tx, batch); err != nil {
+			if isUniqueViolation(err) {
+				return written, &ErrConflict{Resource: "ImportResult job_id=" + job.Id}
+			}
+			return written, errors.Wrap(err, "unable_to_save_import_results")
+		}
+	}
+}
+
+// finalizeRetainedReservation replaces a job's retained reservation with what it actually retained and
+// moves the difference on the shared capacity row. Once a job is terminal nothing more will be written
+// for it, so continuing to hold a reservation sized for a full execution would keep the per-user and
+// global retained budgets occupied for the whole retention window — the exact lockout admission exists
+// to prevent, arriving by a slower route.
+//
+// The delta is signed on purpose: if measured usage somehow exceeded the reservation, the accounting
+// grows to match rather than quietly under-reporting what the database is holding. Must be called inside
+// tx, and after every retained row for the job has been written and charged.
+func (s *Store) finalizeRetainedReservation(tx sqlx.ExtContext, job *model.ImportJob, now int64) error {
+	delta := job.RetainedReservedBytes - job.RetainedBytes
+	if delta == 0 {
+		return nil
+	}
+	capacityBuilder := s.getQueryBuilder().
+		Update("DOCS_ImportCapacity").
+		Set("ReservedRetainedBytes", sq.Expr("GREATEST(ReservedRetainedBytes - ?, 0)", delta)).
+		Set("UpdateAt", now).
+		Where(sq.Eq{"Id": 1})
+	if _, err := s.execBuilder(tx, capacityBuilder); err != nil {
+		return errors.Wrap(err, "unable_to_release_import_retained_capacity")
+	}
+	jobBuilder := s.getQueryBuilder().
+		Update("DOCS_ImportJob").
+		Set("RetainedBytes", job.RetainedBytes).
+		Set("RetainedReservedBytes", job.RetainedBytes).
+		Where(sq.Eq{"Id": job.Id})
+	if _, err := s.execBuilder(tx, jobBuilder); err != nil {
+		return errors.Wrap(err, "unable_to_finalize_import_retained_bytes")
+	}
+	job.RetainedReservedBytes = job.RetainedBytes
+	return nil
 }
 
 // importTerminalRetentionMillis is how long a terminal job's summaries, results, and issues are kept
@@ -871,10 +1095,14 @@ func (s *Store) releaseStagedBytes(tx sqlx.ExtContext, job *model.ImportJob, now
 
 // ImportCleanupCounts reports what one maintenance sweep did, for the operator log line.
 type ImportCleanupCounts struct {
-	ExpiredJobs         int
-	PurgedStagedJobs    int
-	DeletedJobs         int
-	ReleasedStagedBytes int64
+	ExpiredJobs      int
+	PurgedStagedJobs int
+	DeletedJobs      int
+	// ReleasedStagedBytes and ReleasedRetainedBytes are reported separately because they come back on
+	// different schedules: staged bytes are freed as soon as a job stops needing its input, while
+	// retained bytes only shrink to measured usage when the job goes terminal.
+	ReleasedStagedBytes   int64
+	ReleasedRetainedBytes int64
 }
 
 // importCleanupBatch bounds how many jobs one sweep touches per category, so a large backlog is
@@ -890,7 +1118,7 @@ const importCleanupBatch = 100
 // the normal case while no worker exists), and a healthy worker moves such a job within seconds, so
 // this can never race real progress. Execution states are deliberately excluded — those must go
 // through terminalization so every staged page gets a durable outcome first.
-func (s *Store) ExpireStalledImportJobs(now int64, errorCode string) (int, int64, error) {
+func (s *Store) ExpireStalledImportJobs(now int64, errorCode string) (int, int64, int64, error) {
 	builder := s.importJobSelectQuery().
 		Where(sq.Eq{"State": cancelableImportStates}).
 		Where(sq.LtOrEq{"RetainUntil": now}).
@@ -899,11 +1127,11 @@ func (s *Store) ExpireStalledImportJobs(now int64, errorCode string) (int, int64
 
 	jobs := []*model.ImportJob{}
 	if err := s.selectBuilder(s.db, &jobs, builder); err != nil {
-		return 0, 0, errors.Wrap(err, "unable_to_list_expired_import_jobs")
+		return 0, 0, 0, errors.Wrap(err, "unable_to_list_expired_import_jobs")
 	}
 
 	expired := 0
-	var released int64
+	var releasedStaged, releasedRetained int64
 	for _, job := range jobs {
 		// Cancel each job in its own transaction so one contended row cannot stall the whole sweep.
 		// An actorID of "" means "system", bypassing the ownership check.
@@ -913,13 +1141,13 @@ func (s *Store) ExpireStalledImportJobs(now int64, errorCode string) (int, int64
 				// The job advanced or vanished between the scan and the cancel; leave it to the next run.
 				continue
 			}
-			return expired, released, err
+			return expired, releasedStaged, releasedRetained, err
 		}
 		expired++
-		released += job.StagedBytes
-		_ = canceled
+		releasedStaged += job.StagedBytes
+		releasedRetained += job.RetainedReservedBytes - canceled.RetainedReservedBytes
 	}
-	return expired, released, nil
+	return expired, releasedStaged, releasedRetained, nil
 }
 
 // PurgeTerminalImportStagedBodies deletes staged page bodies for terminal jobs older than the body
