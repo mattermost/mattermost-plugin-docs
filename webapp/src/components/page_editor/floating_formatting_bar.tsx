@@ -2,13 +2,27 @@
 // See LICENSE.txt for license information.
 
 import {autoUpdate, flip, inline, offset, shift, useFloating} from '@floating-ui/react';
-import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
 import {hostGetEditor} from 'webapp_globals';
 import type {PublishedFormattingBarHandle, PublishedMarkdownMode} from 'webapp_globals';
 
 import styles from './floating_formatting_bar.module.scss';
 
 const GAP = 8;
+const TRACK_WIDTH = 660;
+const TRAILING_PAD = 7;
+
+const contentWidth = (container: HTMLElement): number | null => {
+    const laidOut = Array.from(container.children).
+        filter((child) => window.getComputedStyle(child).position !== 'absolute');
+    if (laidOut.length === 0) {
+        return null;
+    }
+
+    const left = container.getBoundingClientRect().left;
+    const right = Math.max(...laidOut.map((child) => child.getBoundingClientRect().right));
+    return Math.ceil(right - left) + TRAILING_PAD;
+};
 
 type Props = {
     editorRef: React.RefObject<HTMLElement>;
@@ -24,6 +38,8 @@ const FloatingFormattingBar = ({editorRef, applyFormatting, getEditor, barRef, a
     const rangeRef = useRef<Range | null>(null);
     const [open, setOpen] = useState(false);
     const [editorEl, setEditorEl] = useState<HTMLElement | null>(null);
+    const trackRef = useRef<HTMLDivElement | null>(null);
+    const [width, setWidth] = useState<number | null>(null);
 
     useEffect(() => setEditorEl(editorRef.current), [editorRef]);
 
@@ -56,6 +72,25 @@ const FloatingFormattingBar = ({editorRef, applyFormatting, getEditor, barRef, a
         wrapperRef.current = node;
         setFloating(node);
     }, [setFloating]);
+
+    useLayoutEffect(() => {
+        const container = trackRef.current?.firstElementChild as HTMLElement | null;
+        if (!container) {
+            return undefined;
+        }
+
+        const measure = () => setWidth((current) => contentWidth(container) ?? current);
+
+        measure();
+
+        const observer = new MutationObserver(measure);
+        observer.observe(container, {childList: true});
+        return () => observer.disconnect();
+    }, [additionalControls]);
+
+    useEffect(() => {
+        update();
+    }, [width, update]);
 
     const sync = useCallback(() => {
         const surface = editorRef.current;
@@ -110,17 +145,23 @@ const FloatingFormattingBar = ({editorRef, applyFormatting, getEditor, barRef, a
         <div
             ref={setWrapper}
             className={open ? styles.bar : `${styles.bar} ${styles.hidden}`}
-            style={floatingStyles}
+            style={{...floatingStyles, width: width ?? TRACK_WIDTH}}
             onMouseDown={onMouseDown}
         >
-            <FormattingBar
-                ref={barRef}
-                applyFormatting={applyFormatting}
-                disableControls={false}
-                location='docs'
-                getEditor={getEditor}
-                additionalControls={additionalControls}
-            />
+            <div
+                ref={trackRef}
+                className={styles.track}
+                style={{width: TRACK_WIDTH}}
+            >
+                <FormattingBar
+                    ref={barRef}
+                    applyFormatting={applyFormatting}
+                    disableControls={false}
+                    location='docs'
+                    getEditor={getEditor}
+                    additionalControls={additionalControls}
+                />
+            </div>
         </div>
     );
 };

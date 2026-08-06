@@ -2,6 +2,7 @@
 // See LICENSE.txt for license information.
 
 import {deletePageDraft, publishPageDraft, PublishConflictError} from 'client/drafts';
+import {RestError} from 'client/rest';
 import {useCaretAnchoredSuggestions} from 'hooks/caret_anchored_suggestions';
 import {useDraftAutosave} from 'hooks/draft_autosave';
 import {useDocsNavigation} from 'hooks/navigation';
@@ -195,7 +196,14 @@ const PageEditor = ({spaceId, pageId, isDraft}: Props) => {
             setShowExitDialog(false);
             leave();
         } catch (error) {
-            setActionError(error);
+            // The server answers 404 when there is no draft left to remove, which is
+            // the outcome discard asked for.
+            if (error instanceof RestError && error.status === 404) {
+                setShowExitDialog(false);
+                leave();
+            } else {
+                setActionError(error);
+            }
         } finally {
             busyRef.current = false;
             setBusy(false);
