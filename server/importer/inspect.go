@@ -95,16 +95,30 @@ type ManifestRestrictedPage struct {
 	Title string `json:"title"`
 }
 
-// InspectError is a hard failure that prevents a job from being created. It carries a stable code.
+// InspectError is a hard failure that prevents a job from being created. It carries a stable code, and
+// optionally the more specific error it was raised for.
 type InspectError struct {
 	Code    string
 	Message string
+	// Cause is the underlying failure, when one exists. It is preserved so a caller mapping errors onto
+	// an HTTP contract can reach the specific code — a document rejected for exceeding a size limit and
+	// one rejected as malformed both surface here as page_content_invalid, and only the cause tells them
+	// apart.
+	Cause error
 }
 
 func (e *InspectError) Error() string { return e.Message }
 
+// Unwrap exposes Cause to errors.As, which is what lets the more specific code drive the status.
+func (e *InspectError) Unwrap() error { return e.Cause }
+
 func inspectErr(code, format string, args ...any) *InspectError {
 	return &InspectError{Code: code, Message: fmt.Sprintf(format, args...)}
+}
+
+// inspectErrCausedBy is inspectErr for a failure raised from a more specific error worth preserving.
+func inspectErrCausedBy(code string, cause error, format string, args ...any) *InspectError {
+	return &InspectError{Code: code, Message: fmt.Sprintf(format, args...), Cause: cause}
 }
 
 // Stable inspection hard-failure codes.
@@ -137,6 +151,8 @@ const (
 	InspectErrTipTap               = "page_content_invalid"
 	InspectErrSpaceKeyMismatch     = "space_key_mismatch"
 	InspectErrSpaceKeyMissing      = "space_key_missing"
+	InspectErrSpaceNameTooLong     = "space_name_too_long"
+	InspectErrSpaceTextTooLong     = "space_text_too_long"
 	InspectErrCommentInvalid       = "comment_invalid"
 	InspectErrAttachmentPath       = "attachment_invalid_path"
 	InspectErrAttachmentID         = "attachment_invalid_source_id"
@@ -321,6 +337,16 @@ func Inspect(a *Archive, opts InspectOptions, sink StreamSink) (*InspectionSumma
 	}
 	if manifest.Source.OrganizationID != "" && !IsValidIdentifier(manifest.Source.OrganizationID, SpaceKeyMaxBytes) {
 		return nil, inspectErr(InspectErrSpaceKeyMismatch, "manifest source organization id is not a valid bounded identifier")
+	}
+	// The Space name is display text rather than an identifier, but it is still persisted (as
+	// ImportSource.ExternalSpaceName and inside the bundle summary), so it needs the same storability and
+	// size checks. Without them a NUL reaches PostgreSQL as a write failure and an unbounded value
+	// overflows the summary column — malformed input arriving as a 500 instead of a rejection.
+	if !IsStorableText(manifest.Source.SpaceName) {
+		return nil, inspectErr(InspectErrUnstorableText, "manifest source space name contains invalid UTF-8 or a NUL character")
+	}
+	if utf8.RuneCountInString(manifest.Source.SpaceName) > SpaceNameMaxRunes {
+		return nil, inspectErr(InspectErrSpaceNameTooLong, "manifest source space name exceeds %d characters", SpaceNameMaxRunes)
 	}
 
 	// Verify JSONL integrity before parsing anything from it.
@@ -659,10 +685,13 @@ func (p *streamParser) handleLine(raw []byte, lineNo int, restricted map[string]
 		if line.Version == nil || *line.Version != ContractVersion {
 			return inspectErr(InspectErrVersionValue, "line %d: version must be %d", lineNo, ContractVersion)
 		}
-		if line.Source != nil {
-			if err := requireSameSpaceKey("version.source.space_key", stringOrEmpty(line.Source.SpaceKey), p.manifest.Source.SpaceKey); err != nil {
-				return err
-			}
+		// The version line's source block is required, not optional: it is the bundle's own declaration of
+		// which source namespace every following line belongs to.
+		if line.Source == nil {
+			return inspectErr(InspectErrSpaceKeyMissing, "line %d: version line is missing its source block", lineNo)
+		}
+		if err := requireSameSpaceKey("version.source.space_key", stringOrEmpty(line.Source.SpaceKey), p.manifest.Source.SpaceKey); err != nil {
+			return err
 		}
 		p.summary.Version = *line.Version
 		p.state = stateSpace
@@ -731,6 +760,15 @@ func (p *streamParser) handleSpaceLine(space *SpaceData) error {
 	if !IsStorableText(title) || !IsStorableText(description) {
 		return inspectErr(InspectErrUnstorableText, "the space title or description contains invalid UTF-8 or a NUL character")
 	}
+	// Both are persisted (as the editable new-Space defaults and inside the bundle summary), so they are
+	// bounded here for the same reason the source Space name is: an unbounded value would otherwise
+	// surface as a column or summary write failure rather than a rejection.
+	if utf8.RuneCountInString(title) > SpaceTitleMaxRunes {
+		return inspectErr(InspectErrSpaceTextTooLong, "the space title exceeds %d characters", SpaceTitleMaxRunes)
+	}
+	if utf8.RuneCountInString(description) > SpaceDescriptionMaxRunes {
+		return inspectErr(InspectErrSpaceTextTooLong, "the space description exceeds %d characters", SpaceDescriptionMaxRunes)
+	}
 	p.summary.SpaceTitle = title
 	p.summary.SpaceDescription = description
 	return requireSameSpaceKey("space.props.import_source_id",
@@ -796,7 +834,10 @@ func (p *streamParser) handlePageLine(page *PageData, lineNo int, restricted map
 	}
 	canonicalBody, searchText, links, tErr := CanonicalizeAndExtractSearchText(content)
 	if tErr != nil {
-		return inspectErr(InspectErrTipTap, "line %d: page %q content invalid: %v", lineNo, externalID, tErr)
+		// Keep the TipTap error reachable: "too many nodes" and "not a doc" are the same inspection code
+		// but a different HTTP contract (an over-limit document is unprocessable, a malformed one is a
+		// bad request), and the distinction is only recoverable from the cause.
+		return inspectErrCausedBy(InspectErrTipTap, tErr, "line %d: page %q content invalid: %v", lineNo, externalID, tErr)
 	}
 
 	sourceCreateAt := int64OrZero(page.CreateAt)
@@ -1048,8 +1089,15 @@ func allowlistSourceProps(props map[string]any, externalID string, lineNo int) (
 // requireSameSpaceKey rejects a non-empty space key that differs from the manifest's. An empty value
 // is tolerated (some lines may omit it); only a present-and-different key is a mismatch.
 func requireSameSpaceKey(where, value, manifestKey string) error {
-	if value == "" || manifestKey == "" {
-		return nil
+	if manifestKey == "" {
+		// Unreachable in practice: parseManifest rejects an absent manifest key before any line is read.
+		return inspectErr(InspectErrSpaceKeyMissing, "%s cannot be checked because the manifest has no source space key", where)
+	}
+	// An absent mirror is a rejection, not a pass. Tolerating it left the bundle's own statement of which
+	// source namespace it belongs to unverified on exactly the lines that carry it, so a bundle could be
+	// staged against a namespace no line ever agreed to.
+	if value == "" {
+		return inspectErr(InspectErrSpaceKeyMissing, "%s is missing; every source namespace mirror must repeat the manifest space key (%q)", where, manifestKey)
 	}
 	if value != manifestKey {
 		return inspectErr(InspectErrSpaceKeyMismatch, "%s (%q) does not match manifest source space key (%q)", where, value, manifestKey)

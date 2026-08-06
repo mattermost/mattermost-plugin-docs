@@ -107,7 +107,10 @@ func (p *Plugin) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	file, size, sum, cleanup, bundleErr := writeBundleToTempFile(bundlePart)
-	_ = bundlePart.Close()
+	// Deliberately not Close(): multipart.Part.Close drains the unread remainder, which on a rejection
+	// (oversized archive, out-of-space temp file) means reading the rest of a possibly 250 MiB body the
+	// server has already decided to refuse. See abandonPart.
+	abandonPart(bundlePart)
 	if cleanup != nil {
 		// Remove the temp file and its directory on every return path, including success: the bundle
 		// is not needed after inspection.
@@ -277,6 +280,21 @@ func decodeImportRequestPart(part *multipart.Part) (*model.ImportUploadRequest, 
 	return &req, nil
 }
 
+// faultRecordingWriter remembers the first error its destination returned, so a caller of io.Copy can
+// tell a write-side failure from a read-side one and classify it accordingly.
+type faultRecordingWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (f *faultRecordingWriter) Write(p []byte) (int, error) {
+	n, err := f.w.Write(p)
+	if err != nil && f.err == nil {
+		f.err = err
+	}
+	return n, err
+}
+
 // writeBundleToTempFile streams the archive part to a 0600 file inside a freshly created 0700
 // directory, computing its SHA-256 while writing and enforcing the compressed-size cap. The returned
 // file is rewound and ready to be read as an io.ReaderAt; the returned cleanup removes both the file
@@ -303,13 +321,21 @@ func writeBundleToTempFile(part *multipart.Part) (_ *os.File, _ int64, _ string,
 	}
 
 	hasher := sha256.New()
+	// io.Copy reports one error for both sides of the transfer, so the destination is wrapped to record
+	// its own failures. Without that, a full or failing disk is indistinguishable from a truncated upload
+	// and gets blamed on the client as a 400 — an operational fault reported as a client error.
+	sink := &faultRecordingWriter{w: io.MultiWriter(file, hasher)}
 	// Read one byte past the cap so an exactly-oversized upload is still detected.
-	written, err := io.Copy(io.MultiWriter(file, hasher), io.LimitReader(part, importer.MaxBundleUploadBytes+1))
+	written, err := io.Copy(sink, io.LimitReader(part, importer.MaxBundleUploadBytes+1))
 	if err != nil {
-		if isMaxBytesError(err) {
+		switch {
+		case sink.err != nil:
+			return nil, 0, "", cleanup, mmmodel.NewAppError("writeBundleToTempFile", "api.import.temp_storage_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(sink.err)
+		case isMaxBytesError(err):
 			return nil, 0, "", cleanup, mmmodel.NewAppError("writeBundleToTempFile", "api.import.upload_too_large.app_error", nil, "", http.StatusRequestEntityTooLarge).Wrap(err)
+		default:
+			return nil, 0, "", cleanup, mmmodel.NewAppError("writeBundleToTempFile", "api.import.upload_read_failed.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 		}
-		return nil, 0, "", cleanup, mmmodel.NewAppError("writeBundleToTempFile", "api.import.upload_read_failed.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 	}
 	if written > importer.MaxBundleUploadBytes {
 		return nil, 0, "", cleanup, mmmodel.NewAppError("writeBundleToTempFile", "api.import.upload_too_large.app_error",

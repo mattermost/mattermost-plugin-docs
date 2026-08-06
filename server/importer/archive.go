@@ -5,6 +5,7 @@ package importer
 
 import (
 	"archive/zip"
+	"bufio"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -110,16 +111,21 @@ func OpenArchive(r io.ReaderAt, n int64) (*Archive, error) {
 	if n > MaxBundleUploadBytes {
 		return nil, archiveErr(ArchiveErrTooLarge, "archive is %d bytes, limit is %d", n, MaxBundleUploadBytes)
 	}
-	// Bound the entry count from the central-directory *header* before constructing the reader.
-	// zip.NewReader eagerly materializes a struct per entry, so checking len(zr.File) afterwards is
-	// too late: an archive whose 250 MiB is spent on millions of tiny central-directory records would
-	// already have consumed gigabytes by then.
-	declaredEntries, err := archiveEntryCount(r, n)
+	// Bound the entry count before constructing the reader: zip.NewReader eagerly materializes a
+	// struct per entry, so checking len(zr.File) afterwards is too late — an archive whose 250 MiB is
+	// spent on millions of tiny central-directory records would already have consumed gigabytes.
+	//
+	// The count must come from *counting actual records*, never from the trailer's declared total. Go's
+	// reader does not treat that total as a bound: it reads headers until one fails to parse and then
+	// compares only the low 16 bits ("only compare 16 bits here", archive/zip/reader.go), so an archive
+	// declaring 0 entries while shipping 65 536 of them passes its check. Reading a number the parser
+	// itself ignores would bound nothing.
+	entries, err := archiveEntryCount(r, n)
 	if err != nil {
 		return nil, err
 	}
-	if declaredEntries > MaxArchiveEntries {
-		return nil, archiveErr(ArchiveErrTooManyEntries, "archive declares %d entries, limit is %d", declaredEntries, MaxArchiveEntries)
+	if entries > MaxArchiveEntries {
+		return nil, archiveErr(ArchiveErrTooManyEntries, "archive has more than %d central-directory entries", MaxArchiveEntries)
 	}
 
 	zr, err := zip.NewReader(r, n)
@@ -196,7 +202,7 @@ func OpenArchive(r io.ReaderAt, n int64) (*Archive, error) {
 	return archive, nil
 }
 
-// ZIP structural constants used to read the entry count out of the archive trailer.
+// ZIP structural constants used to locate and walk the central directory.
 const (
 	eocdSignature       = 0x06054b50 // "PK\x05\x06" end of central directory
 	eocdLen             = 22
@@ -206,19 +212,92 @@ const (
 	zip64EOCDMinLen     = 56
 	maxZipCommentLen    = 65535
 	zip16BitEntrySignal = 0xFFFF // total-entries value meaning "see the ZIP64 record"
+	zip32SizeSignal     = 0xFFFFFFFF
+	cdHeaderSignature   = 0x02014b50 // "PK\x01\x02" central-directory file header
+	cdHeaderLen         = 46         // fixed part, before name/extra/comment
+	cdScanBufferBytes   = 64 * 1024
 )
 
-// archiveEntryCount reads the declared total number of central-directory entries from the archive
-// trailer, following the ZIP64 records when the 16-bit field is saturated. It reads at most ~64 KiB
-// plus one ZIP64 record, so it can bound the entry count before any per-entry allocation happens.
+// archiveEntryCount returns the number of central-directory records actually present, stopping as soon
+// as the count exceeds MaxArchiveEntries. Nothing in the trailer is trusted as a count: only the
+// directory's *location* is read from it, and the records are then walked.
+//
+// The walk is cheap and bounded — it stops after MaxArchiveEntries+1 records, and reads only each
+// record's 46-byte fixed header (skipping name, extra, and comment), so at most a couple of megabytes
+// are touched regardless of how the archive is shaped.
 func archiveEntryCount(r io.ReaderAt, n int64) (uint64, error) {
+	starts, err := directoryStartCandidates(r, n)
+	if err != nil {
+		return 0, err
+	}
+	// Go picks the directory start from the trailer with a fallback heuristic, so more than one offset
+	// can be the one it walks. Take the largest count across the candidates: over-counting a malformed
+	// archive only costs a rejection, whereas under-counting would reopen the allocation hole.
+	var most uint64
+	for _, start := range starts {
+		count, countErr := countDirectoryRecords(r, start, n)
+		if countErr != nil {
+			return 0, countErr
+		}
+		most = max(most, count)
+		if most > MaxArchiveEntries {
+			return most, nil
+		}
+	}
+	return most, nil
+}
+
+// countDirectoryRecords walks contiguous central-directory records from start, returning how many it
+// found. It stops at the first non-record byte sequence, at end of file, or once the count passes
+// MaxArchiveEntries — whichever comes first.
+func countDirectoryRecords(r io.ReaderAt, start, n int64) (uint64, error) {
+	if start < 0 || start >= n {
+		return 0, nil
+	}
+	section := io.NewSectionReader(r, start, n-start)
+	buffered := bufio.NewReaderSize(section, cdScanBufferBytes)
+	header := make([]byte, cdHeaderLen)
+
+	var count uint64
+	for {
+		if _, err := io.ReadFull(buffered, header); err != nil {
+			// A short or absent record simply ends the directory; that is a shape zip.NewReader will
+			// diagnose itself, and it is not this function's job to classify it.
+			return count, nil
+		}
+		if binary.LittleEndian.Uint32(header) != cdHeaderSignature {
+			return count, nil
+		}
+		count++
+		if count > MaxArchiveEntries {
+			// Stop immediately: the caller rejects, and walking further would be the very work this
+			// precheck exists to avoid.
+			return count, nil
+		}
+		skip := int64(binary.LittleEndian.Uint16(header[28:])) + // file name length
+			int64(binary.LittleEndian.Uint16(header[30:])) + // extra field length
+			int64(binary.LittleEndian.Uint16(header[32:])) // file comment length
+		if _, err := buffered.Discard(int(skip)); err != nil {
+			return count, nil
+		}
+	}
+}
+
+// directoryStartCandidates returns the offsets at which the central directory may begin, read from the
+// archive trailer. It reads at most ~64 KiB plus one ZIP64 record.
+//
+// Two candidates exist because archive/zip derives the directory start from a computed base offset
+// (end-of-directory offset minus the declared directory size) but falls back to the raw declared offset
+// when that base looks wrong — a concession to self-extracting archives with prepended data. Both are
+// returned so the caller can bound whichever one the reader ends up walking.
+func directoryStartCandidates(r io.ReaderAt, n int64) ([]int64, error) {
 	if n < eocdLen {
-		return 0, archiveErr(ArchiveErrUnreadable, "archive is too small to be a zip file")
+		return nil, archiveErr(ArchiveErrUnreadable, "archive is too small to be a zip file")
 	}
 	tailLen := min(int64(maxZipCommentLen+eocdLen), n)
 	tail := make([]byte, tailLen)
 	if _, err := r.ReadAt(tail, n-tailLen); err != nil {
-		return 0, archiveErr(ArchiveErrUnreadable, "failed to read zip trailer: %v", err)
+		return nil, archiveErr(ArchiveErrUnreadable, "failed to read zip trailer: %v", err)
 	}
 
 	// Scan backwards for the last EOCD whose declared comment length matches the remaining bytes; a
@@ -235,40 +314,59 @@ func archiveEntryCount(r io.ReaderAt, n int64) (uint64, error) {
 		}
 	}
 	if eocd < 0 {
-		return 0, archiveErr(ArchiveErrUnreadable, "archive has no end-of-central-directory record")
+		return nil, archiveErr(ArchiveErrUnreadable, "archive has no end-of-central-directory record")
 	}
+	eocdOffset := n - tailLen + int64(eocd)
 
 	entries := uint64(binary.LittleEndian.Uint16(tail[eocd+10:]))
-	if entries != zip16BitEntrySignal {
-		return entries, nil
+	dirSize := uint64(binary.LittleEndian.Uint32(tail[eocd+12:]))
+	dirOffset := uint64(binary.LittleEndian.Uint32(tail[eocd+16:]))
+
+	// Any saturated 32/16-bit field means the real values live in the ZIP64 record.
+	if entries == zip16BitEntrySignal || dirSize == zip32SizeSignal || dirOffset == zip32SizeSignal {
+		zip64Size, zip64Offset, ok, err := readZip64Directory(r, n, tail, eocd)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			dirSize, dirOffset = zip64Size, zip64Offset
+		}
+	}
+	// Reject values that cannot be in-file before converting. The archive is already bounded to
+	// MaxBundleUploadBytes, so anything at or above MaxInt64 is nonsense rather than a large archive.
+	if dirSize > math.MaxInt64 || dirOffset > math.MaxInt64 {
+		return nil, archiveErr(ArchiveErrUnreadable, "archive central-directory offset is out of range")
 	}
 
-	// Saturated 16-bit count: the real total lives in the ZIP64 end-of-central-directory record, found
-	// through the locator that sits immediately before the EOCD.
+	// The directory ends where the end-of-directory record begins, which is what makes this the
+	// primary candidate regardless of any prepended data.
+	return []int64{eocdOffset - int64(dirSize), int64(dirOffset)}, nil
+}
+
+// readZip64Directory reads the ZIP64 end-of-central-directory record through its locator, returning the
+// directory size and offset. ok is false when no usable locator is present, in which case the caller
+// keeps the 32-bit values.
+func readZip64Directory(r io.ReaderAt, n int64, tail []byte, eocd int) (dirSize, dirOffset uint64, ok bool, err error) {
 	locator := eocd - zip64LocatorLen
 	if locator < 0 || binary.LittleEndian.Uint32(tail[locator:]) != zip64LocatorSig {
-		// No locator: trust the saturated value, which already exceeds any sane entry limit.
-		return entries, nil
+		return 0, 0, false, nil
 	}
-	zip64Offset := binary.LittleEndian.Uint64(tail[locator+8:])
-	// Reject anything that cannot be a valid in-file offset before using it. Comparing in int64 space
-	// (rather than widening n) keeps the conversion provably safe: the archive is already bounded to
-	// MaxBundleUploadBytes, so any offset at or above MaxInt64 is nonsense.
-	if zip64Offset > math.MaxInt64 {
-		return 0, archiveErr(ArchiveErrUnreadable, "archive zip64 directory offset is out of range")
+	recordAt := binary.LittleEndian.Uint64(tail[locator+8:])
+	if recordAt > math.MaxInt64 {
+		return 0, 0, false, archiveErr(ArchiveErrUnreadable, "archive zip64 directory offset is out of range")
 	}
-	recordOffset := int64(zip64Offset)
+	recordOffset := int64(recordAt)
 	if n < zip64EOCDMinLen || recordOffset > n-zip64EOCDMinLen {
-		return 0, archiveErr(ArchiveErrUnreadable, "archive zip64 directory offset is out of range")
+		return 0, 0, false, archiveErr(ArchiveErrUnreadable, "archive zip64 directory offset is out of range")
 	}
 	record := make([]byte, zip64EOCDMinLen)
-	if _, err := r.ReadAt(record, recordOffset); err != nil {
-		return 0, archiveErr(ArchiveErrUnreadable, "failed to read zip64 directory: %v", err)
+	if _, readErr := r.ReadAt(record, recordOffset); readErr != nil {
+		return 0, 0, false, archiveErr(ArchiveErrUnreadable, "failed to read zip64 directory: %v", readErr)
 	}
 	if binary.LittleEndian.Uint32(record) != zip64EOCDSig {
-		return 0, archiveErr(ArchiveErrUnreadable, "archive zip64 directory record is malformed")
+		return 0, 0, false, archiveErr(ArchiveErrUnreadable, "archive zip64 directory record is malformed")
 	}
-	return binary.LittleEndian.Uint64(record[32:]), nil
+	return binary.LittleEndian.Uint64(record[40:]), binary.LittleEndian.Uint64(record[48:]), true, nil
 }
 
 // ReadManifest returns the decompressed manifest, enforcing MaxManifestBytes while reading. The

@@ -79,6 +79,9 @@ CREATE TABLE IF NOT EXISTS DOCS_ImportJob (
     StagedBytes               BIGINT NOT NULL DEFAULT 0,
     -- Actual durable manifest-user, result, issue, and summary bytes.
     RetainedBytes             BIGINT NOT NULL DEFAULT 0,
+    -- The discretionary (issue-row) share of RetainedBytes, tracked separately so issue writers are
+    -- bounded by their own flat allowance and cannot spend the capacity held for mandatory outcomes.
+    RetainedIssueBytes        BIGINT NOT NULL DEFAULT 0,
     -- Conservative budget reserved at upload for preflight and mandatory terminal report rows, so an
     -- admitted job can always afford its terminal outcome.
     RetainedReservedBytes     BIGINT NOT NULL DEFAULT 0,

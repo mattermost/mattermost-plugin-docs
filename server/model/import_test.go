@@ -294,16 +294,24 @@ func TestRetainedRowMaxBytes_CoverTheLargestValidRow(t *testing.T) {
 	}
 }
 
-// TestImportJob_RetainedRemaining covers the accessor that makes the discretionary issue allowance
+// TestImportJob_IssueBudgetRemaining covers the accessor that makes the discretionary issue allowance
 // binding rather than decorative: report writers consult it before emitting another row.
-func TestImportJob_RetainedRemaining(t *testing.T) {
-	job := &ImportJob{RetainedBytes: 400, RetainedReservedBytes: 1000}
-	if got := job.RetainedRemaining(); got != 600 {
-		t.Errorf("remaining = %d, want 600", got)
+//
+// It is measured against the issue allowance alone, never against the job's unspent reservation. A single
+// pooled figure would let issue writers spend the capacity held for mandatory outcomes, which is exactly
+// what the reservation exists to prevent.
+func TestImportJob_IssueBudgetRemaining(t *testing.T) {
+	job := &ImportJob{RetainedIssueBytes: 400, RetainedReservedBytes: 1 << 30}
+	if got := job.IssueBudgetRemaining(); got != ImportRetainedIssueBudgetBytes-400 {
+		t.Errorf("remaining = %d, want %d", got, ImportRetainedIssueBudgetBytes-400)
+	}
+	// A large unspent reservation must not widen the issue allowance.
+	if job.IssueBudgetRemaining() > ImportRetainedIssueBudgetBytes {
+		t.Errorf("issue budget must never exceed %d", ImportRetainedIssueBudgetBytes)
 	}
 	// Overrun clamps to zero rather than reporting negative headroom a caller might treat as room.
-	job.RetainedBytes = 1500
-	if got := job.RetainedRemaining(); got != 0 {
+	job.RetainedIssueBytes = ImportRetainedIssueBudgetBytes + 1
+	if got := job.IssueBudgetRemaining(); got != 0 {
 		t.Errorf("remaining = %d, want 0", got)
 	}
 }

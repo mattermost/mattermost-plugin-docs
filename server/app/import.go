@@ -338,10 +338,14 @@ var importContentLimitCodes = map[string]struct{}{
 	importer.InspectErrDepthExceeded:    {},
 	importer.InspectErrPageTitleTooLong: {},
 	importer.TipTapErrTooManyNodes:      {},
-	importer.TipTapErrSanitizerRejected: {},
 	importer.TipTapErrTooDeep:           {},
 	importer.TipTapErrBodyTooLarge:      {},
 	importer.TipTapErrSearchTooLarge:    {},
+	importer.InspectErrSpaceNameTooLong: {},
+	importer.InspectErrSpaceTextTooLong: {},
+	// TipTapErrSanitizerRejected is deliberately absent: content the sanitizer's allowlist refuses is
+	// malformed, not oversized, so it stays a 400. The sanitizer's own size and nesting rejections are
+	// translated into the specific codes above rather than collapsing into it.
 }
 
 // importArchiveSizeCodes are the failure codes that mean "the upload itself is too large", which the
@@ -371,18 +375,22 @@ func importFailureAppError(where string, err error) *mmmodel.AppError {
 }
 
 // importFailureCode extracts the stable code from an importer error, or "" for an unexpected one.
+// A TipTap error is checked before the inspection error that may wrap it, because it is the more
+// specific of the two: inspection reports every content rejection as page_content_invalid, which cannot
+// distinguish an over-limit document (422) from a malformed one (400). Taking the innermost code keeps
+// that distinction — and keeps the TipTap entries in importContentLimitCodes reachable instead of dead.
 func importFailureCode(err error) string {
 	var archiveErr *importer.ArchiveError
 	if errors.As(err, &archiveErr) {
 		return archiveErr.Code
 	}
-	var inspectErr *importer.InspectError
-	if errors.As(err, &inspectErr) {
-		return inspectErr.Code
-	}
 	var tiptapErr *importer.TipTapError
 	if errors.As(err, &tiptapErr) {
 		return tiptapErr.Code
+	}
+	var inspectErr *importer.InspectError
+	if errors.As(err, &inspectErr) {
+		return inspectErr.Code
 	}
 	return ""
 }
@@ -500,30 +508,72 @@ func (s *Service) GetImportJobsForActor(actorID, teamID string, page, perPage in
 		return nil, false, mmmodel.NewAppError("GetImportJobsForActor", "app.import.list.invalid_team_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	offset, limit := paginationOffsetLimit(page, perPage)
-	jobs, err := s.store.GetImportJobsForActor(actorID, teamID, offset, limit)
-	if err != nil {
-		return nil, false, storeAppError("GetImportJobsForActor", err)
-	}
-	jobs, hasMore := trimPage(jobs, limit)
 
-	views := make([]*model.ImportJobView, 0, len(jobs))
-	for _, job := range jobs {
-		// Jobs whose target the actor can no longer reach are omitted entirely rather than downgraded:
-		// a list is a discovery surface, and a placeholder row would still disclose that an import
-		// exists for a Space the caller has lost access to.
-		entitled, appErr := s.actorStillEntitled(job, actorID)
-		if appErr != nil {
-			return nil, false, appErr
+	// Entitlement cannot be expressed in SQL — it depends on live team and channel membership — so the
+	// page is assembled by scanning store rows and filtering, rather than by filtering a page that was
+	// already cut. Filtering after the cut is what produces sparse pages and a has_more computed from
+	// rows the caller never sees: a request for 20 could return 3 alongside has_more=false while entitled
+	// jobs sat just past the offset.
+	//
+	// Positions are therefore counted in *entitled* rows: offset entitled rows are skipped, then up to
+	// limit (perPage+1) are collected, so the probe row means what it means everywhere else in this
+	// repository.
+	views := make([]*model.ImportJobView, 0, limit)
+	skipped, scanned, storeOffset := 0, 0, 0
+	for len(views) < limit && scanned < importListScanLimit {
+		jobs, err := s.store.GetImportJobsForActor(actorID, teamID, storeOffset, importListScanBatch)
+		if err != nil {
+			return nil, false, storeAppError("GetImportJobsForActor", err)
 		}
-		if !entitled {
-			continue
+		if len(jobs) == 0 {
+			break
 		}
-		// The list view omits source candidates: they are a per-job interactive concern, and querying
-		// them per row would turn one listing into N queries.
-		views = append(views, buildImportJobViewWithoutCandidates(job))
+		storeOffset += len(jobs)
+		scanned += len(jobs)
+
+		for _, job := range jobs {
+			// Jobs whose target the actor can no longer reach are omitted entirely rather than downgraded:
+			// a list is a discovery surface, and a placeholder row would still disclose that an import
+			// exists for a Space the caller has lost access to.
+			entitled, appErr := s.actorStillEntitled(job, actorID)
+			if appErr != nil {
+				return nil, false, appErr
+			}
+			if !entitled {
+				continue
+			}
+			if skipped < offset {
+				skipped++
+				continue
+			}
+			// The list view omits source candidates: they are a per-job interactive concern, and querying
+			// them per row would turn one listing into N queries.
+			views = append(views, buildImportJobViewWithoutCandidates(job))
+			if len(views) == limit {
+				break
+			}
+		}
+		if len(jobs) < importListScanBatch {
+			break // the store is exhausted
+		}
 	}
+	// Hitting the scan cap means unexamined rows remain, so has-more is true either way: from the probe
+	// row when the page filled, or from the cap when it did not.
+	if scanned >= importListScanLimit && len(views) < limit {
+		trimmed, _ := trimPage(views, limit)
+		return trimmed, true, nil
+	}
+	views, hasMore := trimPage(views, limit)
 	return views, hasMore, nil
 }
+
+// Bounds for the entitlement-filtered job listing. Each scanned row costs an entitlement check (a team or
+// channel membership lookup), so the scan is capped: a caller deep into a long history of jobs they can no
+// longer reach gets an honest "there may be more" rather than an unbounded sweep.
+const (
+	importListScanBatch = 50
+	importListScanLimit = 500
+)
 
 // GetImportIssues returns one page of a job's persisted issues, for the actor that owns the job.
 func (s *Service) GetImportIssues(jobID, actorID, stage, severity string, page, perPage int) ([]*model.ImportIssue, bool, *mmmodel.AppError) {

@@ -669,3 +669,295 @@ func TestHandleGetImport_EntitlementLoss(t *testing.T) {
 	require.Equal(t, http.StatusOK, list.Code)
 	require.Contains(t, list.Body.String(), `"items":[]`)
 }
+
+// TestHandleCancelImport_RedactsAfterEntitlementLoss pins that cancelling is not a way around the read
+// path's redaction. Owning a job authorizes cancelling it, but not reading its target: without this,
+// an actor who had lost Space access could cancel and receive the target and selected-source projection
+// that GET deliberately withholds.
+func TestHandleCancelImport_RedactsAfterEntitlementLoss(t *testing.T) {
+	api := newEnabledMockAPI()
+	api.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
+	api.On("GetTeam", mock.Anything).Return(&mmmodel.Team{Id: mmmodel.NewId(), Name: "myteam"}, nil).Maybe()
+	api.On("HasPermissionToTeam", mock.Anything, mock.Anything, mock.Anything).Return(true).Maybe()
+	api.On("GetUser", mock.Anything).Return(&mmmodel.User{Id: mmmodel.NewId()}, nil).Maybe()
+	membership := api.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil)
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+	space := seedSpace(t, h.store, mmmodel.NewId())
+
+	rec := h.uploadFixture(t, actorID, existingTargetRequest(space.Id), importfixture.Options{Pages: 2})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	jobID := decodeJobView(t, rec).Id
+
+	// Revoke Space access, then cancel.
+	membership.Unset()
+	api.On("GetChannelMember", mock.Anything, mock.Anything).
+		Return(nil, mmmodel.NewAppError("GetChannelMember", "not_found", nil, "", http.StatusNotFound)).Maybe()
+
+	cancel := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/cancel", actorID, nil)
+	require.Equal(t, http.StatusAccepted, cancel.Code, cancel.Body.String())
+	view := decodeJobView(t, cancel)
+
+	// The cancel still happened, and its outcome is still reported.
+	require.Equal(t, model.ImportStateCanceled, view.State)
+	require.NotNil(t, view.Error)
+	require.Equal(t, "canceled_by_user", view.Error.Code)
+
+	// But nothing target- or source-identifying comes back.
+	require.Empty(t, view.Target.SpaceId)
+	require.Empty(t, view.Target.TeamId)
+	require.Nil(t, view.SelectedSource)
+	require.Zero(t, view.Bundle.Counts.Pages)
+	require.Empty(t, view.Bundle.Source.SpaceKey)
+
+	// The cancel is durable regardless of what the response disclosed.
+	job, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateCanceled, job.State)
+}
+
+// TestHandleCancelImport_PersistsErrorCode covers the job-level error code. It is what
+// ImportJobView.Error carries, including in the redacted projection, so leaving it unwritten made every
+// canceled job read back as though it had stopped for no stated reason.
+func TestHandleCancelImport_PersistsErrorCode(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
+	h := openTestPlugin(t, api)
+	actorID, teamID := mmmodel.NewId(), mmmodel.NewId()
+
+	rec := h.uploadFixture(t, actorID, newTargetRequest(teamID), importfixture.Options{Pages: 1})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	jobID := decodeJobView(t, rec).Id
+
+	cancel := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/cancel", actorID, nil)
+	require.Equal(t, http.StatusAccepted, cancel.Code)
+
+	// Present on the immediate response...
+	view := decodeJobView(t, cancel)
+	require.NotNil(t, view.Error)
+	require.Equal(t, "canceled_by_user", view.Error.Code)
+	// ...and on a subsequent read, which is what makes it durable rather than cosmetic.
+	got := h.do(t, http.MethodGet, "/api/v1/imports/"+jobID, actorID, nil)
+	require.Equal(t, http.StatusOK, got.Code)
+	require.NotNil(t, decodeJobView(t, got).Error)
+	require.Equal(t, "canceled_by_user", decodeJobView(t, got).Error.Code)
+
+	// The returned job mirrors every column the cancel wrote, rather than leaving some stale.
+	job, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, "canceled_by_user", job.ErrorCode)
+	require.Greater(t, job.CancelRequestedAt, int64(0))
+	require.Greater(t, job.RetainUntil, job.CreateAt)
+	require.Equal(t, job.FinishedAt, job.CancelRequestedAt)
+	require.NotZero(t, view.FinishedAt)
+	require.Equal(t, job.FinishedAt, view.FinishedAt)
+	require.Equal(t, job.UpdateAt, view.UpdateAt)
+}
+
+// TestHandleListImports_FiltersBeforePaginating pins page density and has_more accuracy. Filtering
+// entitlement after the page was cut produced sparse pages and a has_more computed from rows the caller
+// never saw: with unreachable jobs interleaved, a request for 2 could return 0 alongside has_more=false
+// while entitled jobs sat just past the offset.
+func TestHandleListImports_FiltersBeforePaginating(t *testing.T) {
+	api := newEnabledMockAPI()
+	api.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
+	api.On("GetTeam", mock.Anything).Return(&mmmodel.Team{Id: mmmodel.NewId(), Name: "myteam"}, nil).Maybe()
+	api.On("HasPermissionToTeam", mock.Anything, mock.Anything, mock.Anything).Return(true).Maybe()
+	api.On("GetUser", mock.Anything).Return(&mmmodel.User{Id: mmmodel.NewId()}, nil).Maybe()
+	// Space membership is granted for the uploads and revoked afterwards, which makes the
+	// existing-Space jobs unreachable while the new-Space jobs stay visible.
+	membership := api.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil)
+	h := openTestPlugin(t, api)
+	actorID, teamID := mmmodel.NewId(), mmmodel.NewId()
+
+	// Interleave reachable (new-Space) and soon-unreachable (existing-Space) jobs, cancelling each so the
+	// per-actor concurrency cap is not what limits the fixture.
+	var reachable []string
+	for range 3 {
+		space := seedSpace(t, h.store, mmmodel.NewId())
+		hidden := h.uploadFixture(t, actorID, existingTargetRequest(space.Id), importfixture.Options{Pages: 1})
+		require.Equal(t, http.StatusCreated, hidden.Code, hidden.Body.String())
+		h.do(t, http.MethodPost, "/api/v1/imports/"+decodeJobView(t, hidden).Id+"/cancel", actorID, nil)
+
+		visible := h.uploadFixture(t, actorID, newTargetRequest(teamID), importfixture.Options{Pages: 1})
+		require.Equal(t, http.StatusCreated, visible.Code, visible.Body.String())
+		id := decodeJobView(t, visible).Id
+		reachable = append(reachable, id)
+		h.do(t, http.MethodPost, "/api/v1/imports/"+id+"/cancel", actorID, nil)
+	}
+
+	membership.Unset()
+	api.On("GetChannelMember", mock.Anything, mock.Anything).
+		Return(nil, mmmodel.NewAppError("GetChannelMember", "not_found", nil, "", http.StatusNotFound)).Maybe()
+
+	// Page 0 of 2 must be full, and must report that more remain.
+	first := h.do(t, http.MethodGet, "/api/v1/imports?per_page=2&page=0", actorID, nil)
+	require.Equal(t, http.StatusOK, first.Code)
+	var firstPage paginatedResponse[model.ImportJobView]
+	require.NoError(t, json.Unmarshal(first.Body.Bytes(), &firstPage))
+	require.Len(t, firstPage.Items, 2, "a page must be filled with entitled jobs, not left sparse")
+	require.True(t, firstPage.HasMore)
+
+	// Page 1 holds the remaining entitled job and correctly reports the end of the list.
+	second := h.do(t, http.MethodGet, "/api/v1/imports?per_page=2&page=1", actorID, nil)
+	require.Equal(t, http.StatusOK, second.Code)
+	var secondPage paginatedResponse[model.ImportJobView]
+	require.NoError(t, json.Unmarshal(second.Body.Bytes(), &secondPage))
+	require.Len(t, secondPage.Items, 1)
+	require.False(t, secondPage.HasMore)
+
+	// Every entitled job appears exactly once across the two pages, and no unreachable one does.
+	seen := map[string]int{}
+	for _, item := range append(firstPage.Items, secondPage.Items...) {
+		seen[item.Id]++
+	}
+	require.Len(t, seen, 3)
+	for _, id := range reachable {
+		require.Equal(t, 1, seen[id], "job %s should appear exactly once", id)
+	}
+}
+
+// TestImportMaintenance_KeepsJobsAwaitingCompensation pins the retention exemption. A
+// pending_compensation attempt is the record of a Mattermost channel this import created and must still
+// clean up, and DOCS_ImportChannelAttempt cascades on job delete — so deleting the job at retention
+// would destroy the only pointer to an orphaned channel. The schema even carries a partial index over
+// exactly these rows, i.e. a work-list the cascade would silently empty.
+func TestImportMaintenance_KeepsJobsAwaitingCompensation(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
+	h := openTestPlugin(t, api)
+	actorID, teamID := mmmodel.NewId(), mmmodel.NewId()
+
+	rec := h.uploadFixture(t, actorID, newTargetRequest(teamID), importfixture.Options{Pages: 1})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	jobID := decodeJobView(t, rec).Id
+
+	cancel := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/cancel", actorID, nil)
+	require.Equal(t, http.StatusAccepted, cancel.Code)
+
+	// A channel was provisioned and still needs compensating.
+	_, err := h.db.Exec(
+		`INSERT INTO DOCS_ImportChannelAttempt (JobId, AttemptId, ChannelName, ChannelId, State, CreateAt, UpdateAt)
+		 VALUES ($1, $2, 'docs-import', $3, 'pending_compensation', 1, 1)`,
+		jobID, mmmodel.NewId(), mmmodel.NewId())
+	require.NoError(t, err)
+
+	// Push the job past its terminal retention.
+	_, err = h.db.Exec(`UPDATE DOCS_ImportJob SET RetainUntil = 1 WHERE Id = $1`, jobID)
+	require.NoError(t, err)
+
+	counts, err := h.plugin.service.RunImportMaintenance()
+	require.NoError(t, err)
+	require.Zero(t, counts.DeletedJobs, "a job whose channel still needs compensation must not be deleted")
+	require.Equal(t, 1, counts.KeptForCompensationJobs)
+
+	// The job and its attempt both survive, so compensation still has something to act on.
+	_, err = h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	var attempts int
+	require.NoError(t, h.db.QueryRow(
+		`SELECT COUNT(*) FROM DOCS_ImportChannelAttempt WHERE JobId = $1 AND State = 'pending_compensation'`,
+		jobID).Scan(&attempts))
+	require.Equal(t, 1, attempts)
+
+	// Once compensation resolves the attempt, the next sweep deletes the job as usual.
+	_, err = h.db.Exec(`UPDATE DOCS_ImportChannelAttempt SET State = 'compensated' WHERE JobId = $1`, jobID)
+	require.NoError(t, err)
+	counts, err = h.plugin.service.RunImportMaintenance()
+	require.NoError(t, err)
+	require.Equal(t, 1, counts.DeletedJobs)
+	require.Zero(t, counts.KeptForCompensationJobs)
+	_, err = h.store.GetImportJob(jobID)
+	require.Error(t, err)
+
+	capacity, err := h.store.GetImportCapacity()
+	require.NoError(t, err)
+	require.Zero(t, capacity.ReservedRetainedBytes)
+	require.Zero(t, capacity.ReservedStagedBytes)
+}
+
+// TestHandleCreateImport_SeparatesRetainedPools covers the two-pool accounting. A single "unspent
+// reservation" figure let issue writers consume the capacity held for mandatory outcomes, which is
+// exactly the shortfall the reservation exists to prevent, so the issue spend is tracked on its own.
+func TestHandleCreateImport_SeparatesRetainedPools(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
+	h := openTestPlugin(t, api)
+	actorID, teamID := mmmodel.NewId(), mmmodel.NewId()
+
+	rec := h.uploadFixture(t, actorID, newTargetRequest(teamID),
+		importfixture.Options{Pages: 4, WithFindings: true})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	job, err := h.store.GetImportJob(decodeJobView(t, rec).Id)
+	require.NoError(t, err)
+
+	// Inspection emitted issues, so the discretionary pool is non-empty and is a strict part of the total.
+	require.Greater(t, job.RetainedIssueBytes, int64(0))
+	require.Greater(t, job.RetainedBytes, job.RetainedIssueBytes)
+
+	// The issue allowance is measured against itself, never against the (much larger) unspent reservation.
+	require.Equal(t, int64(model.ImportRetainedIssueBudgetBytes)-job.RetainedIssueBytes, job.IssueBudgetRemaining())
+	require.LessOrEqual(t, job.IssueBudgetRemaining(), int64(model.ImportRetainedIssueBudgetBytes))
+	require.Less(t, job.IssueBudgetRemaining(), job.RetainedReservedBytes-job.RetainedBytes,
+		"the issue allowance must be smaller than the whole unspent reservation, or the pools are not separated")
+
+	// The reservation still covers the mandatory outcomes for every staged page plus a full mapping set.
+	mandatory := int64(4+model.ImportMaxMappingsPerSource) * 2 * model.ImportRetainedResultRowMaxBytes
+	require.GreaterOrEqual(t, job.RetainedReservedBytes, mandatory+int64(model.ImportRetainedIssueBudgetBytes))
+
+	// Cancelling charges the final summary before trueing up, so the trued-up figure is not short of the
+	// durable JSONB the job is actually holding.
+	cancel := h.do(t, http.MethodPost, "/api/v1/imports/"+job.Id+"/cancel", actorID, nil)
+	require.Equal(t, http.StatusAccepted, cancel.Code)
+	after, err := h.store.GetImportJob(job.Id)
+	require.NoError(t, err)
+	require.Equal(t, after.RetainedBytes, after.RetainedReservedBytes)
+	summaryBytes, err := after.FinalSummary.Value()
+	require.NoError(t, err)
+	summaryLen := int64(len(summaryBytes.(string)))
+	require.Greater(t, summaryLen, int64(0))
+	require.GreaterOrEqual(t, after.RetainedBytes, job.RetainedBytes+summaryLen,
+		"the final summary must be charged, not written for free")
+}
+
+// TestHandleCancelImport_RecordsOutcomesForPreflightOnlyEntities covers the entities that have a plan but
+// no staged page — chiefly the stale mappings preflight classifies, whose ordinals start above the page
+// range. Deriving outcomes only from staged pages would let those reach a terminal state with a recorded
+// plan and no recorded result.
+func TestHandleCancelImport_RecordsOutcomesForPreflightOnlyEntities(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
+	h := openTestPlugin(t, api)
+	actorID, teamID := mmmodel.NewId(), mmmodel.NewId()
+
+	rec := h.uploadFixture(t, actorID, newTargetRequest(teamID), importfixture.Options{Pages: 2})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	jobID := decodeJobView(t, rec).Id
+
+	// Stand in for what preflight will write: a stale entry with no staged page behind it.
+	staleOrdinal := model.ImportStaleOrdinalBase
+	_, err := h.db.Exec(
+		`INSERT INTO DOCS_ImportResult
+		   (JobId, Stage, Ordinal, EntityType, ExternalId, Title, PlannedAction, Outcome, CreateAt, UpdateAt)
+		 VALUES ($1, 'preflight', $2, 'page', '9001', 'Gone from the bundle', 'stale', 'stale', 1, 1)`,
+		jobID, staleOrdinal)
+	require.NoError(t, err)
+
+	cancel := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/cancel", actorID, nil)
+	require.Equal(t, http.StatusAccepted, cancel.Code, cancel.Body.String())
+
+	// Two pages plus the stale entry all carry an execution outcome.
+	var executionRows int
+	require.NoError(t, h.db.QueryRow(
+		`SELECT COUNT(*) FROM DOCS_ImportResult WHERE JobId = $1 AND Stage = 'execution'`, jobID).Scan(&executionRows))
+	require.Equal(t, 3, executionRows)
+
+	var staleOutcome, staleExternalID string
+	require.NoError(t, h.db.QueryRow(
+		`SELECT Outcome, ExternalId FROM DOCS_ImportResult
+		   WHERE JobId = $1 AND Stage = 'execution' AND Ordinal = $2`, jobID, staleOrdinal).
+		Scan(&staleOutcome, &staleExternalID))
+	require.Equal(t, string(model.ImportOutcomeNotAttemptedCancel), staleOutcome)
+	require.Equal(t, "9001", staleExternalID, "the stale entry's identity must carry across from preflight")
+
+	job, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, 3, job.FinalSummary.Actions.NotAttempted)
+	require.Equal(t, 1, job.FinalSummary.Actions.Stale)
+}

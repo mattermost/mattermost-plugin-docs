@@ -24,7 +24,7 @@ var importJobColumns = []string{
 	"TargetKind", "TargetSpaceId", "TargetSpaceExisted", "ConfirmedSpaceTitle", "ConfirmedSpaceDescription", "ProvisionedChannelId",
 	"SourceSelectionMode", "SelectedImportSourceId", "SelectedSourceDisplayName", "PreflightMappingRevision",
 	"State", "Phase", "TerminalIntent", "MappingInputsChanged", "InvalidationPending",
-	"ProgressCurrent", "ProgressTotal", "StagedBytes", "RetainedBytes", "RetainedReservedBytes",
+	"ProgressCurrent", "ProgressTotal", "StagedBytes", "RetainedBytes", "RetainedIssueBytes", "RetainedReservedBytes",
 	"BundleSha256", "BundleSummary", "PreflightSummary", "PreflightRevision", "Confirmation", "FinalSummary",
 	"ErrorCode", "ErrorMessage", "CancelRequestedAt",
 	"CreateAt", "UpdateAt", "ConfirmedAt", "StartedAt", "FinishedAt", "RetainUntil",
@@ -85,18 +85,6 @@ const importStagedRowOverheadBytes = 256
 // size the model admits (model.ImportRetainedResultRowMaxBytes), never at an average.
 const importMandatoryResultsPerEntity = 2
 
-// importRetainedIssueBudgetBytes is the flat per-job allowance for the *discretionary* retained rows:
-// the preflight and execution issues explaining those outcomes. It is a budget, not an estimate, and
-// model.ImportJob.RetainedRemaining is what makes it binding — a report writer that would exceed it
-// aggregates instead of emitting more rows.
-//
-// It is flat rather than per-entity on purpose. Reserving the model's hard per-page issue cap
-// (model.ImportMaxIssueCodesPerPage codes in each of two stages) at worst-case row size would need
-// hundreds of megabytes for a single large bundle, which no admission budget could grant; a flat
-// allowance large enough for tens of thousands of realistic issues, with visible truncation past it,
-// is both honest and admissible.
-const importRetainedIssueBudgetBytes = int64(16 * 1024 * 1024)
-
 // retainedIssueRowBytes returns the measured retained cost of one issue row. Measuring beats charging a
 // flat figure: issue text spans three orders of magnitude, so a flat charge would either exhaust the
 // budget on short rows or silently overrun it on long ones.
@@ -136,7 +124,7 @@ type ImportAdmissionLimits struct {
 	// staged-body cleanup. The mandatory part — one outcome per entity, at the worst-case row size the
 	// model admits — is reserved up front, so an admitted job always has room to record what happened
 	// to every page it staged. The discretionary part (explanatory issues) is a flat allowance the
-	// report writers must charge against; see importRetainedIssueBudgetBytes.
+	// report writers must charge against; see model.ImportJob.IssueBudgetRemaining.
 	//
 	// Terminal jobs are trued up to their measured usage (finalizeRetainedReservation), so a reservation
 	// this large is only ever held by jobs that could still write.
@@ -229,10 +217,12 @@ type importStagingWriter struct {
 	issueRows  int
 	issueCount int
 
-	// retainedBytes is the measured size of the durable rows this upload wrote (manifest users and
-	// inspection issues). Unlike stagedBytes it is never released by cleanup, so the reservation the
-	// job carries for the rest of its life is built on top of it.
-	retainedBytes int64
+	// Measured sizes of the durable rows this upload wrote, split by budget pool: mandatory rows
+	// (manifest users) against the job's own total, and issue rows against the flat issue allowance.
+	// Unlike stagedBytes neither is released by cleanup, so the reservation the job carries for the rest
+	// of its life is built on top of both.
+	retainedMandatoryBytes int64
+	retainedIssueBytes     int64
 
 	maxStagedBytesPerJob int64
 }
@@ -303,7 +293,7 @@ func (w *importStagingWriter) AddManifestUser(u *model.ImportManifestUser) error
 	w.userBatch = w.userBatch.Values(w.jobID, u.Ordinal, u.AccountId, u.ConfluenceUsername, u.MattermostUsername)
 	w.userRows++
 	w.userCount++
-	w.retainedBytes += retainedManifestUserRowBytes(u)
+	w.retainedMandatoryBytes += retainedManifestUserRowBytes(u)
 	if w.userRows >= importRowBatchRows {
 		return w.flushUsers()
 	}
@@ -343,7 +333,7 @@ func (w *importStagingWriter) AddIssue(i *model.ImportIssueRecord) error {
 	)
 	w.issueRows++
 	w.issueCount++
-	w.retainedBytes += retainedIssueRowBytes(i, detailsBytes)
+	w.retainedIssueBytes += retainedIssueRowBytes(i, detailsBytes)
 	if w.issueRows >= importRowBatchRows {
 		return w.flushIssues()
 	}
@@ -481,15 +471,24 @@ func (s *Store) CreateImportJobStreaming(
 	//  3. one flat discretionary allowance for the issues that will explain those outcomes.
 	//
 	// Parts 2 and 3 are what make the "an admitted job always has room for its terminal outcome"
-	// guarantee real: part 2 can never be short, and part 3 is enforced by RetainedRemaining rather
+	// guarantee real: part 2 can never be short, and part 3 is enforced by IssueBudgetRemaining rather
 	// than assumed.
+	//
+	// The issue allowance is reserved whole rather than as "what inspection has already spent", so the
+	// pools stay separable: a job's issue rows are bounded by the allowance and its mandatory outcomes by
+	// the rest, and neither can eat the other. Taking the larger of the allowance and actual inspection
+	// usage keeps the reservation at or above real usage even for a bundle whose findings alone exceed
+	// the allowance — such a job simply has no room left for preflight or execution issues, which
+	// IssueBudgetRemaining reports as zero rather than silently overrunning.
 	summaryBytes, err := summaryByteLen(job.BundleSummary)
 	if err != nil {
 		return nil, nil, err
 	}
 	job.StagedBytes = w.stagedBytes
-	job.RetainedBytes = w.retainedBytes + summaryBytes
-	job.RetainedReservedBytes = job.RetainedBytes + importRetainedIssueBudgetBytes +
+	job.RetainedIssueBytes = w.retainedIssueBytes
+	job.RetainedBytes = w.retainedMandatoryBytes + w.retainedIssueBytes + summaryBytes
+	job.RetainedReservedBytes = w.retainedMandatoryBytes + summaryBytes +
+		max(int64(model.ImportRetainedIssueBudgetBytes), w.retainedIssueBytes) +
 		int64(w.pageCount+model.ImportMaxMappingsPerSource)*
 			importMandatoryResultsPerEntity*model.ImportRetainedResultRowMaxBytes
 	job.ProgressTotal = int64(w.pageCount)
@@ -504,6 +503,7 @@ func (s *Store) CreateImportJobStreaming(
 		Set("ProgressTotal", job.ProgressTotal).
 		Set("StagedBytes", job.StagedBytes).
 		Set("RetainedBytes", job.RetainedBytes).
+		Set("RetainedIssueBytes", job.RetainedIssueBytes).
 		Set("RetainedReservedBytes", job.RetainedReservedBytes).
 		Set("BundleSummary", job.BundleSummary).
 		Where(sq.Eq{"Id": job.Id})
@@ -532,7 +532,7 @@ func (s *Store) insertImportJob(tx sqlx.ExtContext, job *model.ImportJob) error 
 			string(job.TargetKind), job.TargetSpaceId, job.TargetSpaceExisted, job.ConfirmedSpaceTitle, job.ConfirmedSpaceDescription, job.ProvisionedChannelId,
 			string(job.SourceSelectionMode), job.SelectedImportSourceId, job.SelectedSourceDisplayName, job.PreflightMappingRevision,
 			string(job.State), string(job.Phase), string(job.TerminalIntent), job.MappingInputsChanged, job.InvalidationPending,
-			job.ProgressCurrent, job.ProgressTotal, job.StagedBytes, job.RetainedBytes, job.RetainedReservedBytes,
+			job.ProgressCurrent, job.ProgressTotal, job.StagedBytes, job.RetainedBytes, job.RetainedIssueBytes, job.RetainedReservedBytes,
 			job.BundleSha256, job.BundleSummary, job.PreflightSummary, job.PreflightRevision, job.Confirmation, job.FinalSummary,
 			job.ErrorCode, job.ErrorMessage, job.CancelRequestedAt,
 			job.CreateAt, job.UpdateAt, job.ConfirmedAt, job.StartedAt, job.FinishedAt, job.RetainUntil,
@@ -877,21 +877,33 @@ func (s *Store) CancelImportJob(jobID, actorID, errorCode string) (_ *model.Impo
 	}
 
 	now := mmmodel.GetMillis()
+	previousState := job.State
 
 	// Record the durable outcomes first: releaseStagedBytes deletes the staged rows, and with them the
 	// only record of which pages the bundle contained. Every staged page must have a terminal outcome
 	// before the job becomes terminal, so this cannot be deferred to a later sweep.
-	notAttempted, err := s.recordNotAttemptedOutcomes(tx, &job, errorCode, now)
+	outcomes, err := s.recordNotAttemptedOutcomes(tx, &job, errorCode, now)
 	if err != nil {
 		return nil, err
 	}
 	finalSummary := model.ImportFinalSummary{
 		Manifest: job.BundleSummary.Counts,
-		Actions:  model.ImportActionCounts{NotAttempted: notAttempted},
+		Actions: model.ImportActionCounts{
+			NotAttempted: outcomes.pages + outcomes.stale,
+			Stale:        outcomes.stale,
+		},
 	}
-	if notAttempted > 0 {
-		finalSummary.Outcomes = map[string]int{string(model.ImportOutcomeNotAttemptedCancel): notAttempted}
+	if total := outcomes.pages + outcomes.stale; total > 0 {
+		finalSummary.Outcomes = map[string]int{string(model.ImportOutcomeNotAttemptedCancel): total}
 	}
+	// Charge the summary before the reservation is trued up: it is durable JSONB bounded at
+	// ImportSummaryMaxBytes, so leaving it uncounted would understate what the job permanently holds by
+	// exactly the amount the accounting is meant to track.
+	finalSummaryBytes, err := summaryByteLen(finalSummary)
+	if err != nil {
+		return nil, err
+	}
+	job.RetainedBytes += finalSummaryBytes
 
 	if err = s.releaseStagedBytes(tx, &job, now); err != nil {
 		return nil, err
@@ -908,12 +920,13 @@ func (s *Store) CancelImportJob(jobID, actorID, errorCode string) (_ *model.Impo
 		Update("DOCS_ImportJob").
 		Set("State", string(model.ImportStateCanceled)).
 		Set("TerminalIntent", string(model.ImportIntentCanceled)).
+		Set("ErrorCode", errorCode).
 		Set("FinalSummary", finalSummary).
 		Set("CancelRequestedAt", now).
 		Set("FinishedAt", now).
 		Set("UpdateAt", monotonicBump("UpdateAt", now)).
 		Set("RetainUntil", now+importTerminalRetentionMillis).
-		Where(sq.Eq{"Id": jobID, "State": string(job.State)})
+		Where(sq.Eq{"Id": jobID, "State": string(previousState)})
 	result, err := s.execBuilder(tx, updateBuilder)
 	if err != nil {
 		return nil, errors.Wrap(err, "unable_to_cancel_import_job")
@@ -925,10 +938,17 @@ func (s *Store) CancelImportJob(jobID, actorID, errorCode string) (_ *model.Impo
 		return nil, errors.Wrap(err, "commit_transaction")
 	}
 
+	// Mirror every column the statement above wrote, so the returned job is what a subsequent read would
+	// return rather than a half-stale copy. UpdateAt reproduces monotonicBump's GREATEST(UpdateAt+1, now)
+	// exactly, which is why it can be computed here instead of costing a re-read.
 	job.State = model.ImportStateCanceled
 	job.TerminalIntent = model.ImportIntentCanceled
+	job.ErrorCode = errorCode
 	job.FinalSummary = finalSummary
+	job.CancelRequestedAt = now
 	job.FinishedAt = now
+	job.UpdateAt = max(job.UpdateAt+1, now)
+	job.RetainUntil = now + importTerminalRetentionMillis
 	job.StagedBytes = 0
 	return &job, nil
 }
@@ -939,60 +959,101 @@ var importResultColumns = []string{
 	"PlannedAction", "ActualAction", "Outcome", "Details", "CreateAt", "UpdateAt",
 }
 
-// importStagedPageIdentity is the subset of a staged page needed to record its terminal outcome. Only
-// these columns are read so terminalizing a five-thousand-page job never pulls its bodies into memory.
-type importStagedPageIdentity struct {
+// importEntityIdentity is the subset of an entity needed to record its terminal outcome. Only these
+// columns are read so terminalizing a five-thousand-page job never pulls its bodies into memory.
+type importEntityIdentity struct {
 	Ordinal       int
 	ExternalId    string
 	Title         string
 	PlannedAction string
 }
 
-// recordNotAttemptedOutcomes writes one execution-stage not-attempted result for every staged page of a
-// job being canceled, and charges their measured size against the job's retained total. It returns how
-// many it wrote. Must be called inside tx, and before the staged rows are deleted.
+// importOutcomeCounts reports how many terminal outcomes were recorded, by the source that supplied the
+// entity's identity.
+type importOutcomeCounts struct {
+	// pages are outcomes derived from staged pages: the bundle's own content.
+	pages int
+	// stale are outcomes derived from preflight results with no staged page, i.e. mappings preflight
+	// classified as no longer present in the bundle.
+	stale int
+}
+
+// recordNotAttemptedOutcomes writes one execution-stage not-attempted result for every entity a job being
+// canceled has durable input for, and charges their measured size against the job's retained total. Must
+// be called inside tx, and before the staged rows are deleted.
 //
-// The rows are read and written in bounded batches keyed on Ordinal so the whole page set is never
-// materialized at once. Ordinal is the result table's key for the execution stage, so the ordinals carry
-// straight across and stay stable for a later report read.
-func (s *Store) recordNotAttemptedOutcomes(tx sqlx.ExtContext, job *model.ImportJob, errorCode string, now int64) (int, error) {
+// Two sources are covered, because a job's entities are not only its staged pages. Anything preflight
+// already classified — notably the stale mappings whose ordinals start at model.ImportStaleOrdinalBase —
+// has a preflight result but no staged page, and would otherwise reach a terminal state with a plan and
+// no outcome. Preflight rows are the authority for those: they are what preflight actually decided,
+// rather than a guess reconstructed from the mapping table.
+func (s *Store) recordNotAttemptedOutcomes(tx sqlx.ExtContext, job *model.ImportJob, errorCode string, now int64) (importOutcomeCounts, error) {
 	details := mmmodel.StringInterface{"canceled_from_state": string(job.State)}
 	if errorCode != "" {
 		details["reason"] = errorCode
 	}
 	detailsBytes, err := jsonByteLen(details)
 	if err != nil {
-		return 0, err
+		return importOutcomeCounts{}, err
 	}
 
+	var counts importOutcomeCounts
+	// Staged pages first: their ordinals are the execution stage's own key range.
+	stagedPages := s.getQueryBuilder().
+		Select("Ordinal", "ExternalId", "Title", "PlannedAction").
+		From("DOCS_ImportStagedPage")
+	counts.pages, err = s.recordOutcomesFrom(tx, job, stagedPages, details, detailsBytes, now)
+	if err != nil {
+		return counts, err
+	}
+
+	// Then anything preflight classified that has no staged page of its own. The anti-join is what makes
+	// this safe to run unconditionally: a page that produced both rows is counted once, above.
+	preflightOnly := s.getQueryBuilder().
+		Select("r.Ordinal", "r.ExternalId", "r.Title", "r.PlannedAction").
+		From("DOCS_ImportResult r").
+		Where(sq.Eq{"r.Stage": string(model.ImportStagePreflight)}).
+		Where(`NOT EXISTS (
+			SELECT 1 FROM DOCS_ImportStagedPage p WHERE p.JobId = r.JobId AND p.Ordinal = r.Ordinal
+		)`)
+	counts.stale, err = s.recordOutcomesFrom(tx, job, preflightOnly, details, detailsBytes, now)
+	return counts, err
+}
+
+// recordOutcomesFrom streams entity identities from one source query and writes a not-attempted execution
+// result for each. source must select (Ordinal, ExternalId, Title, PlannedAction) and is filtered by job
+// and paged on Ordinal here, so neither the read nor the write ever materializes the whole entity set.
+func (s *Store) recordOutcomesFrom(
+	tx sqlx.ExtContext,
+	job *model.ImportJob,
+	source sq.SelectBuilder,
+	details mmmodel.StringInterface,
+	detailsBytes int,
+	now int64,
+) (int, error) {
 	written := 0
 	lastOrdinal := -1
 	for {
-		var pages []importStagedPageIdentity
-		pageBuilder := s.getQueryBuilder().
-			Select("Ordinal", "ExternalId", "Title", "PlannedAction").
-			From("DOCS_ImportStagedPage").
-			Where(sq.Eq{"JobId": job.Id}).
-			Where(sq.Gt{"Ordinal": lastOrdinal}).
-			OrderBy("Ordinal ASC")
-		pageBuilder = applyLimitOffset(pageBuilder, 0, importRowBatchRows)
-		if err = s.selectBuilder(tx, &pages, pageBuilder); err != nil {
-			return written, errors.Wrap(err, "unable_to_list_import_staged_page_identities")
+		var entities []importEntityIdentity
+		builder := source.Where(sq.Eq{"JobId": job.Id}).Where(sq.Gt{"Ordinal": lastOrdinal}).OrderBy("Ordinal ASC")
+		builder = applyLimitOffset(builder, 0, importRowBatchRows)
+		if err := s.selectBuilder(tx, &entities, builder); err != nil {
+			return written, errors.Wrap(err, "unable_to_list_import_entity_identities")
 		}
-		if len(pages) == 0 {
+		if len(entities) == 0 {
 			return written, nil
 		}
 
 		batch := s.getQueryBuilder().Insert("DOCS_ImportResult").Columns(importResultColumns...)
-		for _, p := range pages {
+		for _, e := range entities {
 			record := &model.ImportResultRecord{
 				JobId:         job.Id,
 				Stage:         model.ImportStageExecution,
-				Ordinal:       p.Ordinal,
+				Ordinal:       e.Ordinal,
 				EntityType:    model.ImportEntityTypePage,
-				ExternalId:    p.ExternalId,
-				Title:         p.Title,
-				PlannedAction: model.ImportAction(p.PlannedAction),
+				ExternalId:    e.ExternalId,
+				Title:         e.Title,
+				PlannedAction: model.ImportAction(e.PlannedAction),
 				ActualAction:  model.ImportActionNotAttempted,
 				Outcome:       model.ImportOutcomeNotAttemptedCancel,
 				Details:       details,
@@ -1009,10 +1070,10 @@ func (s *Store) recordNotAttemptedOutcomes(tx sqlx.ExtContext, job *model.Import
 				jsonbMap(record.Details), record.CreateAt, record.UpdateAt,
 			)
 			job.RetainedBytes += retainedResultRowBytes(record, detailsBytes)
-			lastOrdinal = p.Ordinal
+			lastOrdinal = e.Ordinal
 			written++
 		}
-		if _, err = s.execBuilder(tx, batch); err != nil {
+		if _, err := s.execBuilder(tx, batch); err != nil {
 			if isUniqueViolation(err) {
 				return written, &ErrConflict{Resource: "ImportResult job_id=" + job.Id}
 			}
@@ -1098,6 +1159,10 @@ type ImportCleanupCounts struct {
 	ExpiredJobs      int
 	PurgedStagedJobs int
 	DeletedJobs      int
+	// KeptForCompensationJobs counts jobs past retention that were deliberately not deleted because a
+	// channel attempt still awaits compensation. Reported rather than skipped silently: a job that never
+	// leaves this count means compensation is stuck and an orphaned channel is waiting on it.
+	KeptForCompensationJobs int
 	// ReleasedStagedBytes and ReleasedRetainedBytes are reported separately because they come back on
 	// different schedules: staged bytes are freed as soon as a job stops needing its input, while
 	// retained bytes only shrink to measured usage when the job goes terminal.
@@ -1211,7 +1276,13 @@ func (s *Store) purgeOneJobStagedBodies(job *model.ImportJob, now int64) (err er
 // reservation each one held. Cascades take their staged pages, manifest users, channel attempts,
 // results, and issues; ImportSources and their page mappings are deliberately never touched, because
 // those are the durable identity a later reimport depends on.
-func (s *Store) DeleteExpiredImportJobs(now int64) (int, error) {
+//
+// It returns how many jobs it deleted and how many it deliberately left in place. A job holding a channel
+// attempt in pending_compensation is skipped: that row is the record of a Mattermost channel this import
+// created and must still clean up, and DOCS_ImportChannelAttempt cascades on job delete, so removing the
+// job would destroy the only pointer to an orphaned channel. Such a job stays until compensation
+// resolves the attempt, which is also why the second return value is reported rather than swallowed.
+func (s *Store) DeleteExpiredImportJobs(now int64) (int, int, error) {
 	builder := s.importJobSelectQuery().
 		Where(sq.Eq{"State": []string{
 			string(model.ImportStateCompleted), string(model.ImportStateCompletedWithIssues),
@@ -1223,24 +1294,44 @@ func (s *Store) DeleteExpiredImportJobs(now int64) (int, error) {
 
 	jobs := []*model.ImportJob{}
 	if err := s.selectBuilder(s.db, &jobs, builder); err != nil {
-		return 0, errors.Wrap(err, "unable_to_list_deletable_import_jobs")
+		return 0, 0, errors.Wrap(err, "unable_to_list_deletable_import_jobs")
 	}
 
-	deleted := 0
+	deleted, skipped := 0, 0
 	for _, job := range jobs {
-		if err := s.deleteOneImportJob(job, now); err != nil {
-			return deleted, err
+		removed, err := s.deleteOneImportJob(job, now)
+		if err != nil {
+			return deleted, skipped, err
 		}
-		deleted++
+		if removed {
+			deleted++
+		} else {
+			skipped++
+		}
 	}
-	return deleted, nil
+	return deleted, skipped, nil
 }
 
-// deleteOneImportJob deletes one job and releases both of its reservations atomically.
-func (s *Store) deleteOneImportJob(job *model.ImportJob, now int64) (err error) {
+// hasPendingCompensation reports whether a job still owns a channel attempt awaiting compensation. Must
+// be called inside tx, with the job row already locked, so the answer cannot change under the delete.
+func (s *Store) hasPendingCompensation(tx sqlx.ExtContext, jobID string) (bool, error) {
+	var pending int
+	builder := s.getQueryBuilder().
+		Select("COUNT(*)").
+		From("DOCS_ImportChannelAttempt").
+		Where(sq.Eq{"JobId": jobID, "State": string(model.ImportChannelPendingCompensation)})
+	if err := s.getBuilder(tx, &pending, builder); err != nil {
+		return false, errors.Wrap(err, "unable_to_count_import_channel_attempts")
+	}
+	return pending > 0, nil
+}
+
+// deleteOneImportJob deletes one job and releases both of its reservations atomically. It reports false
+// when the job was deliberately kept because compensation still needs its channel attempt.
+func (s *Store) deleteOneImportJob(job *model.ImportJob, now int64) (_ bool, err error) {
 	tx, err := s.db.Beginx()
 	if err != nil {
-		return errors.Wrap(err, "begin_transaction")
+		return false, errors.Wrap(err, "begin_transaction")
 	}
 	defer s.finalizeTransaction(tx, &err)
 
@@ -1248,9 +1339,19 @@ func (s *Store) deleteOneImportJob(job *model.ImportJob, now int64) (err error) 
 	lockBuilder := s.importJobSelectQuery().Where(sq.Eq{"Id": job.Id}).Suffix("FOR UPDATE")
 	if err = s.getBuilder(tx, &locked, lockBuilder); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil
+			return false, nil
 		}
-		return errors.Wrap(err, "unable_to_get_import_job")
+		return false, errors.Wrap(err, "unable_to_get_import_job")
+	}
+
+	pending, err := s.hasPendingCompensation(tx, locked.Id)
+	if err != nil {
+		return false, err
+	}
+	if pending {
+		// Keep the job (and therefore its attempt row) until compensation finishes. Its reservation stays
+		// held too, which is correct: the rows are still there.
+		return false, tx.Commit()
 	}
 
 	capacityBuilder := s.getQueryBuilder().
@@ -1260,12 +1361,12 @@ func (s *Store) deleteOneImportJob(job *model.ImportJob, now int64) (err error) 
 		Set("UpdateAt", now).
 		Where(sq.Eq{"Id": 1})
 	if _, err = s.execBuilder(tx, capacityBuilder); err != nil {
-		return errors.Wrap(err, "unable_to_release_import_capacity")
+		return false, errors.Wrap(err, "unable_to_release_import_capacity")
 	}
 
 	deleteBuilder := s.getQueryBuilder().Delete("DOCS_ImportJob").Where(sq.Eq{"Id": locked.Id})
 	if _, err = s.execBuilder(tx, deleteBuilder); err != nil {
-		return errors.Wrap(err, "unable_to_delete_import_job")
+		return false, errors.Wrap(err, "unable_to_delete_import_job")
 	}
-	return tx.Commit()
+	return true, tx.Commit()
 }
