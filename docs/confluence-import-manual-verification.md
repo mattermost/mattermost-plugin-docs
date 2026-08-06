@@ -4,14 +4,14 @@ This walks through exercising the import upload/inspection API by hand. It cover
 implemented today: a bundle can be uploaded, validated, and staged, and its findings can be read
 back.
 
-> **No page is written yet.** The preflight worker and page execution are not implemented, so an
-> accepted job stops at `awaiting_source` (existing-Space target) or `queued_preflight` (new-Space
-> target) and stays there. That is the expected end state for now — see
-> `implementation-plans/confluence-page-import.md`, phases 4 and 5.
+> **No page is written yet.** Upload, source selection, preflight, and confirmation all work, so a job
+> runs as far as `queued_import` and waits there: page execution is not implemented. That is the
+> expected end state for now — see `implementation-plans/confluence-page-import.md`, phase 5.
 >
 > **Single node only.** V1 is designed for one importer worker on one application node, and is
-> explicitly unsupported on clustered deployments until the HA follow-up lands. Only the hourly
-> maintenance sweep runs today; the job-processing worker arrives with phase 4.
+> explicitly unsupported on clustered deployments until the HA follow-up lands. The worker goroutine
+> processes jobs and runs the hourly maintenance sweep from the same loop, so cleanup never overlaps the
+> work whose capacity it reclaims.
 
 ## Prerequisites
 
@@ -196,6 +196,114 @@ Import maintenance pass completed  expired_jobs=1 purged_staged_jobs=0 deleted_j
   kept_for_compensation_jobs=0 released_staged_bytes=20480 released_retained_bytes=61411520
 ```
 
+## 4c. Choose an import source (existing Space only)
+
+An **ImportSource** is the local identity a Confluence space's page history is tracked against. It is
+what makes a second import of the same space an *update* rather than a duplicate. A new-Space target has
+exactly one possible identity and skips this step; an existing-Space target waits in `awaiting_source`
+until you pick one, and the worker deliberately does nothing until you do.
+
+`source_candidates` on the job scores existing sources in the Space by organization ID, space key,
+display-name similarity, last import time, and mapped-page count. **Nothing is ever selected
+automatically** — two Confluence instances can share all of those and still be different sources, so an
+automatic match could merge two unrelated page histories.
+
+```bash
+# Reuse an existing source, continuing its page history.
+curl -sS -X POST "$API/imports/$JOB/source" -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"mode":"existing","import_source_id":"<26-char-source-id>"}' | jq '{state, selected_source}'
+
+# Or start a fresh identity for this space.
+curl -sS -X POST "$API/imports/$JOB/source" -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"mode":"new","display_name":"Acme Confluence / DOCS"}' | jq '{state, selected_source}'
+```
+
+Expect `202` and `state: "queued_preflight"`. Things worth checking:
+
+- **A new source creates no row yet.** `selected_source.import_source_id` is reserved on the job, but
+  `SELECT * FROM DOCS_ImportSource` shows nothing new: an unconfirmed job must not leave an identity
+  behind for later jobs to match against. The row appears at execution.
+- **A source from another Space returns `404`, not `403`** — the endpoint cannot be used to probe which
+  sources exist elsewhere.
+- **Selecting twice returns `409`.**
+- **Mixing modes returns `400`** (`import_source_id` with `mode: new`, or vice versa).
+
+## 4d. Watch preflight run, then confirm
+
+The worker picks up `queued_preflight` within a couple of seconds. Preflight resolves authors, hashes
+every page's source content, compares it against the selected source's mappings, and publishes a plan
+all-or-nothing:
+
+```bash
+curl -sS "$API/imports/$JOB" -H "$AUTH" | jq '{state, preflight, required_acknowledgements}'
+curl -sS "$API/imports/$JOB/preflight-results?per_page=100" -H "$AUTH" \
+  | jq '.items[] | {external_id, title, planned_action, overwrite_eligible, structural_changes}'
+```
+
+Expect `state: "awaiting_confirmation"` and a `preflight.revision` — a 64-character digest of everything
+you were shown. The planned action per page follows the reimport table:
+
+| Source content | Local content | Planned action |
+|---|---|---|
+| unchanged | unchanged | `noop` |
+| changed | unchanged | `update` |
+| unchanged | changed | `preserve_local` |
+| changed | changed | `conflict` (approvable) |
+| no mapping | — | `create` |
+
+Structure is deliberately independent of content. A page moved in Confluence, or moved locally by a user,
+emits `source_parent_changed_not_applied` / `local_parent_changed_preserved` and keeps its current
+position — it does **not** become a content change. Folding either in would turn a safe body update into a
+conflict, or silently undo someone's reorganization.
+
+Pages are `blocked` rather than written when the mapped page was deleted (`mapped_target_missing`), moved
+to another Space (`mapped_target_wrong_space`), has no resolvable parent (`parent_mapping_missing`), or
+would breach the target's sibling/depth limits. Each carries a message and remediation on the issues
+endpoint.
+
+Then confirm, echoing the revision and every acknowledgement the job asked for:
+
+```bash
+curl -sS -X POST "$API/imports/$JOB/confirm" -H "$AUTH" -H 'Content-Type: application/json' -d '{
+  "preflight_revision": "<preflight.revision>",
+  "new_space": {"title": "Imported Docs", "description": "From Confluence"},
+  "acknowledgements": {
+    "confirm_new_space_metadata": true,
+    "page_only_partial_import": true,
+    "widen_restricted_pages": true,
+    "reimport_existing_pages": true
+  },
+  "overwrite_conflicts": ["101"]
+}' | jq '{state}'
+```
+
+Expect `202` and `state: "queued_import"`. The job stops there in this release.
+
+Rejections worth exercising, all before the point of no return:
+
+| Attempt | Result |
+|---|---|
+| A revision that is not the current one | `409` |
+| Omitting an acknowledgement the job listed | `400` naming the missing key |
+| An unrecognized acknowledgement key | `400` |
+| `new_space` on an existing-Space target, or omitting it for a new one | `400` |
+| An `overwrite_conflicts` id that is not a conflict of this job | `400` |
+| Confirming twice | `409` |
+| Another user confirming | `404` |
+
+**The stale-preflight path is worth seeing.** While a job sits in `awaiting_confirmation`, bump its
+source's revision as another import would:
+
+```sql
+UPDATE DOCS_ImportSource SET MappingRevision = MappingRevision + 1 WHERE Id = '<source id>';
+```
+
+Confirming now returns `409` with `app.import.confirm.preflight_stale_recomputing.app_error` inside the
+repository's shared conflict envelope (`{"error": {...}, "current_page": null}`). The job is already back
+in `queued_preflight` with its revision, summary, confirmation, and prior plan rows cleared — so the old
+plan cannot be confirmed, and the worker publishes a fresh revision within seconds. The browser never
+sends hashes: approval carries intent, and the server-owned baselines carry safety.
+
 ## 5. Verify the rejection paths
 
 Each mode breaks exactly one contract rule:
@@ -287,6 +395,22 @@ Import upload rejected: target authorization failed  actor_id=… target_kind=ne
 Cross-check `bundle_sha256` against the generator's `archive sha256` line to confirm the bytes the
 server hashed are the bytes you sent.
 
+The worker logs each preflight it publishes, with the plan's shape:
+
+```text
+Import preflight published  job_id=… actor_id=… target_space_id=… preflight_revision=…
+  mapping_revision=1 pages=4 results=4 issues=6 create=2 update=1 noop=0 preserve_local=0
+  conflict=1 blocked=0 stale=0
+Import source selected  job_id=… actor_id=… target_space_id=… mode=existing import_source_id=…
+Import confirmed  job_id=… actor_id=… preflight_revision=… mapping_revision=1 approved_overwrites=1
+```
+
+A preflight discarded because its inputs moved says so explicitly rather than failing:
+
+```text
+Import preflight discarded: source mappings changed during computation  job_id=… mapping_revision=1
+```
+
 ## 7. Confirm nothing was written and nothing was left behind
 
 - **No pages.** `GET /api/v1/spaces/{space_id}/pages` for an existing target is unchanged; a
@@ -304,6 +428,17 @@ SELECT State, TerminalIntent, ErrorCode, TargetKind, ProgressTotal, StagedBytes,
 SELECT COUNT(*) FROM DOCS_ImportStagedPage WHERE JobId = '<job id>';
 SELECT Ordinal, SourceLine, ExternalId, Restricted FROM DOCS_ImportStagedPage
   WHERE JobId = '<job id>' ORDER BY Ordinal;
+-- Preflight's plan, written back onto the staged rows. Every hash here is a reviewed baseline that
+-- execution rechecks under locks before applying anything.
+SELECT Ordinal, ExternalId, PlannedAction, PlannedPageId, ResolvedUserId, AuthorFallbackReason
+  FROM DOCS_ImportStagedPage WHERE JobId = '<job id>' ORDER BY Ordinal;
+SELECT Ordinal, ExternalId, PlannedAction, Outcome FROM DOCS_ImportResult
+  WHERE JobId = '<job id>' AND Stage = 'preflight' ORDER BY Ordinal;
+-- The durable page mappings a reimport compares against. Content hashes and structural baselines are
+-- separate columns on purpose, so a preserved local move never reads as a content conflict.
+SELECT ExternalId, LocalId, LastAppliedParentId, LastSourceParentExternalId, LastSourceOrdinal
+  FROM DOCS_ImportEntity WHERE ImportSourceId = '<source id>';
+SELECT Id, DisplayName, ExternalSpaceKey, MappingRevision FROM DOCS_ImportSource;
 -- Manifest users are worker input and must survive the request that uploaded them.
 SELECT Ordinal, AccountId, MattermostUsername FROM DOCS_ImportManifestUser WHERE JobId = '<job id>';
 SELECT Stage, Severity, Code FROM DOCS_ImportIssue WHERE JobId = '<job id>' ORDER BY Ordinal;
@@ -330,4 +465,6 @@ The same paths are covered by tests, if you would rather not click through:
 go test ./server/importer/...                                   # bundle parsing/validation, pure
 go test ./server/ -run TestHandleCreateImport -v                # upload, auth, rejections, staging
 go test ./server/ -run 'TestHandleGetImport|TestHandleListImports' -v
+go test ./server/importer/ -run TestClassify -v                 # the reimport decision table, pure
+go test ./server/ -run 'TestImportPreflight|TestImportSourceSelection|TestImportConfirm' -v
 ```

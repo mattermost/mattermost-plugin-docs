@@ -10,8 +10,8 @@ package importer
 
 import (
 	"regexp"
-	"strings"
-	"unicode/utf8"
+
+	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
 // ContractVersion is the only JSONL contract version this importer accepts.
@@ -150,13 +150,13 @@ func derefProps(p *map[string]any) map[string]any {
 	return *p
 }
 
-// IsStorableText reports whether s is safe to persist: valid UTF-8 with no NUL (U+0000). PostgreSQL
-// cannot store a NUL in a TEXT/VARCHAR value and rejects the escaped-NUL code point inside a JSONB
-// string, and invalid UTF-8 would be silently replaced or mutated. Both are rejected during
-// inspection rather than sanitized away, so the bundle the user uploaded is either imported exactly
-// or refused with a clear reason — a silently altered page body is worse than a rejected bundle.
+// IsStorableText reports whether s is safe to persist: valid UTF-8 with no NUL (U+0000). Rejected
+// during inspection rather than sanitized away, so the bundle the user uploaded is either imported
+// exactly or refused with a clear reason — a silently altered page body is worse than a rejected
+// bundle. It delegates to the model so the importer and the request validators cannot drift apart on
+// what "storable" means.
 func IsStorableText(s string) bool {
-	return utf8.ValidString(s) && !strings.ContainsRune(s, 0)
+	return model.IsStorableText(s)
 }
 
 // findUnstorableValue walks a decoded JSON value and returns the first string it finds that is not

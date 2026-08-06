@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
+	"strings"
 	"unicode/utf8"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -107,12 +109,14 @@ func (i ImportTerminalIntent) IsValid() bool {
 type ImportJobPhase string
 
 const (
-	ImportPhaseInspecting       ImportJobPhase = "inspecting"
-	ImportPhaseResolvingUsers   ImportJobPhase = "resolving_users"
-	ImportPhaseComputingActions ImportJobPhase = "computing_actions"
-	ImportPhaseProvisioning     ImportJobPhase = "provisioning_space"
-	ImportPhaseWritingPages     ImportJobPhase = "writing_pages"
-	ImportPhaseFinalizing       ImportJobPhase = "finalizing"
+	ImportPhaseInspecting           ImportJobPhase = "inspecting"
+	ImportPhaseResolvingUsers       ImportJobPhase = "resolving_users"
+	ImportPhaseComputingActions     ImportJobPhase = "computing_actions"
+	ImportPhaseAwaitingConfirmation ImportJobPhase = "awaiting_confirmation"
+	ImportPhaseQueuedImport         ImportJobPhase = "queued_import"
+	ImportPhaseProvisioning         ImportJobPhase = "provisioning_space"
+	ImportPhaseWritingPages         ImportJobPhase = "writing_pages"
+	ImportPhaseFinalizing           ImportJobPhase = "finalizing"
 )
 
 // ImportTargetKind selects a new or existing Docs Space. Matches chk_docs_importjob_target.
@@ -373,6 +377,15 @@ var hexSHA256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // the optional preflight baselines; required hashes must additionally be non-empty.
 func IsValidImportHash(s string) bool {
 	return s == "" || hexSHA256.MatchString(s)
+}
+
+// IsStorableText reports whether s is safe to persist: valid UTF-8 with no NUL (U+0000). PostgreSQL
+// cannot store a NUL in a TEXT/VARCHAR value and rejects the escaped-NUL code point inside a JSONB
+// string, and invalid UTF-8 would be silently replaced or mutated. Both are rejected rather than
+// sanitized away, so what the user supplied is either stored exactly or refused with a clear reason —
+// silently altered content is worse than a rejected request.
+func IsStorableText(s string) bool {
+	return utf8.ValidString(s) && !strings.ContainsRune(s, 0)
 }
 
 // --- typed JSONB columns ---
@@ -823,6 +836,22 @@ func (r *ImportTargetRequest) IsValid() *mmmodel.AppError {
 	return nil
 }
 
+// Author fallback reason codes, recorded on a staged page and in the docs_import namespace when the
+// Confluence author could not be resolved to a live Mattermost user. They are stable strings because they
+// are persisted on the page itself and read back by later imports and reports.
+const (
+	// ImportFallbackSourceAuthorMissing means the bundle named no author at all for the page.
+	ImportFallbackSourceAuthorMissing = "source_author_missing"
+	// ImportFallbackManifestUserMissing means the page named a Confluence account the manifest does not map.
+	ImportFallbackManifestUserMissing = "manifest_user_missing"
+	// ImportFallbackUsernameMissing means the manifest mapped the account but proposed no username.
+	ImportFallbackUsernameMissing = "mattermost_username_missing"
+	// ImportFallbackUserNotFound means the proposed username matches no Mattermost user.
+	ImportFallbackUserNotFound = "mattermost_user_not_found"
+	// ImportFallbackUserInactive means the proposed username matches a deactivated user.
+	ImportFallbackUserInactive = "mattermost_user_inactive"
+)
+
 // Acknowledgement keys the confirmation request must set. The set a given job requires is returned
 // to the client rather than assumed, so a client never has to infer which apply.
 const (
@@ -831,6 +860,117 @@ const (
 	ImportAckWidenRestricted  = "widen_restricted_pages"
 	ImportAckReimportExisting = "reimport_existing_pages"
 )
+
+// ImportSourceSelectionRequest is the body of POST /imports/{job_id}/source. An ImportSource is a
+// user-confirmed local identity, so it is always chosen explicitly: candidate scores are suggestions
+// and nothing is ever selected automatically.
+type ImportSourceSelectionRequest struct {
+	Mode ImportSourceSelectionMode `json:"mode"`
+	// ImportSourceId is required for mode "existing" and must name a source belonging to the job's
+	// target Space.
+	ImportSourceId string `json:"import_source_id,omitempty"`
+	// DisplayName is required for mode "new" and names the source that will be created at execution.
+	DisplayName string `json:"display_name,omitempty"`
+}
+
+// IsValid checks that the selection names exactly what its mode requires.
+func (r *ImportSourceSelectionRequest) IsValid() *mmmodel.AppError {
+	where := "ImportSourceSelectionRequest.IsValid"
+	switch r.Mode {
+	case ImportSourceModeExisting:
+		if !mmmodel.IsValidId(r.ImportSourceId) {
+			return mmmodel.NewAppError(where, "model.import_source_selection.is_valid.import_source_id.app_error", nil, "", http.StatusBadRequest)
+		}
+		if r.DisplayName != "" {
+			return mmmodel.NewAppError(where, "model.import_source_selection.is_valid.display_name_not_allowed.app_error", nil, "", http.StatusBadRequest)
+		}
+	case ImportSourceModeNew:
+		if strings.TrimSpace(r.DisplayName) == "" {
+			return mmmodel.NewAppError(where, "model.import_source_selection.is_valid.display_name.app_error", nil, "", http.StatusBadRequest)
+		}
+		if utf8.RuneCountInString(r.DisplayName) > ImportDisplayNameMaxRunes {
+			return mmmodel.NewAppError(where, "model.import_source_selection.is_valid.display_name_too_long.app_error",
+				map[string]any{"MaxLength": ImportDisplayNameMaxRunes}, "", http.StatusBadRequest)
+		}
+		if r.ImportSourceId != "" {
+			return mmmodel.NewAppError(where, "model.import_source_selection.is_valid.import_source_id_not_allowed.app_error", nil, "", http.StatusBadRequest)
+		}
+	default:
+		return mmmodel.NewAppError(where, "model.import_source_selection.is_valid.mode.app_error", nil, "", http.StatusBadRequest)
+	}
+	return nil
+}
+
+// ImportConfirmRequest is the body of POST /imports/{job_id}/confirm.
+//
+// Acknowledgements are a map rather than a struct so the request mirrors the job's own
+// required_acknowledgements list: a client sets exactly the keys it was told to, and an unknown key is
+// rejected instead of being silently ignored as a struct would.
+type ImportConfirmRequest struct {
+	PreflightRevision string `json:"preflight_revision"`
+	// NewSpace carries the final, user-edited Space metadata. Required for a new-Space target and
+	// rejected for an existing one.
+	NewSpace         *ImportNewSpaceMetadata `json:"new_space,omitempty"`
+	Acknowledgements map[string]bool         `json:"acknowledgements"`
+	// OverwriteConflicts lists the external IDs whose conflicts the user approved overwriting. There is
+	// deliberately no blanket overwrite-all flag: each conflict is approved individually.
+	OverwriteConflicts []string `json:"overwrite_conflicts,omitempty"`
+}
+
+// IsValid checks the request's own shape. Which acknowledgements a given job requires, and whether the
+// approved IDs name real conflicts, are cross-checks the application performs against persisted state.
+func (r *ImportConfirmRequest) IsValid() *mmmodel.AppError {
+	where := "ImportConfirmRequest.IsValid"
+	if !hexSHA256.MatchString(r.PreflightRevision) {
+		return mmmodel.NewAppError(where, "model.import_confirm.is_valid.revision.app_error", nil, "", http.StatusBadRequest)
+	}
+	for key := range r.Acknowledgements {
+		if !slices.Contains(importAckKeys, key) {
+			return mmmodel.NewAppError(where, "model.import_confirm.is_valid.unknown_acknowledgement.app_error",
+				map[string]any{"Key": key}, "", http.StatusBadRequest)
+		}
+	}
+	if r.NewSpace != nil {
+		if strings.TrimSpace(r.NewSpace.Title) == "" {
+			return mmmodel.NewAppError(where, "model.import_confirm.is_valid.space_title_required.app_error", nil, "", http.StatusBadRequest)
+		}
+		if utf8.RuneCountInString(r.NewSpace.Title) > ImportSpaceTitleMaxRunes {
+			return mmmodel.NewAppError(where, "model.import_confirm.is_valid.space_title.app_error",
+				map[string]any{"MaxLength": ImportSpaceTitleMaxRunes}, "", http.StatusBadRequest)
+		}
+		if utf8.RuneCountInString(r.NewSpace.Description) > SpaceDescriptionMaxRunes {
+			return mmmodel.NewAppError(where, "model.import_confirm.is_valid.space_description.app_error",
+				map[string]any{"MaxLength": SpaceDescriptionMaxRunes}, "", http.StatusBadRequest)
+		}
+		if !IsStorableText(r.NewSpace.Title) || !IsStorableText(r.NewSpace.Description) {
+			return mmmodel.NewAppError(where, "model.import_confirm.is_valid.space_unstorable.app_error", nil, "", http.StatusBadRequest)
+		}
+	}
+	// Reuse the persisted payload's bounds for the approved-ID list, so the request cannot carry a set
+	// the confirmation column would then refuse to store.
+	persisted := ImportConfirmation{PreflightRevision: r.PreflightRevision, OverwriteConflicts: r.OverwriteConflicts}
+	return persisted.IsValid()
+}
+
+// importAckKeys is every acknowledgement key a confirmation may carry.
+var importAckKeys = []string{
+	ImportAckNewSpaceMetadata, ImportAckPageOnlyPartial, ImportAckWidenRestricted, ImportAckReimportExisting,
+}
+
+// Acknowledged reports whether the request set the given acknowledgement key.
+func (r *ImportConfirmRequest) Acknowledged(key string) bool {
+	return r.Acknowledgements[key]
+}
+
+// ToAcknowledgements converts the request's map into the persisted struct.
+func (r *ImportConfirmRequest) ToAcknowledgements() ImportAcknowledgements {
+	return ImportAcknowledgements{
+		ConfirmNewSpaceMetadata: r.Acknowledged(ImportAckNewSpaceMetadata),
+		PageOnlyPartialImport:   r.Acknowledged(ImportAckPageOnlyPartial),
+		WidenRestrictedPages:    r.Acknowledged(ImportAckWidenRestricted),
+		ReimportExistingPages:   r.Acknowledged(ImportAckReimportExisting),
+	}
+}
 
 // --- API-safe projections ---
 

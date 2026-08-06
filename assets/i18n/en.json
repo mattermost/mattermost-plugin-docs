@@ -4,6 +4,10 @@
     "translation": "Docs is not enabled."
   },
   {
+    "id": "api.import.body_too_large.app_error",
+    "translation": "The request body is too large. The maximum is {{.MaxBytes}} bytes."
+  },
+  {
     "id": "api.import.bundle_part_not_second.app_error",
     "translation": "The import upload must send the bundle part immediately after the request part."
   },
@@ -14,6 +18,10 @@
   {
     "id": "api.import.inspection_busy.app_error",
     "translation": "Another import bundle is being inspected. Try again shortly."
+  },
+  {
+    "id": "api.import.invalid_body.app_error",
+    "translation": "The request body could not be read."
   },
   {
     "id": "api.import.invalid_multipart.app_error",
@@ -92,6 +100,34 @@
     "translation": "This import has already finished and cannot be canceled."
   },
   {
+    "id": "app.import.confirm.missing_acknowledgement.app_error",
+    "translation": "This import requires the \"{{.Key}}\" acknowledgement before it can start."
+  },
+  {
+    "id": "app.import.confirm.new_space_not_allowed.app_error",
+    "translation": "Space title and description cannot be set when importing into an existing Space."
+  },
+  {
+    "id": "app.import.confirm.new_space_required.app_error",
+    "translation": "A title and description are required when importing into a new Space."
+  },
+  {
+    "id": "app.import.confirm.not_a_conflict.app_error",
+    "translation": "Page \"{{.ExternalId}}\" is not one of this import's conflicts, so it cannot be approved for overwriting."
+  },
+  {
+    "id": "app.import.confirm.not_awaiting_confirmation.app_error",
+    "translation": "This import is not waiting for confirmation."
+  },
+  {
+    "id": "app.import.confirm.preflight_stale_recomputing.app_error",
+    "translation": "The reviewed import plan is out of date because this import source changed. A new plan is being prepared; please review and confirm it."
+  },
+  {
+    "id": "app.import.confirm.revision_mismatch.app_error",
+    "translation": "The confirmed import plan is not the current one. Reload the import and confirm the plan shown."
+  },
+  {
     "id": "app.import.create.invalid_bundle_digest.app_error",
     "translation": "The import bundle checksum could not be computed."
   },
@@ -122,6 +158,18 @@
   {
     "id": "app.import.list.invalid_team_id.app_error",
     "translation": "The team_id parameter is not a valid ID."
+  },
+  {
+    "id": "app.import.source.new_target_not_selectable.app_error",
+    "translation": "An import into a new Space has only one possible import source, so none can be selected."
+  },
+  {
+    "id": "app.import.source.not_awaiting_source.app_error",
+    "translation": "This import is not waiting for an import source to be selected."
+  },
+  {
+    "id": "app.import.target.actor_inactive.app_error",
+    "translation": "Your account is deactivated, so this import cannot continue."
   },
   {
     "id": "app.import.target.cannot_create_space.app_error",
@@ -696,6 +744,30 @@
     "translation": "Invalid user ID for the draft."
   },
   {
+    "id": "model.import_confirm.is_valid.revision.app_error",
+    "translation": "The import plan revision is not a valid 64-character digest."
+  },
+  {
+    "id": "model.import_confirm.is_valid.space_description.app_error",
+    "translation": "The Space description must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_confirm.is_valid.space_title.app_error",
+    "translation": "The Space title must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_confirm.is_valid.space_title_required.app_error",
+    "translation": "A Space title is required."
+  },
+  {
+    "id": "model.import_confirm.is_valid.space_unstorable.app_error",
+    "translation": "The Space title or description contains characters that cannot be stored."
+  },
+  {
+    "id": "model.import_confirm.is_valid.unknown_acknowledgement.app_error",
+    "translation": "\"{{.Key}}\" is not a recognized import acknowledgement."
+  },
+  {
     "id": "model.import_confirmation.is_valid.duplicate_overwrite.app_error",
     "translation": "The confirmation lists the same page twice for overwrite."
   },
@@ -906,6 +978,30 @@
   {
     "id": "model.import_source.is_valid.timestamps.app_error",
     "translation": "The import source timestamps are not set."
+  },
+  {
+    "id": "model.import_source_selection.is_valid.display_name.app_error",
+    "translation": "A display name is required when creating a new import source."
+  },
+  {
+    "id": "model.import_source_selection.is_valid.display_name_not_allowed.app_error",
+    "translation": "A display name cannot be set when selecting an existing import source."
+  },
+  {
+    "id": "model.import_source_selection.is_valid.display_name_too_long.app_error",
+    "translation": "The import source display name must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_source_selection.is_valid.import_source_id.app_error",
+    "translation": "A valid import source ID is required when selecting an existing import source."
+  },
+  {
+    "id": "model.import_source_selection.is_valid.import_source_id_not_allowed.app_error",
+    "translation": "An import source ID cannot be set when creating a new import source."
+  },
+  {
+    "id": "model.import_source_selection.is_valid.mode.app_error",
+    "translation": "The import source mode must be \"new\" or \"existing\"."
   },
   {
     "id": "model.import_staged_page.is_valid.author_account_id.app_error",

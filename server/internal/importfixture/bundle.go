@@ -37,6 +37,11 @@ var CorruptModes = []string{
 // RootExternalID is the external id of the first (root) page every fixture emits.
 const RootExternalID = "100"
 
+// AuthorUsername is the Mattermost username every fixture page proposes as its author, both through the
+// manifest's user mapping for the root page and through each page's own user field. Tests stub a user
+// lookup for it to exercise successful author resolution.
+const AuthorUsername = "jdoe"
+
 // Options controls the generated bundle.
 type Options struct {
 	// Pages is how many pages to emit; the first is the root and the rest are its children (or, under
@@ -129,7 +134,7 @@ func Build(o Options) (Bundle, error) {
 		},
 		"checksums": map[string]any{"jsonl_sha256": manifestChecksum},
 		"users": []map[string]any{
-			{"account_id": "aaid-" + RootExternalID, "confluence_username": "jdoe", "mattermost_username": "jdoe"},
+			{"account_id": "aaid-" + RootExternalID, "confluence_username": AuthorUsername, "mattermost_username": AuthorUsername},
 		},
 	}
 	if len(restricted) > 0 {
@@ -219,7 +224,7 @@ func buildLines(o Options) ([]string, lineCounts, []map[string]any, error) {
 		page := map[string]any{
 			"team":                   o.Team,
 			"space_import_source_id": o.SpaceKey,
-			"user":                   "jdoe",
+			"user":                   AuthorUsername,
 			"title":                  title,
 			"content":                content,
 			"create_at":              1704106800000 + int64(i)*1000,

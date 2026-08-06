@@ -61,6 +61,11 @@ type Service struct {
 	// lastPresenceSweepAt is the timestamp (ms) of the most recent presenceBroadcastTimes sweep, used
 	// to rate-limit the sweep itself to once per presenceBroadcastSweepIntervalMs.
 	lastPresenceSweepAt atomic.Int64
+
+	// unhandledImportStates records import job states this release cannot advance, so the worker reports
+	// each one once instead of on every tick. Guarded by unhandledImportStatesMu.
+	unhandledImportStatesMu sync.Mutex
+	unhandledImportStates   map[model.ImportJobState]struct{}
 }
 
 // New creates a Service wired to the given store, logger, and optional pluginapi client.
