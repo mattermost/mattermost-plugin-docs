@@ -168,6 +168,36 @@ func StubbedRoleName(roleID string) (string, bool) {
 	return role.Name, true
 }
 
+// stubbedChannels holds every space channel a stub has handed out, keyed by the mockAPI it was
+// registered on and then by channel id, so StubPatchRole can answer which schemes currently govern
+// a space. The channel objects are shared with the tests that mutate them, so a repointed SchemeId
+// is visible here without re-registration.
+//
+// Keyed by mockAPI rather than by channel id alone: a pooled scheme's role names are a digest of
+// its capability set, so two tests asking for the same set generate the same role names under
+// different scheme ids. A flat registry would let a channel one test attached authorize a role
+// write another test expects to be refused — hiding the very ordering regression the guard in
+// StubPatchRole exists to catch. One mockAPI is one test, and it is also what confines a channel
+// object to the goroutine mutating its SchemeId.
+var stubbedChannels = struct {
+	sync.RWMutex
+	byAPI map[*plugintest.API]map[string]*mmmodel.Channel
+}{byAPI: map[*plugintest.API]map[string]*mmmodel.Channel{}}
+
+func registerStubbedChannel(mockAPI *plugintest.API, channel *mmmodel.Channel) {
+	if channel == nil || channel.Id == "" {
+		return
+	}
+	stubbedChannels.Lock()
+	defer stubbedChannels.Unlock()
+	channels, ok := stubbedChannels.byAPI[mockAPI]
+	if !ok {
+		channels = map[string]*mmmodel.Channel{}
+		stubbedChannels.byAPI[mockAPI] = channels
+	}
+	channels[channel.Id] = channel
+}
+
 func isPooledSchemeName(name string) bool {
 	return strings.HasPrefix(name, model.SharedSchemeNamePrefix)
 }
@@ -267,10 +297,58 @@ func StubRole(mockAPI *plugintest.API, roleName string, permissions []string) *m
 	return role
 }
 
+// addsSpacePermission reports whether next introduces a space channel-scoped permission the role
+// does not already hold. Core refuses those additions on an unattached scheme but always allows a
+// removal, so a patch that only drops permissions is admissible either way.
+func addsSpacePermission(role *mmmodel.Role, next []string) bool {
+	held := make(map[string]bool, len(role.Permissions))
+	for _, id := range role.Permissions {
+		held[id] = true
+	}
+	for _, id := range next {
+		if !held[id] && mmmodel.IsSpaceChannelScopedPermissionID(id) {
+			return true
+		}
+	}
+	return false
+}
+
+// schemeGovernsSpace reports whether roleName's scheme carries space authority: a seeded preset
+// carries it by name (mirroring mmmodel.IsSpaceSchemeName, whose accepted set is frozen at init),
+// and any other scheme carries it only while a space channel stubbed on this same mockAPI points
+// at it.
+func schemeGovernsSpace(mockAPI *plugintest.API, roleName string) bool {
+	for _, fx := range presetSchemeFixtures {
+		if roleName == fx.guestRole || roleName == fx.userRole || roleName == fx.adminRole {
+			return true
+		}
+	}
+	stubbedChannels.RLock()
+	defer stubbedChannels.RUnlock()
+	for _, channel := range stubbedChannels.byAPI[mockAPI] {
+		if channel.SchemeId == nil || *channel.SchemeId == "" {
+			continue
+		}
+		roles, ok := rolesForScheme(*channel.SchemeId)
+		if !ok {
+			continue
+		}
+		if roleName == roles.Guest || roleName == roles.User || roleName == roles.Admin {
+			return true
+		}
+	}
+	return false
+}
+
 // StubPatchRole registers a PatchRole stub applying the patch's permission set to the shared *Role
 // the matching GetRoleByName stub returns, so the write is observable to a later read. Roles are
 // looked up by id, mirroring core's own PatchRole, which re-reads the stored role rather than
 // trusting one supplied by the caller.
+//
+// The stub also reproduces core's scope guard: adding a space permission is refused unless the
+// role's scheme already governs a space, which is what makes the attach-before-patch ordering in
+// CreateSpace and SetSpaceDefaultCapabilities mandatory rather than stylistic. Without the guard
+// here, reversing that order still passes every test that uses this stub.
 func StubPatchRole(mockAPI *plugintest.API) {
 	mockAPI.On("PatchRole", mock.AnythingOfType("string"), mock.AnythingOfType("*model.RolePatch")).
 		Return(func(roleID string, patch *mmmodel.RolePatch) (*mmmodel.Role, *mmmodel.AppError) {
@@ -279,6 +357,12 @@ func StubPatchRole(mockAPI *plugintest.API) {
 				return nil, &mmmodel.AppError{Id: "app.role.get.app_error", StatusCode: http.StatusNotFound}
 			}
 			if patch != nil && patch.Permissions != nil {
+				if addsSpacePermission(role, *patch.Permissions) && !schemeGovernsSpace(mockAPI, role.Name) {
+					// Core owns the id for this refusal and the plugin only branches on the status,
+					// so this stands in with the status core returns rather than inventing an id the
+					// plugin's translation file would then carry.
+					return nil, &mmmodel.AppError{Id: "app.role.patch.app_error", StatusCode: http.StatusBadRequest}
+				}
 				role.Permissions = *patch.Permissions
 			}
 			return role, nil
@@ -317,6 +401,7 @@ func MustSeedChannelScheme(t *testing.T, mockAPI *plugintest.API, channelID, sch
 // Channel.Update copies the returned channel back over the passed one — returning a fresh channel
 // would wipe SchemeId and 404 the next scheme-resolving read.
 func StubChannelScheme(mockAPI *plugintest.API, channelID string, channel *mmmodel.Channel) {
+	registerStubbedChannel(mockAPI, channel)
 	mockAPI.On("GetChannelOfType", channelID, mmmodel.ChannelTypeSpace).Return(channel, nil).Maybe()
 	mockAPI.On("UpdateChannel", channel).Return(channel, nil).Maybe()
 	mockAPI.On("GetSchemeRolesForChannel", channelID).
@@ -364,6 +449,7 @@ func StubDefaultChannelScheme(mockAPI *plugintest.API) {
 		schemeID := PresetSchemeID(mmmodel.SchemeNameSpaceContribute)
 		ch := &mmmodel.Channel{Id: channelID, Type: mmmodel.ChannelTypeSpace, SchemeId: &schemeID}
 		byID[channelID] = ch
+		registerStubbedChannel(mockAPI, ch)
 		return ch
 	}
 
