@@ -50,7 +50,9 @@ func (s *Service) CancelImportJob(jobID, actorID string) (*model.ImportJobView, 
 	s.log.Info("Import canceled by user",
 		"job_id", canceled.Id, "actor_id", actorID, "team_id", canceled.TeamId,
 		"target_space_id", canceled.TargetSpaceId, "previous_state", string(job.State),
-		"released_staged_bytes", job.StagedBytes)
+		"released_staged_bytes", job.StagedBytes,
+		"released_retained_bytes", job.RetainedReservedBytes-canceled.RetainedReservedBytes,
+		"not_attempted_pages", canceled.FinalSummary.Actions.NotAttempted)
 
 	// The cancel path returns the job as the actor sees it; entitlement is unchanged by cancelling.
 	return buildImportJobViewWithoutCandidates(canceled), nil
@@ -67,9 +69,10 @@ func (s *Service) RunImportMaintenance() (store.ImportCleanupCounts, error) {
 	now := mmmodel.GetMillis()
 	var counts store.ImportCleanupCounts
 
-	expired, releasedExpired, err := s.store.ExpireStalledImportJobs(now, ImportErrorJobExpired)
+	expired, releasedExpired, releasedRetained, err := s.store.ExpireStalledImportJobs(now, ImportErrorJobExpired)
 	counts.ExpiredJobs = expired
 	counts.ReleasedStagedBytes += releasedExpired
+	counts.ReleasedRetainedBytes += releasedRetained
 	if err != nil {
 		return counts, err
 	}
@@ -95,7 +98,8 @@ func (s *Service) LogImportMaintenance(counts store.ImportCleanupCounts, err err
 	if err != nil {
 		s.log.Error("Import maintenance pass failed",
 			"expired_jobs", counts.ExpiredJobs, "purged_staged_jobs", counts.PurgedStagedJobs,
-			"deleted_jobs", counts.DeletedJobs, "released_staged_bytes", counts.ReleasedStagedBytes, "err", err)
+			"deleted_jobs", counts.DeletedJobs, "released_staged_bytes", counts.ReleasedStagedBytes,
+			"released_retained_bytes", counts.ReleasedRetainedBytes, "err", err)
 		return
 	}
 	if counts.ExpiredJobs == 0 && counts.PurgedStagedJobs == 0 && counts.DeletedJobs == 0 {
@@ -103,5 +107,6 @@ func (s *Service) LogImportMaintenance(counts store.ImportCleanupCounts, err err
 	}
 	s.log.Info("Import maintenance pass completed",
 		"expired_jobs", counts.ExpiredJobs, "purged_staged_jobs", counts.PurgedStagedJobs,
-		"deleted_jobs", counts.DeletedJobs, "released_staged_bytes", counts.ReleasedStagedBytes)
+		"deleted_jobs", counts.DeletedJobs, "released_staged_bytes", counts.ReleasedStagedBytes,
+		"released_retained_bytes", counts.ReleasedRetainedBytes)
 }

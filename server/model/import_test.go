@@ -237,3 +237,73 @@ func TestNewImportFidelity(t *testing.T) {
 		t.Errorf("unexpected fidelity: %+v", f)
 	}
 }
+
+// TestRetainedRowMaxBytes_CoverTheLargestValidRow pins the arithmetic the admission reservation rests
+// on: the row-size constants must bound the largest row IsValid actually admits. A constant chosen as an
+// average instead — the original 1 KiB flat figure was roughly a tenth of a permitted issue row — makes
+// the reservation promise storage it never accounted for.
+func TestRetainedRowMaxBytes_CoverTheLargestValidRow(t *testing.T) {
+	maxTitle := strings.Repeat("é", PageTitleMaxRunes) // 2 bytes per rune; the constant budgets 4
+	maxExternalID := strings.Repeat("a", ImportExternalIDMaxBytes)
+	// Details is bounded by its serialized length, so fill it to just under the cap.
+	details := mmmodel.StringInterface{"d": strings.Repeat("x", ImportDetailsMaxBytes-16)}
+
+	issue := &ImportIssueRecord{
+		Stage:       ImportStageExecution,
+		Severity:    ImportSeverityError,
+		Code:        strings.Repeat("c", ImportIssueCodeMaxRunes),
+		EntityType:  ImportEntityTypePage,
+		ExternalId:  maxExternalID,
+		LocalId:     mmmodel.NewId(),
+		Title:       maxTitle,
+		Message:     strings.Repeat("m", ImportIssueTextMaxBytes),
+		Remediation: strings.Repeat("r", ImportIssueTextMaxBytes),
+		Details:     details,
+	}
+	if err := issue.IsValid(); err != nil {
+		t.Fatalf("maximal issue must be valid, otherwise the bound is untested: %v", err)
+	}
+	issueBytes := len(issue.Code) + len(issue.EntityType) + len(issue.ExternalId) + len(issue.LocalId) +
+		len(issue.Title) + len(issue.Message) + len(issue.Remediation) + ImportDetailsMaxBytes
+	if issueBytes > ImportRetainedIssueRowMaxBytes {
+		t.Errorf("largest valid issue row is %d bytes, over the %d-byte budget",
+			issueBytes, ImportRetainedIssueRowMaxBytes)
+	}
+
+	result := &ImportResultRecord{
+		Stage:         ImportStageExecution,
+		EntityType:    ImportEntityTypePage,
+		ExternalId:    maxExternalID,
+		LocalId:       mmmodel.NewId(),
+		Title:         maxTitle,
+		PlannedAction: ImportActionUpdate,
+		ActualAction:  ImportActionNotAttempted,
+		Outcome:       ImportOutcomeNotAttemptedCancel,
+		Details:       details,
+		CreateAt:      mmmodel.GetMillis(),
+		UpdateAt:      mmmodel.GetMillis(),
+	}
+	if err := result.IsValid(); err != nil {
+		t.Fatalf("maximal result must be valid, otherwise the bound is untested: %v", err)
+	}
+	resultBytes := len(result.EntityType) + len(result.ExternalId) + len(result.LocalId) + len(result.Title) +
+		len(result.PlannedAction) + len(result.ActualAction) + len(result.Outcome) + ImportDetailsMaxBytes
+	if resultBytes > ImportRetainedResultRowMaxBytes {
+		t.Errorf("largest valid result row is %d bytes, over the %d-byte budget",
+			resultBytes, ImportRetainedResultRowMaxBytes)
+	}
+}
+
+// TestImportJob_RetainedRemaining covers the accessor that makes the discretionary issue allowance
+// binding rather than decorative: report writers consult it before emitting another row.
+func TestImportJob_RetainedRemaining(t *testing.T) {
+	job := &ImportJob{RetainedBytes: 400, RetainedReservedBytes: 1000}
+	if got := job.RetainedRemaining(); got != 600 {
+		t.Errorf("remaining = %d, want 600", got)
+	}
+	// Overrun clamps to zero rather than reporting negative headroom a caller might treat as room.
+	job.RetainedBytes = 1500
+	if got := job.RetainedRemaining(); got != 0 {
+		t.Errorf("remaining = %d, want 0", got)
+	}
+}

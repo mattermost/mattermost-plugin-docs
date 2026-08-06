@@ -300,6 +300,24 @@ const (
 	ImportDetailsMaxBytes = 4 * 1024
 	// ImportIssueTextMaxBytes bounds a generated message or remediation string.
 	ImportIssueTextMaxBytes = 2 * 1024
+
+	// importRetainedRowOverheadBytes is the fixed cost of one retained report row: its share of the
+	// page header, the job id, the ordinal and timestamps, and the short enum columns (stage, severity,
+	// entity type, planned/actual action, outcome, issue code, local id).
+	importRetainedRowOverheadBytes = 512
+
+	// ImportRetainedIssueRowMaxBytes is the largest DOCS_ImportIssue row ImportIssueRecord.IsValid
+	// admits: bounded Details JSON, a message, a remediation, a title, and an external id. Admission
+	// reservations must be built from this rather than from a guessed average — a single permitted
+	// issue is an order of magnitude larger than any plausible flat figure, so a reservation that
+	// under-counts it promises room it cannot deliver.
+	ImportRetainedIssueRowMaxBytes = importRetainedRowOverheadBytes + ImportDetailsMaxBytes +
+		2*ImportIssueTextMaxBytes + 4*PageTitleMaxRunes + ImportExternalIDMaxBytes
+
+	// ImportRetainedResultRowMaxBytes is the largest DOCS_ImportResult row ImportResultRecord.IsValid
+	// admits. A result row carries no message or remediation, so it is materially smaller than an issue.
+	ImportRetainedResultRowMaxBytes = importRetainedRowOverheadBytes + ImportDetailsMaxBytes +
+		4*PageTitleMaxRunes + ImportExternalIDMaxBytes
 )
 
 // validateImportDetails enforces the serialized-size bound on a result/issue Details map.
@@ -471,6 +489,20 @@ type ImportJob struct {
 	StartedAt   int64 `json:"started_at"`
 	FinishedAt  int64 `json:"finished_at"`
 	RetainUntil int64 `json:"-"`
+}
+
+// RetainedRemaining reports how many retained bytes this job may still write before it exceeds the
+// budget admission reserved for it.
+//
+// Retained rows fall into two classes and only the first is unconditional. *Mandatory* rows — one
+// result per staged page and per stale mapping, plus the final summary — are reserved worst-case at
+// admission, so they are always written and simply charged. *Discretionary* rows — the preflight and
+// execution issues that explain those outcomes — share a flat per-job allowance, and a writer that
+// would exceed what remains must stop emitting per-entity issues and record one aggregate
+// truncation issue instead. Without that check the reservation would bound nothing: the report could
+// grow to ImportMaxIssueCodesPerPage rows per page, far past anything admission could have promised.
+func (j *ImportJob) RetainedRemaining() int64 {
+	return max(j.RetainedReservedBytes-j.RetainedBytes, 0)
 }
 
 // ImportChannelAttempt is one durable external channel-create attempt (DOCS_ImportChannelAttempt).
