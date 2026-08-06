@@ -33,7 +33,7 @@ type Args = {
 // row; the middle half reparents (drop onto center → become a child).
 const REORDER_BAND = 0.25;
 
-function computeDropTarget(element: Element, clientY: number, expanded: boolean): PageDropTarget {
+export function computeDropTarget(element: Element, clientY: number, expanded: boolean): PageDropTarget {
     const rect = element.getBoundingClientRect();
     const ratio = (clientY - rect.top) / rect.height;
     if (ratio <= REORDER_BAND) {

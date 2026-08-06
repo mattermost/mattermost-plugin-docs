@@ -9,7 +9,7 @@ import type {Page} from 'types/docs';
 
 import {PAGE_APPEND_TYPE, PAGE_DRAG_TYPE, type PageDropTarget} from './types';
 
-type MoveArgs = {
+export type MoveArgs = {
     pageId: string;
     parentId: string;
     siblingIndex: number;
@@ -27,7 +27,7 @@ const bySortOrder = (a: Page, b: Page): number =>
 // Resolves the drop of `sourceId` onto `targetId` into a (parentId, siblingIndex)
 // move. Siblings are computed with the source removed, so the returned index is
 // the final 0-based position the server expects.
-function resolveMove(pages: Page[], sourceId: string, targetId: string, drop: PageDropTarget): MoveArgs | null {
+export function resolveMove(pages: Page[], sourceId: string, targetId: string, drop: PageDropTarget): MoveArgs | null {
     const target = pages.find((page) => page.id === targetId);
     if (!target) {
         return null;
