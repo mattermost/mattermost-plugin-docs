@@ -252,6 +252,51 @@ describe('drafts', () => {
     });
 });
 
+describe('spaceMembers', () => {
+    const initialState = reducer(undefined, {type: '@@INIT'});
+    const loaded = reducer(initialState, {
+        type: SpaceTypes.RECEIVED_SPACE_MEMBERS,
+        spaceId: 's1',
+        userIds: ['u1', 'u2'],
+    });
+
+    it('ADDED_SPACE_MEMBER appends to a loaded roster', () => {
+        const next = reducer(loaded, {type: SpaceTypes.ADDED_SPACE_MEMBER, spaceId: 's1', userId: 'u3'});
+
+        expect(next.spaceMembers.s1).toEqual(['u1', 'u2', 'u3']);
+    });
+
+    // A no-op must not produce a new object, or every consumer re-renders for nothing.
+    it('ADDED_SPACE_MEMBER is identity when the member is already there', () => {
+        const next = reducer(loaded, {type: SpaceTypes.ADDED_SPACE_MEMBER, spaceId: 's1', userId: 'u1'});
+
+        expect(next.spaceMembers).toBe(loaded.spaceMembers);
+    });
+
+    // Presence of the entry is what areMembersLoadedForSpace reads as "loaded", so a
+    // single added id must not claim the whole roster has arrived.
+    it('ADDED_SPACE_MEMBER does not seed a space whose members were never loaded', () => {
+        const next = reducer(initialState, {type: SpaceTypes.ADDED_SPACE_MEMBER, spaceId: 'other', userId: 'u9'});
+
+        expect('other' in next.spaceMembers).toBe(false);
+        expect(next.spaceMembers).toBe(initialState.spaceMembers);
+    });
+
+    it('REMOVED_SPACE_MEMBER drops the member', () => {
+        const next = reducer(loaded, {type: SpaceTypes.REMOVED_SPACE_MEMBER, spaceId: 's1', userId: 'u1'});
+
+        expect(next.spaceMembers.s1).toEqual(['u2']);
+    });
+
+    it('REMOVED_SPACE_MEMBER is identity for an absent member or an unloaded space', () => {
+        const absentMember = reducer(loaded, {type: SpaceTypes.REMOVED_SPACE_MEMBER, spaceId: 's1', userId: 'u9'});
+        expect(absentMember.spaceMembers).toBe(loaded.spaceMembers);
+
+        const unloadedSpace = reducer(loaded, {type: SpaceTypes.REMOVED_SPACE_MEMBER, spaceId: 'other', userId: 'u1'});
+        expect(unloadedSpace.spaceMembers).toBe(loaded.spaceMembers);
+    });
+});
+
 describe('collectSubtreeIds', () => {
     it('collects the root and every descendant, excluding unrelated pages', () => {
         const byId = {

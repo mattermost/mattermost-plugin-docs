@@ -22,6 +22,7 @@ type MovedPageAction = {pageId: string; spaceId: string; parentId: string; sibli
 // (via collectSubtreeIds) rather than twice from a map only one slice holds.
 type DeletedPageAction = {pageId: string; spaceId: string; pageIds: string[]};
 type ReceivedSpaceMembersAction = {spaceId: string; userIds: string[]};
+type SpaceMemberAction = {spaceId: string; userId: string};
 
 // `spaceId` marks a full list for that space, seeding its index entry even when the
 // space has no drafts — the same "loaded" signal RECEIVED_PAGES uses.
@@ -288,6 +289,26 @@ function spaceMembers(state: Record<string, string[]> = {}, action: UnknownActio
     case SpaceTypes.RECEIVED_SPACE_MEMBERS: {
         const {spaceId, userIds} = action as unknown as ReceivedSpaceMembersAction;
         return {...state, [spaceId]: userIds};
+    }
+    case SpaceTypes.ADDED_SPACE_MEMBER: {
+        const {spaceId, userId} = action as unknown as SpaceMemberAction;
+        const current = state[spaceId];
+
+        // An absent entry means the roster was never loaded. Seeding it from a single
+        // id would make areMembersLoadedForSpace claim a full list; fetchSpaceMembers
+        // is what populates it.
+        if (!current || current.includes(userId)) {
+            return state;
+        }
+        return {...state, [spaceId]: [...current, userId]};
+    }
+    case SpaceTypes.REMOVED_SPACE_MEMBER: {
+        const {spaceId, userId} = action as unknown as SpaceMemberAction;
+        const current = state[spaceId];
+        if (!current?.includes(userId)) {
+            return state;
+        }
+        return {...state, [spaceId]: current.filter((id) => id !== userId)};
     }
     case SpaceTypes.DELETED_SPACE: {
         const {spaceId} = action as unknown as DeletedSpaceAction;

@@ -8,6 +8,8 @@ export const SpaceTypes = {
     CREATED_SPACE: manifest.id + '_created_space',
     DELETED_SPACE: manifest.id + '_deleted_space',
     RECEIVED_SPACE_MEMBERS: manifest.id + '_received_space_members',
+    ADDED_SPACE_MEMBER: manifest.id + '_added_space_member',
+    REMOVED_SPACE_MEMBER: manifest.id + '_removed_space_member',
 } as const;
 
 export const PageTypes = {
