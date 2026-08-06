@@ -95,10 +95,16 @@ func startEnv() (*testEnv, error) {
 		return nil, imgErr
 	}
 
+	license, err := resolveLicense()
+	if err != nil {
+		return nil, err
+	}
+
 	container, err := mmcontainer.RunContainer(ctx,
 		withImage(imageTag),
 		mmcontainer.WithPlugin(bundlePath, pluginID, nil),
 		mmcontainer.WithEnv("MM_FEATUREFLAGS_ENABLEDOCS", "true"),
+		mmcontainer.WithLicense(license),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start Mattermost container: %w", err)
@@ -210,6 +216,36 @@ func checkImageExists(imageTag string) error {
 		return nil
 	}
 	return fmt.Errorf("core image %q not found — build it with ./build/build-core-image.sh (CORE_IMAGE=%s)", imageTag, imageTag)
+}
+
+// resolveLicense returns the Enterprise license the server boots with. The pooled custom-scheme
+// scenarios drive core's CreateScheme, which is gated on the CustomPermissionsSchemes feature, so
+// an unlicensed server answers them with a 501 no assertion can make sense of.
+//
+// The license is never committed: MM_LICENSE carries it directly (how CI supplies it from a
+// secret), MM_LICENSE_FILE names a file holding it (how a developer points at a local copy).
+// Absence is a hard error naming both, in keeping with this suite's rule that a missing
+// prerequisite fails loudly rather than quietly narrowing what the run proves.
+func resolveLicense() (string, error) {
+	if license := strings.TrimSpace(os.Getenv("MM_LICENSE")); license != "" {
+		return license, nil
+	}
+
+	path := strings.TrimSpace(os.Getenv("MM_LICENSE_FILE"))
+	if path == "" {
+		return "", errors.New("no Enterprise license configured — set MM_LICENSE to the license itself, " +
+			"or MM_LICENSE_FILE to a path holding it. The scheme-backed scenarios need one (see README.md)")
+	}
+
+	raw, err := os.ReadFile(path) // #nosec -- path is test config (MM_LICENSE_FILE env var), not untrusted input
+	if err != nil {
+		return "", fmt.Errorf("reading MM_LICENSE_FILE %q: %w", path, err)
+	}
+	license := strings.TrimSpace(string(raw))
+	if license == "" {
+		return "", fmt.Errorf("MM_LICENSE_FILE %q is empty", path)
+	}
+	return license, nil
 }
 
 // withImage overrides the image RunContainer would otherwise use (a stock Mattermost release,

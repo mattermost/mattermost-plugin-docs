@@ -303,17 +303,6 @@ func TestScenarios(t *testing.T) {
 			if !errors.As(demoteErr, &appErr) {
 				t.Fatalf("scenario6: demote failed with a non-AppError: %v", demoteErr)
 			}
-			if strings.Contains(appErr.Id, "license") {
-				// Skipped rather than returned: a bare return reports this subtest as a pass
-				// having asserted nothing about the guest flow, which is indistinguishable from
-				// real coverage. The no-skip rule exists to stop a missing prerequisite from
-				// being papered over, and an unreported gap papers it over more thoroughly than
-				// a skip does.
-				//nolint:forbidigo // a visible gap beats a silent pass; see the note above
-				t.Skipf("scenario6: guest reviewer flow (real DemoteUserToGuest) needs an Enterprise license — %s: %s. "+
-					"The core image built by build/build-core-image.sh has none, and guest accounts require one. "+
-					"See README.md.", appErr.Id, appErr.Error())
-			}
 			if !strings.Contains(appErr.Id, "disabled") {
 				t.Fatalf("scenario6: demote failed unexpectedly: %s (%s)", appErr.Id, appErr.Error())
 			}

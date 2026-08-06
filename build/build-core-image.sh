@@ -123,12 +123,19 @@ cat > "$BUILD_CTX/Dockerfile" <<'DOCKEREOF'
 # repaint of the noble tag would change behaviour between two builds of identical source.
 FROM ubuntu:noble@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Ubuntu's default sources use plain HTTP, which some networks refuse outright. Fetch over HTTPS
+# instead. The base image carries no CA bundle until ca-certificates lands, so peer verification is
+# off for this one transaction; package integrity still rests on apt's signature check of the
+# repository metadata, as it does over plain HTTP.
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources \
+    && echo 'Acquire::https::Verify-Peer "false";' > /etc/apt/apt.conf.d/99bootstrap \
+    && apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     media-types \
     mailcap \
     tzdata \
     curl \
+    && rm -f /etc/apt/apt.conf.d/99bootstrap \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -g 2000 mattermost && useradd -u 2000 -g 2000 -m mattermost

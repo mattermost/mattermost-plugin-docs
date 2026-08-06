@@ -193,8 +193,14 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # The scheme-backed scenarios drive core's CreateScheme, which is gated on the
+      # CustomPermissionsSchemes feature, so the suite boots the server with an Enterprise license.
+      # The secret is defined once at the organization and granted to selected repositories; the
+      # name matches the one the server and the other plugin repos already use.
       - name: ci/e2e
         run: go test -tags e2e -count=1 -v ./server/e2e/...
+        env:
+          MM_LICENSE: ${{ secrets.MM_E2E_TEST_LICENSE_ONPREM_ENT }}
 
       # The suite boots the server in a container, so a boot or migration failure leaves its
       # diagnosis in the container's log rather than in the test output.

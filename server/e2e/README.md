@@ -72,14 +72,28 @@ go test -tags e2e -count=1 -v ./server/e2e/...
 The container boots once for the whole suite (container startup is slow) and is torn down after
 all tests finish. Every scenario creates its own space and it is deleted at the end of the run.
 
-## Known environment gap
+## Enterprise license
 
-Scenario 6 (read-only guest reviewer) drives the real `POST /users/{id}/demote` core endpoint.
-That endpoint requires an Enterprise license (`api.team.demote_user_to_guest.license.error`), and
-the core image built by `build/build-core-image.sh` has none. In that case the subtest skips
-without asserting the guest-specific behavior, so the run reports it as SKIP rather than as a pass
-that covered nothing. It does not fail the suite. This is the one place the repo's no-skip rule is
-waived, and the waiver is marked `//nolint:forbidigo` at the call: the rule exists to stop a
-missing prerequisite from going unreported, which a silent early return does more thoroughly than
-a skip. Supplying a real EE license to the container (extend `startEnv` in `container_test.go`
-with `mmcontainer.WithLicense`) would let this subtest run to completion.
+The suite boots the server with an Enterprise license, and fails at startup without one. Three
+subtests need it: the scheme-backed capability sets (scenario 8 and the `delete_page` default)
+drive core's `CreateScheme`, gated on the `CustomPermissionsSchemes` feature, and scenario 6's
+read-only guest reviewer drives the real `POST /users/{id}/demote`. Unlicensed, all three answer
+with a 501 that no assertion can read as a pass or a failure of the behavior under test.
+
+The license is never committed. Supply it either way:
+
+| Variable | Holds | Used by |
+| --- | --- | --- |
+| `MM_LICENSE` | the license itself | CI, from the organization secret |
+| `MM_LICENSE_FILE` | a path to a file holding it | a local run |
+
+```sh
+MM_LICENSE_FILE=/path/to/mattermost.mattermost-license make test-e2e
+```
+
+CI reads `MM_E2E_TEST_LICENSE_ONPREM_ENT`, the organization secret the server and the other plugin
+repos already use. It is granted to selected repositories, so a new repository needs an org admin
+to add it before the e2e job can pass.
+
+Absence is a hard error naming both variables rather than a skip, in keeping with the repo's rule
+that a missing prerequisite fails loudly instead of quietly narrowing what the run proves.

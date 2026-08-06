@@ -18,5 +18,9 @@ server/manifest.go
 # Local deploy/dev scripts
 /scripts/
 
+# Browser e2e artifacts (the suite itself is checked in)
+/e2e/node_modules/
+/e2e/results/
+
 # Implementation plans (local, not shared)
 /plans/
