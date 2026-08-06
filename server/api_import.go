@@ -255,6 +255,89 @@ func (p *Plugin) handleGetImportIssues(w http.ResponseWriter, r *http.Request) {
 	writePaginatedJSON(w, issues, page, perPage, hasMore)
 }
 
+// handleGetImportPreflightResults handles GET /api/v1/imports/{job_id}/preflight-results.
+func (p *Plugin) handleGetImportPreflightResults(w http.ResponseWriter, r *http.Request) {
+	actorID := userIDFromRequest(r)
+	jobID := mux.Vars(r)["job_id"]
+	page, perPage := pageParam(r), perPageParam(r)
+	results, hasMore, appErr := p.service.GetImportPreflightResults(jobID, actorID, page, perPage)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
+	}
+	writePaginatedJSON(w, results, page, perPage, hasMore)
+}
+
+// handleSelectImportSource handles POST /api/v1/imports/{job_id}/source.
+func (p *Plugin) handleSelectImportSource(w http.ResponseWriter, r *http.Request) {
+	actorID := userIDFromRequest(r)
+	jobID := mux.Vars(r)["job_id"]
+
+	req, appErr := decodeImportJSONBody[model.ImportSourceSelectionRequest](r, importSourceBodyMaxBytes)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
+	}
+	view, appErr := p.service.SelectImportSource(jobID, actorID, *req)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
+	}
+	// 202: the choice is durable and the job is queued, but preflight has not run yet.
+	writeJSON(w, http.StatusAccepted, view)
+}
+
+// handleConfirmImport handles POST /api/v1/imports/{job_id}/confirm.
+func (p *Plugin) handleConfirmImport(w http.ResponseWriter, r *http.Request) {
+	actorID := userIDFromRequest(r)
+	jobID := mux.Vars(r)["job_id"]
+
+	req, appErr := decodeImportJSONBody[model.ImportConfirmRequest](r, model.ImportConfirmationMaxBytes)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
+	}
+	view, appErr := p.service.ConfirmImportJob(jobID, actorID, *req)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
+	}
+	// 202: the import is queued for the worker, not performed inline.
+	writeJSON(w, http.StatusAccepted, view)
+}
+
+// importSourceBodyMaxBytes bounds the source-selection body. It carries at most a mode, an id, and a
+// display name, so anything larger is malformed rather than merely big.
+const importSourceBodyMaxBytes = 8 * 1024
+
+// decodeImportJSONBody decodes a JSON request body under an explicit size cap, rejecting a body that
+// exceeds it with 413 and trailing data after the object with 400.
+//
+// The cap is applied by reading one byte past it rather than trusting Content-Length, which a client
+// controls independently of what it actually sends.
+func decodeImportJSONBody[T any](r *http.Request, maxBytes int64) (*T, *mmmodel.AppError) {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxBytes+1))
+	if err != nil {
+		return nil, mmmodel.NewAppError("decodeImportJSONBody", "api.import.invalid_body.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+	}
+	if int64(len(raw)) > maxBytes {
+		return nil, mmmodel.NewAppError("decodeImportJSONBody", "api.import.body_too_large.app_error",
+			map[string]any{"MaxBytes": maxBytes}, "", http.StatusRequestEntityTooLarge)
+	}
+
+	var body T
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if decErr := dec.Decode(&body); decErr != nil {
+		return nil, mmmodel.NewAppError("decodeImportJSONBody", "api.invalid_json.app_error", nil, "", http.StatusBadRequest).Wrap(decErr)
+	}
+	// Reject a second concatenated value, for the same reason the multipart request part does: More()
+	// reports false before a closing delimiter, so the only reliable check is decoding again for EOF.
+	if decErr := dec.Decode(&struct{}{}); !errors.Is(decErr, io.EOF) {
+		return nil, mmmodel.NewAppError("decodeImportJSONBody", "api.invalid_json.app_error", nil, "", http.StatusBadRequest)
+	}
+	return &body, nil
+}
+
 // decodeImportRequestPart decodes the JSON `request` part under its own size cap, rejecting trailing
 // data after the object.
 func decodeImportRequestPart(part *multipart.Part) (*model.ImportUploadRequest, *mmmodel.AppError) {

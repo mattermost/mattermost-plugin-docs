@@ -71,6 +71,10 @@ func newImportMockAPI(o importMockOptions) *plugintest.API {
 		actor.DeleteAt = mmmodel.GetMillis()
 	}
 	api.On("GetUser", mock.Anything).Return(actor, nil).Maybe()
+	// Preflight resolves each Confluence author's proposed username. Absent by default so a fixture's
+	// proposals fall back to the importing actor; tests that pin a real mapping stub it themselves.
+	api.On("GetUserByUsername", mock.Anything).
+		Return(nil, mmmodel.NewAppError("GetUserByUsername", "not_found", nil, "", http.StatusNotFound)).Maybe()
 
 	return api
 }

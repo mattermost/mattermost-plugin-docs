@@ -52,11 +52,11 @@ type Plugin struct {
 	inspectionWG        sync.WaitGroup
 	inspectionSemaphore chan struct{}
 
-	// The maintenance goroutine runs the hourly import sweep (expiry, staged-body purge, retention
-	// deletion). It is the seed of the single import worker: phase 4 extends this same loop with job
-	// processing, which is why cleanup and future work share one goroutine rather than racing.
-	maintenanceCancel context.CancelFunc
-	maintenanceWG     sync.WaitGroup
+	// The worker goroutine is the single V1 importer: it processes job work and runs the hourly
+	// maintenance sweep (expiry, staged-body purge, retention deletion) from the same loop, so cleanup can
+	// never overlap the work whose capacity it is reclaiming.
+	workerCancel context.CancelFunc
+	workerWG     sync.WaitGroup
 }
 
 // importInspectionSlots is the number of concurrent bundle inspections allowed per process.
@@ -65,21 +65,53 @@ const importInspectionSlots = 1
 // importMaintenanceInterval is how often the maintenance sweep runs.
 const importMaintenanceInterval = time.Hour
 
-// startImportMaintenance launches the hourly import maintenance loop. One pass runs immediately so a
-// restart after downtime reclaims capacity from work abandoned while the server was down, rather than
-// waiting a full interval.
-func (p *Plugin) startImportMaintenance() {
+// importWorkerIdleInterval is how long the worker waits before re-checking for work when it found none.
+// Job creation does not signal the worker, so this is the latency between an upload being accepted and
+// its preflight starting; short enough to feel immediate, long enough to be a negligible query load.
+const importWorkerIdleInterval = 2 * time.Second
+
+// startImportWorker launches the single import worker.
+//
+// It drains available work before idling, so a backlog is worked down promptly rather than one job per
+// tick. One maintenance pass runs immediately at startup: a restart after downtime must reclaim capacity
+// from work abandoned while the server was down rather than waiting a full hour, and startup is also when
+// interrupted jobs are recovered.
+func (p *Plugin) startImportWorker() {
 	ctx, cancel := context.WithCancel(context.Background())
-	p.maintenanceCancel = cancel
-	p.maintenanceWG.Go(func() {
-		ticker := time.NewTicker(importMaintenanceInterval)
-		defer ticker.Stop()
+	p.workerCancel = cancel
+	p.workerWG.Go(func() {
+		p.service.LogImportWorkerInvariants()
+		p.service.LogImportMaintenance(p.service.RunImportMaintenance())
+
+		maintenance := time.NewTicker(importMaintenanceInterval)
+		defer maintenance.Stop()
+		idle := time.NewTimer(importWorkerIdleInterval)
+		defer idle.Stop()
+
 		for {
-			p.service.LogImportMaintenance(p.service.RunImportMaintenance())
+			// Cancellation is checked between units of work rather than mid-transaction, so deactivation
+			// never abandons a half-applied job.
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			default:
+			}
+
+			worked, err := p.service.RunImportWork()
+			if err != nil {
+				p.API.LogError("Import worker pass failed", "err", err)
+			}
+			if worked {
+				continue
+			}
+
+			idle.Reset(importWorkerIdleInterval)
+			select {
+			case <-ctx.Done():
+				return
+			case <-maintenance.C:
+				p.service.LogImportMaintenance(p.service.RunImportMaintenance())
+			case <-idle.C:
 			}
 		}
 	})
@@ -146,7 +178,7 @@ func (p *Plugin) OnActivate() error {
 
 	// The inspection gate must exist before the router accepts requests.
 	p.initImportAdmission()
-	p.startImportMaintenance()
+	p.startImportWorker()
 
 	p.router = p.initRouter()
 
@@ -165,12 +197,12 @@ func (p *Plugin) OnDeactivate() error {
 	p.inspectionMu.Unlock()
 	p.inspectionWG.Wait()
 
-	// Stop maintenance and wait for the in-flight pass: it runs database transactions, so the store
-	// must outlive it.
-	if p.maintenanceCancel != nil {
-		p.maintenanceCancel()
+	// Stop the worker and wait for its in-flight unit of work: it runs database transactions, so the
+	// store must outlive it.
+	if p.workerCancel != nil {
+		p.workerCancel()
 	}
-	p.maintenanceWG.Wait()
+	p.workerWG.Wait()
 
 	if p.store != nil {
 		if err := p.store.Close(); err != nil {

@@ -73,6 +73,73 @@ func (s *Service) CancelImportJob(jobID, actorID string) (*model.ImportJobView, 
 	return buildImportJobViewWithoutCandidates(canceled), nil
 }
 
+// RunImportWork performs at most one unit of worker work and reports whether it found any.
+//
+// One unit at a time, with the next selection re-read from the database, is what makes the worker
+// restartable: every transition is a compare-and-set, so a crash between units leaves a state the next
+// pass can resume from rather than in-memory progress that is simply lost. The caller loops.
+//
+// V1 runs exactly one worker on one node. There is deliberately no lease, claim token, or heartbeat: with
+// a single worker, losing a compare-and-set is the only contention that can occur, and it resolves by
+// re-reading rather than by fencing.
+func (s *Service) RunImportWork() (bool, error) {
+	job, err := s.store.GetNextImportWork()
+	if err != nil {
+		return false, err
+	}
+	if job == nil {
+		return false, nil
+	}
+
+	switch job.State {
+	case model.ImportStateQueuedPreflight:
+		return true, s.RunImportPreflight(job.Id)
+	case model.ImportStatePreflighting:
+		// A job found already preflighting was interrupted mid-computation, so nothing it derived can be
+		// trusted. Returning it to the queue discards that partial work and the next pass recomputes from
+		// scratch — which is safe precisely because preflight publishes all-or-nothing.
+		s.log.Info("Import preflight interrupted; requeuing for recomputation", "job_id", job.Id)
+		return true, s.requeueImportPreflight(job.Id)
+	default:
+		// Execution and terminalization arrive with the next phase. Until then a job in one of those states
+		// would be selected on every pass, so it is reported once and skipped rather than spun on.
+		s.logUnhandledImportWork(job)
+		return false, nil
+	}
+}
+
+// logUnhandledImportWork reports a job in a state this build cannot advance, at most once per state per
+// process. Without the deduplication an unimplemented state would emit a warning on every worker tick.
+func (s *Service) logUnhandledImportWork(job *model.ImportJob) {
+	s.unhandledImportStatesMu.Lock()
+	defer s.unhandledImportStatesMu.Unlock()
+	if s.unhandledImportStates == nil {
+		s.unhandledImportStates = map[model.ImportJobState]struct{}{}
+	}
+	if _, seen := s.unhandledImportStates[job.State]; seen {
+		return
+	}
+	s.unhandledImportStates[job.State] = struct{}{}
+	s.log.Warn("Import job is in a state this release cannot advance; it will wait for its retention deadline",
+		"job_id", job.Id, "state", string(job.State))
+}
+
+// LogImportWorkerInvariants checks the single-active-job invariant the supported topology relies on and
+// reports a violation. It is a diagnostic, not a guard: immutable execution checkpoints and mapping
+// revisions are what actually prevent duplicate decisions, so a second active job is processed
+// deterministically rather than refused.
+func (s *Service) LogImportWorkerInvariants() {
+	active, err := s.store.CountActiveImportJobs()
+	if err != nil {
+		s.log.Warn("Could not check the import worker invariant", "err", err)
+		return
+	}
+	if active > 1 {
+		s.log.Error("More than one import job is in a worker-owned state; V1 supports a single importer worker on a single node",
+			"active_jobs", active)
+	}
+}
+
 // RunImportMaintenance performs one hourly maintenance pass: expire stalled pre-execution jobs, purge
 // staged bodies of terminal jobs, and delete jobs past their retention. Each step releases the
 // admission capacity its jobs were holding, which is what keeps the per-user and global budgets from

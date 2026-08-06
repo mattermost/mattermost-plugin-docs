@@ -692,17 +692,81 @@ func buildImportJobViewWithoutCandidates(job *model.ImportJob) *model.ImportJobV
 	if job.ErrorCode != "" {
 		view.Error = &model.ImportPublicError{Code: job.ErrorCode}
 	}
+	if job.PreflightRevision != "" {
+		view.Preflight = importPreflightReportSummary(job)
+	}
 	view.RequiredAcknowledgements = requiredAcknowledgements(job)
 	return view
 }
 
-// requiredAcknowledgements lists the confirmation acknowledgements already implied by the bundle and
-// target. reimport_existing_pages is deliberately absent until preflight has compared the bundle
-// against existing mappings — only then is it known whether any page is a reimport.
+// importPreflightReportSummary projects the persisted preflight summary for the wizard.
+//
+// The revision is exposed here because the client must echo it back to confirm, and it is the only piece
+// of the internal job model a client legitimately needs: it names *which* plan was reviewed, without
+// revealing any of the baselines that make applying that plan safe.
+func importPreflightReportSummary(job *model.ImportJob) *model.ImportReportSummary {
+	summary := job.PreflightSummary
+	return &model.ImportReportSummary{
+		Stage:       string(model.ImportStagePreflight),
+		GeneratedAt: job.UpdateAt,
+		Fidelity:    model.NewImportFidelity(),
+		Revision:    job.PreflightRevision,
+		Counts: model.ImportReportCounts{
+			Pages:                   summary.Manifest.Pages,
+			Comments:                summary.Manifest.Comments,
+			Attachments:             summary.Manifest.Attachments,
+			RestrictedManifestTotal: summary.Manifest.RestrictedManifestTotal,
+			RestrictedEmittedPages:  summary.Manifest.RestrictedEmittedPages,
+			RestrictedManifestOnly:  summary.Manifest.RestrictedManifestOnly,
+			Actions:                 importActionCountsMap(summary.Actions),
+			Authors: map[string]int{
+				"mapped":            summary.Authors.Mapped,
+				"fallback_to_actor": summary.Authors.FallbackToActor,
+			},
+		},
+	}
+}
+
+// importActionCountsMap flattens the typed action counts into the report's map shape, omitting zeros so a
+// reader sees only what the plan actually does.
+func importActionCountsMap(actions model.ImportActionCounts) map[string]int {
+	out := map[string]int{}
+	for action, count := range map[model.ImportAction]int{
+		model.ImportActionCreate:        actions.Create,
+		model.ImportActionUpdate:        actions.Update,
+		model.ImportActionNoop:          actions.Noop,
+		model.ImportActionPreserveLocal: actions.PreserveLocal,
+		model.ImportActionConflict:      actions.Conflict,
+		model.ImportActionBlocked:       actions.Blocked,
+		model.ImportActionStale:         actions.Stale,
+		model.ImportActionNotAttempted:  actions.NotAttempted,
+	} {
+		if count > 0 {
+			out[string(action)] = count
+		}
+	}
+	return out
+}
+
+// requiredAcknowledgements lists the confirmation acknowledgements a job currently demands. Before
+// preflight the reimport acknowledgement is absent because the job's preflight action counts are still
+// zero — whether anything is a reimport is only knowable once the bundle has been compared against
+// existing mappings.
 func requiredAcknowledgements(job *model.ImportJob) []string {
-	counts := job.BundleSummary.Counts
+	return importRequiredAcknowledgements(job.TargetKind, job.BundleSummary.Counts, job.PreflightSummary.Actions)
+}
+
+// importRequiredAcknowledgements derives the acknowledgement set from the target, the bundle, and the
+// planned actions. It is shared by the job view, the preflight revision digest, and confirmation
+// validation so all three demand exactly the same set: a client told to set one key and then refused for
+// missing another would be unable to proceed at all.
+func importRequiredAcknowledgements(
+	targetKind model.ImportTargetKind,
+	counts model.ImportBundleCounts,
+	actions model.ImportActionCounts,
+) []string {
 	acks := []string{}
-	if job.TargetKind == model.ImportTargetNew {
+	if targetKind == model.ImportTargetNew {
 		acks = append(acks, model.ImportAckNewSpaceMetadata)
 	}
 	if counts.Comments > 0 || counts.Attachments > 0 {
@@ -712,6 +776,11 @@ func requiredAcknowledgements(job *model.ImportJob) []string {
 	// entries are reported instead, so they must not demand an acknowledgement.
 	if counts.RestrictedEmittedPages > 0 {
 		acks = append(acks, model.ImportAckWidenRestricted)
+	}
+	// Any plan that touches a page which already exists — including one it deliberately leaves alone —
+	// means the user is reimporting rather than importing fresh, and must say so.
+	if actions.Update+actions.Noop+actions.PreserveLocal+actions.Conflict+actions.Stale > 0 {
+		acks = append(acks, model.ImportAckReimportExisting)
 	}
 	return acks
 }
