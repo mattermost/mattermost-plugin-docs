@@ -17,6 +17,11 @@ export interface DocsDataSource {
     // backing-channel membership).
     listSpaces(teamId: string): Promise<Space[]>;
 
+    // One space by id. This is how a space arrives when the URL names it directly
+    // and the team listing hasn't run (or ran before the space existed) — a
+    // deep link must not depend on the space being in a list the client already
+    // holds. Rejects with a RestError the caller interprets (403/404 = the caller
+    // can't see it).
     getSpace(spaceId: string): Promise<Space | undefined>;
 
     // Creates a space in the team and returns it (with its server-assigned id
@@ -46,6 +51,11 @@ export interface DocsDataSource {
     // Pages in a space. The server returns page summaries (no body); the source
     // normalizes them to Page with an empty body for the store.
     listPages(spaceId: string): Promise<Page[]>;
+
+    // One page by id, with its body. The counterpart to getSpace for deep links:
+    // a routed page id is resolved against the server rather than only against
+    // whatever the space listing happened to return.
+    getPage(spaceId: string, pageId: string): Promise<Page>;
 
     // Reparents and/or reorders a page. `parentId` is the new parent id ('' =
     // space root); `siblingIndex` is the 0-based position within the new parent.

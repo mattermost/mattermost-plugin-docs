@@ -1,16 +1,16 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {useCallback} from 'react';
+import {useCallback, useEffect, useState} from 'react';
 import {useIntl} from 'react-intl';
 
-import {createDraft} from 'store/actions';
-import {getPage} from 'store/selectors';
+import {createDraft, fetchPage} from 'store/actions';
+import {getPage, getPageInSpace} from 'store/selectors';
 
 import {toast} from 'components/toast';
 
 import {SPACE_PROP_DEFAULT_PAGE_ID, UNTITLED_PAGE_TITLE} from 'types/docs';
-import type {Space} from 'types/docs';
+import type {Page, Space} from 'types/docs';
 
 import {useDocsNavigation} from './navigation';
 import {useAppDispatch, useAppSelector} from './redux';
@@ -45,6 +45,49 @@ export function useCreateRootPage(spaceId: string) {
             console.error('Docs: failed to create page', error);
         }
     }, [dispatch, spaceId, untitled, goToDraft, formatMessage]);
+}
+
+export type RoutedPage = {
+    page?: Page;
+
+    // False until the id has an answer — see RoutedSpace.resolved.
+    resolved: boolean;
+};
+
+/**
+ * Resolves a page id that came from the URL against the space, fetching it by id
+ * when the space's page list doesn't hold it.
+ *
+ * The list is the usual source, but it can predate the page, so an id missing from
+ * it is not yet a bad id. Fetching by id is also what supplies the page's body — the
+ * list returns summaries.
+ *
+ * `fetchMissing` is false on the draft route, where the page legitimately does not
+ * exist (a draft reserves its page id before publishing) and asking for it would be
+ * a 404 on every draft opened.
+ */
+export function useRoutedPage(spaceId: string, pageId?: string, {fetchMissing = true} = {}): RoutedPage {
+    const dispatch = useAppDispatch();
+    const page = useAppSelector((state) => (pageId ? getPageInSpace(state, spaceId, pageId) : undefined));
+    const [checkedId, setCheckedId] = useState<string>();
+    const missing = Boolean(pageId) && !page;
+
+    useEffect(() => {
+        if (!pageId || !missing || !fetchMissing) {
+            return undefined;
+        }
+        let active = true;
+        dispatch(fetchPage(spaceId, pageId)).then(() => {
+            if (active) {
+                setCheckedId(pageId);
+            }
+        });
+        return () => {
+            active = false;
+        };
+    }, [dispatch, spaceId, pageId, missing, fetchMissing]);
+
+    return {page, resolved: Boolean(pageId) && (Boolean(page) || checkedId === pageId)};
 }
 
 /**

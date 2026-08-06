@@ -3,14 +3,11 @@
 
 import {usePageDraft, usePublishDraft} from 'hooks/drafts';
 import {useDocsNavigation, useTogglePageEditMode} from 'hooks/navigation';
-import {useDefaultPagePath} from 'hooks/pages';
-import {useAppSelector} from 'hooks/redux';
+import {useDefaultPagePath, useRoutedPage} from 'hooks/pages';
 import {useRhs} from 'hooks/rhs';
 import {useSpaceStats} from 'hooks/spaces';
 import React, {useCallback, useState} from 'react';
 import {Redirect} from 'react-router-dom';
-
-import {arePagesLoadedForSpace, getPageInSpace} from 'store/selectors';
 
 import CommentsPanel from 'components/comments/comments_panel';
 import SpaceInfoPanel from 'components/space_info/space_info_panel';
@@ -37,8 +34,10 @@ import styles from './space_view.module.scss';
 const SpaceView = ({space}: {space: Space}) => {
     const {pageId, isDraft, isEditing, paths} = useDocsNavigation();
     const toggleEdit = useTogglePageEditMode(space.id);
-    const page = useAppSelector((state) => (pageId ? getPageInSpace(state, space.id, pageId) : undefined));
-    const pagesLoaded = useAppSelector((state) => arePagesLoadedForSpace(state, space.id));
+
+    // On the draft route the page is expected not to exist, so the id is resolved
+    // from the loaded list alone — fetching it would 404 on every draft opened.
+    const {page, resolved: pageResolved} = useRoutedPage(space.id, pageId, {fetchMissing: !isDraft});
 
     // Loaded for any routed page, not just the draft route: a published page can
     // have unpublished edits too, and that is what Update acts on.
@@ -80,12 +79,12 @@ const SpaceView = ({space}: {space: Space}) => {
         return <Redirect to={paths.overview(space.id)}/>;
     }
 
-    // Once the space's pages are loaded, a routed id that isn't among them names
-    // a page in another space or one that's gone, so fall back to the front door
-    // rather than rendering a page shell that can never fill in. /overview is
-    // explicit, so it won't bounce back through the default-page redirect above.
-    // Excludes the draft route, where having no page is the normal case.
-    if (!isDraft && pageId && pagesLoaded && !page) {
+    // Once the routed page id has an answer and there's no page, it names a page in
+    // another space or one that's gone, so fall back to the front door rather than
+    // rendering a page shell that can never fill in. /overview is explicit, so it
+    // won't bounce back through the default-page redirect above. Excludes the draft
+    // route, where having no page is the normal case.
+    if (!isDraft && pageId && pageResolved && !page) {
         return <Redirect to={paths.overview(space.id)}/>;
     }
 

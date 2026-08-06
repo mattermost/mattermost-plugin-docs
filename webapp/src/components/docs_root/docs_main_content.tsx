@@ -2,13 +2,10 @@
 // See LICENSE.txt for license information.
 
 import {useDocsNavigation} from 'hooks/navigation';
-import {useAppSelector} from 'hooks/redux';
-import {useSpace} from 'hooks/spaces';
+import {useRoutedSpace} from 'hooks/spaces';
 import React from 'react';
 import {Redirect, Route, Switch} from 'react-router-dom';
 import {DOCS_DRAFT_ROUTE, DOCS_SPACE_OVERVIEW_ROUTE, DOCS_SPACE_ROUTE} from 'routing/paths';
-
-import {areSpacesLoadedForCurrentTeam} from 'store/selectors';
 
 import DocsHome from 'components/docs_home/docs_home';
 import SpaceView from 'components/space_view/space_view';
@@ -41,19 +38,19 @@ const DocsMainContent = ({onCreateSpace, onBrowseSpaces}: Props) => {
     );
 };
 
-// Resolves the routed space id against the store. Once the team's spaces are
-// loaded, an id that still isn't there names a space the user can't see (or one
-// that's gone), so the URL is corrected to the product home; until then the id
-// may simply not have arrived, so nothing renders rather than flashing Home.
+// Resolves the routed space id, asking the server for that id when the store
+// doesn't hold it (see useRoutedSpace) rather than treating the team listing as
+// the last word. Once the id has an answer and there's no space, it names one the
+// user can't see or one that's gone, so the URL is corrected to the product home;
+// until then nothing renders rather than flashing Home.
 const RoutedSpaceView = () => {
     const {spaceId, paths} = useDocsNavigation();
-    const space = useSpace(spaceId);
-    const spacesLoaded = useAppSelector(areSpacesLoadedForCurrentTeam);
+    const {space, resolved} = useRoutedSpace(spaceId);
 
     if (space) {
         return <SpaceView space={space}/>;
     }
-    if (spacesLoaded) {
+    if (resolved) {
         return <Redirect to={paths.home()}/>;
     }
     return null;

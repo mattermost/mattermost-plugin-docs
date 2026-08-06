@@ -59,6 +59,9 @@ export const apiDataSource: DocsDataSource = {
         return summaries.map(toPage);
     },
 
+    getPage: async (spaceId, pageId) =>
+        toPage(await restGet<Page>(`${apiUrl()}/spaces/${seg(spaceId)}/pages/${seg(pageId)}`)),
+
     movePage: async (spaceId, pageId, parentId, siblingIndex, expectedUpdateAt) => {
         const moved = await restPatch<Page>(`${apiUrl()}/spaces/${seg(spaceId)}/pages/${seg(pageId)}/move`, {
             parent_id: parentId,

@@ -39,6 +39,34 @@ export function fetchSpaces(): DocsThunkAction<Promise<void>> {
     };
 }
 
+/**
+ * Loads one space by id, for a URL that names a space the store doesn't hold.
+ *
+ * Deliberately not folded into fetchSpaces: a deep link must resolve against the
+ * server, not against whatever the team listing returned. The listing can be
+ * stale (a space created since), scoped to another team, or simply not to have run
+ * yet, and none of those mean the id is bad.
+ *
+ * Resolves to undefined when the space can't be read (403/404) or the request
+ * failed — the caller can only tell "not there" from "not asked yet" by whether
+ * this settled, so it must not reject.
+ */
+export function fetchSpace(spaceId: string): DocsThunkAction<Promise<Space | undefined>> {
+    return async (dispatch) => {
+        try {
+            const space = await docsDataSource.getSpace(spaceId);
+            if (space) {
+                dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: [space]});
+            }
+            return space;
+        } catch (error) {
+            // eslint-disable-next-line no-console
+            console.error('Docs: failed to load space', spaceId, error);
+            return undefined;
+        }
+    };
+}
+
 // Cross-team load for the switcher: fan out over the user's teams. The server
 // has no all-teams endpoint, so this is N team-scoped calls run in parallel.
 export function fetchAllSpaces(): DocsThunkAction<Promise<void>> {
@@ -73,6 +101,30 @@ export function loadPages(spaceId: string): DocsThunkAction<Promise<void>> {
     return async (dispatch) => {
         const pages = await docsDataSource.listPages(spaceId);
         dispatch({type: PageTypes.RECEIVED_PAGES, pages, spaceId});
+    };
+}
+
+/**
+ * Loads one page by id, for a URL that names a page the store doesn't hold.
+ *
+ * The space listing is the usual source, so this covers what it can't: a page
+ * created since the listing ran, or a page reached before it did. Also the only
+ * source of a page's body — the listing returns summaries.
+ *
+ * Resolves to undefined rather than rejecting, for the same reason as fetchSpace:
+ * "settled with nothing" is the answer a routed id needs.
+ */
+export function fetchPage(spaceId: string, pageId: string): DocsThunkAction<Promise<Page | undefined>> {
+    return async (dispatch) => {
+        try {
+            const page = await docsDataSource.getPage(spaceId, pageId);
+            dispatch({type: PageTypes.RECEIVED_PAGES, pages: [page]});
+            return page;
+        } catch (error) {
+            // eslint-disable-next-line no-console
+            console.error('Docs: failed to load page', pageId, error);
+            return undefined;
+        }
     };
 }
 

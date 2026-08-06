@@ -4,12 +4,12 @@
 import {useForm} from '@tanstack/react-form';
 import {getSpaceViews, recordSpaceView} from 'data/recent_spaces';
 import {useAppDispatch, useAppSelector} from 'hooks/redux';
-import {useCallback, useEffect, useMemo} from 'react';
+import {useCallback, useEffect, useMemo, useState} from 'react';
 import {createSpaceFormSchema} from 'validation/space_schema';
 
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
-import {createSpace, fetchPages, fetchSpaceMembers} from 'store/actions';
+import {createSpace, fetchPages, fetchSpace, fetchSpaceMembers} from 'store/actions';
 import {areMembersLoadedForSpace, getAllSpaces, getPagesForSpace, getSpace, getSpaceMemberIds, getSpacesForCurrentTeam} from 'store/selectors';
 
 import type {Space, SpaceSummary, SpaceVisibility} from 'types/docs';
@@ -25,6 +25,53 @@ export function useAllSpaces(): Space[] {
 
 export function useSpace(id?: string): Space | undefined {
     return useAppSelector((state) => (id ? getSpace(state, id) : undefined));
+}
+
+export type RoutedSpace = {
+    space?: Space;
+
+    // False until the id has an answer. A routed id that isn't in the store yet is
+    // not yet known to be bad, and correcting the URL before the answer is in turns
+    // a slow response into a bounce out of a space that is really there.
+    resolved: boolean;
+};
+
+/**
+ * Resolves a space id that came from the URL, fetching it by id when the store
+ * doesn't hold it.
+ *
+ * The team listing is not enough on its own: it can predate the space, or belong to
+ * another team, so an id missing from it is not an id that doesn't exist. Asking the
+ * server for the id itself is the only answer a deep link can trust.
+ *
+ * The fetch runs only while the space is absent, so an id already in the store costs
+ * nothing and a failed lookup isn't retried in a loop (its absence is the state that
+ * gated the effect, and it doesn't change).
+ */
+export function useRoutedSpace(spaceId?: string): RoutedSpace {
+    const dispatch = useAppDispatch();
+    const space = useSpace(spaceId);
+    const [checkedId, setCheckedId] = useState<string>();
+    const missing = Boolean(spaceId) && !space;
+
+    useEffect(() => {
+        if (!spaceId || !missing) {
+            return undefined;
+        }
+        let active = true;
+        dispatch(fetchSpace(spaceId)).then(() => {
+            if (active) {
+                setCheckedId(spaceId);
+            }
+        });
+        return () => {
+            active = false;
+        };
+    }, [dispatch, spaceId, missing]);
+
+    // No routed id is nothing to resolve, so it must not read as answered — the
+    // caller redirects on an answered id with no space.
+    return {space, resolved: Boolean(spaceId) && (Boolean(space) || checkedId === spaceId)};
 }
 
 // Recently-viewed spaces in the current team (Home). Recency is client-side
