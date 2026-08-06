@@ -50,6 +50,9 @@ func openTestServiceWithAPI(t *testing.T, mockAPI *plugintest.API) *testHarness 
 	// stub. TestServiceCreateSpace_NotTeamMember overrides this to exercise the rejection path.
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil).Maybe()
+	// The page-write gate reads the acting user to hold guests to read_page. Defaults to an
+	// ordinary (non-guest) user; a test exercising the guest refusal registers its own stub first.
+	mockAPI.On("GetUser", mock.Anything).Return(&mmmodel.User{}, nil).Maybe()
 	// plugintest flattens a log call's variadic pairs into the mock's argument list, so a stub only
 	// matches calls with exactly that many arguments. Cover each shape the service emits: LogWarn
 	// with message plus two key/value pairs (ResolveSpaceRead/GetSpacesForTeam client-not-wired

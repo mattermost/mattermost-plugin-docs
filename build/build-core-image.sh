@@ -64,6 +64,17 @@ if [[ "$CURRENT_BRANCH" != "$DOCS_CORE_BRANCH" ]]; then
     exit 1
 fi
 
+# ── Report drift from the committed core pin ────────────────────────────────────
+# build/core-commit.txt is what CI holds CORE_IMAGE to. Building ahead of it is the normal way to
+# develop a paired change, so this reports rather than refuses — but the pin has to be bumped
+# before CI will accept an image built from the newer commit.
+PINNED_COMMIT="$(grep -vE '^\s*(#|$)' "$REPO_ROOT/build/core-commit.txt" | head -1 | tr -d '[:space:]')"
+CORE_HEAD="$(git -C "$MM_SERVER_REPO" rev-parse HEAD)"
+if [[ "$CORE_HEAD" != "$PINNED_COMMIT" ]]; then
+    echo "NOTE: core is at $CORE_HEAD but build/core-commit.txt pins $PINNED_COMMIT." >&2
+    echo "      Bump the pin once this image is the one CI should run against." >&2
+fi
+
 # ── Detect the Docker daemon's architecture ─────────────────────────────────────
 # Cross-compile for the arch the *daemon* runs containers as, not the host arch — the two can
 # differ (e.g. Docker Desktop on Apple Silicon set to emulate amd64).

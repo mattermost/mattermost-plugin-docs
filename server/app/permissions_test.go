@@ -521,3 +521,48 @@ func TestResolveSpaceRead_InvalidUserIDIsBadRequest(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 	require.Equal(t, app.ReadDenied, resolution)
 }
+
+// TestRequireSpacePagePermission_DemotedGuestDeniedWrites covers the grant that outlives a
+// demotion. Core clears SchemeUser/SchemeAdmin when a user becomes a guest but leaves the atomic
+// capability roles a prior grant wrote into ExplicitRoles, and it composes those into the member's
+// channel permissions whatever the member's guest standing — so the channel check still reports
+// the write permission, as the harness's default channel grants model here. The gate must deny it
+// anyway, since a guest is read-only in a space.
+func TestRequireSpacePagePermission_DemotedGuestDeniedWrites(t *testing.T) {
+	for _, perm := range []*mmmodel.Permission{
+		mmmodel.PermissionCreatePage, mmmodel.PermissionEditPage,
+		mmmodel.PermissionCommentPage, mmmodel.PermissionDeleteOwnPage,
+	} {
+		t.Run(perm.Id, func(t *testing.T) {
+			mockAPI := &plugintest.API{}
+			guestID := mmmodel.NewId()
+			mockAPI.On("GetUser", guestID).
+				Return(&mmmodel.User{Id: guestID, Roles: mmmodel.SystemGuestRoleId}, nil)
+			testutil.StubGuestTeamDefaults(mockAPI, guestID)
+			h := openTestServiceWithAPI(t, mockAPI)
+			space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), mmmodel.NewId())
+
+			appErr := h.svc.RequireSpacePagePermission("test", space, guestID, perm)
+
+			require.NotNil(t, appErr, "a guest must not hold %s even with the role still in ExplicitRoles", perm.Id)
+			require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+		})
+	}
+}
+
+// TestRequireSpacePagePermission_DemotedGuestKeepsRead is the positive half of the pair above: the
+// same guest still reads the space as a backing-channel member, so the refusals there come from
+// the permission being a write rather than from guests being shut out of the space altogether.
+func TestRequireSpacePagePermission_DemotedGuestKeepsRead(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	guestID := mmmodel.NewId()
+	testutil.StubGuestTeamDefaults(mockAPI, guestID)
+	h := openTestServiceWithAPI(t, mockAPI)
+	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), mmmodel.NewId())
+
+	appErr := h.svc.RequireSpacePagePermission("test", space, guestID, mmmodel.PermissionReadPage)
+
+	require.Nil(t, appErr)
+	// The read arm is decided by the channel grant alone; the user is never read for it.
+	mockAPI.AssertNotCalled(t, "GetUser", mock.Anything)
+}

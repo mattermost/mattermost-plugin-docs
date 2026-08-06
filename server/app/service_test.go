@@ -62,6 +62,9 @@ func openTestService(t *testing.T) *testHarness {
 	testutil.StubDefaultSpacePermissions(mockAPI)
 	mockAPI.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
 	mockAPI.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
+	// The page-write gate reads the acting user to hold guests to read_page. Defaults to an
+	// ordinary (non-guest) user; a test exercising the guest refusal registers its own stub first.
+	mockAPI.On("GetUser", mock.Anything).Return(&mmmodel.User{}, nil).Maybe()
 	// With a client wired, the WS publishes and channel side-effects these paths perform are no
 	// longer no-ops. Tests that assert on specific events register their own expectations against
 	// their own mock.

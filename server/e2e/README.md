@@ -21,6 +21,34 @@ build is required — that is exactly how the `e2e` job in `.github/workflows/ci
 the tag from the `CORE_IMAGE` repository variable. Once those core changes merge and ship in a
 release, point `CORE_IMAGE` at the released image instead and this suite runs unchanged.
 
+Which core commit that variable is allowed to name is recorded in `build/core-commit.txt`, and CI
+fails the suite when the two disagree. The pin lives in a file of its own rather than being read
+off the `go.mod` `server/public` version, because most of the RBAC implementation sits outside the
+public module: a core commit can change the scheme guards and role composition these scenarios
+assert on without moving that version at all. Bump the pin in the same PR that depends on the newer
+core behaviour.
+
+The image this script builds is **API-only**: server binary plus i18n, templates and fonts, and an
+empty `client/`. That is all the suites here need — every assertion is an HTTP call.
+
+The browser suite does not use this image, or Testcontainers, at all. The System Console spec in
+core's Playwright tests (`./scripts/run-tests.sh core-ui-e2e`) runs in Playwright's default
+*external* mode against the docs-core server `start-docs-core-server.sh` already runs, so a run
+costs seconds rather than a container boot. It needs that server to serve the webapp, which a
+core checkout does not do out of the box:
+
+```sh
+(cd ../MM-69269-core/webapp && npm run build)              # once
+cp -R ../MM-69269-core/webapp/channels/dist/. ../MM-69269-core/server/client/
+./scripts/stop-docs-core-server.sh && ./scripts/start-docs-core-server.sh
+```
+
+Two details that are easy to lose an afternoon to: a **symlink** into `server/client` serves
+`root.html` but 404s every asset, so copy rather than link; and the client directory is resolved
+**once, at boot** (`fileutils.FindDir` in `web/static.go`), so populating it under a running server
+registers no static handler — restart afterwards. Without the webapp the server answers `/api/v4`
+normally and returns 500 for every page.
+
 A bare tag (no `/`) is treated as locally built: if it is absent the suite fails immediately and
 names the build script, rather than letting Testcontainers fail mid-boot. A namespaced tag is
 assumed pullable and is left to Testcontainers to fetch.

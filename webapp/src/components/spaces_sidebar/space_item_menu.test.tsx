@@ -15,6 +15,20 @@ jest.mock('utils/clipboard', () => ({
     copyToClipboard: jest.fn(),
 }));
 
+// The settings modal reads its state over HTTP on mount; this menu only owns the
+// decision to open it, so the reads are stubbed rather than exercised here.
+jest.mock('client/space_permissions', () => {
+    const actual = jest.requireActual('client/space_permissions');
+    return {
+        ...actual,
+        getSpaceAccess: jest.fn(),
+        getSpaceMembers: jest.fn(),
+        getMemberProfiles: jest.fn(),
+    };
+});
+
+const api = jest.requireMock('client/space_permissions');
+
 const space = makeSpace('docs', 'Docs');
 
 function renderMenu(props: Partial<React.ComponentProps<typeof SpaceItemMenu>> = {}) {
@@ -33,6 +47,17 @@ async function openMenu() {
 }
 
 describe('SpaceItemMenu', () => {
+    beforeEach(() => {
+        jest.clearAllMocks();
+        api.getSpaceAccess.mockResolvedValue({
+            id: space.id,
+            default_capabilities: [],
+            capabilities: ['read_page'],
+        });
+        api.getSpaceMembers.mockResolvedValue({items: [], page: 0, per_page: 100, has_more: false});
+        api.getMemberProfiles.mockResolvedValue([]);
+    });
+
     it('copies the team-scoped space link', async () => {
         renderMenu();
 
@@ -40,6 +65,18 @@ describe('SpaceItemMenu', () => {
         fireEvent.click(screen.getByText('Copy link'));
 
         await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('http://localhost:8065/myteam/spaces/docs'));
+    });
+
+    it('opens the permissions modal from the menu, scoped to this space', async () => {
+        renderMenu();
+
+        await openMenu();
+        expect(screen.queryByRole('heading', {name: 'Permissions for Docs'})).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByText('Space permissions'));
+
+        expect(await screen.findByRole('heading', {name: 'Permissions for Docs'})).toBeInTheDocument();
+        await waitFor(() => expect(api.getSpaceAccess).toHaveBeenCalledWith(space.id));
     });
 
     it('opens the leave confirmation from the menu', async () => {

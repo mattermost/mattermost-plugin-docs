@@ -1,0 +1,103 @@
+.modal {
+    width: 640px;
+    max-width: calc(100vw - 48px);
+}
+
+.body {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 28px;
+    min-height: 0;
+    padding: 12px 32px;
+    overflow-y: auto;
+}
+
+.section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
+}
+
+.sectionTitle {
+    margin: 0;
+    color: var(--center-channel-color);
+    font-family: 'Metropolis', sans-serif;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 24px;
+}
+
+.note {
+    margin: 0;
+    color: rgba(var(--center-channel-color-rgb), 0.75);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 12px;
+    line-height: 16px;
+}
+
+.error {
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: 4px;
+    background: rgba(var(--error-text-color-rgb), 0.08);
+    color: var(--error-text);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 12px;
+    line-height: 16px;
+}
+
+.toggles {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 0;
+    padding: 0;
+    border: none;
+}
+
+.togglesLegend {
+    // The legend names the group for assistive technology; the visible heading
+    // above it already carries that meaning on screen.
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+}
+
+.toggle {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    color: var(--center-channel-color);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 14px;
+    line-height: 20px;
+
+    input:disabled + label {
+        color: rgba(var(--center-channel-color-rgb), 0.5);
+    }
+}
+
+.member {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+    padding: 12px 0;
+
+    & + & {
+        border-top: 1px solid rgba(var(--center-channel-color-rgb), 0.08);
+    }
+}
+
+.memberName {
+    color: var(--center-channel-color);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 20px;
+}

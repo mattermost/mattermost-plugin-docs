@@ -28,6 +28,14 @@
     "translation": "Capabilities cannot be set when adding a member. Add the member first, then set their capabilities."
   },
   {
+    "id": "api.space.set_default_capabilities.capabilities_required.app_error",
+    "translation": "The default_capabilities field is required. Send an empty list to clear every default capability."
+  },
+  {
+    "id": "api.space.set_member_capabilities.capabilities_required.app_error",
+    "translation": "The granted_capabilities field is required. Send an empty list to clear every granted capability."
+  },
+  {
     "id": "app.optimistic_lock.baseline_required.app_error",
     "translation": "The {{.Field}} field is required unless force is set."
   },
@@ -398,6 +406,10 @@
   {
     "id": "app.space.access.team_lookup_failed.app_error",
     "translation": "Failed to verify team membership."
+  },
+  {
+    "id": "app.space.access.user_lookup_failed.app_error",
+    "translation": "Failed to verify the user's account type."
   },
   {
     "id": "app.space.add_member.failed.app_error",

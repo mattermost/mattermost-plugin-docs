@@ -59,6 +59,12 @@ export function makeTestState({docs, currentTeam, teams, currentUser}: TestState
                 currentUserId: userId,
                 profiles: currentUser ? {[userId]: currentUser} : {},
             },
+
+            // Empty but present: host selectors a Docs component may reach for
+            // (the teammate name-display preference, say) index into these
+            // without guarding, so omitting them throws rather than defaulting.
+            general: {config: {}, license: {}},
+            preferences: {myPreferences: {}},
         },
     } as unknown as GlobalState;
 }

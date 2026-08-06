@@ -160,14 +160,42 @@ func (s *Service) RequireSpacePagePermission(where string, space *model.Space, u
 	return s.evaluatePagePermission(where, space, userID, perm, member != nil, member)
 }
 
+// isGuest reports whether userID holds core's system-wide guest role. Read from the user rather
+// than from the backing channel's ChannelMember.SchemeGuest: the two carry the same standing —
+// a demotion stamps system_guest on the user and mirrors it onto every membership in the same
+// transaction — and the user is the record that standing originates from.
+func (s *Service) isGuest(userID string) (bool, error) {
+	user, err := s.client.User.Get(userID)
+	if err != nil {
+		return false, err
+	}
+	return user.IsGuest(), nil
+}
+
 // evaluatePagePermission grants perm to an active member holding it on the backing channel, or —
 // for a read permission on an open space only — to an active team member via the non-member
 // fall-through. Any other case yields the shared existence-hiding 403. active is the caller's
 // already-resolved team-membership status; member is the membership behind it when the caller
 // holds one, and nil when active was established without reading the row.
+//
+// A guest is held to read_page whatever the composed channel permission says. Demoting a user to
+// guest clears SchemeUser/SchemeAdmin but leaves the atomic capability roles a prior grant wrote
+// into ExplicitRoles, and core composes those into the member's channel permissions regardless of
+// guest standing — so a gate that trusted the composed permission alone would let a demoted guest
+// keep writing.
 func (s *Service) evaluatePagePermission(where string, space *model.Space, userID string, perm *mmmodel.Permission, active bool, member *mmmodel.TeamMember) *mmmodel.AppError {
 	if active && s.client.User.HasPermissionToChannel(userID, space.ChannelId, perm) {
-		return nil
+		if perm.Id == mmmodel.PermissionReadPage.Id {
+			return nil
+		}
+		guest, err := s.isGuest(userID)
+		if err != nil {
+			return mmmodel.NewAppError(where, "app.space.access.user_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+		}
+		if !guest {
+			return nil
+		}
+		return existenceHidingForbidden(where)
 	}
 	if perm.Id == mmmodel.PermissionReadPage.Id && space.ViewAccess == model.ViewAccessOpen && active &&
 		s.hasOpenTeamFallthrough(member, userID, space.TeamId) {

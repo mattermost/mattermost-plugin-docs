@@ -138,41 +138,36 @@ jobs:
           fi
           image_tag="${CORE_IMAGE##*:}"
 
-          # The shape check above cannot catch the drift that matters. go.mod pins server/public to a
-          # core commit; CORE_IMAGE is a separate repository variable a human sets. Nothing ties them
-          # together, so bumping the pin without updating the variable leaves this suite green against
-          # a core image that predates the very changes under test.
-          gomod_version="$(grep -oE 'server/public v[^[:space:]]+' go.mod | head -1 | awk '{print $2}')"
-          if [[ -z "$gomod_version" ]]; then
-            echo "no server/public requirement found in go.mod; the pin cross-check cannot run." >&2
+          # The shape check above cannot catch the drift that matters. build/core-commit.txt records
+          # the core commit this suite is meant to run against; CORE_IMAGE is a separate repository
+          # variable a human sets. Nothing ties them together, so bumping one without the other
+          # leaves this suite green against a core image that predates the very changes under test.
+          #
+          # The comparison is against that file rather than the go.mod server/public pin, because
+          # most of the RBAC implementation lives outside the public module: a core commit can change
+          # the scheme guards and role composition this suite asserts on without moving the pin.
+          pinned_commit="$(grep -vE '^\s*(#|$)' build/core-commit.txt | head -1 | tr -d '[:space:]')"
+          if [[ ! "$pinned_commit" =~ ^[0-9a-f]{7,40}$ ]]; then
+            echo "build/core-commit.txt must hold one core commit sha; got '${pinned_commit}'." >&2
             exit 1
-          fi
-          # Every pseudo-version ends in <14-digit timestamp>-<12-hex revision>, whatever its base
-          # version is, so matching that trailing pair covers all three shapes `go mod tidy` writes:
-          # the tagless v0.0.0-<ts>-<sha>, and the -0.<ts>-<sha> / -<pre>.0.<ts>-<sha> forms that
-          # carry a base tag. The separator before the timestamp is a '-' only in the tagless shape;
-          # the other two put a '.' there. Anything without that pair is a released version.
-          gomod_commit="$(printf '%s' "$gomod_version" | grep -oE '[-.][0-9]{14}-[0-9a-f]{12}$' | grep -oE '[0-9a-f]{12}$' || true)"
-          if [[ -z "$gomod_commit" ]]; then
-            echo "server/public is pinned to released version ${gomod_version}, not a core commit; skipping the sha cross-check."
-            exit 0
           fi
           if [[ ! "$image_tag" =~ ^[0-9a-f]{7,40}$ ]]; then
-            echo "go.mod pins server/public to unreleased core commit ${gomod_commit}, but CORE_IMAGE is release tag '${image_tag}'." >&2
-            echo "A released image cannot carry that commit's changes. Point CORE_IMAGE at the core build for ${gomod_commit}." >&2
+            echo "build/core-commit.txt pins unreleased core commit ${pinned_commit}, but CORE_IMAGE is release tag '${image_tag}'." >&2
+            echo "A released image cannot carry that commit's changes. Point CORE_IMAGE at the core build for ${pinned_commit}." >&2
             exit 1
           fi
-          # Core CI tags images with a 7-char sha while go.mod carries 12, so compare on the shorter.
+          # Core CI tags images with a 7-char sha while the pin carries the full 40, so compare on
+          # the shorter.
           prefix_len=${#image_tag}
-          if (( ${#gomod_commit} < prefix_len )); then
-            prefix_len=${#gomod_commit}
+          if (( ${#pinned_commit} < prefix_len )); then
+            prefix_len=${#pinned_commit}
           fi
-          if [[ "${image_tag:0:$prefix_len}" != "${gomod_commit:0:$prefix_len}" ]]; then
-            echo "CORE_IMAGE sha '${image_tag}' does not match the core commit go.mod pins (${gomod_commit})." >&2
-            echo "Set CORE_IMAGE to the image core CI published for ${gomod_commit}, or repin go.mod." >&2
+          if [[ "${image_tag:0:$prefix_len}" != "${pinned_commit:0:$prefix_len}" ]]; then
+            echo "CORE_IMAGE sha '${image_tag}' does not match the core commit build/core-commit.txt pins (${pinned_commit})." >&2
+            echo "Set CORE_IMAGE to the image core CI published for ${pinned_commit}, or bump the pin." >&2
             exit 1
           fi
-          echo "CORE_IMAGE ${image_tag} matches the go.mod core pin ${gomod_commit}."
+          echo "CORE_IMAGE ${image_tag} matches the core pin ${pinned_commit}."
 
       - name: ci/setup
         uses: mattermost/actions/plugin-ci/setup@0256d363493a1e6b9e361ea788c62a0a73bc00be

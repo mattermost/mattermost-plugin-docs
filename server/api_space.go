@@ -233,13 +233,21 @@ func (p *Plugin) handleSetSpaceMemberCapabilities(w http.ResponseWriter, r *http
 	if !ok {
 		return
 	}
+	// A pointer, so an absent field is distinguishable from an explicit []. This endpoint replaces
+	// the member's whole granted set, and a non-pointer slice would decode {}, null, and a
+	// misspelled field name all to nil — silently clearing every grant the member holds. Only a
+	// present [] clears.
 	var req struct {
-		GrantedCapabilities []string `json:"granted_capabilities"`
+		GrantedCapabilities *[]string `json:"granted_capabilities"`
 	}
 	if !p.decodeJSONBody(w, r, maxCapabilitiesBodyBytes, &req, "handleSetSpaceMemberCapabilities", false) {
 		return
 	}
-	member, appErr := p.service.SetSpaceMemberCapabilities(space, targetUserID, req.GrantedCapabilities, userID)
+	if req.GrantedCapabilities == nil {
+		p.writeAppError(w, mmmodel.NewAppError("handleSetSpaceMemberCapabilities", "api.space.set_member_capabilities.capabilities_required.app_error", nil, "", http.StatusBadRequest))
+		return
+	}
+	member, appErr := p.service.SetSpaceMemberCapabilities(space, targetUserID, *req.GrantedCapabilities, userID)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return
@@ -255,13 +263,20 @@ func (p *Plugin) handleSetSpaceDefaultCapabilities(w http.ResponseWriter, r *htt
 	if !ok {
 		return
 	}
+	// A pointer, for the same reason as the member-capabilities handler above: this repoints the
+	// whole space, so decoding {}, null, or a misspelled field to nil would drop every space
+	// default to read-only. Only a present [] does that deliberately.
 	var req struct {
-		DefaultCapabilities []string `json:"default_capabilities"`
+		DefaultCapabilities *[]string `json:"default_capabilities"`
 	}
 	if !p.decodeJSONBody(w, r, maxCapabilitiesBodyBytes, &req, "handleSetSpaceDefaultCapabilities", false) {
 		return
 	}
-	updated, appErr := p.service.SetSpaceDefaultCapabilities(space, req.DefaultCapabilities, userID)
+	if req.DefaultCapabilities == nil {
+		p.writeAppError(w, mmmodel.NewAppError("handleSetSpaceDefaultCapabilities", "api.space.set_default_capabilities.capabilities_required.app_error", nil, "", http.StatusBadRequest))
+		return
+	}
+	updated, appErr := p.service.SetSpaceDefaultCapabilities(space, *req.DefaultCapabilities, userID)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return

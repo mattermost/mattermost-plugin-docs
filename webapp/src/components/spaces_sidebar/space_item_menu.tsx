@@ -6,6 +6,7 @@ import React, {useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {copyToClipboard} from 'utils/clipboard';
 
+import CogOutlineIcon from '@mattermost/compass-icons/components/cog-outline';
 import DotsVerticalIcon from '@mattermost/compass-icons/components/dots-vertical';
 import ExitToAppIcon from '@mattermost/compass-icons/components/exit-to-app';
 import LinkVariantIcon from '@mattermost/compass-icons/components/link-variant';
@@ -13,6 +14,7 @@ import LinkVariantIcon from '@mattermost/compass-icons/components/link-variant';
 import ConfirmModal from 'components/confirm_modal/confirm_modal';
 import Menu from 'components/menu/menu';
 import type {MenuItemSpec} from 'components/menu/menu_types';
+import SpaceSettingsModal from 'components/space_settings_modal/space_settings_modal';
 
 import type {Space} from 'types/docs';
 
@@ -27,6 +29,7 @@ const SpaceItemMenu = ({space}: Props) => {
     const {paths} = useDocsNavigation();
 
     const [confirmLeaveOpen, setConfirmLeaveOpen] = useState(false);
+    const [settingsOpen, setSettingsOpen] = useState(false);
 
     const copyLink = () => copyToClipboard(`${window.location.origin}${paths.space(space.id)}`);
 
@@ -61,12 +64,17 @@ const SpaceItemMenu = ({space}: Props) => {
             onClick: copyLink,
         },
 
-        // Space settings is deferred until the settings feature exists.
-        // {
-        //     id: 'settings',
-        //     label: formatMessage({id: 'docs.sidebar.space.settings', defaultMessage: 'Space settings'}),
-        //     leadingIcon: <CogOutlineIcon size={18}/>,
-        // },
+        {
+            id: 'settings',
+            label: (
+                <FormattedMessage
+                    id='docs.sidebar.space.settings'
+                    defaultMessage='Space permissions'
+                />
+            ),
+            leadingIcon: <CogOutlineIcon size={18}/>,
+            onClick: () => setSettingsOpen(true),
+        },
         {
             id: 'leave',
             label: (
@@ -102,6 +110,12 @@ const SpaceItemMenu = ({space}: Props) => {
                     </button>
                 )}
             />
+            {settingsOpen && (
+                <SpaceSettingsModal
+                    space={space}
+                    onClose={() => setSettingsOpen(false)}
+                />
+            )}
             {confirmLeaveOpen && (
                 <ConfirmModal
                     title={(

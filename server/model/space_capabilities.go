@@ -167,9 +167,13 @@ type MemberCapabilities struct {
 // not an atomic capability role is ignored (harmless if the base scheme token is passed too).
 // defaultCapabilities is the space's default capability set (wire form, read_page-free).
 //
-// A SchemeGuest member's effective set is read_page union Granted only — never the space default,
-// since a guest resolves through the read-only DefaultChannelGuestRole, not the scheme's user-role
-// default. A SchemeAdmin member's effective set additionally includes the full canonical admin
+// A SchemeGuest member's effective set is read_page alone — neither the space default nor its own
+// granted set. A guest resolves through the read-only DefaultChannelGuestRole rather than the
+// scheme's user-role default, and the write gate holds a guest to read_page even when a grant made
+// before a demotion is still recorded in ExplicitRoles. Granted still reports what is recorded, so
+// the two fields together show a stale grant rather than hiding it.
+//
+// A SchemeAdmin member's effective set additionally includes the full canonical admin
 // capability set, since SchemeAdmin resolves through DefaultChannelAdminRole regardless of what is
 // (or isn't) recorded in ExplicitRoles/the space default. Pure: the model never touches the store.
 func CapabilitiesFromMember(explicitRoles string, schemeAdmin, schemeGuest bool, defaultCapabilities []string) MemberCapabilities {
@@ -194,9 +198,9 @@ func CapabilitiesFromMember(explicitRoles string, schemeAdmin, schemeGuest bool,
 		for _, c := range defaultCapabilities {
 			effective[c] = true
 		}
-	}
-	for _, c := range grantedList {
-		effective[c] = true
+		for _, c := range grantedList {
+			effective[c] = true
+		}
 	}
 
 	return MemberCapabilities{

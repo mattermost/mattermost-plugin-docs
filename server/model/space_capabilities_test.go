@@ -55,8 +55,8 @@ func TestRolesForCapabilities_CapabilitiesFromMember_RoundTrip(t *testing.T) {
 }
 
 // TestCapabilitiesFromMember_Guest verifies that a SchemeGuest member's effective capabilities are
-// read_page union their granted set only — the space default never contributes, since a guest
-// resolves through the read-only guest role rather than the scheme's user-role default.
+// read_page alone: neither the space default nor a grant recorded before a demotion contributes,
+// since a guest resolves through the read-only guest role and the write gate holds them to reads.
 func TestCapabilitiesFromMember_Guest(t *testing.T) {
 	t.Run("grant-free guest is read-only", func(t *testing.T) {
 		mc := model.CapabilitiesFromMember("", false, true, []string{model.CapabilityCreatePage, model.CapabilityCommentPage, model.CapabilityEditPage, model.CapabilityDeleteOwnPage})
@@ -66,17 +66,18 @@ func TestCapabilitiesFromMember_Guest(t *testing.T) {
 		require.False(t, mc.IsAdmin)
 	})
 
-	t.Run("surviving grants project without the default", func(t *testing.T) {
+	t.Run("grants surviving a demotion are reported but not effective", func(t *testing.T) {
+		// The roles a demotion leaves behind: core clears SchemeUser/SchemeAdmin but not the atomic
+		// capability roles in ExplicitRoles.
 		explicitRoles := mmmodel.SpacePageCreatorRoleId + " " + mmmodel.SpacePageEditorRoleId
-		// A contribute default that must NOT leak into a guest's effective set.
+		// A contribute default that must NOT leak into a guest's effective set either.
 		defaultCapabilities := []string{model.CapabilityCommentPage, model.CapabilityCreatePage, model.CapabilityEditPage, model.CapabilityDeleteOwnPage}
 
 		mc := model.CapabilitiesFromMember(explicitRoles, false, true, defaultCapabilities)
 
+		// Granted still reports the stale grant, so it is visible rather than hidden.
 		require.Equal(t, model.NormalizeCapabilitySet([]string{model.CapabilityCreatePage, model.CapabilityEditPage}), mc.Granted)
-		require.Equal(t, model.NormalizeCapabilitySet([]string{model.CapabilityReadPage, model.CapabilityCreatePage, model.CapabilityEditPage}), mc.Effective)
-		require.NotContains(t, mc.Effective, model.CapabilityCommentPage)
-		require.NotContains(t, mc.Effective, model.CapabilityDeleteOwnPage)
+		require.Equal(t, []string{model.CapabilityReadPage}, mc.Effective)
 		require.True(t, mc.IsGuest)
 	})
 }

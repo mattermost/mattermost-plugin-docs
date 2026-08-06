@@ -1,0 +1,10 @@
+# The commit of the paired core branch (MM-69269-permissions-rbac-core) that the e2e suite runs
+# against. CORE_IMAGE must be the image core CI published for it.
+#
+# This is tracked here rather than derived from the go.mod server/public pin, because most of the
+# server-side RBAC implementation lives outside the public module: a core commit can change scheme
+# guards, role composition, or the migrations this suite exercises without moving the pin at all.
+# Bump this line in the same PR that depends on the newer core behaviour.
+#
+# One sha, comments and blank lines ignored.
+612253bf0223ebc352ffa01b0071c5de2ffee89b
