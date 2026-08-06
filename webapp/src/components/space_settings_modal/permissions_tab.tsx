@@ -27,16 +27,18 @@ import styles from './space_settings_modal.module.scss';
  * committed when it returns, so SaveChangesBar would imply a discard that cannot
  * happen.
  */
-const PermissionsTab = ({space}: {space: Space}) => {
+const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) => {
     const {formatMessage} = useIntl();
     const members = useSpaceMemberProfiles(space.id);
     const {addMembers, removeMember, leave, busy} = useManageSpaceMembers(space);
 
     const memberIds = useMemo(() => members.map((member) => member.id), [members]);
 
+    // Leaving destroys your access to what is behind this tab, so the settings
+    // modal goes too (mirrors ShareSpaceModal's onLeave).
     const actions: MemberListActions = {
         onRemove: removeMember,
-        onLeave: leave,
+        onLeave: () => leave().then(onClose),
         disabled: busy,
     };
 

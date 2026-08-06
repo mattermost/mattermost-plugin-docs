@@ -103,6 +103,19 @@ describe('useManageSpaceMembers', () => {
         expect(toast.error).toHaveBeenCalledWith("Grace isn't a member of this team.");
     });
 
+    // Any other single-user failure gets the generic add message, not the
+    // not-on-team wording, which is specific to a 403.
+    it('names the user for a single non-403 failure', async () => {
+        mockAddSpaceMembers.mockResolvedValue([{userId: 'u2', error: clientError(500)}]);
+        const hook = render();
+
+        await act(async () => {
+            await hook.current.addMembers([profile('u2', 'Grace')]);
+        });
+
+        expect(toast.error).toHaveBeenCalledWith("Couldn't add Grace. Please try again.");
+    });
+
     it('collapses a multi-failure batch to a count', async () => {
         mockAddSpaceMembers.mockResolvedValue([
             {userId: 'u1', error: clientError(403)},

@@ -38,7 +38,7 @@ const MemberRowMenu = ({member, isCurrentUser, disabled, onRemove, onLeave}: Pro
             size='sm'
             className={styles.roleTrigger}
             aria-label={formatMessage(
-                {id: 'docs.spaceMembers.menu.label', defaultMessage: 'Manage {name}'},
+                {id: 'docs.spaceMembers.menu.label', defaultMessage: 'Admin, manage {name}'},
                 {name: member.displayName},
             )}
         >

@@ -135,7 +135,10 @@ const SpaceSettingsModal = ({space, onClose, initialTab = 'info'}: Props) => {
                         value='permissions'
                         className={styles.panelContent}
                     >
-                        <PermissionsTab space={space}/>
+                        <PermissionsTab
+                            space={space}
+                            onClose={onClose}
+                        />
                     </TabPanel>
                     <TabPanel
                         value='configuration'

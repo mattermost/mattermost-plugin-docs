@@ -62,5 +62,8 @@ describe('MemberRowMenu', () => {
         await openMenu();
 
         expect(screen.getByRole('menuitem', {name: 'Remove from space'})).toHaveAttribute('aria-disabled', 'true');
+
+        fireEvent.click(screen.getByRole('menuitem', {name: 'Remove from space'}));
+        expect(onRemove).not.toHaveBeenCalled();
     });
 });
