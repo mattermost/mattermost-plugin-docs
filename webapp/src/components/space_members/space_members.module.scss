@@ -40,3 +40,14 @@
     color: var(--link-color);
     font-weight: 600;
 }
+
+.addField {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.addField > :first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+}
