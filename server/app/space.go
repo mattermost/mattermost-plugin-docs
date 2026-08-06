@@ -566,9 +566,9 @@ func normalizeAndValidateSpacePatch(where string, patch *model.SpacePatch) *mmmo
 // A patch that changes ViewAccess requires RequireSpaceAdminOrSysadmin against the live row and is
 // rejected when force=true. actingUserID is used only for that escalation check.
 //
-// Any patch on a space with a backing channel runs under the space's membership advisory lock (the
-// same lock AutoJoinIfDefaultGranted and the last-admin/last-member guards use), because it also
-// drives the channel-metadata sync below, which must not race a concurrent membership change.
+// Every patch runs under the space's membership advisory lock (the same lock
+// AutoJoinIfDefaultGranted and the last-admin/last-member guards use), because it also drives the
+// channel-metadata sync below, which must not race a concurrent membership change.
 func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expectedUpdateAt *int64, force bool, actingUserID string) (*model.Space, *mmmodel.AppError) {
 	if space == nil {
 		return nil, mmmodel.NewAppError("UpdateSpace", "app.space.update.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -650,14 +650,6 @@ func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expec
 		s.publishToChannels(wsEventSpaceUpdated, payload, updated.ChannelId)
 	}
 
-	if space.ChannelId == "" {
-		updated, appErr := apply()
-		if appErr != nil {
-			return nil, appErr
-		}
-		publish(updated)
-		return updated, nil
-	}
 	var result *model.Space
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
 		r, appErr := apply()

@@ -194,8 +194,8 @@ func (p *Plugin) handleGetSpaceMembers(w http.ResponseWriter, r *http.Request) {
 
 // handleAddSpaceMember handles POST /api/v1/spaces/{space_id}/members. Adds the target at the
 // space default only; granted_capabilities/capabilities in the body are rejected (400) rather
-// than silently dropped, since a caller believing they restricted a new member's capabilities
-// would otherwise be misled.
+// than silently dropped, so a caller cannot believe a new member's capabilities were restricted
+// when they were not.
 func (p *Plugin) handleAddSpaceMember(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]

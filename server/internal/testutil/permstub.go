@@ -25,8 +25,8 @@ import (
 // catch-alls.
 //
 // The team grants here are team_user's. A test whose actor is a guest must register
-// StubGuestTeamDefaults for that user first, since core's team_guest holds neither create_space nor
-// read_public_channel and the catch-all below would otherwise admit it to both.
+// StubGuestTeamDefaults for that user first: the catch-all below matches any user and grants both
+// create_space and read_public_channel, neither of which core's team_guest holds.
 func StubDefaultSpacePermissions(mockAPI *plugintest.API) {
 	for _, p := range []*mmmodel.Permission{
 		mmmodel.PermissionReadPage, mmmodel.PermissionCreatePage, mmmodel.PermissionCommentPage,
@@ -63,8 +63,8 @@ func StubDefaultSpacePermissions(mockAPI *plugintest.API) {
 
 // StubGuestTeamDefaults narrows guestUserID's team grants to what core's team_guest actually holds:
 // read_space, but neither create_space nor read_public_channel. Register it BEFORE
-// StubDefaultSpacePermissions, whose catch-alls match any user and would otherwise grant a guest
-// the read_public_channel that admits the open-space non-member read fall-through.
+// StubDefaultSpacePermissions, whose catch-alls match any user and grant the read_public_channel
+// that admits the open-space non-member read fall-through — a guest must not receive it.
 func StubGuestTeamDefaults(mockAPI *plugintest.API, guestUserID string) {
 	for _, p := range []*mmmodel.Permission{mmmodel.PermissionCreateSpace, mmmodel.PermissionReadPublicChannel} {
 		mockAPI.On("HasPermissionToTeam", guestUserID, mock.Anything, p).Return(false).Maybe()

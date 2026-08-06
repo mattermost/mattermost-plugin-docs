@@ -112,16 +112,16 @@ func (s *Service) ResolveSpaceRead(where string, space *model.Space, userID stri
 	return s.readResolutionFrom(sysadmin, member, space, userID), nil
 }
 
-// requireActiveMemberGate performs the four checks that precede the permission-specific branches
+// requireActiveMemberGate performs the checks that precede the permission-specific branches
 // of RequireSpacePagePermission, RequireSpaceAdminOrTeamPerm, and RequireSpaceAdminOrSysadmin
 // (RequireSpacePagePermissionFrom skips them, reusing a ReadResolution its caller already
-// resolved): client wiring, existence-hiding on a nil space, the sysadmin override, and
-// active-team-membership resolution with its 500 on a genuine lookup failure. A non-nil appErr
-// must be returned by the caller immediately. Otherwise, when sysadmin is true the caller may
-// return nil immediately; when it is false the caller continues with member to evaluate its own
-// permission-specific branches. A nil member means the caller is not an active team member; the
-// membership itself is returned rather than a bool so a caller needing a team permission resolves
-// it from these roles instead of re-reading the row.
+// resolved): client wiring, a malformed-user-id 400, existence-hiding on a nil space, the sysadmin
+// override, and active-team-membership resolution with its 500 on a genuine lookup failure. A
+// non-nil appErr must be returned by the caller immediately. Otherwise, when sysadmin is true the
+// caller may return nil immediately; when it is false the caller continues with member to evaluate
+// its own permission-specific branches. A nil member means the caller is not an active team
+// member; the membership itself is returned rather than a bool so a caller needing a team
+// permission resolves it from these roles instead of re-reading the row.
 func (s *Service) requireActiveMemberGate(where string, space *model.Space, userID string) (member *mmmodel.TeamMember, sysadmin bool, appErr *mmmodel.AppError) {
 	if appErr = s.requireClient(where, "space_id", spaceIDOrEmpty(space), "user_id", userID); appErr != nil {
 		return nil, false, appErr
@@ -456,9 +456,9 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 // so a rejected request leaves no membership behind. Callers pass the joined result of the gate
 // that admitted them; when it is false this does nothing.
 //
-// The pre-step runs ahead of the guarded write, so without this a request rejected after the gate —
-// a cycle or depth breach on a move, a stale optimistic-lock baseline, or the subtree-ownership 403 —
-// would still leave the caller a member of a space it never successfully wrote to.
+// The pre-step runs ahead of the guarded write, so the rejections that land after the gate — a
+// cycle or depth breach on a move, a stale optimistic-lock baseline, or the subtree-ownership 403 —
+// all happen with the membership already created.
 //
 // Removal is best-effort and reported only in the log: the caller is already returning the write's
 // own error, and replacing it with a cleanup failure would hide why the request was rejected. A
