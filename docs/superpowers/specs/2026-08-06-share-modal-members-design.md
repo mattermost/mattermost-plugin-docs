@@ -25,10 +25,9 @@ In scope:
 
 - `addSpaceMember` on the data source, over the existing POST route.
 - Store action types and reducer cases for adding and removing one member.
-- Thunks for both, plus a hook that owns the toasts and the busy state.
-- Adding on select in the Share modal's picker, and a per-row menu offering Remove (or Leave on
-  your own row).
-- Reducing `PeoplePicker` from multi-select-with-chips to single-select.
+- A singular thunk for each mutation, plus a separate bulk add thunk composed from the singular one.
+- A hook that owns the toasts and the busy state.
+- An `Add` button in the Share modal, and a per-row menu offering Remove (or Leave on your own row).
 - Correcting the two stale comments.
 
 Out of scope:
@@ -37,6 +36,10 @@ Out of scope:
 - Space view-access — the `Public` / `Can View` footer controls (PR #10 `view_access`).
 - Flipping `canManageMembers`. It is already `true` via the dev override, and that override's
   comment stays accurate as the thing to revisit when real capabilities arrive.
+- `PeoplePicker` and its stylesheet. The multi-select chip UI it already has is exactly what this
+  flow needs; it is not touched.
+- Bulk remove. The bulk add thunk establishes the composition pattern; a bulk remove can follow the
+  same shape if a surface ever needs it.
 - The space-info panel's member list. The hook is designed so that surface can reuse it later, but
   this change does not touch it.
 
@@ -58,6 +61,9 @@ Out of scope:
 - Removing the last member who can still reach the space is refused with `409`
   `app.space.remove_member.last_member.app_error`.
 - Publishes `space_member_removed` to the backing channel and directly to the removed user.
+
+There is no bulk route. Adding N people is N requests, which is why the fan-out belongs on the
+client and why the singular call is the primitive.
 
 Behaviour when the target is **already a member** is core's, not this plugin's: `AddSpaceMember`
 does not pre-check, it calls `pluginapi`'s `Channel.AddMember` straight through. Whether that is
@@ -84,6 +90,9 @@ addSpaceMember: (spaceId, userId) =>
     restPost<SpaceMember>(`${apiUrl()}/spaces/${seg(spaceId)}/members`, {user_id: userId}),
 ```
 
+One method, singular, mirroring the route. No bulk method: the transport has nothing to batch, so a
+bulk data-source method would only be a loop wearing a transport's clothes.
+
 `removeSpaceMember` is unchanged; it already maps to the DELETE route.
 
 ### Store
@@ -94,6 +103,10 @@ addSpaceMember: (spaceId, userId) =>
 ADDED_SPACE_MEMBER:   manifest.id + '_added_space_member',
 REMOVED_SPACE_MEMBER: manifest.id + '_removed_space_member',
 ```
+
+Two action types, not three. A bulk add produces N `ADDED_SPACE_MEMBER` dispatches, one per member
+that actually landed — there is no bulk action type, because a partially-successful batch has no
+single truth to express.
 
 `store/entities.ts`, the `spaceMembers` reducer (`Record<string, string[]>`) handles both by
 splicing the space's id array. Two invariants:
@@ -120,16 +133,45 @@ action nobody performs in a loop.
 
 ### Thunks
 
-`store/actions.ts`:
+`store/actions.ts`. Three thunks, in two layers.
+
+**Singular — the primitives.** Each awaits the data source, dispatches its action on success, and
+**rejects** on failure, matching `createPage` and `deleteSpace`. They know nothing about batching:
+no partial success, no result objects, no swallowed errors.
 
 ```ts
 addSpaceMember(spaceId: string, userId: string): Promise<void>
 removeSpaceMember(spaceId: string, userId: string): Promise<void>
 ```
 
-Each awaits the data source, then dispatches its action on success. Both **reject** rather than
-swallowing, matching `createPage` and `deleteSpace`, because the caller has to tell a 403 from a
-last-member 409 to say anything useful.
+**Bulk — composed from the primitive.**
+
+```ts
+export type FailedMemberAdd = {userId: string; error: unknown};
+
+// Adds several members by dispatching addSpaceMember once per user, concurrently.
+// Never rejects: a batch has no single outcome, so the result is the list of users
+// that failed and why. An empty list means every add landed.
+export function addSpaceMembers(spaceId: string, userIds: string[]): DocsThunkAction<Promise<FailedMemberAdd[]>> {
+    return async (dispatch) => {
+        const settled = await Promise.allSettled(
+            userIds.map((userId) => dispatch(addSpaceMember(spaceId, userId))),
+        );
+        return settled.flatMap((result, i) => (
+            result.status === 'rejected' ? [{userId: userIds[i], error: result.reason}] : []
+        ));
+    };
+}
+```
+
+The shape matters more than the code: `addSpaceMembers` is a *caller* of `addSpaceMember`, not a
+generalisation of it. The primitive keeps rejecting, so a single add reads naturally at any call
+site; the wrapper absorbs `allSettled` and hands back per-user outcomes. Each successful add has
+already dispatched by the time the wrapper resolves, so the store is correct even for a batch that
+partly failed.
+
+Returning `error` rather than a pre-formatted message keeps message selection in the hook, where
+`isLastSpaceMemberError`-style classification already lives.
 
 `leaveSpace` stays as it is. It is a different operation — it dispatches `DELETED_SPACE`, dropping
 the space from the store entirely, because the current user losing access means the space should
@@ -143,57 +185,40 @@ strip a space from everyone's store or leave a departed user's own store stale.
 
 ```ts
 useManageSpaceMembers(space: Space): {
-    addMember: (user: MemberProfile) => Promise<void>;
+    // Returns the users that FAILED, so the caller can keep exactly those chips.
+    addMembers: (users: MemberProfile[]) => Promise<MemberProfile[]>;
     removeMember: (userId: string) => Promise<void>;
     leave: () => Promise<void>;
     busy: boolean;
 }
 ```
 
-- `addMember` adds one user. One member is the whole action: it is the unit the server route accepts
-  and the unit the reducer splices, so nothing about it is a fragment of something larger. A bulk
-  operation can be layered on later as a wrapper over this primitive — `allSettled` over N calls,
-  plus whatever partial-failure reporting that surface wants — without this signature changing.
-  Because it is whole, its failure is whole too: one user, one reason, one toast.
-- `removeMember` is a single call; it distinguishes the 409 via the existing `isLastSpaceMemberError`.
+- `addMembers` dispatches `addSpaceMembers`, then maps the returned `userId`s back to the
+  `MemberProfile`s it was handed so the modal can restore exactly those chips. It raises the toast.
+- `removeMember` dispatches the singular thunk and catches; it distinguishes the 409 via the
+  existing `isLastSpaceMemberError`.
 - `leave` delegates to `useLeaveSpace(space)`, inheriting its last-member message and its
   navigate-home behaviour rather than restating either.
-- `busy` is true while a remove or leave is in flight, and disables the menus' action item
-  (Remove / Leave) so it cannot be double-fired. It does **not** disable the menu trigger — the menu
-  still opens, so the role items remain readable and the disabled action is visibly the thing that is
-  unavailable. It does **not** gate the picker: selections are independent, so picking two people in
-  quick succession issues two independent adds that resolve on their own.
+- `busy` is true while any mutation is in flight. It disables the Add button and the menus' action
+  item (Remove / Leave). It does **not** disable the menu trigger — the menu still opens, so the
+  role items remain readable and the disabled action is visibly the thing that is unavailable.
 - Toasts are raised here, not in the component, so the space-info panel can adopt the hook without
   duplicating the error vocabulary.
+
+The hook is the only layer that knows about both profiles and messages. The thunks deal in ids and
+errors; the component deals in chips.
 
 ### Components
 
 `components/share_space_modal/share_space_modal.tsx`:
 
-- Picking a person calls `addMember(user)` directly. There is no Add button and no `pending` state —
-  both are deleted. The member list is the feedback: on success the row appears, on failure a toast
-  explains why and nothing changed.
-- `excludeIds` reduces to the current member ids. It no longer has to union in pending selections,
-  because a successful add makes that person a member, which excludes them from suggestions on the
-  next render.
+- An `Add` button below the picker, enabled when `pending.length > 0 && !busy`. On click it calls
+  `addMembers(pending)` and sets `pending` to the returned failures — landed chips disappear,
+  failed ones stay visible next to the toast that explains them.
+- `excludeIds` keeps its current union of member ids and pending selections, so neither a current
+  member nor an already-picked person appears in the suggestions.
 - The two stale comments about there being no add-member API are removed. The remaining comment
   narrows to what is still true: roles and view-access are PR #10 scaffolding.
-
-`components/share_space_modal/people_picker.tsx` drops to single-select:
-
-```ts
-type Props = {
-    excludeIds: string[];
-    onSelect: (user: MemberProfile) => void;
-};
-```
-
-`Combobox.Root` loses `multiple`, and `Combobox.Chips` / `Chip` / `ChipRemove` go with it — with no
-pending set to render there is nothing for a chip to represent. On select the handler fires
-`onSelect` and clears the query so the field is ready for the next person. Base UI's Combobox holds
-the selected value, so the component keeps `value={null}` and treats selection as an event rather
-than state; that reset is the one implementation detail worth verifying against Base UI's controlled
-behaviour during the build. `people_picker.module.scss` loses its chip rules.
 
 `components/share_space_modal/member_row_menu.tsx`, new. Wraps the row's existing `Admin ▾` trigger
 in `components/menu`:
@@ -213,45 +238,50 @@ alongside layout and identity display.
 
 | Case | Surface |
 | --- | --- |
-| Add: target not an active team member (403) | Toast: "{name} isn't a member of this team." |
-| Add: unknown user (404), or anything else | Toast: "Couldn't add {name}. Please try again." |
+| Add, one failure: target not an active team member (403) | Toast: "{name} isn't a member of this team." |
+| Add, one failure: anything else | Toast: "Couldn't add {name}. Please try again." |
+| Add, several failures | One toast naming the count; failed chips stay in the picker |
+| Add, all succeeded | No toast; the rows appearing is the confirmation |
 | Remove: last member with access (409) | Toast reusing the existing `docs.leaveSpace.error.lastMember` string |
 | Remove: anything else | Toast: generic failure |
 | Leave | Inherited from `useLeaveSpace` — its own 409 message, navigate home |
 
-Every add failure can name its user, because an add is always one user. Distinguishing the 403 by
-message on top of that is worth the effort because it is the one failure the user can act on: the
-person they picked has to join the team first. Everything else is either a race or a server fault,
-where a generic message is honest and a specific one would be guesswork.
+A batch with exactly one failure still names that user and its reason — the per-user `error` in the
+bulk result makes that free, and it is the common case when someone picks a few people and one of
+them turns out not to be on the team. Only a genuinely multi-failure batch collapses to a count:
+stacking N toasts for one click is worse than one that says how many did not land, and the failed
+chips staying in the picker is what identifies *which*.
+
+Distinguishing the 403 by message is worth the effort because it is the one failure the user can act
+on: the person they picked has to join the team first. Everything else is either a race or a server
+fault, where a generic message is honest and a specific one would be guesswork.
 
 ## Testing
 
 - `store/entities.test.ts` — `ADDED_SPACE_MEMBER` appends; `REMOVED_SPACE_MEMBER` removes; each
   returns the identical state object for a no-op; add does not seed an absent space entry.
-- `store/actions.test.ts` — both thunks dispatch the right action on success and reject on failure,
-  through the existing `jest.mock('data')` harness.
-- `hooks/space_members.test.tsx` — `addMember` dispatches on success; a 403 names the user and a
-  409 from `removeMember` produces the last-member message rather than the generic one; `leave`
-  delegates to `useLeaveSpace`.
-- `components/share_space_modal/share_space_modal.test.tsx` — selecting a person calls `addMember`
-  with that user; a failed add leaves the member list unchanged; a row for another user offers
-  Remove; the current user's row offers Leave.
-- `components/share_space_modal/people_picker.test.tsx` — selecting fires `onSelect` once with the
-  picked profile and clears the query; existing members are absent from the suggestions.
+- `store/actions.test.ts` — the singular thunks dispatch the right action on success and reject on
+  failure; `addSpaceMembers` resolves (never rejects) with only the failed users, and the successes
+  in a mixed batch have still dispatched. Uses the existing `jest.mock('data')` harness.
+- `hooks/space_members.test.tsx` — `addMembers` maps failed ids back to the profiles it was given; a
+  single 403 names the user while a multi-failure batch reports a count; a 409 from `removeMember`
+  produces the last-member message rather than the generic one; `leave` delegates to `useLeaveSpace`.
+- `components/share_space_modal/share_space_modal.test.tsx` — Add is disabled with no chips and while
+  busy; clicking it calls the hook with the pending users; failed users remain as chips and
+  successful ones do not; a row for another user offers Remove; the current user's row offers Leave.
 
 ## Consequences
-
-Adding on select means there is no review step: a mis-click grants access immediately, and the only
-correction is Remove. That is the accepted trade for a whole, simple action — an Add button would
-have bought a moment to reconsider at the cost of pending state, batch semantics and partial-failure
-reporting. Remove is one menu item away on the row that just appeared, so the mistake is cheap to
-undo.
 
 Adding a member writes real backing-channel membership. Under the current access model that
 membership is also what makes the space visible in the team listing, so adding someone is
 functionally granting them access — which is the intent. When PR #10 introduces `private` spaces,
 the same membership becomes the per-space grant, so the semantics carry over rather than needing
 migration.
+
+A batch is N requests against one backing channel, issued concurrently. That is acceptable at the
+scale a person can pick from a combobox. If a future surface adds many members at once — an
+import, a group expansion — the fan-out is one function to change, and the primitive underneath it
+does not move.
 
 WebSocket events for both mutations are published server-side but the webapp registers no handlers
 yet, so a second client sees the change on its next fetch. That gap is not addressed here.
