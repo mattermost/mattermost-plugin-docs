@@ -151,6 +151,16 @@ describe('resolveReorder with drafts in the group', () => {
         }
     });
 
+    // The new parent's drafts sit after its published children, so the indented page
+    // has to land on the published tail rather than after the drafts.
+    it('indents to the end of the new parent\'s published children, not past its drafts', () => {
+        const {roots, heights} = treeWithDrafts(pages, [draftRow('ad', 'a')]);
+
+        expect(resolveReorder(roots, heights, 'b', 'indent')).toEqual({
+            move: {pageId: 'b', parentId: 'a', siblingIndex: 2},
+        });
+    });
+
     it('leaves a group with no drafts reordering as before', () => {
         const {roots, heights} = treeWithDrafts(pages, []);
 

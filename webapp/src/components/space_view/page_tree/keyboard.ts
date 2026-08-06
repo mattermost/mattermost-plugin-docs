@@ -135,7 +135,7 @@ export function resolveReorder(
         if (deepest > MAX_PAGE_DEPTH) {
             return {blocked: 'depth'};
         }
-        return {move: {pageId, parentId: newParent.id, siblingIndex: newParent.children.length}};
+        return {move: {pageId, parentId: newParent.id, siblingIndex: publishedCount(newParent.children)}};
     }
 
     // Become the parent's next sibling. Always shallower, so the cap can't bite.
