@@ -31,33 +31,7 @@
     padding: 0 24px 96px;
 }
 
-.titleBlock {
-    display: flex;
-    flex-direction: column;
-    padding: 0 0 16px;
-    border-bottom: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
-    gap: 12px;
-    margin-bottom: 24px;
-}
 
-.title {
-    width: 100%;
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: var(--center-channel-color);
-    font-size: 40px;
-    font-weight: 700;
-    line-height: 1.2;
-
-    &:focus {
-        outline: none;
-    }
-
-    &::placeholder {
-        color: rgba(var(--center-channel-color-rgb), 0.4);
-    }
-}
 
 .column {
     :global {

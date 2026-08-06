@@ -24,7 +24,6 @@ import AutosaveIndicator from './autosave_indicator';
 import {DOCS_EXTENSIONS} from './docs_extensions';
 import ExitEditorDialog from './exit_editor_dialog';
 import FloatingFormattingBar from './floating_formatting_bar';
-import PageByline from './page_byline';
 import styles from './page_editor.module.scss';
 import PublishConflictDialog from './publish_conflict_dialog';
 import {CalloutControl, PinToolbarControl} from './toolbar_controls';
@@ -57,7 +56,6 @@ const PageEditor = ({spaceId, pageId, isDraft}: Props) => {
     const [pinned, togglePinned] = usePinnedToolbar();
     useCaretAnchoredSuggestions(editorSurfaceRef, !load.loading && !load.error);
     const [documentMode, setDocumentMode] = useState<boolean | null>(null);
-    const [title, setTitle] = useState('');
     const [showExitDialog, setShowExitDialog] = useState(false);
     const [conflict, setConflict] = useState<Conflict | null>(null);
     const [actionError, setActionError] = useState<unknown>(null);
@@ -82,10 +80,6 @@ const PageEditor = ({spaceId, pageId, isDraft}: Props) => {
     });
 
     useEffect(() => {
-        setTitle(load.title);
-    }, [load.title]);
-
-    useEffect(() => {
         setBaseEditAt(load.baseEditAt);
     }, [load.baseEditAt]);
 
@@ -104,14 +98,6 @@ const PageEditor = ({spaceId, pageId, isDraft}: Props) => {
         }
         setDocumentMode(hostSupportsDocumentEditor(editorRef.current));
     }, [load.loading]);
-
-    const onTitleChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
-        setTitle(event.target.value);
-        if (contentError) {
-            return;
-        }
-        autosave.queue({title: event.target.value});
-    }, [autosave, contentError]);
 
     const onContentChange = useCallback((content: string) => {
         if (contentError || editorRef.current?.hasContentError?.()) {
@@ -364,17 +350,6 @@ const PageEditor = ({spaceId, pageId, isDraft}: Props) => {
                             />
                         </div>
                     )}
-
-                    <div className={styles.titleBlock}>
-                        <input
-                            className={styles.title}
-                            value={title}
-                            onChange={onTitleChange}
-                            placeholder={formatMessage({id: 'docs.editor.titlePlaceholder', defaultMessage: 'Untitled'})}
-                            aria-label={formatMessage({id: 'docs.editor.titleLabel', defaultMessage: 'Page title'})}
-                        />
-                        {load.page?.user_id ? <PageByline userId={load.page.user_id}/> : null}
-                    </div>
 
                     <div
                         ref={editorSurfaceRef}
