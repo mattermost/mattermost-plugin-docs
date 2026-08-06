@@ -1,11 +1,13 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {act, screen} from '@testing-library/react';
+import {act, fireEvent, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 
+import GenericModal from 'components/generic_modal/generic_modal';
+
 import DocsModalController, {useDocsModal, useDocsModalLayer} from './docs_modal_controller';
-import {closeAllDocsModals, openDocsModal} from './modal_store';
+import {closeAllDocsModals, getDocsModalStack, openDocsModal} from './modal_store';
 
 import {renderWithContext} from '../../../tests/react_testing_utils';
 
@@ -129,5 +131,38 @@ describe('DocsModalController', () => {
         });
 
         expect(screen.queryByRole('button', {name: 'Close from context'})).not.toBeInTheDocument();
+    });
+
+    // Stack entries are siblings, so Base UI sees no parent/child relationship and
+    // every open dialog answers the same Escape unless the covered ones opt out.
+    it('dismisses only the top dialog on Escape', async () => {
+        renderWithContext(<DocsModalController/>);
+
+        const push = async (label: string) => {
+            act(() => {
+                openDocsModal((modal) => (
+                    <GenericModal
+                        title={label}
+                        onClose={modal.close}
+                    >
+                        {`${label} body`}
+                    </GenericModal>
+                ));
+            });
+            await screen.findByText(`${label} body`);
+        };
+
+        await push('Outer');
+        await push('Inner');
+        expect(getDocsModalStack()).toHaveLength(2);
+
+        fireEvent.keyDown(document.body, {key: 'Escape'});
+
+        await waitFor(() => expect(getDocsModalStack()).toHaveLength(1));
+        expect(screen.getByText('Outer body')).toBeInTheDocument();
+
+        fireEvent.keyDown(document.body, {key: 'Escape'});
+
+        await waitFor(() => expect(getDocsModalStack()).toHaveLength(0));
     });
 });

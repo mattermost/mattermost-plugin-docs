@@ -99,10 +99,21 @@ const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, in
     return (
         <Dialog.Root
             open={open}
-            onOpenChange={(nextOpen) => {
-                if (!nextOpen) {
-                    closeWith();
+            onOpenChange={(nextOpen, details) => {
+                if (nextOpen) {
+                    return;
                 }
+
+                // Stacked modals are rendered as siblings, so Base UI sees no
+                // parent/child relationship between them and every open dialog
+                // answers the same Escape — one press would close the whole stack.
+                // Only the topmost may. Modals nested through JSX are a real Base UI
+                // parent/child pair and it guards them itself, so they never get here
+                // covered.
+                if (details.reason === 'escape-key' && isCovered) {
+                    return;
+                }
+                closeWith();
             }}
             onOpenChangeComplete={(nextOpen) => {
                 // `openedRef` guards the closed state this mounts in: without it a
