@@ -7,8 +7,8 @@ import {ClientError} from '@mattermost/client';
 
 import {makePage} from 'store/test_fixtures';
 
-import {addSpaceMember, addSpaceMembers, isLastSpaceMemberError, isNotTeamMemberError, leaveSpace, movePage, removeSpaceMember} from './actions';
 import {SpaceTypes} from './action_types';
+import {addSpaceMember, addSpaceMembers, isLastSpaceMemberError, isNotTeamMemberError, leaveSpace, movePage, removeSpaceMember} from './actions';
 
 const mockAddSpaceMember = jest.fn();
 const mockRemoveSpaceMember = jest.fn();
