@@ -6,6 +6,7 @@ package importer
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -92,7 +93,20 @@ func CanonicalizeAndExtractSearchText(body string) (canonicalBody string, search
 		// The sanitizer returns plain errors (its failures are parse-level, with no per-field i18n
 		// key), so they are wrapped in one stable code here. Its message is safe to surface: it names
 		// node/mark types and limits, never content.
-		return "", "", nil, tiptapErr(TipTapErrSanitizerRejected, "content rejected by the page sanitizer: %v", parseErr)
+		// Keep the sanitizer's limit rejections distinct from its structural ones. Both come back as one
+		// error type, but a document that breaches a size or nesting bound is well-formed and merely
+		// unprocessable, while one the allowlist rejects is malformed — a different HTTP contract, and the
+		// only reason the size-limit codes below are reachable at all.
+		switch {
+		case errors.Is(parseErr, model.ErrTipTapBodyTooLarge):
+			return "", "", nil, tiptapErr(TipTapErrBodyTooLarge, "content exceeds the maximum body size of %d bytes", model.PageBodyMaxBytes)
+		case errors.Is(parseErr, model.ErrTipTapTooDeep):
+			return "", "", nil, tiptapErr(TipTapErrTooDeep, "document nesting exceeds depth %d", model.MaxTipTapDepth)
+		case errors.Is(parseErr, model.ErrTipTapTooManyNodes):
+			return "", "", nil, tiptapErr(TipTapErrTooManyNodes, "document has more than %d nodes", model.MaxTipTapNodes)
+		default:
+			return "", "", nil, tiptapErr(TipTapErrSanitizerRejected, "content rejected by the page sanitizer: %v", parseErr)
+		}
 	}
 
 	compact, marshalErr := json.Marshal(doc)
@@ -111,7 +125,11 @@ func CanonicalizeAndExtractSearchText(body string) (canonicalBody string, search
 		if node == nil {
 			return "", "", nil, tiptapErr(TipTapErrBadContent, "sanitized content contains a null node")
 		}
-		if walkErr := w.walkNode(node, 1); walkErr != nil {
+		// Depth 0 for the document's direct children, matching how the shared sanitizer numbers them
+		// (sanitizeTipTapDocument enters sanitizeTipTapNode at 0). Starting at 1 here made this walk one
+		// level stricter than the sanitizer that just accepted the document, so imported content could be
+		// rejected at a nesting the browser path allows.
+		if walkErr := w.walkNode(node, 0); walkErr != nil {
 			return "", "", nil, walkErr
 		}
 	}
@@ -132,9 +150,10 @@ type tiptapWalker struct {
 	nodeCount int
 }
 
-// walkNode processes one node object at the given nesting depth (the doc root is depth 0, so its
-// direct children start at 1). The node has already been sanitized; these checks are the text-shape
-// and storability rules the sanitizer does not cover, plus defence-in-depth bounds.
+// walkNode processes one node object at the given nesting depth. The document's direct children are
+// depth 0, exactly as the shared sanitizer counts them, so both enforce model.MaxTipTapDepth at the same
+// nesting. The node has already been sanitized; these checks are the text-shape and storability rules the
+// sanitizer does not cover, plus defence-in-depth bounds.
 func (w *tiptapWalker) walkNode(node map[string]any, depth int) error {
 	w.nodeCount++
 	if w.nodeCount > model.MaxTipTapNodes {

@@ -736,3 +736,98 @@ func mustQuote(s string) string {
 	b, _ := jsonMarshalString(s)
 	return b
 }
+
+// TestInspect_RequiresSourceNamespaceMirrors covers the producer contract's redundant space-key mirrors.
+// Tolerating an absent mirror left the bundle's own statement of which source namespace it belongs to
+// unverified on exactly the lines that carry it, so a bundle could be staged against a namespace no line
+// ever agreed to. A present-but-different value was already rejected; absence now is too.
+func TestInspect_RequiresSourceNamespaceMirrors(t *testing.T) {
+	cases := map[string]string{
+		"version line has no source block": strings.Join([]string{
+			`{"type":"version","version":2}`,
+			spaceLine(),
+			pageLine(t, "100", "", "Root", docString("hi")),
+			resolveLine(),
+		}, "\n"),
+		"version source has an empty space key": strings.Join([]string{
+			`{"type":"version","version":2,"source":{"space_key":""}}`,
+			spaceLine(),
+			pageLine(t, "100", "", "Root", docString("hi")),
+			resolveLine(),
+		}, "\n"),
+		"space line has no import_source_id": strings.Join([]string{
+			versionLine(),
+			`{"type":"space","space":{"team":"myteam","title":"Docs","description":"Migrated","props":{}}}`,
+			pageLine(t, "100", "", "Root", docString("hi")),
+			resolveLine(),
+		}, "\n"),
+		"resolve line has no space_import_source_id": strings.Join([]string{
+			versionLine(),
+			spaceLine(),
+			pageLine(t, "100", "", "Root", docString("hi")),
+			`{"type":"resolve_space_placeholders","resolve_space_placeholders":{}}`,
+		}, "\n"),
+	}
+	for name, jsonl := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := newBundle(jsonl, baseManifest(1, 0, 0)).inspect(t, InspectOptions{})
+			ie, ok := err.(*InspectError)
+			if !ok || ie.Code != InspectErrSpaceKeyMissing {
+				t.Fatalf("err = %v, want %s", err, InspectErrSpaceKeyMissing)
+			}
+		})
+	}
+}
+
+// TestInspect_ValidatesSpaceDisplayText covers the manifest's source space name and the bundle's proposed
+// Space title and description. All three are persisted but none is an indexed identifier, so they were
+// left unchecked — a NUL then surfaced as a PostgreSQL write failure and an unbounded value as a summary
+// column overflow, i.e. malformed input arriving as a 500 rather than a rejection.
+func TestInspect_ValidatesSpaceDisplayText(t *testing.T) {
+	goodJSONL := strings.Join([]string{
+		versionLine(), spaceLine(), pageLine(t, "100", "", "Root", docString("hi")), resolveLine(),
+	}, "\n")
+
+	t.Run("manifest space name with a NUL", func(t *testing.T) {
+		m := baseManifest(1, 0, 0)
+		m.Source.SpaceName = "Docs\x00hidden"
+		_, err := newBundle(goodJSONL, m).inspect(t, InspectOptions{})
+		ie, ok := err.(*InspectError)
+		if !ok || ie.Code != InspectErrUnstorableText {
+			t.Fatalf("err = %v, want %s", err, InspectErrUnstorableText)
+		}
+	})
+
+	t.Run("manifest space name too long", func(t *testing.T) {
+		m := baseManifest(1, 0, 0)
+		m.Source.SpaceName = strings.Repeat("é", SpaceNameMaxRunes+1)
+		_, err := newBundle(goodJSONL, m).inspect(t, InspectOptions{})
+		ie, ok := err.(*InspectError)
+		if !ok || ie.Code != InspectErrSpaceNameTooLong {
+			t.Fatalf("err = %v, want %s", err, InspectErrSpaceNameTooLong)
+		}
+	})
+
+	t.Run("space title too long", func(t *testing.T) {
+		jsonl := strings.Join([]string{
+			versionLine(),
+			`{"type":"space","space":{"team":"myteam","title":"` + strings.Repeat("t", SpaceTitleMaxRunes+1) +
+				`","description":"Migrated","props":{"import_source_id":"DOCS"}}}`,
+			pageLine(t, "100", "", "Root", docString("hi")),
+			resolveLine(),
+		}, "\n")
+		_, err := newBundle(jsonl, baseManifest(1, 0, 0)).inspect(t, InspectOptions{})
+		ie, ok := err.(*InspectError)
+		if !ok || ie.Code != InspectErrSpaceTextTooLong {
+			t.Fatalf("err = %v, want %s", err, InspectErrSpaceTextTooLong)
+		}
+	})
+
+	t.Run("a name at the limit is accepted", func(t *testing.T) {
+		m := baseManifest(1, 0, 0)
+		m.Source.SpaceName = strings.Repeat("é", SpaceNameMaxRunes)
+		if _, err := newBundle(goodJSONL, m).inspect(t, InspectOptions{}); err != nil {
+			t.Fatalf("a name exactly at the limit must be accepted: %v", err)
+		}
+	})
+}

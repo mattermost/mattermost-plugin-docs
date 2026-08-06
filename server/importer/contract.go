@@ -196,6 +196,19 @@ const (
 	SpaceKeyMaxBytes = 255
 )
 
+// Display-text bounds for producer-supplied strings that are stored but never indexed. Unlike
+// identifiers these may contain arbitrary Unicode, so they are bounded by rune count and checked for
+// storability rather than matched against a pattern.
+const (
+	// SpaceNameMaxRunes bounds the source Space's human-readable name, which becomes
+	// ImportSource.ExternalSpaceName and part of the persisted bundle summary.
+	SpaceNameMaxRunes = 255
+	// SpaceTitleMaxRunes bounds the proposed new-Space title carried in the bundle.
+	SpaceTitleMaxRunes = 128
+	// SpaceDescriptionMaxRunes bounds the proposed new-Space description.
+	SpaceDescriptionMaxRunes = 1024
+)
+
 // IdentifierPattern is the ASCII contract every non-empty external identifier must match. Every
 // identifier the authoritative producer emits fits this set, so bounding it keeps index sizing
 // deterministic and rejects incompatible future producer identifiers until the contract is

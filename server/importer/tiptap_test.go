@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
 func TestCanonicalize_RejectsNonDoc(t *testing.T) {
@@ -314,4 +316,69 @@ func text(s string) map[string]any {
 func marshal(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+// nestedBlockquotes returns a doc whose content nests `levels` blockquote nodes, the innermost holding a
+// paragraph. levels counts the document's direct children as level 1.
+func nestedBlockquotes(levels int) string {
+	inner := map[string]any{"type": "paragraph", "content": []any{text("deep")}}
+	node := inner
+	for range levels - 1 {
+		node = map[string]any{"type": "blockquote", "content": []any{node}}
+	}
+	return marshal(map[string]any{"type": "doc", "content": []any{node}})
+}
+
+// TestCanonicalize_DepthAgreesWithSharedSanitizer pins that the importer's walk rejects at exactly the
+// nesting the shared sanitizer does, never one level earlier. Starting the walk at depth 1 while the
+// sanitizer starts at 0 made the importer stricter than the sanitizer that had just accepted the
+// document, so content the browser path stores could not be imported.
+func TestCanonicalize_DepthAgreesWithSharedSanitizer(t *testing.T) {
+	// Find the first depth the shared sanitizer refuses, then check the importer agrees on both sides of
+	// that boundary rather than assuming a particular number.
+	firstRejected := 0
+	for levels := model.MaxTipTapDepth - 2; levels <= model.MaxTipTapDepth+4; levels++ {
+		if _, err := model.ParseTipTapDocument(nestedBlockquotes(levels)); err != nil {
+			firstRejected = levels
+			break
+		}
+	}
+	if firstRejected == 0 {
+		t.Fatalf("the sanitizer accepted every depth probed; the test cannot locate the boundary")
+	}
+
+	// One level below the boundary must pass the importer too.
+	if _, _, _, err := CanonicalizeAndExtractSearchText(nestedBlockquotes(firstRejected - 1)); err != nil {
+		t.Errorf("depth %d is accepted by the sanitizer but rejected by the importer: %v", firstRejected-1, err)
+	}
+	// At the boundary both must refuse, and the importer must report it as a depth limit rather than as
+	// generic malformation, so the HTTP contract can map it to "not processable".
+	_, _, _, err := CanonicalizeAndExtractSearchText(nestedBlockquotes(firstRejected))
+	te, ok := err.(*TipTapError)
+	if !ok || te.Code != TipTapErrTooDeep {
+		t.Errorf("depth %d: err = %v, want %s", firstRejected, err, TipTapErrTooDeep)
+	}
+}
+
+// TestCanonicalize_SanitizerLimitsKeepTheirOwnCodes covers the other half of that mapping: the sanitizer
+// reports size, depth, and node-count breaches through one error type, and collapsing them into
+// "rejected by the sanitizer" made the size-limit codes unreachable for imported content.
+func TestCanonicalize_SanitizerLimitsKeepTheirOwnCodes(t *testing.T) {
+	// A body past PageBodyMaxBytes is refused before parsing, by the sanitizer rather than by the
+	// importer's own post-marshal check.
+	huge := `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"` +
+		strings.Repeat("a", model.PageBodyMaxBytes) + `"}]}]}`
+	_, _, _, err := CanonicalizeAndExtractSearchText(huge)
+	te, ok := err.(*TipTapError)
+	if !ok || te.Code != TipTapErrBodyTooLarge {
+		t.Errorf("oversized body: err = %v, want %s", err, TipTapErrBodyTooLarge)
+	}
+
+	// Genuine malformation keeps the sanitizer-rejected code, which maps to a client error rather than
+	// to "not processable".
+	_, _, _, err = CanonicalizeAndExtractSearchText(`{"type":"doc","content":[{"type":"customWidget"}]}`)
+	te, ok = err.(*TipTapError)
+	if !ok || te.Code != TipTapErrSanitizerRejected {
+		t.Errorf("unknown node: err = %v, want %s", err, TipTapErrSanitizerRejected)
+	}
 }

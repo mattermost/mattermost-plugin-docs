@@ -54,7 +54,22 @@ func (s *Service) CancelImportJob(jobID, actorID string) (*model.ImportJobView, 
 		"released_retained_bytes", job.RetainedReservedBytes-canceled.RetainedReservedBytes,
 		"not_attempted_pages", canceled.FinalSummary.Actions.NotAttempted)
 
-	// The cancel path returns the job as the actor sees it; entitlement is unchanged by cancelling.
+	// Owning a job authorizes cancelling it, but it does not authorize reading the target. An actor who
+	// has lost Space access gets the same minimal projection GET returns — otherwise cancelling would be
+	// a way to read back target- and source-identifying fields (notably the selected source's display
+	// name, which is Space-side data the actor may never have seen) that GET deliberately withholds.
+	//
+	// A lookup failure redacts rather than errors: the cancel already committed, so failing the response
+	// would report an error for work that succeeded. Failing closed on disclosure is the safe direction.
+	entitled, entitlementErr := s.actorStillEntitled(canceled, actorID)
+	if entitlementErr != nil {
+		s.log.Warn("Import cancel: entitlement check failed, returning the minimal view",
+			"job_id", canceled.Id, "actor_id", actorID, "err", entitlementErr)
+		return minimalImportJobView(canceled), nil
+	}
+	if !entitled {
+		return minimalImportJobView(canceled), nil
+	}
 	return buildImportJobViewWithoutCandidates(canceled), nil
 }
 
@@ -84,8 +99,9 @@ func (s *Service) RunImportMaintenance() (store.ImportCleanupCounts, error) {
 		return counts, err
 	}
 
-	deleted, err := s.store.DeleteExpiredImportJobs(now)
+	deleted, keptForCompensation, err := s.store.DeleteExpiredImportJobs(now)
 	counts.DeletedJobs = deleted
+	counts.KeptForCompensationJobs = keptForCompensation
 	if err != nil {
 		return counts, err
 	}
@@ -98,15 +114,18 @@ func (s *Service) LogImportMaintenance(counts store.ImportCleanupCounts, err err
 	if err != nil {
 		s.log.Error("Import maintenance pass failed",
 			"expired_jobs", counts.ExpiredJobs, "purged_staged_jobs", counts.PurgedStagedJobs,
-			"deleted_jobs", counts.DeletedJobs, "released_staged_bytes", counts.ReleasedStagedBytes,
+			"deleted_jobs", counts.DeletedJobs, "kept_for_compensation_jobs", counts.KeptForCompensationJobs,
+			"released_staged_bytes", counts.ReleasedStagedBytes,
 			"released_retained_bytes", counts.ReleasedRetainedBytes, "err", err)
 		return
 	}
-	if counts.ExpiredJobs == 0 && counts.PurgedStagedJobs == 0 && counts.DeletedJobs == 0 {
+	if counts.ExpiredJobs == 0 && counts.PurgedStagedJobs == 0 && counts.DeletedJobs == 0 &&
+		counts.KeptForCompensationJobs == 0 {
 		return
 	}
 	s.log.Info("Import maintenance pass completed",
 		"expired_jobs", counts.ExpiredJobs, "purged_staged_jobs", counts.PurgedStagedJobs,
-		"deleted_jobs", counts.DeletedJobs, "released_staged_bytes", counts.ReleasedStagedBytes,
+		"deleted_jobs", counts.DeletedJobs, "kept_for_compensation_jobs", counts.KeptForCompensationJobs,
+		"released_staged_bytes", counts.ReleasedStagedBytes,
 		"released_retained_bytes", counts.ReleasedRetainedBytes)
 }

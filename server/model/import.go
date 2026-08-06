@@ -318,6 +318,17 @@ const (
 	// admits. A result row carries no message or remediation, so it is materially smaller than an issue.
 	ImportRetainedResultRowMaxBytes = importRetainedRowOverheadBytes + ImportDetailsMaxBytes +
 		4*PageTitleMaxRunes + ImportExternalIDMaxBytes
+
+	// ImportRetainedIssueBudgetBytes is the per-job allowance for *discretionary* retained rows: the
+	// inspection, preflight, and execution issues that explain a job's outcomes. It is a budget, not an
+	// estimate — see ImportJob.IssueBudgetRemaining.
+	//
+	// It is flat rather than per-entity on purpose. Reserving the hard per-page cap
+	// (ImportMaxIssueCodesPerPage codes in each of two stages) at worst-case row size would need
+	// hundreds of megabytes for one large bundle, which no admission budget could grant; a flat
+	// allowance large enough for tens of thousands of realistic issues, with visible truncation past it,
+	// is both honest and admissible.
+	ImportRetainedIssueBudgetBytes = 16 * 1024 * 1024
 )
 
 // validateImportDetails enforces the serialized-size bound on a result/issue Details map.
@@ -468,8 +479,12 @@ type ImportJob struct {
 	ProgressCurrent      int64                `json:"progress_current"`
 	ProgressTotal        int64                `json:"progress_total"`
 
-	StagedBytes           int64 `json:"-"`
-	RetainedBytes         int64 `json:"-"`
+	StagedBytes   int64 `json:"-"`
+	RetainedBytes int64 `json:"-"`
+	// RetainedIssueBytes is the discretionary share of RetainedBytes: how much of
+	// ImportRetainedIssueBudgetBytes the job's issue rows have already spent. It is tracked separately
+	// so issue writers cannot borrow the capacity reserved for mandatory outcomes.
+	RetainedIssueBytes    int64 `json:"-"`
 	RetainedReservedBytes int64 `json:"-"`
 
 	BundleSha256      string                 `json:"-"`
@@ -491,18 +506,19 @@ type ImportJob struct {
 	RetainUntil int64 `json:"-"`
 }
 
-// RetainedRemaining reports how many retained bytes this job may still write before it exceeds the
-// budget admission reserved for it.
+// IssueBudgetRemaining reports how many bytes of issue rows this job may still write.
 //
 // Retained rows fall into two classes and only the first is unconditional. *Mandatory* rows — one
 // result per staged page and per stale mapping, plus the final summary — are reserved worst-case at
-// admission, so they are always written and simply charged. *Discretionary* rows — the preflight and
-// execution issues that explain those outcomes — share a flat per-job allowance, and a writer that
-// would exceed what remains must stop emitting per-entity issues and record one aggregate
-// truncation issue instead. Without that check the reservation would bound nothing: the report could
-// grow to ImportMaxIssueCodesPerPage rows per page, far past anything admission could have promised.
-func (j *ImportJob) RetainedRemaining() int64 {
-	return max(j.RetainedReservedBytes-j.RetainedBytes, 0)
+// admission, so they are always written and simply charged. *Discretionary* rows — the issues that
+// explain those outcomes — share ImportRetainedIssueBudgetBytes, and a writer that would exceed what
+// remains must stop emitting per-entity issues and record one aggregate truncation issue instead.
+//
+// The two pools are deliberately measured against different totals. A single "unspent reservation"
+// figure would let issue writers consume the capacity held for mandatory outcomes and leave a job
+// unable to record what happened to its pages — exactly the failure the reservation exists to prevent.
+func (j *ImportJob) IssueBudgetRemaining() int64 {
+	return max(ImportRetainedIssueBudgetBytes-j.RetainedIssueBytes, 0)
 }
 
 // ImportChannelAttempt is one durable external channel-create attempt (DOCS_ImportChannelAttempt).
@@ -979,7 +995,7 @@ func (j *ImportJob) IsValid() *mmmodel.AppError {
 	if utf8.RuneCountInString(j.ErrorCode) > ImportErrorCodeMaxRunes {
 		return mmmodel.NewAppError(where, "model.import_job.is_valid.error_code_length.app_error", map[string]any{"MaxLength": ImportErrorCodeMaxRunes}, "id="+j.Id, http.StatusBadRequest)
 	}
-	if j.StagedBytes < 0 || j.RetainedBytes < 0 || j.RetainedReservedBytes < 0 {
+	if j.StagedBytes < 0 || j.RetainedBytes < 0 || j.RetainedIssueBytes < 0 || j.RetainedReservedBytes < 0 {
 		return mmmodel.NewAppError(where, "model.import_job.is_valid.byte_accounting.app_error", nil, "id="+j.Id, http.StatusBadRequest)
 	}
 	if j.CreateAt == 0 || j.UpdateAt == 0 || j.RetainUntil == 0 {
