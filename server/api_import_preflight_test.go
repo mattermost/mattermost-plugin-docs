@@ -584,3 +584,330 @@ func TestImportPreflight_CancelDuringReviewRecordsOutcomes(t *testing.T) {
 		`SELECT COUNT(*) FROM DOCS_ImportResult WHERE JobId = $1 AND Stage = 'execution'`, jobID).Scan(&executionRows))
 	require.Equal(t, 3, executionRows)
 }
+
+// TestImportWorker_DoesNotStarveOnUnadvanceableStates is the regression test for a worker wedge. Work
+// selection returns the first non-empty state in priority order, so a state the worker cannot advance would
+// be picked on every pass and starve everything below it — and neither queued_import nor terminalizing is
+// expirable, so the wedge would outlive the jobs that caused it.
+func TestImportWorker_DoesNotStarveOnUnadvanceableStates(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+
+	// A confirmed job parks in queued_import, which this release cannot execute.
+	blocker := h.uploadFixture(t, actorID, newTargetRequest(mmmodel.NewId()), importfixture.Options{Pages: 1})
+	require.Equal(t, http.StatusCreated, blocker.Code, blocker.Body.String())
+	blockerID := decodeJobView(t, blocker).Id
+	h.drainImportWorker(t)
+	blockerView := decodeJobView(t, h.do(t, http.MethodGet, "/api/v1/imports/"+blockerID, actorID, nil))
+	require.Equal(t, model.ImportStateAwaitingConfirmation, blockerView.State)
+	require.Equal(t, http.StatusAccepted,
+		h.do(t, http.MethodPost, "/api/v1/imports/"+blockerID+"/confirm", actorID, confirmBody(t, blockerView, true)).Code)
+
+	// A later upload must still preflight.
+	later := h.uploadFixture(t, actorID, newTargetRequest(mmmodel.NewId()), importfixture.Options{Pages: 1})
+	require.Equal(t, http.StatusCreated, later.Code, later.Body.String())
+	laterID := decodeJobView(t, later).Id
+
+	h.drainImportWorker(t)
+	job, err := h.store.GetImportJob(laterID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateAwaitingConfirmation, job.State,
+		"a queued_import job must not starve later preflight work")
+
+	// A confirmed-but-unexecutable job is still cancelable, so it cannot hold its staged bytes and its
+	// per-user slot until an operator intervenes.
+	cancel := h.do(t, http.MethodPost, "/api/v1/imports/"+blockerID+"/cancel", actorID, nil)
+	require.Equal(t, http.StatusAccepted, cancel.Code, cancel.Body.String())
+	blocked, err := h.store.GetImportJob(blockerID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateCanceled, blocked.State)
+}
+
+// TestImportWorker_TerminalizesFailedPreflight covers the other wedge and the terminalization step itself. A
+// preflight failure records a terminal intent and hands off to the worker; the worker must finish the job
+// rather than leaving it parked in the highest-priority state forever.
+func TestImportWorker_TerminalizesFailedPreflight(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, channelMember: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+	space := seedSpace(t, h.store, mmmodel.NewId())
+	sourceID, _ := seedImportSourceWithMapping(t, h, space, importfixture.RootExternalID, "", "")
+
+	rec := h.uploadFixture(t, actorID, existingTargetRequest(space.Id), importfixture.Options{Pages: 2})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	jobID := decodeJobView(t, rec).Id
+	selected := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/source", actorID,
+		json.RawMessage(fmt.Sprintf(`{"mode":"existing","import_source_id":%q}`, sourceID)))
+	require.Equal(t, http.StatusAccepted, selected.Code)
+
+	// Delete the selected source so preflight cannot load its mappings; classifying against a missing
+	// source would silently reclassify every mapped page as a create, so it must fail instead.
+	_, err := h.db.Exec(`DELETE FROM DOCS_ImportSource WHERE Id = $1`, sourceID)
+	require.NoError(t, err)
+
+	h.drainImportWorker(t)
+
+	job, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateFailed, job.State, "a failed preflight must reach a terminal state")
+	require.Equal(t, app.ImportErrorSourceMissing, job.ErrorCode)
+	// Terminalization wrote the durable report: every staged page carries a not-attempted-failed outcome.
+	require.Equal(t, 2, job.FinalSummary.Actions.NotAttempted)
+	require.Equal(t, 2, job.FinalSummary.Outcomes[string(model.ImportOutcomeNotAttemptedFailure)])
+	require.Zero(t, job.StagedBytes)
+
+	var executionRows int
+	require.NoError(t, h.db.QueryRow(
+		`SELECT COUNT(*) FROM DOCS_ImportResult WHERE JobId = $1 AND Stage = 'execution' AND Outcome = $2`,
+		jobID, string(model.ImportOutcomeNotAttemptedFailure)).Scan(&executionRows))
+	require.Equal(t, 2, executionRows)
+
+	// The final summary is projected through the API, which is the only way a user sees the outcome.
+	view := decodeJobView(t, h.do(t, http.MethodGet, "/api/v1/imports/"+jobID, actorID, nil))
+	require.NotNil(t, view.Final, "a terminal job must report its final summary")
+	require.Equal(t, 2, view.Final.Counts.Outcomes[string(model.ImportOutcomeNotAttemptedFailure)])
+	require.NotNil(t, view.Error)
+	require.Equal(t, app.ImportErrorSourceMissing, view.Error.Code)
+}
+
+// TestImportTerminalization_IsIdempotent covers restart safety: a crash mid-terminalization must resume
+// rather than collide with the outcomes it already wrote.
+func TestImportTerminalization_IsIdempotent(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+
+	rec := h.uploadFixture(t, actorID, newTargetRequest(mmmodel.NewId()), importfixture.Options{Pages: 3})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	jobID := decodeJobView(t, rec).Id
+	h.drainImportWorker(t)
+
+	// Write an outcome for one page, then park the job in terminalizing as an interrupted run would.
+	_, err := h.db.Exec(
+		`INSERT INTO DOCS_ImportResult
+		   (JobId, Stage, Ordinal, EntityType, ExternalId, Title, ActualAction, Outcome, CreateAt, UpdateAt)
+		 VALUES ($1, 'execution', 0, 'page', $2, 'Already recorded', 'not_attempted', $3, 1, 1)`,
+		jobID, importfixture.RootExternalID, string(model.ImportOutcomeNotAttemptedFailure))
+	require.NoError(t, err)
+	_, err = h.db.Exec(
+		`UPDATE DOCS_ImportJob SET State='terminalizing', TerminalIntent='failed', ErrorCode='preflight_failed'
+		   WHERE Id=$1`, jobID)
+	require.NoError(t, err)
+
+	h.drainImportWorker(t)
+
+	job, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateFailed, job.State)
+	// Three pages, three outcomes: the pre-existing row was kept, not duplicated or overwritten.
+	var rows int
+	require.NoError(t, h.db.QueryRow(
+		`SELECT COUNT(*) FROM DOCS_ImportResult WHERE JobId = $1 AND Stage = 'execution'`, jobID).Scan(&rows))
+	require.Equal(t, 3, rows)
+	var keptTitle string
+	require.NoError(t, h.db.QueryRow(
+		`SELECT Title FROM DOCS_ImportResult WHERE JobId = $1 AND Stage = 'execution' AND Ordinal = 0`,
+		jobID).Scan(&keptTitle))
+	require.Equal(t, "Already recorded", keptTitle, "an existing execution outcome must not be overwritten")
+}
+
+// TestImportPreflight_ChargesRetainedRows covers the accounting hole: preflight rows are retained for the
+// job's whole life, so publishing them without charging lets repeated preflight/cancel cycles accumulate
+// storage against a figure that barely moves.
+func TestImportPreflight_ChargesRetainedRows(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+
+	rec := h.uploadFixture(t, actorID, newTargetRequest(mmmodel.NewId()),
+		importfixture.Options{Pages: 4, WithFindings: true})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	jobID := decodeJobView(t, rec).Id
+
+	before, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	h.drainImportWorker(t)
+	after, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+
+	require.Greater(t, after.PreflightRetainedBytes, int64(0), "a published plan must be charged")
+	require.Greater(t, after.RetainedBytes, before.RetainedBytes)
+	require.GreaterOrEqual(t, after.RetainedBytes-before.RetainedBytes, after.PreflightRetainedBytes)
+	require.Greater(t, after.PreflightRetainedIssueBytes, int64(0))
+	require.Greater(t, after.RetainedIssueBytes, before.RetainedIssueBytes)
+
+	// Recomputing replaces the charge instead of accumulating it: the rows the previous plan wrote are gone.
+	_, err = h.db.Exec(`UPDATE DOCS_ImportJob SET State='queued_preflight' WHERE Id=$1`, jobID)
+	require.NoError(t, err)
+	h.drainImportWorker(t)
+	recomputed, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, after.PreflightRetainedBytes, recomputed.PreflightRetainedBytes)
+	require.Equal(t, after.RetainedBytes, recomputed.RetainedBytes,
+		"a recomputed plan must not double-charge the plan it replaced")
+
+	// The true-up at cancellation now reflects the preflight rows that remain retained.
+	cancel := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/cancel", actorID, nil)
+	require.Equal(t, http.StatusAccepted, cancel.Code)
+	canceled, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, canceled.RetainedBytes, canceled.RetainedReservedBytes)
+	require.Greater(t, canceled.RetainedReservedBytes, recomputed.PreflightRetainedBytes,
+		"the trued-up reservation must still cover the retained preflight rows")
+}
+
+// seedLocalChain creates a chain of live pages depth levels deep and returns the deepest one.
+func seedLocalChain(t *testing.T, h *apiTestHarness, space *model.Space, depth int) *model.Page {
+	t.Helper()
+	var page *model.Page
+	parentID := ""
+	for range depth {
+		page = seedPage(t, h.store, space.Id, space.ChannelId, parentID)
+		parentID = page.Id
+	}
+	return page
+}
+
+// mapExternalIDToPage points an existing source's mapping for externalID at a local page.
+func mapExternalIDToPage(t *testing.T, h *apiTestHarness, sourceID, externalID string, page *model.Page) {
+	t.Helper()
+	_, err := h.db.Exec(
+		`UPDATE DOCS_ImportEntity SET LocalId = $1, LastAppliedParentId = COALESCE($2, '')
+		   WHERE ImportSourceId = $3 AND ExternalId = $4`,
+		page.Id, page.ParentId, sourceID, externalID)
+	require.NoError(t, err)
+}
+
+// TestImportPreflight_ProjectsDepthAcrossStagedTree covers a tree that is legal in the bundle and legal
+// against the database, but illegal once the two are combined. The chain's depth only exists in the plan —
+// no row reveals it — so a projection that queries only existing parents approves a page tree the target
+// cannot hold, and execution discovers it far too late.
+func TestImportPreflight_ProjectsDepthAcrossStagedTree(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, channelMember: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+	space := seedSpace(t, h.store, mmmodel.NewId())
+	sourceID, _ := seedImportSourceWithMapping(t, h, space, importfixture.RootExternalID, "", "")
+
+	// Put the mapped root deep enough that only two more levels fit beneath it.
+	deep := seedLocalChain(t, h, space, model.MaxPageDepth-1)
+	mapExternalIDToPage(t, h, sourceID, importfixture.RootExternalID, deep)
+
+	// A four-page chain: 100 (mapped, at depth 9) -> 101 -> 102 -> 103.
+	rec := h.uploadFixture(t, actorID, existingTargetRequest(space.Id),
+		importfixture.Options{Pages: 4, Chain: true})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	jobID := decodeJobView(t, rec).Id
+	selected := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/source", actorID,
+		json.RawMessage(fmt.Sprintf(`{"mode":"existing","import_source_id":%q}`, sourceID)))
+	require.Equal(t, http.StatusAccepted, selected.Code, selected.Body.String())
+
+	h.drainImportWorker(t)
+
+	results := h.do(t, http.MethodGet, "/api/v1/imports/"+jobID+"/preflight-results?per_page=100", actorID, nil)
+	require.Equal(t, http.StatusOK, results.Code)
+	var page paginatedResponse[model.ImportPreflightResultView]
+	require.NoError(t, json.Unmarshal(results.Body.Bytes(), &page))
+	byExternal := map[string]model.ImportPreflightResultView{}
+	for _, item := range page.Items {
+		byExternal[item.ExternalId] = item
+	}
+
+	// 101 is the last level that fits; 102 breaches the depth limit and 103 follows it.
+	require.Equal(t, model.ImportActionCreate, byExternal["101"].PlannedAction)
+	require.Equal(t, model.ImportActionBlocked, byExternal["102"].PlannedAction,
+		"a page projected past the depth limit must be blocked")
+	require.Equal(t, model.ImportActionBlocked, byExternal["103"].PlannedAction,
+		"a descendant of a blocked page must be blocked, not left pointing at a page that will never exist")
+	require.Empty(t, byExternal["103"].LocalId, "a blocked create must not advertise a planned page id")
+
+	issues := h.do(t, http.MethodGet, "/api/v1/imports/"+jobID+"/issues?stage=preflight&per_page=100", actorID, nil)
+	require.Equal(t, http.StatusOK, issues.Code)
+	body := issues.Body.String()
+	require.Contains(t, body, importer.IssueTargetDepthExceeded)
+	require.Contains(t, body, importer.IssueParentBlocked)
+
+	// The plan the store persisted agrees: a blocked page carries no planned id for execution to use.
+	var plannedID string
+	require.NoError(t, h.db.QueryRow(
+		`SELECT PlannedPageId FROM DOCS_ImportStagedPage WHERE JobId = $1 AND ExternalId = '103'`,
+		jobID).Scan(&plannedID))
+	require.Empty(t, plannedID)
+}
+
+// TestImportPreflight_MappingCapacityCountsOnlyNewPages covers the double-count: existing mappings are held
+// in one map and every mapped page seen in the bundle was also recorded in another, so adding the two
+// lengths counted those pages twice — blocking valid creates and making the result depend on bundle order.
+func TestImportPreflight_MappingCapacityCountsOnlyNewPages(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, channelMember: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+	space := seedSpace(t, h.store, mmmodel.NewId())
+	sourceID, mapped := seedImportSourceWithMapping(t, h, space, importfixture.RootExternalID, "", "")
+	require.NotNil(t, mapped)
+
+	// Sit the source just under its cap, with the bundle's root among the mappings. Before the fix, the
+	// mapped root was counted twice and the two new pages were blocked as over capacity.
+	_, err := h.db.Exec(
+		`INSERT INTO DOCS_ImportEntity
+		   (ImportSourceId, EntityType, ExternalId, LocalId, LastSourceContentHash, LastAppliedContentHash,
+		    LastAppliedParentId, LastSourceParentExternalId, LastSourceTitle, LastSourceOrdinal,
+		    FirstJobId, LastSeenJobId, CreateAt, UpdateAt)
+		 SELECT $1, 'page', 'filler-' || g, 'flr' || lpad(g::text, 23, '0'), '', '', '', '', 'Filler', 0,
+		        $2, $2, 1, 1
+		   FROM generate_series(1, $3) AS g`,
+		sourceID, mmmodel.NewId(), model.ImportMaxMappingsPerSource-3)
+	require.NoError(t, err)
+
+	rec := h.uploadFixture(t, actorID, existingTargetRequest(space.Id), importfixture.Options{Pages: 3})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	jobID := decodeJobView(t, rec).Id
+	selected := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/source", actorID,
+		json.RawMessage(fmt.Sprintf(`{"mode":"existing","import_source_id":%q}`, sourceID)))
+	require.Equal(t, http.StatusAccepted, selected.Code, selected.Body.String())
+
+	h.drainImportWorker(t)
+
+	job, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateAwaitingConfirmation, job.State)
+	// 4998 existing mappings + 2 new pages = 5000, exactly the cap, so nothing is blocked.
+	require.Equal(t, 2, job.PreflightSummary.Actions.Create,
+		"a mapped page present in the bundle must not be counted twice against the mapping cap")
+	require.Zero(t, job.PreflightSummary.Actions.Blocked)
+}
+
+// TestImportPreflight_HashesTheEffectiveAuthorProposal covers the hash/resolution split. Inspection and
+// preflight must hash the same proposal author resolution will use, or changing a page's author leaves the
+// source hash untouched and the change is classified as "nothing to do".
+func TestImportPreflight_HashesTheEffectiveAuthorProposal(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+
+	// Two bundles differing only in the page-level author proposal. The fixture maps only the root page's
+	// account in its manifest, so pages beyond the root rely on the page fallback — exactly the case where a
+	// manifest-only hash is blind to the change.
+	first := h.uploadFixture(t, actorID, newTargetRequest(mmmodel.NewId()), importfixture.Options{Pages: 2})
+	require.Equal(t, http.StatusCreated, first.Code, first.Body.String())
+	firstID := decodeJobView(t, first).Id
+	h.drainImportWorker(t)
+
+	second := h.uploadFixture(t, actorID, newTargetRequest(mmmodel.NewId()),
+		importfixture.Options{Pages: 2, AuthorUsernameOverride: "someone-else"})
+	require.Equal(t, http.StatusCreated, second.Code, second.Body.String())
+	secondID := decodeJobView(t, second).Id
+	h.drainImportWorker(t)
+
+	readHash := func(jobID, externalID string) string {
+		var hash string
+		require.NoError(t, h.db.QueryRow(
+			`SELECT IncomingSourceContentHash FROM DOCS_ImportStagedPage WHERE JobId = $1 AND ExternalId = $2`,
+			jobID, externalID).Scan(&hash))
+		require.Len(t, hash, 64)
+		return hash
+	}
+	require.NotEqual(t, readHash(firstID, "101"), readHash(secondID, "101"),
+		"changing the author a page resolves through must change its source-content hash")
+}

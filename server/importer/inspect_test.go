@@ -831,3 +831,73 @@ func TestInspect_ValidatesSpaceDisplayText(t *testing.T) {
 		}
 	})
 }
+
+// TestInspect_BoundsSourceProps covers the size of the allowlisted source props. Their shape was validated
+// but not their serialized size, so a bundle that satisfies the contract could still exceed the JSONB and
+// page-props limits — surfacing as a server error during staging rather than as a refused bundle.
+func TestInspect_BoundsSourceProps(t *testing.T) {
+	pageWithLabels := func(labels []any) string {
+		props := map[string]any{
+			"import_source_id":             "100",
+			"import_source":                "confluence",
+			"confluence_space_key":         "DOCS",
+			"confluence_author_account_id": "aaid-100",
+			"import_labels":                labels,
+		}
+		page := map[string]any{
+			"type": "page",
+			"page": map[string]any{
+				"space_import_source_id": "DOCS",
+				"user":                   "jdoe",
+				"title":                  "Root",
+				"content":                docString("hi"),
+				"create_at":              1704106800000,
+				"props":                  props,
+			},
+		}
+		raw, err := json.Marshal(page)
+		if err != nil {
+			t.Fatalf("marshal page: %v", err)
+		}
+		return string(raw)
+	}
+	bundleWith := func(labels []any) *bundleBuilder {
+		jsonl := strings.Join([]string{versionLine(), spaceLine(), pageWithLabels(labels), resolveLine()}, "\n")
+		return newBundle(jsonl, baseManifest(1, 0, 0))
+	}
+
+	t.Run("props at the limit are accepted", func(t *testing.T) {
+		// One label just under the bound, leaving room for the JSON scaffolding around it.
+		labels := []any{strings.Repeat("l", MaxSourcePropsBytes-64)}
+		if _, err := bundleWith(labels).inspect(t, InspectOptions{}); err != nil {
+			t.Fatalf("props within the limit must be accepted: %v", err)
+		}
+	})
+
+	t.Run("oversized props are refused, not deferred to a column limit", func(t *testing.T) {
+		labels := make([]any, 0, 512)
+		for range 512 {
+			labels = append(labels, strings.Repeat("l", 128))
+		}
+		_, err := bundleWith(labels).inspect(t, InspectOptions{})
+		ie, ok := err.(*InspectError)
+		if !ok || ie.Code != InspectErrSourcePropsTooLarge {
+			t.Fatalf("err = %v, want %s", err, InspectErrSourcePropsTooLarge)
+		}
+	})
+}
+
+// TestEffectiveAuthorProposal pins the single definition both hashing and resolution use. Two definitions
+// let a real author change leave the source-content hash untouched, so the page reads as unchanged and the
+// new attribution is never applied.
+func TestEffectiveAuthorProposal(t *testing.T) {
+	if got := EffectiveAuthorProposal("from-manifest", "from-page"); got != "from-manifest" {
+		t.Errorf("manifest proposal must win, got %q", got)
+	}
+	if got := EffectiveAuthorProposal("", "from-page"); got != "from-page" {
+		t.Errorf("page proposal must be the fallback, got %q", got)
+	}
+	if got := EffectiveAuthorProposal("", ""); got != "" {
+		t.Errorf("no proposal must stay empty, got %q", got)
+	}
+}

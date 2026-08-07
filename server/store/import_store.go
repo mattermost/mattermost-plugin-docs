@@ -24,7 +24,8 @@ var importJobColumns = []string{
 	"TargetKind", "TargetSpaceId", "TargetSpaceExisted", "ConfirmedSpaceTitle", "ConfirmedSpaceDescription", "ProvisionedChannelId",
 	"SourceSelectionMode", "SelectedImportSourceId", "SelectedSourceDisplayName", "PreflightMappingRevision",
 	"State", "Phase", "TerminalIntent", "MappingInputsChanged", "InvalidationPending",
-	"ProgressCurrent", "ProgressTotal", "StagedBytes", "RetainedBytes", "RetainedIssueBytes", "RetainedReservedBytes",
+	"ProgressCurrent", "ProgressTotal", "StagedBytes", "RetainedBytes", "RetainedIssueBytes",
+	"PreflightRetainedBytes", "PreflightRetainedIssueBytes", "RetainedReservedBytes",
 	"BundleSha256", "BundleSummary", "PreflightSummary", "PreflightRevision", "Confirmation", "FinalSummary",
 	"ErrorCode", "ErrorMessage", "CancelRequestedAt",
 	"CreateAt", "UpdateAt", "ConfirmedAt", "StartedAt", "FinishedAt", "RetainUntil",
@@ -532,7 +533,8 @@ func (s *Store) insertImportJob(tx sqlx.ExtContext, job *model.ImportJob) error 
 			string(job.TargetKind), job.TargetSpaceId, job.TargetSpaceExisted, job.ConfirmedSpaceTitle, job.ConfirmedSpaceDescription, job.ProvisionedChannelId,
 			string(job.SourceSelectionMode), job.SelectedImportSourceId, job.SelectedSourceDisplayName, job.PreflightMappingRevision,
 			string(job.State), string(job.Phase), string(job.TerminalIntent), job.MappingInputsChanged, job.InvalidationPending,
-			job.ProgressCurrent, job.ProgressTotal, job.StagedBytes, job.RetainedBytes, job.RetainedIssueBytes, job.RetainedReservedBytes,
+			job.ProgressCurrent, job.ProgressTotal, job.StagedBytes, job.RetainedBytes, job.RetainedIssueBytes,
+			job.PreflightRetainedBytes, job.PreflightRetainedIssueBytes, job.RetainedReservedBytes,
 			job.BundleSha256, job.BundleSummary, job.PreflightSummary, job.PreflightRevision, job.Confirmation, job.FinalSummary,
 			job.ErrorCode, job.ErrorMessage, job.CancelRequestedAt,
 			job.CreateAt, job.UpdateAt, job.ConfirmedAt, job.StartedAt, job.FinishedAt, job.RetainUntil,
@@ -828,17 +830,23 @@ var _ ImportStagingWriter = (*importStagingWriter)(nil)
 
 // --- cancellation, expiry, and capacity release ---
 
-// cancelableImportStates are the pre-execution states a job may be canceled from today. None of them
-// can have written a page, so cancellation never has to undo work — but it does still have to record
-// what the bundle contained before it throws the staged rows away.
+// cancelableImportStates are the pre-execution states a job may be canceled from today. None of them can
+// have written a page, so cancellation never has to undo work — but it does still have to record what the
+// bundle contained before it throws the staged rows away.
 //
-// Once execution states exist, cancellation instead routes through terminalizing so the terminalizer
-// can also reconcile partially applied pages; this method deliberately refuses those states rather
-// than short-circuiting that reconciliation.
+// queued_import is included even though the user has already confirmed: until execution exists a confirmed
+// job simply waits, and a state that can neither advance nor be canceled would hold its staged bytes and
+// its slot until an operator intervened. Cancelling one is safe precisely because nothing has been written
+// yet.
+//
+// Once execution states exist, cancellation from importing instead routes through terminalizing so the
+// terminalizer can reconcile partially applied pages; this method deliberately refuses that state rather
+// than short-circuiting the reconciliation.
 var cancelableImportStates = []string{
 	string(model.ImportStateAwaitingSource),
 	string(model.ImportStateQueuedPreflight),
 	string(model.ImportStateAwaitingConfirmation),
+	string(model.ImportStateQueuedImport),
 }
 
 // CancelImportJob transitions a pre-execution job to canceled: it records a durable not-attempted
@@ -877,14 +885,80 @@ func (s *Store) CancelImportJob(jobID, actorID, errorCode string) (_ *model.Impo
 	}
 
 	now := mmmodel.GetMillis()
-	previousState := job.State
+	if err = s.finishImportJob(tx, &job, model.ImportIntentCanceled, errorCode, now); err != nil {
+		return nil, err
+	}
+	job.CancelRequestedAt = now
+	if err = tx.Commit(); err != nil {
+		return nil, errors.Wrap(err, "commit_transaction")
+	}
+	return &job, nil
+}
 
-	// Record the durable outcomes first: releaseStagedBytes deletes the staged rows, and with them the
-	// only record of which pages the bundle contained. Every staged page must have a terminal outcome
-	// before the job becomes terminal, so this cannot be deferred to a later sweep.
-	outcomes, err := s.recordNotAttemptedOutcomes(tx, &job, errorCode, now)
+// TerminalizeImportJob completes a job sitting in terminalizing, honouring the intent recorded when it
+// entered that state.
+//
+// Terminalization is worker work rather than part of the transition that decided the outcome, because the
+// durable report has to be written before the job is terminal: a crash mid-way must resume, not leave a
+// terminal job with an empty report. It is idempotent — outcomes are inserted only for entities that have
+// none — so a restart re-runs it safely.
+func (s *Store) TerminalizeImportJob(jobID string) (_ *model.ImportJob, err error) {
+	tx, err := s.db.Beginx()
+	if err != nil {
+		return nil, errors.Wrap(err, "begin_transaction")
+	}
+	defer s.finalizeTransaction(tx, &err)
+
+	job, err := s.lockImportJobForActor(tx, jobID, "")
 	if err != nil {
 		return nil, err
+	}
+	if job.State != model.ImportStateTerminalizing {
+		return nil, &ErrConflict{Resource: "ImportJob state=" + string(job.State)}
+	}
+	if job.TerminalIntent == model.ImportIntentNone {
+		// The state machine sets the intent in the same transaction that enters terminalizing, so an
+		// intentless job here is a corrupted row rather than a race. Failing loudly beats inventing one.
+		return nil, &ErrInvalidInput{Entity: "ImportJob", Field: "TerminalIntent", Value: ""}
+	}
+
+	now := mmmodel.GetMillis()
+	if err = s.finishImportJob(tx, job, job.TerminalIntent, job.ErrorCode, now); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, errors.Wrap(err, "commit_transaction")
+	}
+	return job, nil
+}
+
+// finishImportJob is the one path from "this job is over" to a terminal state, shared by cancellation and
+// worker terminalization. It records a durable outcome for every entity, writes the final summary, releases
+// the staged reservation, and trues up the retained one — all in the caller's transaction, so capacity is
+// never lost to a half-applied finish and a terminal job's report can always say which pages it held.
+//
+// The job value is updated in place to mirror every column written, so the caller returns what a
+// subsequent read would return rather than a half-stale copy. UpdateAt reproduces monotonicBump's
+// GREATEST(UpdateAt+1, now) exactly, which is why it needs no re-read.
+func (s *Store) finishImportJob(
+	tx sqlx.ExtContext,
+	job *model.ImportJob,
+	intent model.ImportTerminalIntent,
+	errorCode string,
+	now int64,
+) error {
+	previousState := job.State
+
+	// Record the durable outcomes first: releaseStagedBytes deletes the staged rows, and with them the only
+	// record of which pages the bundle contained. Every staged page must have a terminal outcome before the
+	// job becomes terminal, so this cannot be deferred to a later sweep.
+	outcome := model.ImportOutcomeNotAttemptedCancel
+	if intent == model.ImportIntentFailed {
+		outcome = model.ImportOutcomeNotAttemptedFailure
+	}
+	outcomes, err := s.recordNotAttemptedOutcomes(tx, job, outcome, errorCode, now)
+	if err != nil {
+		return err
 	}
 	finalSummary := model.ImportFinalSummary{
 		Manifest: job.BundleSummary.Counts,
@@ -894,63 +968,85 @@ func (s *Store) CancelImportJob(jobID, actorID, errorCode string) (_ *model.Impo
 		},
 	}
 	if total := outcomes.pages + outcomes.stale; total > 0 {
-		finalSummary.Outcomes = map[string]int{string(model.ImportOutcomeNotAttemptedCancel): total}
+		finalSummary.Outcomes = map[string]int{string(outcome): total}
 	}
 	// Charge the summary before the reservation is trued up: it is durable JSONB bounded at
 	// ImportSummaryMaxBytes, so leaving it uncounted would understate what the job permanently holds by
 	// exactly the amount the accounting is meant to track.
 	finalSummaryBytes, err := summaryByteLen(finalSummary)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	job.RetainedBytes += finalSummaryBytes
 
-	if err = s.releaseStagedBytes(tx, &job, now); err != nil {
-		return nil, err
+	if err = s.releaseStagedBytes(tx, job, now); err != nil {
+		return err
+	}
+	// Trueing up the retained reservation is what keeps finishing a job from trading a fast capacity leak
+	// for a slow one: the job keeps only what it actually retained, so it no longer holds a whole
+	// execution's worth of budget for the ninety-day retention window.
+	if err = s.finalizeRetainedReservation(tx, job, now); err != nil {
+		return err
 	}
 
-	// Trueing up the retained reservation is what keeps cancellation from trading a fast capacity leak
-	// for a slow one: the job keeps only what it actually retained, so a canceled job no longer holds a
-	// whole execution's worth of budget for the ninety-day retention window.
-	if err = s.finalizeRetainedReservation(tx, &job, now); err != nil {
-		return nil, err
+	finalState, err := s.terminalStateFor(tx, job.Id, intent)
+	if err != nil {
+		return err
 	}
-
 	updateBuilder := s.getQueryBuilder().
 		Update("DOCS_ImportJob").
-		Set("State", string(model.ImportStateCanceled)).
-		Set("TerminalIntent", string(model.ImportIntentCanceled)).
+		Set("State", string(finalState)).
+		Set("TerminalIntent", string(intent)).
 		Set("ErrorCode", errorCode).
 		Set("FinalSummary", finalSummary).
-		Set("CancelRequestedAt", now).
 		Set("FinishedAt", now).
 		Set("UpdateAt", monotonicBump("UpdateAt", now)).
 		Set("RetainUntil", now+importTerminalRetentionMillis).
-		Where(sq.Eq{"Id": jobID, "State": string(previousState)})
+		Where(sq.Eq{"Id": job.Id, "State": string(previousState)})
+	if intent == model.ImportIntentCanceled {
+		updateBuilder = updateBuilder.Set("CancelRequestedAt", now)
+	}
 	result, err := s.execBuilder(tx, updateBuilder)
 	if err != nil {
-		return nil, errors.Wrap(err, "unable_to_cancel_import_job")
+		return errors.Wrap(err, "unable_to_finish_import_job")
 	}
-	if err = checkRowsAffected(result, "ImportJob", jobID); err != nil {
-		return nil, err
-	}
-	if err = tx.Commit(); err != nil {
-		return nil, errors.Wrap(err, "commit_transaction")
+	if err = checkRowsAffected(result, "ImportJob", job.Id); err != nil {
+		return err
 	}
 
-	// Mirror every column the statement above wrote, so the returned job is what a subsequent read would
-	// return rather than a half-stale copy. UpdateAt reproduces monotonicBump's GREATEST(UpdateAt+1, now)
-	// exactly, which is why it can be computed here instead of costing a re-read.
-	job.State = model.ImportStateCanceled
-	job.TerminalIntent = model.ImportIntentCanceled
+	job.State = finalState
+	job.TerminalIntent = intent
 	job.ErrorCode = errorCode
 	job.FinalSummary = finalSummary
-	job.CancelRequestedAt = now
 	job.FinishedAt = now
 	job.UpdateAt = max(job.UpdateAt+1, now)
 	job.RetainUntil = now + importTerminalRetentionMillis
 	job.StagedBytes = 0
-	return &job, nil
+	return nil
+}
+
+// terminalStateFor maps a terminal intent onto the state the job lands in. A completed job that recorded
+// any error-severity finding lands in completed_with_issues rather than completed, so "it worked" never
+// hides a page that did not. Must be called inside tx.
+func (s *Store) terminalStateFor(tx sqlx.ExtContext, jobID string, intent model.ImportTerminalIntent) (model.ImportJobState, error) {
+	switch intent {
+	case model.ImportIntentCanceled:
+		return model.ImportStateCanceled, nil
+	case model.ImportIntentFailed:
+		return model.ImportStateFailed, nil
+	}
+	var errorIssues int
+	builder := s.getQueryBuilder().
+		Select("COUNT(*)").
+		From("DOCS_ImportIssue").
+		Where(sq.Eq{"JobId": jobID, "Severity": string(model.ImportSeverityError)})
+	if err := s.getBuilder(tx, &errorIssues, builder); err != nil {
+		return "", errors.Wrap(err, "unable_to_count_import_error_issues")
+	}
+	if errorIssues > 0 {
+		return model.ImportStateCompletedWithIssues, nil
+	}
+	return model.ImportStateCompleted, nil
 }
 
 // importResultColumns are the DOCS_ImportResult columns, in insert order.
@@ -987,8 +1083,8 @@ type importOutcomeCounts struct {
 // has a preflight result but no staged page, and would otherwise reach a terminal state with a plan and
 // no outcome. Preflight rows are the authority for those: they are what preflight actually decided,
 // rather than a guess reconstructed from the mapping table.
-func (s *Store) recordNotAttemptedOutcomes(tx sqlx.ExtContext, job *model.ImportJob, errorCode string, now int64) (importOutcomeCounts, error) {
-	details := mmmodel.StringInterface{"canceled_from_state": string(job.State)}
+func (s *Store) recordNotAttemptedOutcomes(tx sqlx.ExtContext, job *model.ImportJob, outcome model.ImportOutcome, errorCode string, now int64) (importOutcomeCounts, error) {
+	details := mmmodel.StringInterface{"finished_from_state": string(job.State)}
 	if errorCode != "" {
 		details["reason"] = errorCode
 	}
@@ -998,11 +1094,19 @@ func (s *Store) recordNotAttemptedOutcomes(tx sqlx.ExtContext, job *model.Import
 	}
 
 	var counts importOutcomeCounts
-	// Staged pages first: their ordinals are the execution stage's own key range.
+	// Staged pages first: their ordinals are the execution stage's own key range. The anti-join is what
+	// makes terminalization idempotent — a page that already has an execution result keeps it, so a restart
+	// mid-terminalization resumes instead of colliding with its own earlier rows, and a partially executed
+	// job never has a real outcome overwritten by "not attempted".
 	stagedPages := s.getQueryBuilder().
 		Select("Ordinal", "ExternalId", "Title", "PlannedAction").
-		From("DOCS_ImportStagedPage")
-	counts.pages, err = s.recordOutcomesFrom(tx, job, stagedPages, details, detailsBytes, now)
+		From("DOCS_ImportStagedPage").
+		Where(`NOT EXISTS (
+			SELECT 1 FROM DOCS_ImportResult x
+			WHERE x.JobId = DOCS_ImportStagedPage.JobId AND x.Stage = 'execution'
+			  AND x.Ordinal = DOCS_ImportStagedPage.Ordinal
+		)`)
+	counts.pages, err = s.recordOutcomesFrom(tx, job, stagedPages, outcome, details, detailsBytes, now)
 	if err != nil {
 		return counts, err
 	}
@@ -1015,8 +1119,12 @@ func (s *Store) recordNotAttemptedOutcomes(tx sqlx.ExtContext, job *model.Import
 		Where(sq.Eq{"r.Stage": string(model.ImportStagePreflight)}).
 		Where(`NOT EXISTS (
 			SELECT 1 FROM DOCS_ImportStagedPage p WHERE p.JobId = r.JobId AND p.Ordinal = r.Ordinal
+		)`).
+		Where(`NOT EXISTS (
+			SELECT 1 FROM DOCS_ImportResult x
+			WHERE x.JobId = r.JobId AND x.Stage = 'execution' AND x.Ordinal = r.Ordinal
 		)`)
-	counts.stale, err = s.recordOutcomesFrom(tx, job, preflightOnly, details, detailsBytes, now)
+	counts.stale, err = s.recordOutcomesFrom(tx, job, preflightOnly, outcome, details, detailsBytes, now)
 	return counts, err
 }
 
@@ -1027,6 +1135,7 @@ func (s *Store) recordOutcomesFrom(
 	tx sqlx.ExtContext,
 	job *model.ImportJob,
 	source sq.SelectBuilder,
+	outcome model.ImportOutcome,
 	details mmmodel.StringInterface,
 	detailsBytes int,
 	now int64,
@@ -1055,7 +1164,7 @@ func (s *Store) recordOutcomesFrom(
 				Title:         e.Title,
 				PlannedAction: model.ImportAction(e.PlannedAction),
 				ActualAction:  model.ImportActionNotAttempted,
-				Outcome:       model.ImportOutcomeNotAttemptedCancel,
+				Outcome:       outcome,
 				Details:       details,
 				CreateAt:      now,
 				UpdateAt:      now,

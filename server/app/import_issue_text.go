@@ -27,7 +27,8 @@ func preflightIssueSeverity(code string) model.ImportIssueSeverity {
 		importer.IssueParentMappingMissing,
 		importer.IssueTargetSiblingCapacityExceeded,
 		importer.IssueTargetDepthExceeded,
-		importer.IssueMappingCapacityExceeded:
+		importer.IssueMappingCapacityExceeded,
+		importer.IssueParentBlocked:
 		return model.ImportSeverityError
 	case importer.IssueSourceAndLocalConflict,
 		importer.IssueLocalChangesPreserved,
@@ -66,10 +67,14 @@ func preflightIssueMessage(code string) string {
 		return "Importing these pages would exceed the maximum number of pages allowed directly under one parent."
 	case importer.IssueTargetDepthExceeded:
 		return "Importing this page would nest it deeper than Mattermost allows."
+	case importer.IssueParentBlocked:
+		return "This page is skipped because the page it would be nested under is itself being skipped."
 	case importer.IssueMappingCapacityExceeded:
 		return "This import source already tracks the maximum number of pages, so no further pages can be adopted into it."
 	case importer.IssueAuthorFallbackToActor:
 		return "The original Confluence author could not be matched to an active Mattermost user, so the page is attributed to you."
+	case importer.IssueReportTruncated:
+		return "This import produced more findings than the report can store, so the remaining per-page findings are omitted. Every page still has a recorded outcome."
 	default:
 		return "The importer recorded a finding for this page."
 	}
@@ -101,10 +106,14 @@ func preflightIssueRemediation(code string) string {
 		return "Move some existing pages out from under that parent, or split the import into smaller bundles."
 	case importer.IssueTargetDepthExceeded:
 		return "Import under a shallower parent, or flatten the page hierarchy in Confluence."
+	case importer.IssueParentBlocked:
+		return "Resolve the finding on the parent page and import again; this page will then be created with it."
 	case importer.IssueMappingCapacityExceeded:
 		return "Import the remaining pages as a separate import source, so each source stays within its limit."
 	case importer.IssueAuthorFallbackToActor:
 		return "Create or activate a Mattermost account for that Confluence user and include the mapping in the export to attribute future imports correctly."
+	case importer.IssueReportTruncated:
+		return "Review the per-page outcomes directly, or split the import into smaller bundles to get a complete list of findings."
 	default:
 		return "No action needed."
 	}

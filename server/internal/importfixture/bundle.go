@@ -42,6 +42,14 @@ const RootExternalID = "100"
 // lookup for it to exercise successful author resolution.
 const AuthorUsername = "jdoe"
 
+// pageAuthorUsername is the per-page author proposal, which AuthorUsernameOverride may replace.
+func pageAuthorUsername(o Options) string {
+	if o.AuthorUsernameOverride != "" {
+		return o.AuthorUsernameOverride
+	}
+	return AuthorUsername
+}
+
 // Options controls the generated bundle.
 type Options struct {
 	// Pages is how many pages to emit; the first is the root and the rest are its children (or, under
@@ -59,6 +67,13 @@ type Options struct {
 	// WithFindings also emits a comment, an attachment record (plus its data/ payload), a restricted
 	// page, a manifest-only restricted entry, and a manifest warning, so inspection reports issues.
 	WithFindings bool
+	// AuthorUsernameOverride replaces the per-page author proposal (each page's user field) without touching
+	// the manifest's account mapping, which is how a test exercises the page-level author fallback.
+	AuthorUsernameOverride string
+	// Chain emits the pages as a single parent-to-child chain instead of a root with flat children. The
+	// bundle stays within the importer's depth limit, so it is the shape to use when the *target's* existing
+	// depth is what a test needs to push a projection over the edge.
+	Chain bool
 	// Corrupt is one of the Corrupt* modes.
 	Corrupt string
 }
@@ -195,7 +210,7 @@ func buildLines(o Options) ([]string, lineCounts, []map[string]any, error) {
 	}
 	lines = append(lines, versionLine, spaceLine)
 
-	chain := o.Corrupt == CorruptDeepHierarchy
+	chain := o.Chain || o.Corrupt == CorruptDeepHierarchy
 	prevID := ""
 	for i := 0; i < o.Pages; i++ {
 		id := strconv.Itoa(100 + i)
@@ -224,7 +239,7 @@ func buildLines(o Options) ([]string, lineCounts, []map[string]any, error) {
 		page := map[string]any{
 			"team":                   o.Team,
 			"space_import_source_id": o.SpaceKey,
-			"user":                   AuthorUsername,
+			"user":                   pageAuthorUsername(o),
 			"title":                  title,
 			"content":                content,
 			"create_at":              1704106800000 + int64(i)*1000,

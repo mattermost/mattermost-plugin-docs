@@ -162,8 +162,20 @@ const (
 	InspectErrTooManyManifestUsers = "manifest_too_many_users"
 	InspectErrUnstorableText       = "unstorable_text"
 	InspectErrSourcePropShape      = "source_prop_invalid_shape"
+	InspectErrSourcePropsTooLarge  = "source_props_too_large"
 	InspectErrHash                 = "hash_failed"
 )
+
+// manifestUsernameProposals indexes the manifest's user mappings by Confluence account id. Duplicate
+// account ids are already rejected during manifest-user emission, so the last write can only be a repeat
+// of the same value.
+func manifestUsernameProposals(manifest *Manifest) map[string]string {
+	out := make(map[string]string, len(manifest.Users))
+	for _, u := range manifest.Users {
+		out[u.AccountID] = u.MattermostUsername
+	}
+	return out
+}
 
 // Inspection issue severities, mirroring the persisted enumeration.
 const (
@@ -583,6 +595,11 @@ type streamParser struct {
 	sink     StreamSink
 	summary  *InspectionSummary
 
+	// manifestProposals maps a Confluence account id to the manifest's proposed Mattermost username, so
+	// the page hash covers the same proposal author resolution will later prefer. Built once from the
+	// manifest rather than looked up per page.
+	manifestProposals map[string]string
+
 	state parseState
 	// depthOf gives each emitted page's depth (root = 1). Because a parent must appear before its
 	// child, a child's depth is derived from its parent's in one step, so the limit is enforced as
@@ -612,10 +629,11 @@ func streamJSONL(a *Archive, manifest *Manifest, opts InspectOptions, sink Strea
 
 	p := &streamParser{
 		manifest: manifest, opts: opts, sink: sink, summary: summary,
-		depthOf:        make(map[string]int),
-		siblingCounter: make(map[string]int),
-		commentIDs:     make(map[string]struct{}),
-		teamValues:     make(map[string]struct{}),
+		depthOf:           make(map[string]int),
+		siblingCounter:    make(map[string]int),
+		commentIDs:        make(map[string]struct{}),
+		teamValues:        make(map[string]struct{}),
+		manifestProposals: manifestUsernameProposals(manifest),
 	}
 	// The manifest's advisory target team is compared alongside the per-line values, so a mismatch
 	// declared only in the manifest is still surfaced.
@@ -875,11 +893,15 @@ func (p *streamParser) handlePageLine(page *PageData, lineNo int, restricted map
 		return inspectErr(InspectErrUnstorableText, "line %d: page %q user proposal contains invalid UTF-8 or a NUL character", lineNo, externalID)
 	}
 
+	// The effective proposal is what author resolution will actually use, so it is what the hash must
+	// cover: hashing the page's own field while resolution prefers the manifest's would let a real author
+	// change leave the hash untouched.
+	effectiveProposal := EffectiveAuthorProposal(p.manifestProposals[authorAccountID], userProposal)
 	incomingHash, hErr := HashSourceContent(SourceContentHashInput{
 		Title:           title,
 		CanonicalBody:   canonicalBody,
 		AuthorAccountID: authorAccountID,
-		AuthorProposal:  userProposal,
+		AuthorProposal:  effectiveProposal,
 		SourceCreateAt:  sourceCreateAt,
 		SourceUpdateAt:  int64OrZero(page.UpdateAt),
 		SourceProps:     sourceProps,
@@ -1082,6 +1104,17 @@ func allowlistSourceProps(props map[string]any, externalID string, lineNo int) (
 			}
 		}
 		out[key] = v
+	}
+	// Bound the serialized form, not just the shape. These props are persisted twice — once as staged
+	// input and again inside the page's own Props — so an unbounded value that passes shape validation
+	// would be rejected only by a column limit, arriving as a server error rather than a refused bundle.
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		return nil, inspectErr(InspectErrSourcePropShape, "line %d: page %q source props cannot be serialized: %v", lineNo, externalID, err)
+	}
+	if len(encoded) > MaxSourcePropsBytes {
+		return nil, inspectErr(InspectErrSourcePropsTooLarge,
+			"line %d: page %q source props are %d bytes, limit is %d", lineNo, externalID, len(encoded), MaxSourcePropsBytes)
 	}
 	return out, nil
 }

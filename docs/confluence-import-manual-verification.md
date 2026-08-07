@@ -277,7 +277,21 @@ curl -sS -X POST "$API/imports/$JOB/confirm" -H "$AUTH" -H 'Content-Type: applic
 }' | jq '{state}'
 ```
 
-Expect `202` and `state: "queued_import"`. The job stops there in this release.
+Expect `202` and `state: "queued_import"`. The job stops there in this release — and, importantly, stops
+there *without blocking anything else*: work selection only offers the worker states it can advance, so a
+confirmed job waiting for execution never starves later preflights. A `queued_import` job is also
+cancelable, so it does not hold its staged bytes and its per-user slot until an operator intervenes.
+
+A preflight that cannot complete — say its selected source was deleted underneath it — records a terminal
+intent and is finished by the worker rather than parked:
+
+```bash
+curl -sS "$API/imports/$JOB" -H "$AUTH" | jq '{state, error, final}'
+```
+
+Expect `state: "failed"`, `error.code: "selected_source_missing"`, and a populated `final` summary: every
+staged page carries a durable `not_attempted_failed` outcome. Terminalization is idempotent, so a process
+killed mid-way resumes and completes rather than duplicating outcomes.
 
 Rejections worth exercising, all before the point of no return:
 
@@ -423,8 +437,11 @@ Import preflight discarded: source mappings changed during computation  job_id=�
 
 ```sql
 SELECT State, TerminalIntent, ErrorCode, TargetKind, ProgressTotal, StagedBytes,
-       RetainedBytes, RetainedIssueBytes, RetainedReservedBytes
+       RetainedBytes, RetainedIssueBytes, PreflightRetainedBytes, RetainedReservedBytes
   FROM DOCS_ImportJob;
+-- A published plan is charged against retained storage, and republishing replaces that charge rather than
+-- adding to it: PreflightRetainedBytes is what the current plan costs, so a recompute cannot double-count
+-- the plan it replaced or lose it entirely.
 SELECT COUNT(*) FROM DOCS_ImportStagedPage WHERE JobId = '<job id>';
 SELECT Ordinal, SourceLine, ExternalId, Restricted FROM DOCS_ImportStagedPage
   WHERE JobId = '<job id>' ORDER BY Ordinal;

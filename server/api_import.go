@@ -71,9 +71,10 @@ func (p *Plugin) handleCreateImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uploadRequest, appErr := decodeImportRequestPart(requestPart)
-	// The request part is bounded at MaxRequestPartBytes and has just been read, so closing it drains
-	// at most that much.
-	_ = requestPart.Close()
+	// Deliberately not Close(): the decoder reads only MaxRequestPartBytes+1 bytes, so an oversized part is
+	// intentionally left unread — and Close would drain the remainder, letting a caller push most of the
+	// 250 MiB body limit through this part before authorization has even run. See abandonPart.
+	abandonPart(requestPart)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return
