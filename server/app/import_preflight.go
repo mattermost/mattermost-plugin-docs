@@ -230,6 +230,8 @@ func (s *Service) computeImportPreflight(job *model.ImportJob, mappingRevision i
 				LastAppliedParentID:        e.LastAppliedParentId,
 				LastSourceParentExternalID: e.LastSourceParentExternalId,
 				LastSourceOrdinal:          e.LastSourceOrdinal,
+				LastSourceTitle:            e.LastSourceTitle,
+				UpdateAt:                   e.UpdateAt,
 			}
 		}
 	}
@@ -485,6 +487,10 @@ func (st *preflightState) recordPlan(
 	if mapping != nil {
 		plan.PreflightMappingContentHash = mapping.LastAppliedContentHash
 		plan.PreflightMappingParentId = mapping.LastAppliedParentID
+		// The mapping's own UpdateAt is recorded so an approved overwrite can be refused when another import
+		// has touched this page since review — a change the content hashes alone cannot reveal, because
+		// re-applying identical content leaves them equal.
+		plan.PreflightMappingUpdateAt = mapping.UpdateAt
 	}
 	st.plans = append(st.plans, plan)
 }
@@ -569,14 +575,14 @@ func (st *preflightState) recordIssues(page *model.ImportStagedPage, classificat
 			JobId:       st.job.Id,
 			Stage:       model.ImportStagePreflight,
 			Ordinal:     page.Ordinal*model.ImportIssuesPerPage + i,
-			Severity:    preflightIssueSeverity(code),
+			Severity:    importer.IssueSeverity(code),
 			Code:        code,
 			EntityType:  model.ImportEntityTypePage,
 			ExternalId:  page.ExternalId,
 			LocalId:     classification.LocalID,
 			Title:       page.Title,
-			Message:     preflightIssueMessage(code),
-			Remediation: preflightIssueRemediation(code),
+			Message:     importer.IssueMessage(code),
+			Remediation: importer.IssueRemediation(code),
 			Details:     issueDetails(code, author),
 		})
 		st.issueBytes += estimateIssueRowBytes(code)
@@ -602,8 +608,8 @@ func (st *preflightState) truncateIssues(dropped int) {
 		Ordinal:     model.ImportJobIssueOrdinalBase - 1,
 		Severity:    model.ImportSeverityWarning,
 		Code:        importer.IssueReportTruncated,
-		Message:     preflightIssueMessage(importer.IssueReportTruncated),
-		Remediation: preflightIssueRemediation(importer.IssueReportTruncated),
+		Message:     importer.IssueMessage(importer.IssueReportTruncated),
+		Remediation: importer.IssueRemediation(importer.IssueReportTruncated),
 	})
 }
 
@@ -611,7 +617,7 @@ func (st *preflightState) truncateIssues(dropped int) {
 // shape the store charges at publication, built from the text this code will carry, so the budget the plan
 // spends here and the bytes the store records cannot drift apart by more than the small fixed overhead.
 func estimateIssueRowBytes(code string) int64 {
-	return int64(len(code) + len(preflightIssueMessage(code)) + len(preflightIssueRemediation(code)) +
+	return int64(len(code) + len(importer.IssueMessage(code)) + len(importer.IssueRemediation(code)) +
 		model.ImportExternalIDMaxBytes)
 }
 
@@ -684,8 +690,8 @@ func (s *Service) appendStaleResults(st *preflightState) {
 			ExternalId:  externalID,
 			LocalId:     mapping.LocalID,
 			Title:       mapping.LastSourceTitle,
-			Message:     preflightIssueMessage(importer.IssueSourcePageStale),
-			Remediation: preflightIssueRemediation(importer.IssueSourcePageStale),
+			Message:     importer.IssueMessage(importer.IssueSourcePageStale),
+			Remediation: importer.IssueRemediation(importer.IssueSourcePageStale),
 		})
 		st.actions.Stale++
 	}
@@ -802,8 +808,8 @@ func (s *Service) applyProjectionBlocks(st *preflightState, blocks map[int]strin
 			EntityType:  model.ImportEntityTypePage,
 			ExternalId:  result.ExternalId,
 			Title:       result.Title,
-			Message:     preflightIssueMessage(code),
-			Remediation: preflightIssueRemediation(code),
+			Message:     importer.IssueMessage(code),
+			Remediation: importer.IssueRemediation(code),
 		})
 	}
 	return nil

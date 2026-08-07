@@ -44,17 +44,26 @@ func (s *Service) CancelImportJob(jobID, actorID string) (*model.ImportJobView, 
 		return nil, mmmodel.NewAppError("CancelImportJob", "app.import.cancel.already_terminal.app_error", nil, "", http.StatusConflict)
 	}
 
-	canceled, err := s.store.CancelImportJob(jobID, actorID, ImportErrorCanceledByUser)
+	canceled, immediate, err := s.store.CancelImportJob(jobID, actorID, ImportErrorCanceledByUser)
 	if err != nil {
 		return nil, storeAppError("CancelImportJob", err)
 	}
 
-	s.log.Info("Import canceled by user",
-		"job_id", canceled.Id, "actor_id", actorID, "team_id", canceled.TeamId,
-		"target_space_id", canceled.TargetSpaceId, "previous_state", string(job.State),
-		"released_staged_bytes", job.StagedBytes,
-		"released_retained_bytes", job.RetainedReservedBytes-canceled.RetainedReservedBytes,
-		"not_attempted_pages", canceled.FinalSummary.Actions.NotAttempted)
+	if immediate {
+		s.log.Info("Import canceled by user",
+			"job_id", canceled.Id, "actor_id", actorID, "team_id", canceled.TeamId,
+			"target_space_id", canceled.TargetSpaceId, "previous_state", string(job.State),
+			"released_staged_bytes", job.StagedBytes,
+			"released_retained_bytes", job.RetainedReservedBytes-canceled.RetainedReservedBytes,
+			"not_attempted_pages", canceled.FinalSummary.Actions.NotAttempted)
+	} else {
+		// The job had reached a state that may already have written pages, so it goes to the terminalizer
+		// rather than straight to canceled: committed work must be reconciled and reported, and an unattached
+		// backing channel compensated, before any final report is published.
+		s.log.Info("Import cancellation requested; the job is terminalizing",
+			"job_id", canceled.Id, "actor_id", actorID, "team_id", canceled.TeamId,
+			"target_space_id", canceled.TargetSpaceId, "previous_state", string(job.State))
+	}
 
 	// Owning a job authorizes cancelling it, but it does not authorize reading the target. An actor who
 	// has lost Space access gets the same minimal projection GET returns — otherwise cancelling would be
@@ -96,6 +105,10 @@ func (s *Service) RunImportWork() (bool, error) {
 	switch job.State {
 	case model.ImportStateTerminalizing:
 		return true, s.RunImportTerminalization(job.Id)
+	case model.ImportStateQueuedImport, model.ImportStateImporting:
+		// One call covers both: starting a confirmed job and resuming one interrupted mid-flight are the same
+		// operation, because execution is driven entirely by which pages already have committed checkpoints.
+		return true, s.RunImportExecution(job.Id)
 	case model.ImportStateQueuedPreflight:
 		return true, s.RunImportPreflight(job.Id)
 	case model.ImportStatePreflighting:
@@ -118,10 +131,23 @@ func (s *Service) RunImportWork() (bool, error) {
 // moving it to a terminal state.
 //
 // It is a worker step rather than part of the transition that decided the outcome so that a crash between
-// the two resumes here instead of leaving a terminal job with no report. The store call is idempotent, so
+// the two resumes here instead of leaving a terminal job with no report. Every write is idempotent, so
 // re-running it after an interruption completes the job rather than duplicating outcomes.
+//
+// Compensation runs first and outside the transaction, because archiving a channel is an external call. Its
+// result is passed in so the report can state what happened either way: a channel that could not be archived
+// becomes an operator-actionable finding rather than a silent orphan.
 func (s *Service) RunImportTerminalization(jobID string) error {
-	finished, err := s.store.TerminalizeImportJob(jobID)
+	job, err := s.store.GetImportJob(jobID)
+	if err != nil {
+		if store.IsErrNotFound(err) {
+			return nil
+		}
+		return errors.Wrap(err, "load terminalizing import job")
+	}
+	compensations := s.compensateImportChannels(job)
+
+	finished, err := s.store.TerminalizeImportJob(jobID, compensations)
 	if err != nil {
 		if store.IsErrConflict(err) || store.IsErrNotFound(err) {
 			// The job advanced or vanished between selection and this transition; the CAS losing is the
@@ -134,8 +160,157 @@ func (s *Service) RunImportTerminalization(jobID string) error {
 	s.log.Info("Import terminalized",
 		"job_id", finished.Id, "actor_id", finished.ActorId, "state", string(finished.State),
 		"intent", string(finished.TerminalIntent), "error_code", finished.ErrorCode,
-		"not_attempted", finished.FinalSummary.Actions.NotAttempted)
+		"created", finished.FinalSummary.Actions.Create, "updated", finished.FinalSummary.Actions.Update,
+		"noop", finished.FinalSummary.Actions.Noop, "preserved", finished.FinalSummary.Actions.PreserveLocal,
+		"conflict", finished.FinalSummary.Actions.Conflict, "blocked", finished.FinalSummary.Actions.Blocked,
+		"stale", finished.FinalSummary.Actions.Stale,
+		"not_attempted", finished.FinalSummary.Actions.NotAttempted,
+		"compensated_channels", len(compensations))
+
+	s.publishImportJobUpdate(finished)
+	s.publishPendingImportInvalidation(finished)
 	return nil
+}
+
+// compensateImportChannels archives backing channels created for a Space that never came into existence.
+//
+// It only ever runs when there is no Space row: once one exists the channel is real, user-visible content and
+// must be preserved and reported rather than cleaned up. Resolution is by channel id, not by name, because a
+// Space channel cannot be found by name; already archived or absent counts as compensated, which is what makes
+// a retry after a crash produce the same finding rather than a new failure.
+func (s *Service) compensateImportChannels(job *model.ImportJob) []store.ImportCompensation {
+	if job.TargetSpaceExisted {
+		return nil
+	}
+	if _, err := s.store.GetSpace(job.TargetSpaceId, true); err == nil {
+		return nil
+	} else if !store.IsErrNotFound(err) {
+		// Not knowing whether the Space exists is not grounds to archive its channel. Leaving the attempt rows
+		// alone keeps them visible to the next pass, which is safer than deleting content on a failed read.
+		s.log.Warn("Could not determine whether the import Space exists; skipping channel compensation",
+			"job_id", job.Id, "target_space_id", job.TargetSpaceId, "err", err)
+		return nil
+	}
+
+	attempts, err := s.store.GetImportChannelAttempts(job.Id)
+	if err != nil {
+		s.log.Warn("Could not load import channel attempts for compensation", "job_id", job.Id, "err", err)
+		return nil
+	}
+
+	compensations := make([]store.ImportCompensation, 0, len(attempts))
+	for _, attempt := range attempts {
+		if attempt.ChannelId == "" {
+			// No id was ever recorded, so there is nothing this pass can resolve. The attempt row remains as the
+			// only trace of a call whose result was lost.
+			continue
+		}
+		if attempt.State != model.ImportChannelProvisioned && attempt.State != model.ImportChannelPendingCompensation {
+			continue
+		}
+		result := s.archiveImportChannelAttempt(job, attempt)
+		compensations = append(compensations, result)
+
+		state := model.ImportChannelCompensated
+		errorCode := ""
+		if !result.Resolved {
+			state = model.ImportChannelPendingCompensation
+			errorCode = result.Reason
+		}
+		if stateErr := s.store.SetImportChannelAttemptState(job.Id, attempt.AttemptId, state, errorCode); stateErr != nil {
+			s.log.Warn("Could not record import channel compensation state",
+				"job_id", job.Id, "attempt_id", attempt.AttemptId, "err", stateErr)
+		}
+	}
+	return compensations
+}
+
+// archiveImportChannelAttempt archives one attempt's channel, treating an already-gone channel as success.
+func (s *Service) archiveImportChannelAttempt(job *model.ImportJob, attempt *model.ImportChannelAttempt) store.ImportCompensation {
+	result := store.ImportCompensation{AttemptID: attempt.AttemptId, ChannelID: attempt.ChannelId}
+	if s.client == nil {
+		result.Reason = "plugin_client_unavailable"
+		return result
+	}
+
+	channel, err := s.client.Channel.GetChannelOfType(attempt.ChannelId, mmmodel.ChannelTypeSpace)
+	if err != nil || channel == nil {
+		// Not found is the successful end state, not a failure: the channel this job would have to clean up is
+		// already gone.
+		result.Resolved = true
+		return result
+	}
+	if channel.DeleteAt != 0 {
+		result.Resolved = true
+		return result
+	}
+	if err = s.client.Channel.Delete(attempt.ChannelId); err != nil {
+		s.log.Error("Could not archive the channel created for an import Space that was never provisioned; it must be archived manually",
+			"job_id", job.Id, "attempt_id", attempt.AttemptId, "channel_id", attempt.ChannelId, "err", err)
+		result.Reason = "archive_failed"
+		return result
+	}
+	result.Resolved = true
+	return result
+}
+
+// PublishPendingImportInvalidations publishes any tree invalidation a terminal job still owes.
+//
+// The normal path publishes immediately after terminalization; this is the recovery path for a crash between
+// the terminal commit and that publish. Duplicating an idempotent invalidation is harmless, while losing one
+// leaves every client showing a page tree that no longer matches the database.
+func (s *Service) PublishPendingImportInvalidations() int {
+	jobs, err := s.store.GetImportJobsPendingInvalidation(importInvalidationBatch)
+	if err != nil {
+		s.log.Warn("Could not scan for pending import invalidations", "err", err)
+		return 0
+	}
+	published := 0
+	for _, job := range jobs {
+		if s.publishPendingImportInvalidation(job) {
+			published++
+		}
+	}
+	return published
+}
+
+// importInvalidationBatch bounds one pending-invalidation sweep.
+const importInvalidationBatch = 50
+
+// publishPendingImportInvalidation publishes one job's tree invalidation and then clears the flag, reporting
+// whether it published. The order matters: clearing first would lose the invalidation on a crash in between,
+// while publishing first can only repeat it.
+func (s *Service) publishPendingImportInvalidation(job *model.ImportJob) bool {
+	if !job.InvalidationPending {
+		return false
+	}
+	space, err := s.store.GetSpace(job.TargetSpaceId, true)
+	if err != nil {
+		s.log.Warn("Could not resolve the imported Space to publish its tree invalidation",
+			"job_id", job.Id, "target_space_id", job.TargetSpaceId, "err", err)
+		return false
+	}
+	// Channel-scoped and carrying only the Space id: the event's audience is everyone who can read the Space,
+	// and job or source detail would disclose the import to members who never initiated it.
+	s.publishToChannels(wsEventSpaceImported, map[string]any{"space_id": space.Id}, space.ChannelId)
+
+	if err = s.store.ClearImportInvalidationPending(job.Id); err != nil {
+		s.log.Warn("Could not clear the import invalidation flag; it will be republished",
+			"job_id", job.Id, "err", err)
+	}
+	return true
+}
+
+// publishImportJobUpdate sends the actor-scoped progress event. Job and source detail belong here rather
+// than on the channel-scoped invalidation, because only the actor is entitled to see it.
+func (s *Service) publishImportJobUpdate(job *model.ImportJob) {
+	s.publishToUser(wsEventImportJobUpdated, map[string]any{
+		"job_id":           job.Id,
+		"state":            string(job.State),
+		"phase":            string(job.Phase),
+		"progress_current": job.ProgressCurrent,
+		"progress_total":   job.ProgressTotal,
+	}, job.ActorId)
 }
 
 // LogImportWorkerInvariants checks the single-active-job invariant the supported topology relies on and
@@ -164,6 +339,10 @@ func (s *Service) LogImportWorkerInvariants() {
 func (s *Service) RunImportMaintenance() (store.ImportCleanupCounts, error) {
 	now := mmmodel.GetMillis()
 	var counts store.ImportCleanupCounts
+
+	// Publish first: an invalidation a crash left owed is the one piece of maintenance whose delay users can
+	// see, because until it goes out every client shows a page tree the import has already changed.
+	counts.PublishedInvalidations = s.PublishPendingImportInvalidations()
 
 	expired, releasedExpired, releasedRetained, err := s.store.ExpireStalledImportJobs(now, ImportErrorJobExpired)
 	counts.ExpiredJobs = expired
@@ -197,16 +376,18 @@ func (s *Service) LogImportMaintenance(counts store.ImportCleanupCounts, err err
 			"expired_jobs", counts.ExpiredJobs, "purged_staged_jobs", counts.PurgedStagedJobs,
 			"deleted_jobs", counts.DeletedJobs, "kept_for_compensation_jobs", counts.KeptForCompensationJobs,
 			"released_staged_bytes", counts.ReleasedStagedBytes,
+			"published_invalidations", counts.PublishedInvalidations,
 			"released_retained_bytes", counts.ReleasedRetainedBytes, "err", err)
 		return
 	}
 	if counts.ExpiredJobs == 0 && counts.PurgedStagedJobs == 0 && counts.DeletedJobs == 0 &&
-		counts.KeptForCompensationJobs == 0 {
+		counts.KeptForCompensationJobs == 0 && counts.PublishedInvalidations == 0 {
 		return
 	}
 	s.log.Info("Import maintenance pass completed",
 		"expired_jobs", counts.ExpiredJobs, "purged_staged_jobs", counts.PurgedStagedJobs,
 		"deleted_jobs", counts.DeletedJobs, "kept_for_compensation_jobs", counts.KeptForCompensationJobs,
+		"published_invalidations", counts.PublishedInvalidations,
 		"released_staged_bytes", counts.ReleasedStagedBytes,
 		"released_retained_bytes", counts.ReleasedRetainedBytes)
 }

@@ -70,6 +70,10 @@ type Options struct {
 	// AuthorUsernameOverride replaces the per-page author proposal (each page's user field) without touching
 	// the manifest's account mapping, which is how a test exercises the page-level author fallback.
 	AuthorUsernameOverride string
+	// Revision, when non-zero, is appended to every page's title and body so the bundle represents the same
+	// pages *edited in Confluence*. It is the knob a reimport test needs: page content is what the source
+	// content hash covers, so nothing else in these options can make a second import see a real source change.
+	Revision int
 	// Chain emits the pages as a single parent-to-child chain instead of a root with flat children. The
 	// bundle stays within the importer's depth limit, so it is the shape to use when the *target's* existing
 	// depth is what a test needs to push a projection over the edge.
@@ -228,6 +232,9 @@ func buildLines(o Options) ([]string, lineCounts, []map[string]any, error) {
 		}
 
 		title := fmt.Sprintf("Imported page %d", i+1)
+		if o.Revision != 0 {
+			title = fmt.Sprintf("%s (rev %d)", title, o.Revision)
+		}
 		content, docErr := sampleDoc(title, i)
 		if docErr != nil {
 			return nil, counts, nil, docErr

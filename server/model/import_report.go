@@ -112,6 +112,15 @@ const ImportStaleOrdinalBase = ImportMaxPages
 // issue ordinals are Ordinal*ImportIssuesPerPage + issueIndex, so they stay below this value.
 const ImportJobIssueOrdinalBase = 500000
 
+// ImportTerminalIssueOrdinalBase is the first issue ordinal reserved for the issues terminalization
+// itself writes: the reason a job ended, channel compensation outcomes, and invariant failures.
+//
+// It is a separate range from ImportJobIssueOrdinalBase because that one is indexed by stale entry, of
+// which there can be up to ImportMaxMappingsPerSource. Sharing the base would let a job with many stale
+// mappings collide with its own terminal issues, and the collision would surface as a primary-key
+// violation during terminalization — the one moment a job cannot afford to fail.
+const ImportTerminalIssueOrdinalBase = 600000
+
 // ImportIssuesPerPage is the per-page issue ordinal stride: at most this many distinct issue codes
 // are recorded per page, with repeats aggregated by stable code.
 const ImportIssuesPerPage = 100

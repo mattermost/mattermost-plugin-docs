@@ -110,11 +110,20 @@ func TestImportPreflight_NewSpaceEndToEnd(t *testing.T) {
 	require.True(t, job.Confirmation.Acknowledgements.ConfirmNewSpaceMetadata)
 	require.Greater(t, job.ConfirmedAt, int64(0))
 
-	// Execution is not implemented yet, so the worker leaves the job queued rather than spinning on it.
+	// The worker now executes the confirmed job: it provisions the Space and writes every page.
 	h.drainImportWorker(t)
 	job, err = h.store.GetImportJob(jobID)
 	require.NoError(t, err)
-	require.Equal(t, model.ImportStateQueuedImport, job.State)
+	require.Equal(t, model.ImportStateCompletedWithIssues, job.State,
+		"the fixture carries comments and attachments, which are disclosed rather than imported")
+	require.Equal(t, 4, job.FinalSummary.Actions.Create)
+	require.Equal(t, 4, job.FinalSummary.Outcomes[string(model.ImportOutcomeCreated)])
+	require.Zero(t, job.FinalSummary.Actions.NotAttempted)
+
+	space, err := h.store.GetSpace(job.TargetSpaceId, false)
+	require.NoError(t, err)
+	require.Equal(t, "Imported Docs", space.Title)
+	require.True(t, mmmodel.IsValidId(space.ChannelId))
 }
 
 // TestImportSourceSelection_ExistingSpace covers the source step an existing-Space target must take before
@@ -586,42 +595,70 @@ func TestImportPreflight_CancelDuringReviewRecordsOutcomes(t *testing.T) {
 }
 
 // TestImportWorker_DoesNotStarveOnUnadvanceableStates is the regression test for a worker wedge. Work
-// selection returns the first non-empty state in priority order, so a state the worker cannot advance would
-// be picked on every pass and starve everything below it — and neither queued_import nor terminalizing is
+// selection returns the first non-empty state in priority order, so a state the worker cannot advance would be
+// picked on every pass and starve everything below it — and neither queued_import nor terminalizing is
 // expirable, so the wedge would outlive the jobs that caused it.
+//
+// The property is that *both* jobs finish: a job in a high-priority state has to reach a terminal state rather
+// than being re-selected forever, and a job behind it has to get its turn.
 func TestImportWorker_DoesNotStarveOnUnadvanceableStates(t *testing.T) {
 	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
 	h := openTestPlugin(t, api)
 	actorID := mmmodel.NewId()
 
-	// A confirmed job parks in queued_import, which this release cannot execute.
-	blocker := h.uploadFixture(t, actorID, newTargetRequest(mmmodel.NewId()), importfixture.Options{Pages: 1})
-	require.Equal(t, http.StatusCreated, blocker.Code, blocker.Body.String())
-	blockerID := decodeJobView(t, blocker).Id
+	first := h.uploadFixture(t, actorID, newTargetRequest(mmmodel.NewId()), importfixture.Options{Pages: 1})
+	require.Equal(t, http.StatusCreated, first.Code, first.Body.String())
+	firstID := decodeJobView(t, first).Id
 	h.drainImportWorker(t)
-	blockerView := decodeJobView(t, h.do(t, http.MethodGet, "/api/v1/imports/"+blockerID, actorID, nil))
-	require.Equal(t, model.ImportStateAwaitingConfirmation, blockerView.State)
+	firstView := decodeJobView(t, h.do(t, http.MethodGet, "/api/v1/imports/"+firstID, actorID, nil))
+	require.Equal(t, model.ImportStateAwaitingConfirmation, firstView.State)
 	require.Equal(t, http.StatusAccepted,
-		h.do(t, http.MethodPost, "/api/v1/imports/"+blockerID+"/confirm", actorID, confirmBody(t, blockerView, true)).Code)
+		h.do(t, http.MethodPost, "/api/v1/imports/"+firstID+"/confirm", actorID, confirmBody(t, firstView, true)).Code)
 
-	// A later upload must still preflight.
+	// A second upload queues behind the confirmed one, which sits in a higher-priority state.
 	later := h.uploadFixture(t, actorID, newTargetRequest(mmmodel.NewId()), importfixture.Options{Pages: 1})
 	require.Equal(t, http.StatusCreated, later.Code, later.Body.String())
 	laterID := decodeJobView(t, later).Id
 
 	h.drainImportWorker(t)
+
+	executed, err := h.store.GetImportJob(firstID)
+	require.NoError(t, err)
+	require.True(t, executed.State.IsTerminal(),
+		"a confirmed job must be executed and terminalized, not re-selected forever")
 	job, err := h.store.GetImportJob(laterID)
 	require.NoError(t, err)
 	require.Equal(t, model.ImportStateAwaitingConfirmation, job.State,
 		"a queued_import job must not starve later preflight work")
+}
 
-	// A confirmed-but-unexecutable job is still cancelable, so it cannot hold its staged bytes and its
-	// per-user slot until an operator intervenes.
-	cancel := h.do(t, http.MethodPost, "/api/v1/imports/"+blockerID+"/cancel", actorID, nil)
+// TestImportCancel_QueuedImportIsStillDirect covers the fast cancellation path. A confirmed job the worker has
+// not started has committed nothing, so it goes straight to canceled rather than waiting for a worker pass —
+// otherwise a user's only escape route would depend on worker scheduling.
+func TestImportCancel_QueuedImportIsStillDirect(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+
+	rec := h.uploadFixture(t, actorID, newTargetRequest(mmmodel.NewId()), importfixture.Options{Pages: 2})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	jobID := decodeJobView(t, rec).Id
+	h.drainImportWorker(t)
+	view := decodeJobView(t, h.do(t, http.MethodGet, "/api/v1/imports/"+jobID, actorID, nil))
+	require.Equal(t, http.StatusAccepted,
+		h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/confirm", actorID, confirmBody(t, view, true)).Code)
+
+	cancel := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/cancel", actorID, nil)
 	require.Equal(t, http.StatusAccepted, cancel.Code, cancel.Body.String())
-	blocked, err := h.store.GetImportJob(blockerID)
+	canceled, err := h.store.GetImportJob(jobID)
 	require.NoError(t, err)
-	require.Equal(t, model.ImportStateCanceled, blocked.State)
+	require.Equal(t, model.ImportStateCanceled, canceled.State,
+		"a confirmed but unstarted job cancels without waiting for the worker")
+	require.Equal(t, 2, canceled.FinalSummary.Actions.NotAttempted)
+
+	// Nothing was provisioned, so no Space came into existence.
+	_, err = h.store.GetSpace(canceled.TargetSpaceId, true)
+	require.Error(t, err)
 }
 
 // TestImportWorker_TerminalizesFailedPreflight covers the other wedge and the terminalization step itself. A

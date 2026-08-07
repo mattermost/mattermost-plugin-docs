@@ -39,6 +39,12 @@ go run ./server/cmd/genimportbundle -out /tmp/bundle.zip
 # A richer bundle that also produces inspection findings: a comment, an attachment record,
 # a restricted page, a manifest-only restricted entry, and a producer warning.
 go run ./server/cmd/genimportbundle -out /tmp/bundle.zip -pages 6 -with-findings
+
+# The same pages, as a single parent-to-child chain, and again as though they had been edited in
+# Confluence. -revision is the only knob that changes what the source-content hash covers, so it is
+# what a reimport test needs to see a genuine source change rather than an unchanged bundle.
+go run ./server/cmd/genimportbundle -out /tmp/bundle.zip     -pages 3 -chain
+go run ./server/cmd/genimportbundle -out /tmp/bundle-v2.zip  -pages 3 -chain -revision 2
 ```
 
 It prints the counts and checksums it wrote, so you can compare them against the API response:
@@ -277,10 +283,9 @@ curl -sS -X POST "$API/imports/$JOB/confirm" -H "$AUTH" -H 'Content-Type: applic
 }' | jq '{state}'
 ```
 
-Expect `202` and `state: "queued_import"`. The job stops there in this release — and, importantly, stops
-there *without blocking anything else*: work selection only offers the worker states it can advance, so a
-confirmed job waiting for execution never starves later preflights. A `queued_import` job is also
-cancelable, so it does not hold its staged bytes and its per-user slot until an operator intervenes.
+Expect `202` and `state: "queued_import"`. The worker picks it up within a couple of seconds and executes it
+(section 4e). A `queued_import` job the worker has not started is still cancelable, so a user who changes
+their mind does not have to wait on worker scheduling to get their staged bytes and per-user slot back.
 
 A preflight that cannot complete — say its selected source was deleted underneath it — records a terminal
 intent and is finished by the worker rather than parked:
@@ -317,6 +322,155 @@ repository's shared conflict envelope (`{"error": {...}, "current_page": null}`)
 in `queued_preflight` with its revision, summary, confirmation, and prior plan rows cleared — so the old
 plan cannot be confirmed, and the worker publishes a fresh revision within seconds. The browser never
 sends hashes: approval carries intent, and the server-owned baselines carry safety.
+
+## 4e. Watch the import execute
+
+Execution is the only phase that writes anything a user can see. The worker takes the confirmed job,
+provisions the target, and applies one page per transaction:
+
+```bash
+curl -sS "$API/imports/$JOB" -H "$AUTH" | jq '{state, phase, progress, final}'
+```
+
+Expect `state` to settle on `completed` or `completed_with_issues`, with `final.counts.outcomes` naming
+what actually happened. The two terminal states differ by whether anything needs your attention: any
+warning or error finding — a preserved local edit, an author who could not be matched, comments counted but
+not imported — lands the job in `completed_with_issues`. `completed` means nothing was flagged at all.
+
+**The bundle's hierarchy is reproduced, its layout is not negotiable.** Pages are applied in producer order,
+which is parents before children, so a new import preserves the Confluence sibling order. New roots append
+after existing roots and new children after that parent's existing children; nothing already in the Space is
+renumbered to match Confluence.
+
+```sql
+SELECT p.Title, p.ParentId, p.SortOrder, p.CreateAt, e.ExternalId
+  FROM DOCS_Page p JOIN DOCS_ImportEntity e ON e.LocalId = p.Id
+  WHERE e.ImportSourceId = '<source id>' AND p.DeleteAt = 0
+  ORDER BY p.SortOrder;
+```
+
+`CreateAt` is the Confluence creation date, preserved. A missing or future source date is replaced by the
+import's own clock and reported as `source_create_at_invalid` rather than written as-is.
+
+Each page carries the importer's bookkeeping under a single `docs_import` prop namespace, and *only* that
+namespace is rewritten on reimport — anything interactive editing stored on the page survives untouched:
+
+```sql
+SELECT jsonb_pretty(Props -> 'docs_import') FROM DOCS_Page WHERE Id = '<page id>';
+```
+
+**Reimport the same bundle to see the decision table applied for real.** Upload it again, select the
+*existing* source this time, confirm, and expect every page to come back `noop`. A no-op must not touch the
+page at all: check that `UpdateAt` and `EditAt` are unchanged, because bumping them would show every reader
+a spurious edit. `LastSeenJobId` on the mapping *does* advance — that is presence tracking, and without it a
+page this import deliberately skipped would be reported as stale by the next one.
+
+Then edit one page in Mattermost and reimport again. That page comes back `preserve_local` with
+`local_changes_preserved`, and its title and body are still yours.
+
+**The approved-overwrite path is the one place a user's work is deliberately discarded, so it is worth
+seeing refused.** Edit a page locally, regenerate the bundle with `-revision 2` so its Confluence content
+genuinely differs, and confirm with that page in `overwrite_conflicts`. Now edit the same page again
+*after* confirming, before the worker gets to it:
+
+```sql
+SELECT ExternalId, ActualAction, Outcome FROM DOCS_ImportResult
+  WHERE JobId = '<job id>' AND Stage = 'execution' ORDER BY Ordinal;
+```
+
+The page you edited after approving comes back `conflict_skipped` with
+`conflict_changed_after_confirmation`; a page you approved and left alone comes back `updated`. The browser's
+approval carries intent about a specific reviewed state; the server-owned baselines — the local content hash,
+the mapping's content hash, and the mapping's own `UpdateAt` — are what decide whether that state still
+holds. `UpdateAt` matters on its own: another import re-applying identical content leaves both hashes equal
+while still meaning someone else has taken ownership of the page.
+
+**A page whose parent was not created is skipped, never rooted at the top of the Space.** Delete an imported
+page in Mattermost and reimport: the mapped page comes back `blocked` with `mapped_target_missing` (a
+reimport is not a restore), and any page whose only parent was that one comes back `blocked` with
+`parent_not_available_after_import`. Silently promoting orphans to roots would flatten a hierarchy nobody
+asked to change.
+
+A page the *reviewed plan* blocked stays blocked even if the limit that blocked it has since cleared — you
+approved a plan that said it would be skipped, so it is reported as `skipped_by_reviewed_plan` rather than
+created behind your back.
+
+**Restart the plugin mid-import.** Each page commits in its own transaction together with an immutable
+execution result, so the pass that resumes recognizes what is already there:
+
+```bash
+# disable and re-enable the plugin while the import is running, then:
+curl -sS "$API/imports/$JOB" -H "$AUTH" | jq '{state, progress, final}'
+```
+
+Expect the job to finish with the same page count and no duplicates. `progress.current` is *set* from the
+count of committed execution results rather than incremented, so a replay cannot advance it twice.
+
+**Cancel a running import.** Committed pages stay — they are real content, and there is no global rollback
+across channels, Spaces, mappings, and pages:
+
+```bash
+curl -sS -X POST "$API/imports/$JOB/cancel" -H "$AUTH" | jq '{state}'
+```
+
+Expect `202` and `state: "terminalizing"`, not `canceled`. Unlike a pre-execution cancel this one cannot
+finish on the spot: the terminalizer has to reconcile what was already written first. Within a couple of
+seconds the job reads `canceled`, with the pages it managed to write keeping their real outcomes and every
+page it never reached carrying `not_attempted_canceled` plus a job-level `not_attempted_due_to_cancellation`
+finding.
+
+**The mapping revision moves exactly once per job.** Every page transaction that changes a field a later
+preflight classifies against sets a durable flag; terminalization reads it once:
+
+```sql
+SELECT Id, MappingRevision, LastImportAt, LastSuccessfulJobId FROM DOCS_ImportSource;
+```
+
+A per-page bump would invalidate every other job's reviewed plan once per page for no additional safety.
+`LastImportAt` and `LastSuccessfulJobId` are set only for a genuine completion.
+
+**New-Space provisioning is the one place an external system is involved**, so it has its own durable trail.
+Each channel-create attempt gets a row *before* the call is made, with a random name:
+
+```sql
+SELECT AttemptId, ChannelName, ChannelId, State, ErrorCode FROM DOCS_ImportChannelAttempt
+  WHERE JobId = '<job id>';
+```
+
+A successful import leaves one `attached` attempt. A job that created a channel but never got as far as the
+Space row leaves a `compensated` one and an `import_channel_compensated` finding — the channel was archived
+again, because a Space channel cannot be found by name and would otherwise be invisible orphan work. If the
+archive itself fails the attempt stays `pending_compensation` and the report carries an error-severity
+`import_channel_compensation_failed` naming the channel, which is real operator work rather than a footnote.
+The name is random rather than derived from the job id on purpose: a deterministic name would collide with
+that orphan on every retry and wedge the job permanently instead of leaving one channel to clean up.
+
+There remains one unavoidable window — the process dying after core creates the channel but before the
+returned id reaches the database. That channel needs an operator, and the attempt row is what makes it
+visible.
+
+**A job that cannot proceed is failed, not parked.** Work selection returns the highest-priority non-empty
+state, so anything left in `importing` without advancing would be re-selected on every pass and starve every
+job behind it. Confirm a job and then remove its destination:
+
+```sql
+UPDATE DOCS_Space SET DeleteAt = 1 WHERE Id = '<target space id>';
+```
+
+Expect `state: "failed"` with `error.code: "authorization_revoked"`, a full set of `not_attempted_failed`
+outcomes, and — the point of the exercise — a second queued upload still reaching
+`awaiting_confirmation` on the same worker pass.
+
+Finally, a terminal job that changed the tree owes exactly one channel-scoped `space_imported` event
+carrying only the Space id, published after the terminal state commits and then cleared:
+
+```sql
+SELECT Id, State, InvalidationPending FROM DOCS_ImportJob WHERE Id = '<job id>';
+```
+
+Expect `InvalidationPending = false`. A crash between the commit and the publish leaves it true, and the
+hourly maintenance sweep republishes it — duplicating an idempotent invalidation is harmless, while losing
+one leaves every client showing a page tree that no longer matches the database.
 
 ## 5. Verify the rejection paths
 
@@ -459,9 +613,18 @@ SELECT Id, DisplayName, ExternalSpaceKey, MappingRevision FROM DOCS_ImportSource
 -- Manifest users are worker input and must survive the request that uploaded them.
 SELECT Ordinal, AccountId, MattermostUsername FROM DOCS_ImportManifestUser WHERE JobId = '<job id>';
 SELECT Stage, Severity, Code FROM DOCS_ImportIssue WHERE JobId = '<job id>' ORDER BY Ordinal;
--- After a cancel: one durable outcome per staged page, recorded before the pages were deleted.
-SELECT Ordinal, ExternalId, ActualAction, Outcome FROM DOCS_ImportResult
+-- Execution outcomes: the immutable checkpoints. One per staged page, inserted in the same transaction
+-- as that page's write, which is what makes a restart resume rather than reimport. After a cancel or a
+-- failure the pages the job never reached carry not_attempted_* here, recorded before the staged rows
+-- were deleted. PlannedAction is kept alongside ActualAction so a report can still show what the
+-- reviewed plan expected without presenting it as what happened.
+SELECT Ordinal, ExternalId, PlannedAction, ActualAction, Outcome, Details FROM DOCS_ImportResult
   WHERE JobId = '<job id>' AND Stage = 'execution' ORDER BY Ordinal;
+-- What was actually written, in tree order. Confluence CreateAt is preserved; UpdateAt/EditAt are the
+-- import's own monotonic timestamp, so every page in one job shares a coherent edit time.
+SELECT p.Title, p.ParentId, p.SortOrder, p.CreateAt, p.UpdateAt, p.UserId, p.LastModifiedBy, e.ExternalId
+  FROM DOCS_Page p JOIN DOCS_ImportEntity e ON e.LocalId = p.Id
+  WHERE e.ImportSourceId = '<source id>' AND p.DeleteAt = 0 ORDER BY p.SortOrder;
 -- Admission reserved this job's bytes on the shared singleton row.
 -- Reservations must return to zero once every job is canceled, purged, or deleted. A canceled job
 -- keeps only RetainedBytes: RetainedReservedBytes is trued up to match it, and the difference comes
@@ -484,4 +647,6 @@ go test ./server/ -run TestHandleCreateImport -v                # upload, auth, 
 go test ./server/ -run 'TestHandleGetImport|TestHandleListImports' -v
 go test ./server/importer/ -run TestClassify -v                 # the reimport decision table, pure
 go test ./server/ -run 'TestImportPreflight|TestImportSourceSelection|TestImportConfirm' -v
+go test ./server/ -run TestImportExecution -v                   # provisioning, page writes, reimport, cancel
+go test ./server/ -run 'TestImportWorker|TestImportTerminalization' -v
 ```
