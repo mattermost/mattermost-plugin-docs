@@ -1,0 +1,92 @@
+.root {
+    display: flex;
+    min-height: 0;
+}
+
+.horizontal {
+    flex-direction: column;
+}
+
+.vertical {
+    flex-direction: row;
+}
+
+.list {
+    display: flex;
+    gap: 8px;
+
+    // Each tab is a `.btn`; core's global `.btn + .btn { margin-left: 8px }`
+    // keys off DOM adjacency and would indent every tab after the first (and
+    // toggles as Base UI mounts focus guards). Spacing here comes from `gap`.
+    :global(.btn + .btn) {
+        margin-left: 0;
+    }
+}
+
+.horizontal .list {
+    flex-direction: row;
+    align-items: center;
+    border-bottom: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
+}
+
+.vertical .list {
+    flex-direction: column;
+}
+
+// Tabs are quaternary Buttons (accent-blue by default); scope under
+// `.btn.btn-quaternary` so these win over core's button color/padding.
+.tab:global(.btn.btn-quaternary) {
+    justify-content: flex-start;
+    height: auto;
+    min-height: 32px;
+    gap: 8px;
+    padding: 8px 12px;
+    color: rgba(var(--center-channel-color-rgb), 0.56);
+    font-weight: 600;
+    text-align: left;
+
+    &:hover {
+        background: rgba(var(--center-channel-color-rgb), 0.08);
+        color: rgba(var(--center-channel-color-rgb), 0.75);
+    }
+
+    &[data-active] {
+        background: rgba(var(--button-bg-rgb), 0.08);
+        color: var(--button-bg);
+    }
+}
+
+.vertical .tab:global(.btn.btn-quaternary) {
+    width: 100%;
+}
+
+// Destructive tab (e.g. "Archive space") reads red in every state.
+.tabDestructive:global(.btn.btn-quaternary) {
+    color: var(--error-text);
+
+    &:hover,
+    &[data-active] {
+        background: rgba(var(--error-text-color-rgb), 0.08);
+        color: var(--error-text);
+    }
+}
+
+.tabLabel {
+    overflow: hidden;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 20px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.separator {
+    flex-shrink: 0;
+    height: 1px;
+    margin: 8px 0;
+    background: rgba(var(--center-channel-color-rgb), 0.12);
+}
+
+.panel {
+    min-width: 0;
+}

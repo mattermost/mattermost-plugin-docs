@@ -1,65 +1,59 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {useSpace} from 'hooks/spaces';
+import {useDocsNavigation} from 'hooks/navigation';
+import {useRoutedSpace} from 'hooks/spaces';
 import React from 'react';
-import {FormattedMessage} from 'react-intl';
+import {Redirect, Route, Switch} from 'react-router-dom';
+import {DOCS_DRAFT_ROUTE, DOCS_SPACE_OVERVIEW_ROUTE, DOCS_SPACE_ROUTE} from 'routing/paths';
 
 import DocsHome from 'components/docs_home/docs_home';
-import PageEditor from 'components/page_editor/page_editor';
-
-import styles from './docs_main_content.module.scss';
+import SpaceView from 'components/space_view/space_view';
 
 type Props = {
-    spaceId?: string;
-    pageId?: string;
-    isDraft?: boolean;
     onCreateSpace: () => void;
     onBrowseSpaces: () => void;
 };
 
-// The space view is built later; for now a routed space renders a placeholder
-// that reflects the routed space/page. When a page is routed we hand off to
-// PageEditor
-const DocsMainContent = ({spaceId, pageId, isDraft, onCreateSpace, onBrowseSpaces}: Props) => {
-    const space = useSpace(spaceId);
-
-    if (!space) {
-        return (
-            <DocsHome
-                onCreateSpace={onCreateSpace}
-                onBrowseSpaces={onBrowseSpaces}
-            />
-        );
-    }
-
-    if (pageId) {
-        return (
-            <PageEditor
-                spaceId={space.id}
-                pageId={pageId}
-                isDraft={Boolean(isDraft)}
-            />
-        );
-    }
+// Routes the product's main column: a routed space renders its view, the product
+// root (anything else) renders Home.
+const DocsMainContent = ({onCreateSpace, onBrowseSpaces}: Props) => {
+    const home = (
+        <DocsHome
+            onCreateSpace={onCreateSpace}
+            onBrowseSpaces={onBrowseSpaces}
+        />
+    );
 
     return (
-        <div className={styles.root}>
-            <div className={styles.empty}>
-                <h2 className={styles.title}>
-                    {/* eslint-disable-next-line formatjs/no-literal-string-in-jsx -- decorative emoji, not translatable */}
-                    <span aria-hidden={true}>{space.icon ? `${space.icon} ` : null}</span>
-                    {space.title}
-                </h2>
-                <p className={styles.subtitle}>
-                    <FormattedMessage
-                        id='docs.main.spaceOverview'
-                        defaultMessage='Space overview'
-                    />
-                </p>
-            </div>
-        </div>
+        <Switch>
+            {/* The draft pattern is listed first: the generic space route would
+                otherwise capture 'drafts' as the page id. Both render the space
+                view, which reads the parsed selection from the URL. */}
+            <Route path={[DOCS_DRAFT_ROUTE, DOCS_SPACE_OVERVIEW_ROUTE, DOCS_SPACE_ROUTE]}>
+                <RoutedSpaceView/>
+            </Route>
+            <Route>{home}</Route>
+        </Switch>
     );
+};
+
+// Resolves the routed space id, asking the server for that id when the store
+// doesn't hold it (see useRoutedSpace) rather than treating the team listing as
+// the last word. Once the id has an answer and there's no space, it names one the
+// user can't see or one that's gone, so the URL is corrected to the product home;
+// until then nothing renders rather than flashing Home.
+const RoutedSpaceView = () => {
+    const {spaceId, paths} = useDocsNavigation();
+    const {space, resolved} = useRoutedSpace(spaceId);
+
+    if (space) {
+        return <SpaceView space={space}/>;
+    }
+    if (resolved) {
+        return <Redirect to={paths.home()}/>;
+    }
+    return null;
 };
 
 export default DocsMainContent;

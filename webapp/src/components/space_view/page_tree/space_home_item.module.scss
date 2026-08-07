@@ -1,0 +1,60 @@
+// Mirrors a page tree row's metrics and states so the space's front door reads as
+// part of the same list, while being a real button (it isn't a treeitem).
+.row {
+    display: flex;
+    width: 100%;
+    min-height: 32px;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+
+    // Matches the tree's own row gap, so Overview reads as the list's first row.
+    margin-block-end: 8px;
+    padding-block: 2px;
+
+    // Stands in for a tree row's chevron slot (16px) plus its gap (4px), so the
+    // icon lands on the same axis as the page rows' icons and the Pages toggle's.
+    padding-inline: 20px 4px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+
+    &:hover {
+        background: rgba(var(--center-channel-color-rgb), 0.08);
+    }
+
+    &:focus-visible {
+        outline: 2px solid var(--button-bg);
+        outline-offset: -2px;
+    }
+}
+
+.active,
+.active:hover {
+    background: rgba(var(--button-bg-rgb), 0.08);
+}
+
+.icon {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+}
+
+// Body 100 - Semibold
+.title {
+    overflow: hidden;
+    color: var(--center-channel-color);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 20px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.active .icon,
+.active .title {
+    color: var(--button-bg);
+}

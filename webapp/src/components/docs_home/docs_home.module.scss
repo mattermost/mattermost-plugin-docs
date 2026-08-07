@@ -7,17 +7,7 @@
     background: var(--center-channel-bg);
 }
 
-.header {
-    display: flex;
-    flex: 0 0 auto;
-    gap: 16px;
-    align-items: center;
-    padding: 12px 20px;
-    border-bottom: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
-}
-
 .headerTitle {
-    flex: 1 1 auto;
     margin: 0;
     color: var(--center-channel-color);
     font-family: 'Metropolis', sans-serif;

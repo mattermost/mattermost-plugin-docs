@@ -2,16 +2,15 @@
 // See LICENSE.txt for license information.
 
 import {useForm} from '@tanstack/react-form';
-import {useAppDispatch, useAppSelector, useAppStore} from 'hooks/redux';
-import {useTeamContext} from 'hooks/team';
-import {useCallback, useMemo, useRef} from 'react';
-import {DOCS_KEYWORD} from 'routing/paths';
-import {createSpaceFormSchema, slugify} from 'validation/space_schema';
+import {getSpaceViews, recordSpaceView} from 'data/recent_spaces';
+import {useAppDispatch, useAppSelector} from 'hooks/redux';
+import {useCallback, useEffect, useMemo, useState} from 'react';
+import {createSpaceFormSchema} from 'validation/space_schema';
 
-import {createSpace} from 'store/actions';
-import {getAllSpaces, getRecentSpaceSummaries, getSpace, getSpacesForCurrentTeam, isSlugAvailable} from 'store/selectors';
+import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
-import type {UrlInputHandle} from 'components/form-controls/url_input';
+import {createSpace, fetchPages, fetchSpace, fetchSpaceMembers} from 'store/actions';
+import {areMembersLoadedForSpace, getAllSpaces, getPagesForSpace, getSpace, getSpaceMemberIds, getSpacesForCurrentTeam} from 'store/selectors';
 
 import type {Space, SpaceSummary, SpaceVisibility} from 'types/docs';
 
@@ -28,20 +27,114 @@ export function useSpace(id?: string): Space | undefined {
     return useAppSelector((state) => (id ? getSpace(state, id) : undefined));
 }
 
+export type RoutedSpace = {
+    space?: Space;
+
+    // False until the id has an answer. A routed id that isn't in the store yet is
+    // not yet known to be bad, and correcting the URL before the answer is in turns
+    // a slow response into a bounce out of a space that is really there.
+    resolved: boolean;
+};
+
+/**
+ * Resolves a space id that came from the URL, fetching it by id when the store
+ * doesn't hold it.
+ *
+ * The team listing is not enough on its own: it can predate the space, or belong to
+ * another team, so an id missing from it is not an id that doesn't exist. Asking the
+ * server for the id itself is the only answer a deep link can trust.
+ *
+ * The fetch runs only while the space is absent, so an id already in the store costs
+ * nothing and a failed lookup isn't retried in a loop (its absence is the state that
+ * gated the effect, and it doesn't change).
+ */
+export function useRoutedSpace(spaceId?: string): RoutedSpace {
+    const dispatch = useAppDispatch();
+    const space = useSpace(spaceId);
+    const [checkedId, setCheckedId] = useState<string>();
+    const missing = Boolean(spaceId) && !space;
+
+    useEffect(() => {
+        if (!spaceId || !missing) {
+            return undefined;
+        }
+        let active = true;
+        dispatch(fetchSpace(spaceId)).then(() => {
+            if (active) {
+                setCheckedId(spaceId);
+            }
+        });
+        return () => {
+            active = false;
+        };
+    }, [dispatch, spaceId, missing]);
+
+    // No routed id is nothing to resolve, so it must not read as answered — the
+    // caller redirects on an answered id with no space.
+    return {space, resolved: Boolean(spaceId) && (Boolean(space) || checkedId === spaceId)};
+}
+
+// Recently-viewed spaces in the current team (Home). Recency is client-side
+// today (see data/recent_spaces); resolved against the loaded team spaces so a
+// left/deleted space drops out. pageCount is omitted until the server provides
+// one.
 export function useRecentSpaceSummaries(): SpaceSummary[] {
-    return useAppSelector(getRecentSpaceSummaries);
+    const userId = useAppSelector(getCurrentUserId);
+    const teamSpaces = useAppSelector(getSpacesForCurrentTeam);
+    return useMemo(() => {
+        const byId = new Map(teamSpaces.map((space) => [space.id, space]));
+        return getSpaceViews(userId).flatMap(({spaceId, lastViewedAt}) => {
+            const space = byId.get(spaceId);
+            return space ? [{space, lastViewedAt}] : [];
+        });
+    }, [userId, teamSpaces]);
+}
+
+export type SpaceStats = {
+    pageCount: number;
+
+    // Undefined until the member list arrives (or if it failed): a real space is
+    // never memberless, so rendering 0 would state something untrue.
+    memberCount?: number;
+};
+
+// Loads and returns a space's page and member counts. Fetches on mount into the
+// store, so the page tree and member avatars can reuse the same data later. The
+// view count has no server source yet, so it isn't included.
+export function useSpaceStats(spaceId: string): SpaceStats {
+    const dispatch = useAppDispatch();
+
+    useEffect(() => {
+        dispatch(fetchPages(spaceId));
+        dispatch(fetchSpaceMembers(spaceId));
+    }, [dispatch, spaceId]);
+
+    const pages = useAppSelector((state) => getPagesForSpace(state, spaceId));
+    const memberIds = useAppSelector((state) => getSpaceMemberIds(state, spaceId));
+    const membersLoaded = useAppSelector((state) => areMembersLoadedForSpace(state, spaceId));
+
+    return {pageCount: pages.length, memberCount: membersLoaded ? memberIds.length : undefined};
+}
+
+// Records that the current user viewed a space, feeding the recently-viewed
+// list. No-op until both ids are known.
+export function useRecordSpaceView(spaceId?: string): void {
+    const userId = useAppSelector(getCurrentUserId);
+    useEffect(() => {
+        if (userId && spaceId) {
+            recordSpaceView(userId, spaceId, Date.now());
+        }
+    }, [userId, spaceId]);
 }
 
 type CreateSpaceValues = {
     name: string;
-    slug: string;
     visibility: SpaceVisibility;
     description: string;
 };
 
 const INITIAL_VALUES: CreateSpaceValues = {
     name: '',
-    slug: '',
     visibility: 'public',
     description: '',
 };
@@ -50,62 +143,31 @@ type CreateSpaceOptions = {
     onCreated?: (space: Space) => void;
 };
 
-// Owns the create-space form via TanStack Form. The existing Zod schemas drive
-// validation through TanStack's validators — the whole-form schema on submit
-// (its issues distribute to fields by path) and the slug's async format +
-// uniqueness schema on blur. The uniqueness check reads current store state
-// (a Zod refine isn't a React hook, so it reads the store snapshot rather than
-// subscribing) so a space created earlier in the same session is accounted for.
+// Owns the create-space form via TanStack Form. The Zod schema drives validation
+// through TanStack's validators (its issues distribute to fields by path).
 export function useCreateSpace({onCreated}: CreateSpaceOptions = {}) {
-    const {name: teamName} = useTeamContext();
     const dispatch = useAppDispatch();
-    const store = useAppStore();
 
-    const checkSlugAvailable = useCallback((slug: string) => isSlugAvailable(store.getState(), slug), [store]);
-    const formSchema = useMemo(() => createSpaceFormSchema(checkSlugAvailable), [checkSlugAvailable]);
-    const slugSchema = useMemo(() => formSchema.shape.slug, [formSchema]);
-
-    // Stop deriving the slug from the name once the user edits the slug directly.
-    const slugEdited = useRef(false);
-
-    const urlInputRef = useRef<UrlInputHandle>(null);
+    const formSchema = useMemo(() => createSpaceFormSchema(), []);
 
     const form = useForm({
         defaultValues: INITIAL_VALUES,
         validators: {onSubmitAsync: formSchema},
         onSubmit: async ({value}) => {
-            const space = await Promise.resolve(dispatch(createSpace({
+            const space = await dispatch(createSpace({
                 title: value.name.trim(),
-                slug: value.slug.trim(),
                 visibility: value.visibility,
                 description: value.description.trim() || undefined,
-            })));
+            }));
             onCreated?.(space);
         },
     });
 
     const changeName = useCallback((name: string) => {
         form.setFieldValue('name', name);
-        if (!slugEdited.current) {
-            form.setFieldValue('slug', slugify(name));
-        }
     }, [form]);
 
-    const changeSlug = useCallback((slug: string) => {
-        slugEdited.current = true;
-        form.setFieldValue('slug', slug);
-    }, [form]);
+    const submit = useCallback(() => form.handleSubmit(), [form]);
 
-    // Submits, then surfaces a rejected slug (e.g. a taken URL) by focusing the
-    // URL input — otherwise the error lands on the field's read-only preview.
-    const submit = useCallback(async () => {
-        await form.handleSubmit();
-        if ((form.getFieldMeta('slug')?.errors.length ?? 0) > 0) {
-            urlInputRef.current?.focus();
-        }
-    }, [form]);
-
-    const baseUrl = useMemo(() => `${window.location.origin}/${teamName}/${DOCS_KEYWORD}`, [teamName]);
-
-    return {form, slugSchema, baseUrl, changeName, changeSlug, submit, urlInputRef};
+    return {form, changeName, submit};
 }

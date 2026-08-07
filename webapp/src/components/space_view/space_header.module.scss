@@ -1,0 +1,58 @@
+/*
+ * Core's global `.btn + .btn { margin-left: 8px }` stacks on top of the header's
+ * flex `gap`, and because it keys off DOM adjacency it toggles as Base UI mounts
+ * focus guards around an open menu trigger — which made the row jump on open.
+ * Spacing in this header comes from `gap` alone.
+ */
+.header :global(.btn + .btn) {
+    margin-left: 0;
+}
+
+.leftCluster {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 4px;
+}
+
+// The `.btn` compounds raise specificity over core's `.btn.btn-sm` padding/gap.
+.titleTrigger:global(.btn.btn-sm) {
+    min-width: 0;
+    max-width: 280px;
+    padding: 0 6px;
+    gap: 6px;
+}
+
+.emoji {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    font-size: 18px;
+    line-height: 1;
+}
+
+.title {
+    overflow: hidden;
+    color: var(--center-channel-color);
+    font-family: 'Metropolis', sans-serif;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 20px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.chevron {
+    flex-shrink: 0;
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+}
+
+.members:global(.btn.btn-sm) {
+    padding: 0 8px;
+    gap: 4px;
+}
+
+.share:global(.btn.btn-sm) {
+    padding: 0 12px;
+    gap: 6px;
+}

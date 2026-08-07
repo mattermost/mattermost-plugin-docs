@@ -56,4 +56,58 @@ describe('GenericModal', () => {
 
         expect(screen.queryByRole('button', {name: 'Close'})).not.toBeInTheDocument();
     });
+
+    // A modal rendered inside another's JSX stacks through Base UI's nesting
+    // rather than through the modal stack. Base UI renders no backdrop for a
+    // nested dialog unless forced, and marks the outer popup instead — so both
+    // halves are pinned here.
+    describe('a modal opened from inside another', () => {
+        const renderNested = () => renderWithContext(
+            <GenericModal
+                {...baseProps}
+                title='Outer'
+            >
+                <GenericModal
+                    {...baseProps}
+                    title='Inner'
+                >
+                    <p>{'Inner body'}</p>
+                </GenericModal>
+            </GenericModal>,
+        );
+
+        // Base UI hides a covered dialog from the accessibility tree, so the outer
+        // title is present in the DOM but has no `heading` role to query.
+        it('renders both dialogs', () => {
+            renderNested();
+
+            expect(screen.getByText('Outer')).toBeInTheDocument();
+            expect(screen.getByText('Inner')).toBeInTheDocument();
+            expect(screen.getByRole('heading', {name: 'Inner'})).toBeInTheDocument();
+        });
+
+        it('marks the outer popup as covered, so it can recede', () => {
+            renderNested();
+
+            const covered = document.querySelectorAll('[data-nested-dialog-open]');
+
+            // Only the outer popup is marked, and it holds only its own content —
+            // the inner dialog is portaled to the body rather than nested in the
+            // outer popup's DOM, even though it nests in the React tree.
+            expect(covered).toHaveLength(1);
+            expect(covered[0].textContent).toContain('Outer');
+            expect(covered[0].textContent).not.toContain('Inner body');
+        });
+
+        it('paints each dialog in its own band, innermost highest', () => {
+            renderNested();
+
+            // Both the backdrop and the viewport of each dialog carry the level, in
+            // portal order: outer pair first, then inner.
+            const levels = [...document.querySelectorAll('[style*="--docs-modal-level"]')].
+                map((el) => (el as HTMLElement).style.getPropertyValue('--docs-modal-level'));
+
+            expect(levels).toEqual(['0', '0', '1', '1']);
+        });
+    });
 });

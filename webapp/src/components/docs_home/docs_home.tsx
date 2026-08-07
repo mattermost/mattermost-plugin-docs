@@ -2,10 +2,12 @@
 // See LICENSE.txt for license information.
 
 import {useDocsNavigation} from 'hooks/navigation';
+import {useAppSelector} from 'hooks/redux';
 import {useRecentSpaceSummaries} from 'hooks/spaces';
 import {useCurrentUser} from 'hooks/user';
 import React from 'react';
 import {FormattedMessage, defineMessages, useIntl} from 'react-intl';
+import {SpaceIcon} from 'utils/space_icon';
 import {Timestamp} from 'webapp_globals';
 import type {TimestampUnit} from 'webapp_globals';
 
@@ -14,7 +16,10 @@ import NotebookOutlineIcon from '@mattermost/compass-icons/components/notebook-o
 import PlusIcon from '@mattermost/compass-icons/components/plus';
 import SearchListIcon from '@mattermost/compass-icons/components/search-list';
 
-import {PrimaryButton, TertiaryButton} from 'components/form-controls/button';
+import {areSpacesLoadedForCurrentTeam} from 'store/selectors';
+
+import {PrimaryButton, TertiaryButton} from 'components/form_controls/button';
+import Header from 'components/header/header';
 
 import type {SpaceSummary} from 'types/docs';
 
@@ -34,21 +39,37 @@ const DocsHome = ({onCreateSpace, onBrowseSpaces}: Props) => {
     const {name} = useCurrentUser();
     const {goToSpace} = useDocsNavigation();
     const summaries = useRecentSpaceSummaries();
+    const spacesLoaded = useAppSelector(areSpacesLoadedForCurrentTeam);
 
     const header = (
-        <header className={styles.header}>
-            <h1 className={styles.headerTitle}>
-                {formatMessage({id: 'docs.home.title', defaultMessage: 'Home'})}
-            </h1>
-            <PrimaryButton
-                className={styles.cta}
-                onClick={onCreateSpace}
-            >
-                <PlusIcon size={16}/>
-                {formatMessage({id: 'docs.home.newSpace', defaultMessage: 'New Space'})}
-            </PrimaryButton>
-        </header>
+        <Header
+            left={
+                <h1 className={styles.headerTitle}>
+                    {formatMessage({id: 'docs.home.title', defaultMessage: 'Home'})}
+                </h1>
+            }
+            right={
+                <PrimaryButton
+                    className={styles.cta}
+                    onClick={onCreateSpace}
+                >
+                    <PlusIcon size={16}/>
+                    {formatMessage({id: 'docs.home.newSpace', defaultMessage: 'New Space'})}
+                </PrimaryButton>
+            }
+        />
     );
+
+    // Only an empty list that's actually settled means "no spaces". Until the
+    // team's spaces arrive the list is empty for a different reason, and showing
+    // the welcome hero would flash it at every returning user.
+    if (!spacesLoaded) {
+        return (
+            <div className={styles.root}>
+                {header}
+            </div>
+        );
+    }
 
     if (summaries.length === 0) {
         return (
@@ -156,21 +177,21 @@ const SpaceCard = ({summary, onOpen}: {summary: SpaceSummary; onOpen: (id: strin
     const {formatMessage} = useIntl();
     const {space, pageCount, lastViewedAt} = summary;
 
-    const pages = formatMessage(
+    const pages = pageCount === undefined ? null : formatMessage(
         {id: 'docs.home.space.pageCount', defaultMessage: '{count, plural, one {# page} other {# pages}}'},
         {count: pageCount},
     );
 
     // Timestamp's `style` is a narrow/short/long format variant, not a DOM style object.
     /* eslint-disable react/style-prop-object */
-    const relative = lastViewedAt !== undefined && Timestamp ? (
+    const relative = lastViewedAt === undefined ? null : (
         <Timestamp
             value={lastViewedAt}
             units={VIEWED_TIME_SPEC}
             useTime={false}
             style='narrow'
         />
-    ) : null;
+    );
     /* eslint-enable react/style-prop-object */
 
     return (
@@ -183,7 +204,10 @@ const SpaceCard = ({summary, onOpen}: {summary: SpaceSummary; onOpen: (id: strin
                 className={styles.spaceCardEmoji}
                 aria-hidden='true'
             >
-                {space.icon}
+                <SpaceIcon
+                    space={space}
+                    size={20}
+                />
             </span>
             <span className={styles.spaceCardText}>
                 <span className={styles.spaceCardName}>{space.title}</span>
@@ -192,8 +216,10 @@ const SpaceCard = ({summary, onOpen}: {summary: SpaceSummary; onOpen: (id: strin
                         <>
                             {pages}
 
-                            {/* eslint-disable-next-line formatjs/no-literal-string-in-jsx -- decorative separator between metadata segments */}
-                            {' · '}
+                            {pages ? (
+                                // eslint-disable-next-line formatjs/no-literal-string-in-jsx -- decorative separator between metadata segments
+                                <>{' · '}</>
+                            ) : null}
                             <FormattedMessage
                                 id='docs.home.space.viewed'
                                 defaultMessage='Viewed {relative}'

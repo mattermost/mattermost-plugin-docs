@@ -1,0 +1,57 @@
+// Mirrors core's channel_info_rhs menu: a flush vertical list of 40px rows that
+// bleed to the panel's edges, so it reads as a menu rather than a card.
+.menu {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    margin-inline: -16px;
+    padding: 8px 0;
+
+    // Core's global `.btn + .btn { margin-left: 8px }` keys off DOM adjacency and
+    // would indent every row after the first; this is a vertical list.
+    :global(.btn + .btn) {
+        margin-left: 0;
+    }
+}
+
+// Scoped under `.btn.btn-sm` to beat core's quaternary color and padding.
+.item:global(.btn.btn-sm) {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    height: 40px;
+    padding: 8px 16px;
+    border-radius: 0;
+    color: var(--center-channel-color);
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 20px;
+    text-align: left;
+
+    &:hover {
+        background: rgba(var(--center-channel-color-rgb), 0.08);
+    }
+}
+
+.icon {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+}
+
+.text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    padding-inline-start: 8px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.badge {
+    flex-shrink: 0;
+    color: rgba(var(--center-channel-color-rgb), 0.75);
+    font-size: 12px;
+    line-height: 18px;
+}

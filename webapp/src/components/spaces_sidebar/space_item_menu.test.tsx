@@ -15,6 +15,13 @@ jest.mock('utils/clipboard', () => ({
     copyToClipboard: jest.fn(),
 }));
 
+// Stubbed at the hook boundary: mattermost-redux's preferences actions are
+// published as ESM that jest doesn't transform.
+jest.mock('hooks/favorites', () => ({
+    useSpaceFavoriteState: () => 'off',
+    useToggleFavorite: () => jest.fn(),
+}));
+
 const space = makeSpace('docs', 'Docs');
 
 function renderMenu(props: Partial<React.ComponentProps<typeof SpaceItemMenu>> = {}) {

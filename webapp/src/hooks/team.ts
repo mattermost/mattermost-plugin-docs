@@ -32,3 +32,10 @@ export function useTeamNamesById(): Map<string, string> {
     const teams = useSelector(getMyTeams);
     return useMemo(() => new Map(teams.map((team) => [team.id, team.name])), [teams]);
 }
+
+// Maps team id → display name, for labelling a result that lives in another team.
+// Distinct from useTeamNamesById, which yields the URL name used for routing.
+export function useTeamDisplayNamesById(): Map<string, string> {
+    const teams = useSelector(getMyTeams);
+    return useMemo(() => new Map(teams.map((team) => [team.id, team.display_name])), [teams]);
+}

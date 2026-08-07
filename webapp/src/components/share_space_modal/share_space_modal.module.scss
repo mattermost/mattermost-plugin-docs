@@ -1,0 +1,46 @@
+.modal {
+    width: 640px;
+    max-width: calc(100vw - 32px);
+}
+
+.copyLink {
+    gap: 6px;
+}
+
+.body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 20px 24px 8px;
+}
+
+.access {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.accessLeft {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: rgba(var(--center-channel-color-rgb), 0.75);
+}
+
+.accessTrigger {
+    gap: 4px;
+    font-weight: 600;
+}
+
+.accessHint {
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+    font-size: 14px;
+}
+
+.canView {
+    gap: 4px;
+    color: var(--link-color);
+    font-weight: 600;
+}

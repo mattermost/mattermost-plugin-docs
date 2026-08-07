@@ -1,0 +1,82 @@
+/*
+ * PORT-TO-CORE: the shared Button is accent-only (every emphasis colors with
+ * --button-bg). These :global rules restore core's neutral header-icon-button
+ * behaviour for ghost buttons that should read as toolbar controls:
+ *   - `.btn-icon` quaternary icon buttons (core's .btn-icon grey is otherwise
+ *     overridden by the later emphasis color, so raise its specificity)
+ *   - quaternary buttons marked `docs-btn-neutral` that carry a label
+ * States mirror core's .btn-icon / channel-header icon: grey base, light-grey
+ * hover, light-blue press (:active), persistent blue when toggled on (.active).
+ * Fold the icon rules into core's .btn-icon; the label rules are a stopgap
+ * until a neutral emphasis exists upstream.
+ */
+
+// Badge overlay (see the `badge` prop on the Button wrappers). Local classes —
+// the wrapper imports this stylesheet for both the badge and the rules below.
+.badged {
+    position: relative;
+}
+
+.badgeDot {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 8px;
+    height: 8px;
+    border: 2px solid var(--center-channel-bg);
+    border-radius: 50%;
+    background: var(--button-bg);
+}
+
+.badgeCount {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    display: flex;
+    min-width: 16px;
+    height: 16px;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+    border: 2px solid var(--center-channel-bg);
+    border-radius: 8px;
+    background: var(--button-bg);
+    color: var(--button-color);
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 12px;
+}
+
+// Base — neutral grey.
+:global(.btn.btn-icon.btn-quaternary),
+:global(.btn.btn-quaternary.docs-btn-neutral) {
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+}
+
+// Hover — light-grey wash (replaces btn-quaternary's accent-blue hover).
+:global(.btn.btn-icon.btn-quaternary:hover),
+:global(.btn.btn-icon.btn-quaternary.btn-force-hover),
+:global(.btn.btn-quaternary.docs-btn-neutral:hover),
+:global(.btn.btn-quaternary.docs-btn-neutral.btn-force-hover) {
+    background: rgba(var(--center-channel-color-rgb), 0.08);
+    color: var(--center-channel-color);
+}
+
+// Pressed — light-blue wash + accent color. Declared after :hover so a hovered
+// press reads blue, not grey.
+:global(.btn.btn-icon.btn-quaternary:active),
+:global(.btn.btn-icon.btn-quaternary.btn-force-active),
+:global(.btn.btn-quaternary.docs-btn-neutral:active),
+:global(.btn.btn-quaternary.docs-btn-neutral.btn-force-active) {
+    background: rgba(var(--button-bg-rgb), 0.08);
+    color: rgb(var(--button-bg-rgb));
+}
+
+// Toggled on (favorited / panel open) — persistent blue, overriding hover.
+:global(.btn.btn-icon.btn-quaternary.active),
+:global(.btn.btn-icon.btn-quaternary.active:hover),
+:global(.btn.btn-quaternary.docs-btn-neutral.active),
+:global(.btn.btn-quaternary.docs-btn-neutral.active:hover) {
+    background: rgba(var(--button-bg-rgb), 0.08);
+    color: rgb(var(--button-bg-rgb));
+}

@@ -1,0 +1,187 @@
+.control {
+    display: flex;
+    box-sizing: border-box;
+    min-height: 40px;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 5px 11px;
+    border-radius: 4px;
+    background: var(--center-channel-bg);
+    cursor: text;
+    gap: 6px;
+
+    // Inset ring rather than a border so widening it on focus doesn't reflow the row.
+    box-shadow: inset 0 0 0 1px rgba(var(--center-channel-color-rgb), 0.16);
+
+    &:focus-within {
+        box-shadow: inset 0 0 0 2px var(--button-bg);
+    }
+}
+
+.searchIcon {
+    flex: 0 0 auto;
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+}
+
+.chip {
+    display: flex;
+    max-width: 100%;
+    align-items: center;
+    padding: 2px 4px 2px 2px;
+    border-radius: 12px;
+    background: rgba(var(--center-channel-color-rgb), 0.08);
+    color: var(--center-channel-color);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 16px;
+    gap: 4px;
+
+    &:focus-visible {
+        outline: 2px solid var(--button-bg);
+        outline-offset: 1px;
+    }
+}
+
+.chipName {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.chipRemove {
+    display: flex;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+    cursor: pointer;
+
+    &:hover {
+        background: rgba(var(--center-channel-color-rgb), 0.16);
+        color: var(--center-channel-color);
+    }
+
+    &:focus-visible {
+        outline: 2px solid var(--button-bg);
+        outline-offset: 1px;
+    }
+}
+
+.input {
+    min-width: 120px;
+    flex: 1 1 120px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--center-channel-color);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 14px;
+    line-height: 24px;
+
+    &:focus {
+        outline: none;
+    }
+
+    &::placeholder {
+        color: rgba(var(--center-channel-color-rgb), 0.64);
+    }
+}
+
+.positioner {
+    z-index: var(--z-index-menu);
+    width: var(--anchor-width);
+}
+
+.popup {
+    box-sizing: border-box;
+    max-height: min(320px, var(--available-height));
+    padding: 6px 0;
+    overflow-y: auto;
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.16);
+    border-radius: 4px;
+    background: var(--center-channel-bg);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+
+    &:focus {
+        outline: none;
+    }
+}
+
+.empty {
+    padding: 8px 16px;
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+    font-size: 14px;
+    line-height: 20px;
+
+    &:empty {
+        display: none;
+    }
+}
+
+.list {
+    display: flex;
+    flex-direction: column;
+
+    &:focus {
+        outline: none;
+    }
+}
+
+// The row itself is the click target: full width, padding on the row (not on an
+// inner wrapper) so every pixel of it selects the person.
+.item {
+    display: flex;
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 40px;
+    align-items: center;
+    padding: 6px 16px;
+    color: var(--center-channel-color);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 14px;
+    line-height: 20px;
+    cursor: pointer;
+    gap: 12px;
+    user-select: none;
+
+    > :global(.Avatar) {
+        flex: 0 0 auto;
+    }
+
+    &:hover,
+    &[data-highlighted] {
+        background: rgba(var(--center-channel-color-rgb), 0.08);
+        outline: none;
+    }
+
+    &:active {
+        background: rgba(var(--center-channel-color-rgb), 0.16);
+    }
+}
+
+.itemInfo {
+    display: flex;
+    flex: 1 1 0;
+    min-width: 0;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.itemName {
+    color: var(--center-channel-color);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.itemUsername {
+    overflow: hidden;
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

@@ -1,13 +1,20 @@
+// Each stacked modal gets a two-slot band of its own — backdrop, then popup —
+// starting from the app's modal layer. Depth comes from `--docs-modal-level`,
+// set by the modal stack (see components/modals). Without it every modal shared
+// one z-index and the order fell to whichever portal mounted first, which is why
+// a modal opened from another could end up under it.
+@function layer($slot) {
+    @return calc(var(--z-index-modal) + (var(--docs-modal-level, 0) * 2) + $slot);
+}
+
 // Base UI's Dialog has no positioner, so the consumer positions the popup. This
 // full-viewport flex container centers it and is click-through
 // (pointer-events: none) so clicks on the dimmed area reach the backdrop to
-// dismiss. This and the backdrop sit in the app's modal layer so they cover
-// fixed chrome like the global header; within that layer the popup still paints
-// above the backdrop by DOM order.
+// dismiss. It sits above its own backdrop and below the next level's.
 .viewport {
     position: fixed;
     inset: 0;
-    z-index: var(--z-index-modal);
+    z-index: layer(1);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -26,13 +33,73 @@
     background: var(--center-channel-bg);
     box-shadow: 0 20px 32px rgba(0, 0, 0, 0.12);
     pointer-events: auto;
+    transition: transform 150ms ease, opacity 150ms ease;
+}
+
+// Arriving and leaving, via the attributes Base UI puts on the popup while it
+// transitions. Same duration and easing as the receding step below, and the same
+// downward axis, so the two read as one motion — but with more travel: this one has
+// to carry a surface in from nothing, where receding only has to hint at depth.
+//
+// The fade here is about a surface that isn't there yet; a modal that has arrived
+// stays fully opaque even once something covers it.
+.modal[data-starting-style],
+.modal[data-ending-style] {
+    transform: scale(0.96) translateY(8px);
+    opacity: 0;
+}
+
+// Something opened on top of this one: sink it back a step so the stack reads as
+// layers rather than as one modal replacing another, and stop it taking clicks —
+// the covering backdrop already intercepts them, but a lower popup should never
+// be the thing under the pointer.
+//
+// Two selectors because there are two ways to stack. `.modalCovered` is the modal
+// stack's own signal. `[data-nested-dialog-open]` is Base UI's, set on a popup
+// that has a dialog open inside its React tree — which is how a modal rendered in
+// another's JSX stacks, and which nothing was reading before.
+// The surface stays fully opaque — it's a solid sheet of paper that moved back, not
+// a translucent one. The dimming comes from the covering modal's backdrop, which
+// paints above this popup's band; fading the popup too would double the effect and
+// let the app show through a modal.
+// Kept deliberately slight so it reads as a step back rather than as the modal
+// shrinking. The dim from the covering backdrop is doing most of the work; this only
+// has to be enough to notice. Sinks down rather than lifting, so the covering modal
+// appears to sit in front of it rather than the two sliding apart.
+.modalCovered,
+.modal[data-nested-dialog-open] {
+    transform: scale(0.99) translateY(2px);
+    pointer-events: none;
 }
 
 .backdrop {
     position: fixed;
     inset: 0;
-    z-index: var(--z-index-modal);
+    z-index: layer(0);
     background: rgba(0, 0, 0, 0.5);
+    transition: opacity 150ms ease;
+}
+
+// The dim arrives with the surface rather than snapping in behind it.
+.backdrop[data-starting-style],
+.backdrop[data-ending-style] {
+    opacity: 0;
+}
+
+// A nested modal's backdrop is additive: the modal below it is already dimming the
+// app, so this one's job is to dim that modal — it is the whole layering cue now
+// that the covered surface stays opaque. Kept well below full strength so levels
+// don't compound toward black.
+.backdropNested {
+    background: rgba(0, 0, 0, 0.32);
+}
+
+// Only the topmost backdrop dims. Stacked blacks would compound toward black, so
+// lower ones stay mounted — Base UI dismisses through them — but paint nothing.
+// Declared after `.backdropNested` deliberately: a backdrop can be both nested and
+// covered, they have equal specificity, and "covered" has to win.
+.backdropCovered {
+    background: transparent;
 }
 
 .header {
@@ -41,17 +108,31 @@
     flex-direction: column;
     gap: 24px;
     padding: 24px 32px;
+}
+
+// Opt-in divider under the header (on by default via the component).
+.headerDivider {
     border-bottom: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
 }
 
+// Title grows; the actions slot and close button sit at the right edge.
 .titleRow {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 10px;
 }
 
+.titleActions {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 8px;
+}
+
+// Grows so the actions slot and close button are pushed to the right edge.
 .title {
+    flex: 1 1 auto;
+    min-width: 0;
     margin: 0;
     color: var(--center-channel-color);
     font-family: 'Metropolis', sans-serif;
@@ -67,6 +148,11 @@
     align-items: center;
     justify-content: flex-end;
     padding: 24px 32px;
+}
+
+// Opt-in divider between the body and footer actions.
+.footerDivider {
+    border-top: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
 }
 
 .close {
