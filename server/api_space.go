@@ -139,7 +139,7 @@ func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 		DefaultCapabilities: preWrapper.DefaultCapabilities,
 		Capabilities:        preWrapper.Capabilities,
 	}
-	wrapper.Space.Props = maps.Clone(updated.Props)
+	wrapper.Props = maps.Clone(updated.Props)
 	wrapper.EnsureCapabilities()
 	writeJSON(w, http.StatusOK, wrapper)
 }
