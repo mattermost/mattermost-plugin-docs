@@ -73,6 +73,8 @@
     "@mattermost/compass-icons": "0.1.53",
     "@mattermost/shared": "11.8.0",
     "@tanstack/react-form": "1.33.0",
+    "@tiptap/core": "3.20.0",
+    "@tiptap/pm": "3.20.0",
     "classnames": "2.3.1",
     "core-js": "3.26.0",
     "mattermost-redux": "11.8.0",
@@ -120,7 +122,7 @@
       "jest-junit"
     ],
     "transformIgnorePatterns": [
-      "node_modules/(?!react-native|react-router|mattermost-webapp)"
+      "node_modules/(?!react-native|react-router|mattermost-webapp|@tiptap|prosemirror-)"
     ],
     "setupFiles": [
       "jest-canvas-mock"
