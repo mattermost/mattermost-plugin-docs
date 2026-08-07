@@ -163,17 +163,20 @@ func (s *Store) lockImportJobForActor(tx sqlx.ExtContext, jobID, actorID string)
 // can actually advance.
 //
 // That restriction is load-bearing. Selection returns the first non-empty state in this order, so a state
-// the worker cannot advance would be selected on every pass and starve everything below it — one confirmed
-// job would wedge the importer permanently, since queued_import is not expirable either. Execution states
-// join this list in the same change that implements them; until then they are unreachable by construction
-// (nothing transitions into importing) or reclaimed by cancellation and expiry.
+// the worker cannot advance would be selected on every pass and starve everything below it — one such job
+// would wedge the importer permanently, since queued_import is not expirable either. Any state added here
+// must be handled by RunImportWork in the same change.
 //
 // Within the list, active states come before newly queued ones so a job interrupted mid-flight is finished
 // before new work starts: it holds staged input and capacity that stay in limbo until it completes.
-// Terminalizing is first because it is the only state that releases those holds.
+// Terminalizing is first because it is the only state that releases those holds, and queued_import comes
+// before queued_preflight because a confirmed job is further along: making a user who has already approved a
+// plan wait behind a newly uploaded bundle would be the wrong queue discipline.
 var importWorkPriority = []model.ImportJobState{
 	model.ImportStateTerminalizing,
+	model.ImportStateImporting,
 	model.ImportStatePreflighting,
+	model.ImportStateQueuedImport,
 	model.ImportStateQueuedPreflight,
 }
 
@@ -995,29 +998,12 @@ func (s *Store) EnterImportTerminalizing(jobID string, intent model.ImportTermin
 		return nil, &ErrConflict{Resource: "ImportJob state=" + string(job.State)}
 	}
 
-	now := mmmodel.GetMillis()
-	builder := s.getQueryBuilder().
-		Update("DOCS_ImportJob").
-		Set("State", string(model.ImportStateTerminalizing)).
-		Set("TerminalIntent", string(intent)).
-		Set("ErrorCode", errorCode).
-		Set("UpdateAt", monotonicBump("UpdateAt", now)).
-		Where(sq.Eq{"Id": jobID, "State": string(job.State)})
-	result, err := s.execBuilder(tx, builder)
-	if err != nil {
-		return nil, errors.Wrap(err, "unable_to_enter_import_terminalizing")
-	}
-	if err = checkRowsAffected(result, "ImportJob", jobID); err != nil {
+	if err = s.enterImportTerminalizing(tx, job, intent, errorCode, mmmodel.GetMillis()); err != nil {
 		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, errors.Wrap(err, "commit_transaction")
 	}
-
-	job.State = model.ImportStateTerminalizing
-	job.TerminalIntent = intent
-	job.ErrorCode = errorCode
-	job.UpdateAt = max(job.UpdateAt+1, now)
 	return job, nil
 }
 

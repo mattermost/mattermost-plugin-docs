@@ -28,6 +28,8 @@ func main() {
 	spaceName := flag.String("space-name", "Docs", "Confluence space name")
 	orgID := flag.String("organization-id", "", "optional Confluence organization id")
 	team := flag.String("team", "myteam", "advisory target team recorded in the bundle (never used to route the import)")
+	revision := flag.Int("revision", 0, "when non-zero, append a revision marker to every page's title and body, so the same bundle represents pages edited in Confluence (the only way to make a reimport see a real source change)")
+	chain := flag.Bool("chain", false, "emit the pages as a single parent-to-child chain instead of a root with flat children")
 	withFindings := flag.Bool("with-findings", false, "also emit a comment, an attachment, restricted pages, and a manifest warning so inspection reports issues")
 	corrupt := flag.String("corrupt", "", "deliberately break the bundle: one of "+strings.Join(importfixture.CorruptModes, ", "))
 	flag.Parse()
@@ -45,6 +47,8 @@ func main() {
 		SpaceName:      *spaceName,
 		OrganizationID: *orgID,
 		Team:           *team,
+		Revision:       *revision,
+		Chain:          *chain,
 		WithFindings:   *withFindings,
 		Corrupt:        *corrupt,
 	})

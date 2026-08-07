@@ -39,6 +39,9 @@ type importMockOptions struct {
 	// deactivatedActor makes GetUser report the acting user as deleted, which the read paths treat as
 	// lost entitlement.
 	deactivatedActor bool
+	// channelCreateFails makes the backing-channel create for a new Space fail without producing a channel,
+	// which is the provisioning failure that needs no compensation.
+	channelCreateFails bool
 }
 
 // newImportMockAPI builds a plugintest API with only the stubs the import flow needs, so a test can
@@ -79,7 +82,40 @@ func newImportMockAPI(o importMockOptions) *plugintest.API {
 	api.On("GetUserByUsername", mock.Anything).
 		Return(nil, mmmodel.NewAppError("GetUserByUsername", "not_found", nil, "", http.StatusNotFound)).Maybe()
 
+	stubImportChannelAPI(api, o)
 	return api
+}
+
+// stubImportChannelAPI stubs the channel calls a new-Space import makes while provisioning its target. The
+// created channel echoes back the requested fields with a fresh id, exactly as core does, so the recorded
+// ProvisionedChannelId and the resolve-on-restart path see a consistent channel.
+func stubImportChannelAPI(api *plugintest.API, o importMockOptions) {
+	created := map[string]*mmmodel.Channel{}
+	if o.channelCreateFails {
+		// No channel comes back, so there is nothing for compensation to reconcile.
+		api.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
+			Return(nil, mmmodel.NewAppError("CreateChannel", "create_failed", nil, "", http.StatusInternalServerError)).Maybe()
+	} else {
+		api.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
+			Return(func(ch *mmmodel.Channel) *mmmodel.Channel {
+				copied := *ch
+				copied.Id = mmmodel.NewId()
+				created[copied.Id] = &copied
+				return &copied
+			}, nil).Maybe()
+	}
+	api.On("AddChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
+	api.On("GetChannelOfType", mock.Anything, mock.Anything).
+		Return(func(channelID string, _ mmmodel.ChannelType) *mmmodel.Channel {
+			return created[channelID]
+		}, nil).Maybe()
+	api.On("DeleteChannel", mock.Anything).
+		Return(func(channelID string) *mmmodel.AppError {
+			if ch, ok := created[channelID]; ok {
+				ch.DeleteAt = mmmodel.GetMillis()
+			}
+			return nil
+		}).Maybe()
 }
 
 // multipartImportBody builds the multipart body the upload endpoint expects. A nil requestJSON omits
@@ -955,18 +991,23 @@ func TestHandleCancelImport_RecordsOutcomesForPreflightOnlyEntities(t *testing.T
 		`SELECT COUNT(*) FROM DOCS_ImportResult WHERE JobId = $1 AND Stage = 'execution'`, jobID).Scan(&executionRows))
 	require.Equal(t, 3, executionRows)
 
-	var staleOutcome, staleExternalID string
+	var staleOutcome, staleExternalID, stalePlanned string
 	require.NoError(t, h.db.QueryRow(
-		`SELECT Outcome, ExternalId FROM DOCS_ImportResult
+		`SELECT Outcome, ExternalId, PlannedAction FROM DOCS_ImportResult
 		   WHERE JobId = $1 AND Stage = 'execution' AND Ordinal = $2`, jobID, staleOrdinal).
-		Scan(&staleOutcome, &staleExternalID))
+		Scan(&staleOutcome, &staleExternalID, &stalePlanned))
 	require.Equal(t, string(model.ImportOutcomeNotAttemptedCancel), staleOutcome)
 	require.Equal(t, "9001", staleExternalID, "the stale entry's identity must carry across from preflight")
+	require.Equal(t, string(model.ImportActionStale), stalePlanned,
+		"the plan is preserved on the row even though the outcome is not-attempted")
 
 	job, err := h.store.GetImportJob(jobID)
 	require.NoError(t, err)
 	require.Equal(t, 3, job.FinalSummary.Actions.NotAttempted)
-	require.Equal(t, 1, job.FinalSummary.Actions.Stale)
+	// A canceled job never looked at these mappings, so it has no grounds to assert the source dropped them.
+	// The final counts report what actually happened; the historical classification stays on the row above and
+	// in the preflight report.
+	require.Zero(t, job.FinalSummary.Actions.Stale)
 }
 
 // TestHandleCreateImport_DoesNotDrainOversizedRequestPart covers the request part's own size cap. The
