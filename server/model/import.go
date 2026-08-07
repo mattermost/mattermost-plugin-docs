@@ -497,8 +497,13 @@ type ImportJob struct {
 	// RetainedIssueBytes is the discretionary share of RetainedBytes: how much of
 	// ImportRetainedIssueBudgetBytes the job's issue rows have already spent. It is tracked separately
 	// so issue writers cannot borrow the capacity reserved for mandatory outcomes.
-	RetainedIssueBytes    int64 `json:"-"`
-	RetainedReservedBytes int64 `json:"-"`
+	RetainedIssueBytes int64 `json:"-"`
+	// PreflightRetainedBytes and PreflightRetainedIssueBytes are what the job's current preflight-stage
+	// rows contribute to the two totals above. Preflight is republished wholesale on recomputation, so the
+	// previous plan's charge must be known in order to be replaced rather than double-counted.
+	PreflightRetainedBytes      int64 `json:"-"`
+	PreflightRetainedIssueBytes int64 `json:"-"`
+	RetainedReservedBytes       int64 `json:"-"`
 
 	BundleSha256      string                 `json:"-"`
 	BundleSummary     ImportBundleSummary    `json:"bundle_summary"`
@@ -1135,7 +1140,8 @@ func (j *ImportJob) IsValid() *mmmodel.AppError {
 	if utf8.RuneCountInString(j.ErrorCode) > ImportErrorCodeMaxRunes {
 		return mmmodel.NewAppError(where, "model.import_job.is_valid.error_code_length.app_error", map[string]any{"MaxLength": ImportErrorCodeMaxRunes}, "id="+j.Id, http.StatusBadRequest)
 	}
-	if j.StagedBytes < 0 || j.RetainedBytes < 0 || j.RetainedIssueBytes < 0 || j.RetainedReservedBytes < 0 {
+	if j.StagedBytes < 0 || j.RetainedBytes < 0 || j.RetainedIssueBytes < 0 || j.RetainedReservedBytes < 0 ||
+		j.PreflightRetainedBytes < 0 || j.PreflightRetainedIssueBytes < 0 {
 		return mmmodel.NewAppError(where, "model.import_job.is_valid.byte_accounting.app_error", nil, "id="+j.Id, http.StatusBadRequest)
 	}
 	if j.CreateAt == 0 || j.UpdateAt == 0 || j.RetainUntil == 0 {

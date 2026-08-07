@@ -21,6 +21,8 @@ const (
 	IssueLocalParentChangedPreserved   = "local_parent_changed_preserved"
 	IssueLocalBodyNotCanonical         = "local_body_not_canonical"
 	IssueTargetSiblingCapacityExceeded = "target_sibling_capacity_exceeded"
+	IssueParentBlocked                 = "parent_blocked_by_ancestor"
+	IssueReportTruncated               = "report_truncated"
 	IssueTargetDepthExceeded           = "target_depth_exceeded"
 	IssueMappingCapacityExceeded       = "mapping_capacity_exceeded"
 	IssueAuthorFallbackToActor         = "author_fallback_to_actor"

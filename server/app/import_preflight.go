@@ -39,6 +39,11 @@ const (
 func (s *Service) RunImportPreflight(jobID string) error {
 	job, mappingRevision, err := s.store.BeginImportPreflight(jobID)
 	if err != nil {
+		if store.IsErrImportSourceMissing(err) {
+			// The job can never proceed, so it is failed rather than retried: leaving it queued would have
+			// the worker re-select it on every pass and starve everything behind it.
+			return s.failImportJob(jobID, ImportErrorSourceMissing, err)
+		}
 		if store.IsErrConflict(err) || store.IsErrNotFound(err) {
 			// The job advanced or vanished between work selection and this transition. The CAS losing is
 			// the intended outcome, not an error worth failing the job over.
@@ -50,16 +55,11 @@ func (s *Service) RunImportPreflight(jobID string) error {
 
 	publication, err := s.computeImportPreflight(job, mappingRevision)
 	if err != nil {
-		s.log.Error("Import preflight failed",
-			"job_id", job.Id, "actor_id", job.ActorId, "target_space_id", job.TargetSpaceId, "err", err)
 		code := ImportErrorPreflightFailed
-		if store.IsErrNotFound(err) {
+		if store.IsErrImportSourceMissing(err) {
 			code = ImportErrorSourceMissing
 		}
-		if _, termErr := s.store.EnterImportTerminalizing(job.Id, model.ImportIntentFailed, code); termErr != nil {
-			return errors.Wrap(termErr, "terminalize after failed preflight")
-		}
-		return nil
+		return s.failImportJob(job.Id, code, err)
 	}
 
 	published, err := s.store.PublishImportPreflight(publication)
@@ -70,6 +70,9 @@ func (s *Service) RunImportPreflight(jobID string) error {
 			s.log.Info("Import preflight discarded: source mappings changed during computation",
 				"job_id", job.Id, "mapping_revision", mappingRevision)
 			return s.requeueImportPreflight(job.Id)
+		}
+		if store.IsErrImportSourceMissing(err) {
+			return s.failImportJob(job.Id, ImportErrorSourceMissing, err)
 		}
 		if store.IsErrConflict(err) {
 			s.log.Debug("Import preflight not published: job state changed", "job_id", job.Id, "err", err)
@@ -86,6 +89,22 @@ func (s *Service) RunImportPreflight(jobID string) error {
 		"noop", publication.Summary.Actions.Noop, "preserve_local", publication.Summary.Actions.PreserveLocal,
 		"conflict", publication.Summary.Actions.Conflict, "blocked", publication.Summary.Actions.Blocked,
 		"stale", publication.Summary.Actions.Stale)
+	return nil
+}
+
+// failImportJob records a terminal failure intent and hands the job to terminalization, which writes its
+// durable report. Any state the worker cannot advance must end up here rather than staying selectable:
+// selection returns the highest-priority non-empty state, so a job that is retried forever starves every
+// job behind it.
+func (s *Service) failImportJob(jobID, errorCode string, cause error) error {
+	s.log.Error("Import job failed", "job_id", jobID, "error_code", errorCode, "err", cause)
+	if _, err := s.store.EnterImportTerminalizing(jobID, model.ImportIntentFailed, errorCode); err != nil {
+		if store.IsErrConflict(err) || store.IsErrNotFound(err) {
+			// Already terminal or gone; nothing left to fail.
+			return nil
+		}
+		return errors.Wrap(err, "terminalize failed import job")
+	}
 	return nil
 }
 
@@ -123,8 +142,13 @@ type preflightState struct {
 	plans   []store.ImportStagedPagePlan
 	results []*model.ImportResultRecord
 	issues  []*model.ImportIssueRecord
-	actions model.ImportActionCounts
-	authors model.ImportAuthorCounts
+	// issueBytes is what the issues recorded so far have spent of the flat per-job allowance;
+	// issuesDropped counts the findings omitted once it ran out.
+	issueBytes         int64
+	issuesDropped      int
+	truncationRecorded bool
+	actions            model.ImportActionCounts
+	authors            model.ImportAuthorCounts
 
 	// creates records, per intended local parent, how many new pages the plan would add, for the
 	// projected sibling-capacity check.
@@ -132,10 +156,26 @@ type preflightState struct {
 	// createDepthNeeded is the set of existing local parent ids new pages would be added under, whose
 	// depth must be projected.
 	createDepthNeeded map[string]int
-	// createParentByOrdinal records each planned create's intended local parent. It is not a persisted
-	// column — an existing page's PreflightCurrentParentId means the parent it already has, which a create
-	// by definition does not — so the projection keeps its own map.
-	createParentByOrdinal map[int]string
+	// plannedNewMappings counts the creates planned so far, i.e. how many *new* mappings this job would add
+	// to the selected source.
+	plannedNewMappings int
+	// plannedCreates lists every planned create in ordinal order, which is parents-before-children order.
+	// The structural projection walks it to derive each new page's projected depth and to cascade blocking
+	// down a subtree — neither of which is answerable from the database alone, because most of the parents
+	// involved do not exist yet.
+	plannedCreates []plannedCreate
+	// plannedCreateIDs is the set of local ids that belong to planned creates, so the projection can tell an
+	// in-bundle parent (whose depth it computes) from an existing local parent (whose depth it queries).
+	plannedCreateIDs map[string]struct{}
+}
+
+// plannedCreate is one page the plan would create, with the identity the structural projection needs.
+type plannedCreate struct {
+	ordinal          int
+	externalID       string
+	parentExternalID string
+	// parentLocalID is "" for a Space root, a planned id for an in-bundle parent, or an existing page id.
+	parentLocalID string
 }
 
 // resolvedAuthor is one author resolution outcome.
@@ -147,17 +187,17 @@ type resolvedAuthor struct {
 // computeImportPreflight builds the complete preflight for a job without writing anything.
 func (s *Service) computeImportPreflight(job *model.ImportJob, mappingRevision int64) (*store.ImportPreflightPublication, error) {
 	st := &preflightState{
-		job:                   job,
-		mappingRevision:       mappingRevision,
-		mappings:              map[string]*importer.MappingBaseline{},
-		seen:                  map[string]struct{}{},
-		plannedIDs:            map[string]string{},
-		blocked:               map[string]struct{}{},
-		authorCache:           map[string]resolvedAuthor{},
-		userProposals:         map[string]string{},
-		createsPerParent:      map[string]int{},
-		createDepthNeeded:     map[string]int{},
-		createParentByOrdinal: map[int]string{},
+		job:               job,
+		mappingRevision:   mappingRevision,
+		mappings:          map[string]*importer.MappingBaseline{},
+		seen:              map[string]struct{}{},
+		plannedIDs:        map[string]string{},
+		blocked:           map[string]struct{}{},
+		authorCache:       map[string]resolvedAuthor{},
+		userProposals:     map[string]string{},
+		createsPerParent:  map[string]int{},
+		createDepthNeeded: map[string]int{},
+		plannedCreateIDs:  map[string]struct{}{},
 	}
 
 	users, err := s.store.GetImportManifestUsers(job.Id)
@@ -270,11 +310,15 @@ func (s *Service) loadLocalStateForBatch(st *preflightState, pages []*model.Impo
 // classifyOneStagedPage decides one page and records its plan, result, and issues.
 func (s *Service) classifyOneStagedPage(st *preflightState, page *model.ImportStagedPage, locals map[string]*store.ImportLocalPage) error {
 	sourceProps := map[string]any(page.SourceProps)
+	// The same effective proposal inspection hashed, and the same one resolution will use below. Hashing a
+	// different proposal than the one that decides attribution lets a real author change read as unchanged.
+	effectiveProposal := importer.EffectiveAuthorProposal(
+		st.userProposals[page.SourceAuthorAccountId], page.SourceUserProposal)
 	incomingHash, err := importer.HashSourceContent(importer.SourceContentHashInput{
 		Title:           page.Title,
 		CanonicalBody:   page.CanonicalBody,
 		AuthorAccountID: page.SourceAuthorAccountId,
-		AuthorProposal:  st.userProposals[page.SourceAuthorAccountId],
+		AuthorProposal:  effectiveProposal,
 		SourceCreateAt:  page.SourceCreateAt,
 		SourceUpdateAt:  page.SourceUpdateAt,
 		SourceProps:     importer.BuildDocsImportProps(importer.DocsImportInput{SourceProps: sourceProps})[importer.DocsImportKeySourceProps].(map[string]any),
@@ -310,10 +354,21 @@ func (s *Service) classifyOneStagedPage(st *preflightState, page *model.ImportSt
 		// parenting can refer to a page that does not exist yet.
 		plannedPageID = mmmodel.NewId()
 		st.plannedIDs[page.ExternalId] = plannedPageID
+		st.plannedNewMappings++
 		st.createsPerParent[parentLocalID]++
-		st.createParentByOrdinal[page.Ordinal] = parentLocalID
+		st.plannedCreateIDs[plannedPageID] = struct{}{}
+		st.plannedCreates = append(st.plannedCreates, plannedCreate{
+			ordinal:          page.Ordinal,
+			externalID:       page.ExternalId,
+			parentExternalID: page.ParentExternalId,
+			parentLocalID:    parentLocalID,
+		})
+		// Only an *existing* local parent needs its depth queried. A parent that is itself a planned create
+		// has no row yet, and its depth is derived from the plan instead.
 		if parentLocalID != "" {
-			st.createDepthNeeded[parentLocalID] = 0
+			if _, planned := st.plannedCreateIDs[parentLocalID]; !planned {
+				st.createDepthNeeded[parentLocalID] = 0
+			}
 		}
 	case classification.Action == model.ImportActionBlocked:
 		st.blocked[page.ExternalId] = struct{}{}
@@ -395,11 +450,15 @@ func (st *preflightState) parentAvailability(page *model.ImportStagedPage, mappi
 
 // mappingCapacityExceeded reports whether adopting one more page would push the selected source past its
 // retained-mapping cap. Existing mappings are already counted, so only new pages can breach it.
+//
+// The planned count is tracked on its own rather than derived from plannedIDs, which also holds an entry
+// for every *existing* mapping seen in the bundle: adding that to len(mappings) counts those pages twice,
+// which blocks valid creates early and makes the outcome depend on where in the bundle they appear.
 func (st *preflightState) mappingCapacityExceeded(mapping *importer.MappingBaseline) bool {
 	if mapping != nil {
 		return false
 	}
-	return len(st.mappings)+len(st.plannedIDs) >= model.ImportMaxMappingsPerSource
+	return len(st.mappings)+st.plannedNewMappings >= model.ImportMaxMappingsPerSource
 }
 
 // recordPlan stores the reviewed baseline for one page. Every hash and parent recorded here is what
@@ -488,6 +547,11 @@ func structuralChangeCodes(issues []string) []string {
 // Ordinals are page-strided (Ordinal*ImportIssuesPerPage + index) so a page's issues stay adjacent and
 // deterministic across recomputations, and the per-page count is capped so one pathological page cannot
 // consume another page's stride.
+//
+// Issues are the *discretionary* half of the retained budget, so the flat per-job allowance is enforced
+// here: once it is spent the plan stops emitting per-page findings and records one aggregate truncation
+// issue instead. Without that check the report could grow to ImportMaxIssueCodesPerPage rows per page, far
+// past anything admission reserved — the outcomes themselves are unaffected, only their explanations.
 func (st *preflightState) recordIssues(page *model.ImportStagedPage, classification importer.Classification, author resolvedAuthor) {
 	codes := classification.Issues
 	if author.reason != "" {
@@ -497,6 +561,10 @@ func (st *preflightState) recordIssues(page *model.ImportStagedPage, classificat
 		codes = codes[:model.ImportMaxIssueCodesPerPage]
 	}
 	for i, code := range codes {
+		if st.issueBudgetSpent() {
+			st.truncateIssues(len(codes) - i)
+			return
+		}
 		st.issues = append(st.issues, &model.ImportIssueRecord{
 			JobId:       st.job.Id,
 			Stage:       model.ImportStagePreflight,
@@ -511,7 +579,40 @@ func (st *preflightState) recordIssues(page *model.ImportStagedPage, classificat
 			Remediation: preflightIssueRemediation(code),
 			Details:     issueDetails(code, author),
 		})
+		st.issueBytes += estimateIssueRowBytes(code)
 	}
+}
+
+// issueBudgetSpent reports whether the plan has used its discretionary issue allowance.
+func (st *preflightState) issueBudgetSpent() bool {
+	return st.issueBytes >= int64(model.ImportRetainedIssueBudgetBytes)
+}
+
+// truncateIssues records, exactly once, that the report stopped listing findings. A silent cap would read
+// as "nothing else was wrong", so the count of what was dropped is part of the report.
+func (st *preflightState) truncateIssues(dropped int) {
+	st.issuesDropped += dropped
+	if st.truncationRecorded {
+		return
+	}
+	st.truncationRecorded = true
+	st.issues = append(st.issues, &model.ImportIssueRecord{
+		JobId:       st.job.Id,
+		Stage:       model.ImportStagePreflight,
+		Ordinal:     model.ImportJobIssueOrdinalBase - 1,
+		Severity:    model.ImportSeverityWarning,
+		Code:        importer.IssueReportTruncated,
+		Message:     preflightIssueMessage(importer.IssueReportTruncated),
+		Remediation: preflightIssueRemediation(importer.IssueReportTruncated),
+	})
+}
+
+// estimateIssueRowBytes is the charge one issue row makes against the allowance. It uses the same measured
+// shape the store charges at publication, built from the text this code will carry, so the budget the plan
+// spends here and the bytes the store records cannot drift apart by more than the small fixed overhead.
+func estimateIssueRowBytes(code string) int64 {
+	return int64(len(code) + len(preflightIssueMessage(code)) + len(preflightIssueRemediation(code)) +
+		model.ImportExternalIDMaxBytes)
 }
 
 // issueDetails adds the small extras a specific code needs.
@@ -590,59 +691,84 @@ func (s *Service) appendStaleResults(st *preflightState) {
 	}
 }
 
-// applyStructuralProjections blocks planned creates that would breach the target's sibling or depth
-// limits.
+// applyStructuralProjections blocks planned creates the target cannot actually accept, and cascades that
+// blocking through their descendants.
 //
-// It runs after content classification because capacity depends on how many creates the whole plan adds
-// to each group, which is only known once every page has been classified. Execution rechecks both limits
-// under locks: an interactive edit can consume the remaining room between review and execution, so this
-// is a review-time projection rather than a guarantee.
+// It runs after content classification because both questions depend on the whole plan: a group's capacity
+// depends on how many creates it receives in total, and a new page's depth depends on ancestors that mostly
+// do not exist yet. Querying the database alone answers neither — a chain of ten new pages beneath an
+// existing page at depth five projects a leaf at depth fifteen, and no row exists to reveal that.
+//
+// Execution rechecks both limits under locks: an interactive edit can consume the remaining room between
+// review and execution, so this is a review-time projection rather than a guarantee.
 func (s *Service) applyStructuralProjections(st *preflightState) error {
-	if len(st.createsPerParent) == 0 {
+	if len(st.plannedCreates) == 0 {
 		return nil
 	}
-	parents := make([]string, 0, len(st.createsPerParent))
-	for parentID := range st.createsPerParent {
-		parents = append(parents, parentID)
-	}
-	sort.Strings(parents)
 
-	existingChildren, err := s.store.CountLivePageChildren(st.job.TargetSpaceId, parents)
+	groups := make([]string, 0, len(st.createsPerParent))
+	for parentID := range st.createsPerParent {
+		groups = append(groups, parentID)
+	}
+	sort.Strings(groups)
+	existingChildren, err := s.store.CountLivePageChildren(st.job.TargetSpaceId, groups)
 	if err != nil {
 		return errors.Wrap(err, "count target sibling groups")
 	}
-	depthParents := make([]string, 0, len(st.createDepthNeeded))
+
+	existingParents := make([]string, 0, len(st.createDepthNeeded))
 	for parentID := range st.createDepthNeeded {
-		depthParents = append(depthParents, parentID)
+		existingParents = append(existingParents, parentID)
 	}
-	sort.Strings(depthParents)
-	depths, err := s.store.GetLivePageDepths(depthParents)
+	sort.Strings(existingParents)
+	existingDepths, err := s.store.GetLivePageDepths(existingParents)
 	if err != nil {
 		return errors.Wrap(err, "project target depths")
 	}
 
-	overCapacity := map[string]struct{}{}
-	for _, parentID := range parents {
-		if existingChildren[parentID]+st.createsPerParent[parentID] > store.MaxPageSiblingsLimit {
-			overCapacity[parentID] = struct{}{}
+	// Walk the planned creates in ordinal order, which the producer guarantees is parents before children.
+	// One pass therefore resolves every projected depth and propagates every block.
+	projectedDepth := make(map[string]int, len(st.plannedCreates))
+	blocks := map[int]string{}
+	for _, create := range st.plannedCreates {
+		// A blocked ancestor blocks the whole subtree: parenting a page under an id that will never exist
+		// would silently root it at the top of the Space instead.
+		if _, blocked := st.blocked[create.parentExternalID]; create.parentExternalID != "" && blocked {
+			st.blocked[create.externalID] = struct{}{}
+			blocks[create.ordinal] = importer.IssueParentBlocked
+			continue
+		}
+
+		// A source root becomes a Space root at depth 1. Otherwise the parent's depth comes from the plan
+		// when the parent is itself a create, and from the database when it already exists.
+		depth := 1
+		if create.parentLocalID != "" {
+			if _, planned := st.plannedCreateIDs[create.parentLocalID]; planned {
+				depth = projectedDepth[create.parentExternalID] + 1
+			} else {
+				depth = existingDepths[create.parentLocalID] + 1
+			}
+		}
+		projectedDepth[create.externalID] = depth
+
+		switch {
+		case depth > model.MaxPageDepth:
+			st.blocked[create.externalID] = struct{}{}
+			blocks[create.ordinal] = importer.IssueTargetDepthExceeded
+		case existingChildren[create.parentLocalID]+st.createsPerParent[create.parentLocalID] > store.MaxPageSiblingsLimit:
+			st.blocked[create.externalID] = struct{}{}
+			blocks[create.ordinal] = importer.IssueTargetSiblingCapacityExceeded
 		}
 	}
-	overDepth := map[string]struct{}{}
-	for parentID, depth := range depths {
-		// A create sits one level below its parent, so the parent must itself be shallower than the limit.
-		if depth+1 > model.MaxPageDepth {
-			overDepth[parentID] = struct{}{}
-		}
-	}
-	if len(overCapacity) == 0 && len(overDepth) == 0 {
+	if len(blocks) == 0 {
 		return nil
 	}
-	return s.blockCreatesUnder(st, overCapacity, overDepth)
+	return s.applyProjectionBlocks(st, blocks)
 }
 
-// blockCreatesUnder rewrites the plan for creates whose target group cannot accept them.
-func (s *Service) blockCreatesUnder(st *preflightState, overCapacity, overDepth map[string]struct{}) error {
-	// The plan is indexed by ordinal, and results share that ordinal, so both are rewritten together.
+// applyProjectionBlocks rewrites the plan and result rows for creates the projection refused, and records
+// why. The plan and its result share an ordinal, so both are rewritten together.
+func (s *Service) applyProjectionBlocks(st *preflightState, blocks map[int]string) error {
 	resultByOrdinal := make(map[int]*model.ImportResultRecord, len(st.results))
 	for _, r := range st.results {
 		resultByOrdinal[r.Ordinal] = r
@@ -650,28 +776,21 @@ func (s *Service) blockCreatesUnder(st *preflightState, overCapacity, overDepth 
 
 	for i := range st.plans {
 		plan := &st.plans[i]
-		if plan.PlannedAction != model.ImportActionCreate {
+		code, blocked := blocks[plan.Ordinal]
+		if !blocked || plan.PlannedAction != model.ImportActionCreate {
 			continue
 		}
 		result := resultByOrdinal[plan.Ordinal]
 		if result == nil {
 			continue
 		}
-		parentID := st.createParentByOrdinal[plan.Ordinal]
-		code := ""
-		if _, over := overCapacity[parentID]; over {
-			code = importer.IssueTargetSiblingCapacityExceeded
-		}
-		if _, over := overDepth[parentID]; over {
-			code = importer.IssueTargetDepthExceeded
-		}
-		if code == "" {
-			continue
-		}
 		plan.PlannedAction = model.ImportActionBlocked
+		// The planned id is dropped with the plan: leaving it would let a report or a link rewrite refer to a
+		// page this import has just decided not to create.
 		plan.PlannedPageId = ""
 		result.PlannedAction = model.ImportActionBlocked
 		result.Outcome = model.ImportOutcomeBlocked
+		result.LocalId = ""
 		st.actions.Create--
 		st.actions.Blocked++
 		st.issues = append(st.issues, &model.ImportIssueRecord{

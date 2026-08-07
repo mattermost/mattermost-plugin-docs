@@ -82,6 +82,11 @@ CREATE TABLE IF NOT EXISTS DOCS_ImportJob (
     -- The discretionary (issue-row) share of RetainedBytes, tracked separately so issue writers are
     -- bounded by their own flat allowance and cannot spend the capacity held for mandatory outcomes.
     RetainedIssueBytes        BIGINT NOT NULL DEFAULT 0,
+    -- What the current preflight-stage rows contribute to the two figures above. Preflight is republished
+    -- wholesale on every recomputation, so the charge has to be replaceable: without knowing what the
+    -- previous plan cost, a recompute would either double-count it or lose it entirely.
+    PreflightRetainedBytes      BIGINT NOT NULL DEFAULT 0,
+    PreflightRetainedIssueBytes BIGINT NOT NULL DEFAULT 0,
     -- Conservative budget reserved at upload for preflight and mandatory terminal report rows, so an
     -- admitted job can always afford its terminal outcome.
     RetainedReservedBytes     BIGINT NOT NULL DEFAULT 0,

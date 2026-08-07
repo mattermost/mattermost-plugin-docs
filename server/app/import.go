@@ -695,6 +695,12 @@ func buildImportJobViewWithoutCandidates(job *model.ImportJob) *model.ImportJobV
 	if job.PreflightRevision != "" {
 		view.Preflight = importPreflightReportSummary(job)
 	}
+	if job.State.IsTerminal() {
+		// A terminal job's report is the whole point of retaining it for ninety days, so its summary is
+		// projected even when nothing ran: a canceled job still reports which pages it held and that none
+		// were attempted.
+		view.Final = importFinalReportSummary(job)
+	}
 	view.RequiredAcknowledgements = requiredAcknowledgements(job)
 	return view
 }
@@ -719,6 +725,32 @@ func importPreflightReportSummary(job *model.ImportJob) *model.ImportReportSumma
 			RestrictedEmittedPages:  summary.Manifest.RestrictedEmittedPages,
 			RestrictedManifestOnly:  summary.Manifest.RestrictedManifestOnly,
 			Actions:                 importActionCountsMap(summary.Actions),
+			Authors: map[string]int{
+				"mapped":            summary.Authors.Mapped,
+				"fallback_to_actor": summary.Authors.FallbackToActor,
+			},
+		},
+	}
+}
+
+// importFinalReportSummary projects the persisted final summary. Unlike the preflight summary it carries
+// no revision: there is nothing left to confirm, and outcomes rather than planned actions are what a
+// reader of a finished import needs.
+func importFinalReportSummary(job *model.ImportJob) *model.ImportReportSummary {
+	summary := job.FinalSummary
+	return &model.ImportReportSummary{
+		Stage:       string(model.ImportStageExecution),
+		GeneratedAt: job.FinishedAt,
+		Fidelity:    model.NewImportFidelity(),
+		Counts: model.ImportReportCounts{
+			Pages:                   summary.Manifest.Pages,
+			Comments:                summary.Manifest.Comments,
+			Attachments:             summary.Manifest.Attachments,
+			RestrictedManifestTotal: summary.Manifest.RestrictedManifestTotal,
+			RestrictedEmittedPages:  summary.Manifest.RestrictedEmittedPages,
+			RestrictedManifestOnly:  summary.Manifest.RestrictedManifestOnly,
+			Actions:                 importActionCountsMap(summary.Actions),
+			Outcomes:                summary.Outcomes,
 			Authors: map[string]int{
 				"mapped":            summary.Authors.Mapped,
 				"fallback_to_actor": summary.Authors.FallbackToActor,

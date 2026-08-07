@@ -40,6 +40,27 @@ func IsErrPreflightStale(err error) bool {
 	return errors.As(err, &e)
 }
 
+// ErrImportSourceMissing reports that a job's selected ImportSource no longer exists.
+//
+// It is deliberately its own type rather than a plain not-found: a missing *job* means the work vanished and
+// the worker should move on, while a missing *source* means this job can never proceed and must be failed.
+// Conflating the two makes the worker retry forever, re-selecting the same job on every pass and starving
+// everything behind it.
+type ErrImportSourceMissing struct {
+	JobID    string
+	SourceID string
+}
+
+func (e *ErrImportSourceMissing) Error() string {
+	return "import job " + e.JobID + " selected an import source that no longer exists: " + e.SourceID
+}
+
+// IsErrImportSourceMissing reports whether err is an ErrImportSourceMissing.
+func IsErrImportSourceMissing(err error) bool {
+	var e *ErrImportSourceMissing
+	return errors.As(err, &e)
+}
+
 // --- source selection ---
 
 // SelectImportSource records the actor's explicit ImportSource choice and queues the job for preflight.
@@ -138,11 +159,28 @@ func (s *Store) lockImportJobForActor(tx sqlx.ExtContext, jobID, actorID string)
 
 // --- worker work selection ---
 
-// importWorkPriority is the order the worker resumes states in. Active states come before newly queued
-// ones so a job interrupted mid-flight is finished before new work is started: an interrupted job holds
-// staged input, capacity, and possibly committed page decisions, all of which stay in limbo until it
-// completes. Terminalizing is first because it is the only state that releases those holds.
+// importWorkPriority is the order the worker resumes states in, and it contains *only* states this release
+// can actually advance.
+//
+// That restriction is load-bearing. Selection returns the first non-empty state in this order, so a state
+// the worker cannot advance would be selected on every pass and starve everything below it — one confirmed
+// job would wedge the importer permanently, since queued_import is not expirable either. Execution states
+// join this list in the same change that implements them; until then they are unreachable by construction
+// (nothing transitions into importing) or reclaimed by cancellation and expiry.
+//
+// Within the list, active states come before newly queued ones so a job interrupted mid-flight is finished
+// before new work starts: it holds staged input and capacity that stay in limbo until it completes.
+// Terminalizing is first because it is the only state that releases those holds.
 var importWorkPriority = []model.ImportJobState{
+	model.ImportStateTerminalizing,
+	model.ImportStatePreflighting,
+	model.ImportStateQueuedPreflight,
+}
+
+// importActiveStates are every worker-owned state, including those importWorkPriority deliberately omits.
+// The invariant check counts these rather than the selectable ones, so a job parked in an unimplemented
+// state is still visible as active work.
+var importActiveStates = []model.ImportJobState{
 	model.ImportStateTerminalizing,
 	model.ImportStateImporting,
 	model.ImportStatePreflighting,
@@ -177,8 +215,8 @@ func (s *Store) GetNextImportWork() (*model.ImportJob, error) {
 // most one; more means either an unsupported multi-node deployment or a bug, and the caller logs it as an
 // invariant violation rather than silently processing them.
 func (s *Store) CountActiveImportJobs() (int, error) {
-	active := make([]string, 0, len(importWorkPriority))
-	for _, state := range importWorkPriority {
+	active := make([]string, 0, len(importActiveStates))
+	for _, state := range importActiveStates {
 		if state.IsWorkerOwned() {
 			active = append(active, string(state))
 		}
@@ -266,9 +304,9 @@ func (s *Store) readImportSourceRevision(tx sqlx.ExtContext, job *model.ImportJo
 	var revision int64
 	if err := s.getBuilder(tx, &revision, builder); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			// A selected source that has vanished is a hard failure rather than "revision zero": zero
-			// would silently reclassify every mapped page as a create.
-			return 0, &ErrNotFound{EntityName: "ImportSource", ID: job.SelectedImportSourceId}
+			// A selected source that has vanished is a hard failure rather than "revision zero": zero would
+			// silently reclassify every mapped page as a create.
+			return 0, &ErrImportSourceMissing{JobID: job.Id, SourceID: job.SelectedImportSourceId}
 		}
 		return 0, errors.Wrap(err, "unable_to_read_import_source_revision")
 	}
@@ -538,6 +576,19 @@ func (s *Store) PublishImportPreflight(pub *ImportPreflightPublication) (_ *mode
 		return nil, err
 	}
 
+	// Charge what this plan retains, replacing the previous plan's charge rather than adding to it: a
+	// recompute deletes those rows, so accumulating would over-count and ignoring them would leave rows the
+	// accounting never knew about — which is what lets repeated preflight/cancel cycles retain storage for
+	// ninety days against a figure that barely moves.
+	charge, err := measureImportPreflightCharge(pub)
+	if err != nil {
+		return nil, err
+	}
+	job.RetainedBytes += charge.total - job.PreflightRetainedBytes
+	job.RetainedIssueBytes += charge.issues - job.PreflightRetainedIssueBytes
+	job.PreflightRetainedBytes = charge.total
+	job.PreflightRetainedIssueBytes = charge.issues
+
 	now := mmmodel.GetMillis()
 	updateBuilder := s.getQueryBuilder().
 		Update("DOCS_ImportJob").
@@ -548,6 +599,10 @@ func (s *Store) PublishImportPreflight(pub *ImportPreflightPublication) (_ *mode
 		Set("PreflightMappingRevision", pub.MappingRevision).
 		Set("MappingInputsChanged", false).
 		Set("ProgressCurrent", int64(len(pub.Plans))).
+		Set("RetainedBytes", job.RetainedBytes).
+		Set("RetainedIssueBytes", job.RetainedIssueBytes).
+		Set("PreflightRetainedBytes", job.PreflightRetainedBytes).
+		Set("PreflightRetainedIssueBytes", job.PreflightRetainedIssueBytes).
 		Set("UpdateAt", monotonicBump("UpdateAt", now)).
 		Where(sq.Eq{"Id": pub.JobID, "State": string(model.ImportStatePreflighting)})
 	result, err := s.execBuilder(tx, updateBuilder)
@@ -570,6 +625,39 @@ func (s *Store) PublishImportPreflight(pub *ImportPreflightPublication) (_ *mode
 	job.ProgressCurrent = int64(len(pub.Plans))
 	job.UpdateAt = max(job.UpdateAt+1, now)
 	return job, nil
+}
+
+// importPreflightCharge is what one published preflight retains, split by budget pool.
+type importPreflightCharge struct {
+	total  int64
+	issues int64
+}
+
+// measureImportPreflightCharge measures a publication's retained cost: its result rows, its issue rows, and the
+// summary it persists. Measuring rather than estimating matters here for the same reason it does at upload —
+// issue text spans orders of magnitude, so a flat per-row figure would be wrong in both directions.
+func measureImportPreflightCharge(pub *ImportPreflightPublication) (importPreflightCharge, error) {
+	var charge importPreflightCharge
+	for _, r := range pub.Results {
+		detailsBytes, err := jsonByteLen(jsonbMap(r.Details))
+		if err != nil {
+			return charge, err
+		}
+		charge.total += retainedResultRowBytes(r, detailsBytes)
+	}
+	for _, i := range pub.Issues {
+		detailsBytes, err := jsonByteLen(jsonbMap(i.Details))
+		if err != nil {
+			return charge, err
+		}
+		charge.issues += retainedIssueRowBytes(i, detailsBytes)
+	}
+	summaryBytes, err := summaryByteLen(pub.Summary)
+	if err != nil {
+		return charge, err
+	}
+	charge.total += charge.issues + summaryBytes
+	return charge, nil
 }
 
 // deleteImportPreflightRows removes a job's prior preflight-stage results and issues. Inspection and
@@ -855,10 +943,16 @@ func (s *Store) resetImportToPreflight(tx sqlx.ExtContext, job *model.ImportJob,
 	if err := s.deleteImportPreflightRows(tx, job.Id); err != nil {
 		return err
 	}
+	// The deleted rows are no longer retained, so their charge is returned. Leaving it would make every
+	// discarded plan permanently inflate the job's usage.
 	builder := s.getQueryBuilder().
 		Update("DOCS_ImportJob").
 		Set("State", string(model.ImportStateQueuedPreflight)).
 		Set("Phase", string(model.ImportPhaseComputingActions)).
+		Set("RetainedBytes", sq.Expr("GREATEST(RetainedBytes - PreflightRetainedBytes, 0)")).
+		Set("RetainedIssueBytes", sq.Expr("GREATEST(RetainedIssueBytes - PreflightRetainedIssueBytes, 0)")).
+		Set("PreflightRetainedBytes", 0).
+		Set("PreflightRetainedIssueBytes", 0).
 		Set("Confirmation", model.ImportConfirmation{}).
 		Set("PreflightSummary", model.ImportPreflightSummary{}).
 		Set("PreflightRevision", "").

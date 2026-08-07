@@ -6,6 +6,8 @@ package app
 import (
 	"net/http"
 
+	"github.com/pkg/errors"
+
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
@@ -92,6 +94,8 @@ func (s *Service) RunImportWork() (bool, error) {
 	}
 
 	switch job.State {
+	case model.ImportStateTerminalizing:
+		return true, s.RunImportTerminalization(job.Id)
 	case model.ImportStateQueuedPreflight:
 		return true, s.RunImportPreflight(job.Id)
 	case model.ImportStatePreflighting:
@@ -101,27 +105,37 @@ func (s *Service) RunImportWork() (bool, error) {
 		s.log.Info("Import preflight interrupted; requeuing for recomputation", "job_id", job.Id)
 		return true, s.requeueImportPreflight(job.Id)
 	default:
-		// Execution and terminalization arrive with the next phase. Until then a job in one of those states
-		// would be selected on every pass, so it is reported once and skipped rather than spun on.
-		s.logUnhandledImportWork(job)
+		// Unreachable: work selection only offers states this release advances. Reaching it would mean a
+		// state was added to the selection list without a handler, which starves everything below it — so it
+		// is reported as the invariant violation it is rather than silently skipped.
+		s.log.Error("Import worker selected a state it cannot advance; work below it is starved",
+			"job_id", job.Id, "state", string(job.State))
 		return false, nil
 	}
 }
 
-// logUnhandledImportWork reports a job in a state this build cannot advance, at most once per state per
-// process. Without the deduplication an unimplemented state would emit a warning on every worker tick.
-func (s *Service) logUnhandledImportWork(job *model.ImportJob) {
-	s.unhandledImportStatesMu.Lock()
-	defer s.unhandledImportStatesMu.Unlock()
-	if s.unhandledImportStates == nil {
-		s.unhandledImportStates = map[model.ImportJobState]struct{}{}
+// RunImportTerminalization finishes a job that has decided its outcome, writing the durable report and
+// moving it to a terminal state.
+//
+// It is a worker step rather than part of the transition that decided the outcome so that a crash between
+// the two resumes here instead of leaving a terminal job with no report. The store call is idempotent, so
+// re-running it after an interruption completes the job rather than duplicating outcomes.
+func (s *Service) RunImportTerminalization(jobID string) error {
+	finished, err := s.store.TerminalizeImportJob(jobID)
+	if err != nil {
+		if store.IsErrConflict(err) || store.IsErrNotFound(err) {
+			// The job advanced or vanished between selection and this transition; the CAS losing is the
+			// intended outcome.
+			s.log.Debug("Import terminalization skipped: job is no longer terminalizing", "job_id", jobID, "err", err)
+			return nil
+		}
+		return errors.Wrap(err, "terminalize import job")
 	}
-	if _, seen := s.unhandledImportStates[job.State]; seen {
-		return
-	}
-	s.unhandledImportStates[job.State] = struct{}{}
-	s.log.Warn("Import job is in a state this release cannot advance; it will wait for its retention deadline",
-		"job_id", job.Id, "state", string(job.State))
+	s.log.Info("Import terminalized",
+		"job_id", finished.Id, "actor_id", finished.ActorId, "state", string(finished.State),
+		"intent", string(finished.TerminalIntent), "error_code", finished.ErrorCode,
+		"not_attempted", finished.FinalSummary.Actions.NotAttempted)
+	return nil
 }
 
 // LogImportWorkerInvariants checks the single-active-job invariant the supported topology relies on and

@@ -61,11 +61,6 @@ type Service struct {
 	// lastPresenceSweepAt is the timestamp (ms) of the most recent presenceBroadcastTimes sweep, used
 	// to rate-limit the sweep itself to once per presenceBroadcastSweepIntervalMs.
 	lastPresenceSweepAt atomic.Int64
-
-	// unhandledImportStates records import job states this release cannot advance, so the worker reports
-	// each one once instead of on every tick. Guarded by unhandledImportStatesMu.
-	unhandledImportStatesMu sync.Mutex
-	unhandledImportStates   map[model.ImportJobState]struct{}
 }
 
 // New creates a Service wired to the given store, logger, and optional pluginapi client.
@@ -141,6 +136,8 @@ func requireBaseline(where, field string, baseline *int64, force bool) *mmmodel.
 // UpdatePage's conflict carrying ModifiedBy/ModifiedAt).
 func storeAppError(where string, err error) *mmmodel.AppError {
 	switch {
+	case store.IsErrImportSourceMissing(err):
+		return mmmodel.NewAppError(where, "app.import.source.missing.app_error", nil, "", http.StatusNotFound).Wrap(err)
 	case store.IsErrNotFound(err):
 		return mmmodel.NewAppError(where, "app.store.not_found.app_error", nil, "", http.StatusNotFound).Wrap(err)
 	case store.IsErrCircularReference(err):

@@ -160,6 +160,10 @@
     "translation": "The team_id parameter is not a valid ID."
   },
   {
+    "id": "app.import.source.missing.app_error",
+    "translation": "The import source this import was pointed at no longer exists."
+  },
+  {
     "id": "app.import.source.new_target_not_selectable.app_error",
     "translation": "An import into a new Space has only one possible import source, so none can be selected."
   },

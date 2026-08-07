@@ -7,9 +7,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -19,6 +21,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 
+	"github.com/mattermost/mattermost-plugin-docs/server/importer"
 	"github.com/mattermost/mattermost-plugin-docs/server/internal/importfixture"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
@@ -964,4 +967,52 @@ func TestHandleCancelImport_RecordsOutcomesForPreflightOnlyEntities(t *testing.T
 	require.NoError(t, err)
 	require.Equal(t, 3, job.FinalSummary.Actions.NotAttempted)
 	require.Equal(t, 1, job.FinalSummary.Actions.Stale)
+}
+
+// TestHandleCreateImport_DoesNotDrainOversizedRequestPart covers the request part's own size cap. The
+// decoder reads only MaxRequestPartBytes+1 bytes, so an oversized part is deliberately left unread — and
+// closing it would drain the remainder, letting an authenticated caller push most of the 250 MiB body limit
+// through this part before target authorization has even run.
+func TestHandleCreateImport_DoesNotDrainOversizedRequestPart(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+
+	// A request part far past its cap, padded inside an ignored JSON field.
+	padding := strings.Repeat("p", 4*importer.MaxRequestPartBytes)
+	oversized := fmt.Sprintf(`{"target":{"kind":"new","team_id":%q},"padding":%q}`, mmmodel.NewId(), padding)
+
+	// countingReader reports how much of the body the server actually consumed.
+	body := &countingReader{data: []byte(oversized)}
+	contentType, raw := multipartImportBody(t, []byte(oversized), nil, nil)
+	body.data = raw
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/imports/preflight", body)
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Mattermost-User-ID", actorID)
+	rec := httptest.NewRecorder()
+	h.plugin.ServeHTTP(&plugin.Context{}, rec, req)
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
+	// The server stopped near the cap rather than reading the whole part. The multipart reader buffers, so
+	// this is a generous bound — the point is that it is nowhere near the full body.
+	require.Less(t, body.read, len(raw)/2,
+		"an oversized request part must not be drained before the request is refused")
+}
+
+// countingReader records how many bytes were read from it.
+type countingReader struct {
+	data []byte
+	pos  int
+	read int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	if c.pos >= len(c.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, c.data[c.pos:])
+	c.pos += n
+	c.read += n
+	return n, nil
 }

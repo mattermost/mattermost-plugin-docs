@@ -113,6 +113,29 @@ const (
 // namespace on execution. Arbitrary future producer fields are deliberately not copied.
 var AllowlistedSourceProps = []string{PropImportLabels}
 
+// MaxSourcePropsBytes bounds the serialized allowlisted source props for one page.
+//
+// It is a fraction of model.PagePropsMaxBytes on purpose: these props end up nested inside the
+// docs_import namespace of the page's own Props column, alongside the rest of that namespace and whatever
+// unrelated top-level props the page already carries. Bounding them at the full page limit would admit a
+// bundle that only fails at execution — or, earlier, that trips the 1 MiB JSONB valuer during staging and
+// surfaces as a server error instead of a rejected bundle.
+const MaxSourcePropsBytes = 16 * 1024
+
+// EffectiveAuthorProposal returns the single username proposal both hashing and author resolution must
+// use: the manifest's mapping for the page's Confluence account when present, otherwise the page's own
+// user field.
+//
+// One definition, used everywhere, is the point. Hashing one proposal while resolving another means a real
+// author change can leave the source-content hash untouched — the page classifies as unchanged and the new
+// attribution is never applied.
+func EffectiveAuthorProposal(manifestProposal, pageProposal string) string {
+	if manifestProposal != "" {
+		return manifestProposal
+	}
+	return pageProposal
+}
+
 // stringOrEmpty dereferences a *string, returning "" for nil.
 func stringOrEmpty(s *string) string {
 	if s == nil {
