@@ -113,6 +113,10 @@ type SpaceMember struct {
 	GrantedCapabilities []string `json:"granted_capabilities"`
 	IsAdmin             bool     `json:"is_admin"`
 	IsGuest             bool     `json:"is_guest"`
+	// AutoJoined reports whether the member was added by the open-space auto-join pre-step rather
+	// than invited/added deliberately, so a membership review (e.g. after an open->private flip)
+	// can tell the two apart.
+	AutoJoined bool `json:"auto_joined"`
 }
 
 // EnsureCapabilities normalizes Capabilities and GrantedCapabilities to non-nil slices so they

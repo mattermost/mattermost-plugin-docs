@@ -15,6 +15,7 @@ type Props = {
     options: Capability[];
     selected: Capability[];
     disabled?: boolean;
+    busy?: boolean;
     onChange: (next: Capability[]) => void;
 
     // Distinguishes the checkbox ids of two sets rendered on the same screen
@@ -40,7 +41,7 @@ export const useCapabilityLabels = (): Record<Capability, string> => {
     };
 };
 
-const CapabilityToggles = ({options, selected, disabled, onChange, idPrefix, legend}: Props) => {
+const CapabilityToggles = ({options, selected, disabled, busy, onChange, idPrefix, legend}: Props) => {
     const labels = useCapabilityLabels();
 
     const toggle = (capability: Capability) => {
@@ -53,7 +54,10 @@ const CapabilityToggles = ({options, selected, disabled, onChange, idPrefix, leg
     };
 
     return (
-        <fieldset className={styles.toggles}>
+        <fieldset
+            className={styles.toggles}
+            aria-busy={busy}
+        >
             <legend className={styles.togglesLegend}>{legend}</legend>
             {options.map((capability) => {
                 const id = `${idPrefix}-${capability}`;

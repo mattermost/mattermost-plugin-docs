@@ -19,7 +19,7 @@
 # Requires:
 #   - Docker running locally.
 #   - The core repo checked out on DOCS_CORE_BRANCH (this script refuses to run otherwise — it
-#     never switches branches for you; see start-docs-core-server.sh for the same guard style).
+#     never switches branches for you).
 
 set -euo pipefail
 

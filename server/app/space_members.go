@@ -37,9 +37,15 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int) ([]*mod
 	if err != nil {
 		return nil, false, mmmodel.NewAppError("GetSpaceMembers", "app.space.get_members.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
+	// One lookup for the whole page, not one per member: the marker is stored as a single set per
+	// space, not one KV entry per member.
+	autoJoined, err := s.autoJoinedIDs(space.Id)
+	if err != nil {
+		return nil, false, mmmodel.NewAppError("GetSpaceMembers", "app.space.get_members.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+	}
 	members := make([]*model.SpaceMember, 0, len(channelMembers))
 	for _, cm := range channelMembers {
-		members = append(members, toSpaceMember(cm, defaultCapabilities))
+		members = append(members, toSpaceMember(cm, defaultCapabilities, slices.Contains(autoJoined, cm.UserId)))
 	}
 	hasMore := false
 	if len(channelMembers) == perPage {
@@ -56,7 +62,8 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int) ([]*mod
 }
 
 // toSpaceMember builds the wire representation of a channel member's capability state.
-func toSpaceMember(cm *mmmodel.ChannelMember, defaultCapabilities []string) *model.SpaceMember {
+// autoJoined reports whether the member carries the auto-join provenance marker.
+func toSpaceMember(cm *mmmodel.ChannelMember, defaultCapabilities []string, autoJoined bool) *model.SpaceMember {
 	mc := model.CapabilitiesFromMember(cm.ExplicitRoles, cm.SchemeAdmin, cm.SchemeGuest, defaultCapabilities)
 	member := &model.SpaceMember{
 		UserId:              cm.UserId,
@@ -64,6 +71,7 @@ func toSpaceMember(cm *mmmodel.ChannelMember, defaultCapabilities []string) *mod
 		GrantedCapabilities: mc.Granted,
 		IsAdmin:             mc.IsAdmin,
 		IsGuest:             mc.IsGuest,
+		AutoJoined:          autoJoined,
 	}
 	member.EnsureCapabilities()
 	return member
@@ -97,20 +105,43 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 	if err != nil {
 		return nil, schemeAppError("AddSpaceMember", err)
 	}
-	member, err := s.client.Channel.AddMember(space.ChannelId, userID)
-	if err != nil {
-		// A missing target user is the caller's mistake, not a server fault.
-		if errors.Is(err, pluginapi.ErrNotFound) {
-			return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(err)
+	// Core affirms an add of an already-existing member, returning their membership unchanged
+	// rather than erroring — so this also covers a deliberate re-add of a member the auto-join
+	// pre-step joined earlier. Either way it is a deliberate admin act on this membership, the same
+	// legitimizing act SetSpaceMemberCapabilities' clear is for, so the marker is cleared here too.
+	// The add and the clear run together under the space-keyed lock — the same lock UndoAutoJoin
+	// takes to check the marker before deleting — so the clear can never be separated from the
+	// affirm it legitimizes: UndoAutoJoin either runs wholly before (deletes the stale membership,
+	// and this call's locked add then recreates it fresh) or wholly after (finds the marker already
+	// cleared and skips the delete). An unlocked clear could instead land in the gap between
+	// UndoAutoJoin's marker check and its delete, so its delete removes a membership this call just
+	// legitimized.
+	var member *mmmodel.ChannelMember
+	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
+		added, addErr := s.client.Channel.AddMember(space.ChannelId, userID)
+		if addErr != nil {
+			// A missing target user is the caller's mistake, not a server fault.
+			if errors.Is(addErr, pluginapi.ErrNotFound) {
+				return mmmodel.NewAppError("AddSpaceMember", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(addErr)
+			}
+			return mmmodel.NewAppError("AddSpaceMember", "app.space.add_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(addErr)
 		}
-		return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.add_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+		member = added
+		if clearErr := s.clearAutoJoined(space.Id, member.UserId); clearErr != nil {
+			// Best-effort: the membership add already committed.
+			s.log.Warn("failed to clear auto-join provenance marker", "space_id", space.Id, "user_id", member.UserId, "err", clearErr)
+		}
+		return nil
+	})
+	if lockErr != nil {
+		return nil, membershipLockAppError("AddSpaceMember", lockErr)
 	}
 	payload := map[string]any{"space_id": space.Id, "user_id": member.UserId}
 	s.publishToChannels(wsEventSpaceMemberAdded, payload, space.ChannelId)
 	// Also delivered directly: the channel-scoped broadcast may not resolve a member added moments
 	// earlier, and the new member has no other signal that they now have the space.
 	s.publishToUser(wsEventSpaceMemberAdded, payload, member.UserId)
-	return toSpaceMember(member, defaultCapabilities), nil
+	return toSpaceMember(member, defaultCapabilities, false), nil
 }
 
 // requireNotLastAdmin rejects an operation that would leave space without an admin who can still
@@ -160,15 +191,25 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 	// advisory lock, alongside the mutation itself.
 	var newRoles string
 	var newSchemeAdmin bool
-	var resolvedRoles *schemeRoles
+	var defaultCapabilities []string
 	var updatedMember *mmmodel.ChannelMember
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
-		var rolesErr error
-		resolvedRoles, rolesErr = s.getSchemeRolesForChannel(space.ChannelId)
+		resolvedRoles, rolesErr := s.getSchemeRolesForChannel(space.ChannelId)
 		if rolesErr != nil {
 			return schemeAppError("SetSpaceMemberCapabilities", rolesErr)
 		}
 		newRoles, newSchemeAdmin = model.RolesForCapabilities(capabilities, resolvedRoles.UserRoleName)
+		// Resolved here, before the write below commits, rather than after the lock: the space's
+		// default capability set does not change during a member-capability write (only
+		// SetSpaceDefaultCapabilities changes it, serialized behind this same lock), so nothing about
+		// resolving it depends on the write having happened. Doing it here means a failure here is
+		// caught before anything commits, instead of surfacing a committed write as a 500 and
+		// silently skipping the WS event below.
+		defaults, defErr := s.defaultCapabilitiesForRoles(resolvedRoles)
+		if defErr != nil {
+			return schemeAppError("SetSpaceMemberCapabilities", defErr)
+		}
+		defaultCapabilities = defaults
 
 		target, memErr := s.client.Channel.GetMember(space.ChannelId, targetUserID)
 		if memErr != nil {
@@ -203,23 +244,24 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 			return mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.member.update_capabilities_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(updErr)
 		}
 		updatedMember = member
+		// A deliberate admin act on this member's capabilities supersedes whatever brought them into
+		// the space, so any auto-join provenance marker is now stale. Best-effort: the role write
+		// already committed, which is what governs the member's access.
+		if clearErr := s.clearAutoJoined(space.Id, targetUserID); clearErr != nil {
+			s.log.Warn("failed to clear auto-join provenance marker", "space_id", space.Id, "user_id", targetUserID, "err", clearErr)
+		}
 		return nil
 	})
 	if lockErr != nil {
 		return nil, membershipLockAppError("SetSpaceMemberCapabilities", lockErr)
 	}
 
-	// The scheme roles read under the lock still describe this channel: only
-	// SetSpaceDefaultCapabilities repoints a channel's scheme, and it serializes behind the same
-	// space-keyed lock, so the default capability set is projected from them rather than re-read.
-	defaultCapabilities, defErr := s.defaultCapabilitiesForRoles(resolvedRoles)
-	if defErr != nil {
-		return nil, schemeAppError("SetSpaceMemberCapabilities", defErr)
-	}
-	// The response is projected from the member the role update returned. Re-reading it would go to
-	// a replica, which on a lagging one still carries the pre-update roles and would report the
-	// caller's own committed change as not having taken effect.
-	result := toSpaceMember(updatedMember, defaultCapabilities)
+	// The response is projected from the member the role update returned and the default
+	// capabilities resolved inside the same lock, before the write committed. Re-reading either
+	// afterward would go to a replica, which on a lagging one still carries the pre-update state and
+	// would report the caller's own committed change as not having taken effect — and would leave a
+	// fallible lookup after the commit, able to turn a successful write into a reported failure.
+	result := toSpaceMember(updatedMember, defaultCapabilities, false)
 
 	payload := map[string]any{"space_id": space.Id, "user_id": targetUserID}
 	// Delivered both ways deliberately: the channel-scoped broadcast covers observers, and the
@@ -301,6 +343,11 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 				return mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(err)
 			}
 			return mmmodel.NewAppError("RemoveSpaceMember", "app.space.remove_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+		}
+		if clearErr := s.clearAutoJoined(space.Id, userID); clearErr != nil {
+			// Best-effort: the membership is already gone, which is what any later check acts on; a
+			// stale marker only degrades the provenance signal a future membership review reads.
+			s.log.Warn("failed to clear auto-join provenance marker", "space_id", space.Id, "user_id", userID, "err", clearErr)
 		}
 		return nil
 	})

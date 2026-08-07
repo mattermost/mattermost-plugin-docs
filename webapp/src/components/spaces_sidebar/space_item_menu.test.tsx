@@ -48,7 +48,6 @@ async function openMenu() {
 
 describe('SpaceItemMenu', () => {
     beforeEach(() => {
-        jest.clearAllMocks();
         api.getSpaceAccess.mockResolvedValue({
             id: space.id,
             default_capabilities: [],

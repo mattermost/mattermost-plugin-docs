@@ -410,7 +410,7 @@ i18n-extract: i18n-extract-webapp i18n-extract-server
 .PHONY: i18n-extract-webapp
 i18n-extract-webapp:
 ifneq ($(HAS_WEBAPP),)
-	cd webapp && $(NPM) run extract
+	cd webapp && $(NPM) run i18n-extract
 endif
 
 .PHONY: i18n-extract-server

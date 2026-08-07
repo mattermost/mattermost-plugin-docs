@@ -43,10 +43,18 @@ export class RestError extends ClientError {
     }
 }
 
+// A 409 body is the conflictResponse envelope (server/api.go writeConflictWithPage):
+// the scrubbed AppError nested under "error", plus a current_page a caller may
+// want later — one shape across every conflict, whichever endpoint produced it.
+type ConflictEnvelope = {
+    error?: {message?: string; id?: string};
+};
+
 // The single fetch idiom every Docs API call goes through. Client4.getOptions
 // injects the session credentials and CSRF header the server expects, so this
-// never hand-rolls auth. Server errors are JSON AppErrors ({message, id,
-// status_code}); a non-OK response becomes a RestError carrying all three.
+// never hand-rolls auth. A non-conflict server error is a flat JSON AppError
+// ({message, id, status_code}); a 409 is the nested conflictResponse envelope.
+// Either way, a non-OK response becomes a RestError carrying message and id.
 async function request<T>(url: string, options: FetchOptions): Promise<T> {
     const response = await fetch(url, Client4.getOptions(options));
 
@@ -62,9 +70,15 @@ async function request<T>(url: string, options: FetchOptions): Promise<T> {
     let serverErrorId: string | undefined;
     try {
         body = await response.json();
-        const data = body as {message?: string; id?: string};
-        message = data.message || message;
-        serverErrorId = data.id;
+        const envelope = body as ConflictEnvelope;
+        if (envelope.error) {
+            message = envelope.error.message || message;
+            serverErrorId = envelope.error.id;
+        } else {
+            const data = body as {message?: string; id?: string};
+            message = data.message || message;
+            serverErrorId = data.id;
+        }
     } catch {
         // Non-JSON error body — keep the status-based message.
     }

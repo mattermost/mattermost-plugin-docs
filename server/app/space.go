@@ -6,6 +6,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"unicode/utf8"
@@ -185,7 +186,7 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultCapabili
 	// space permissions, so a freshly created pooled scheme gets its exact permission sets here
 	// rather than at create time.
 	if pooledRoles != nil {
-		if cfgErr := s.configureSharedScheme(pooledRoles, capabilities); cfgErr != nil {
+		if _, cfgErr := s.configureSharedScheme(pooledRoles, capabilities); cfgErr != nil {
 			s.archiveOrphanChannel(backingChannel.Id, "pooled scheme role configuration failed", cfgErr)
 			return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.scheme_configure_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(cfgErr)
 		}
@@ -232,6 +233,7 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultCapabili
 		DefaultCapabilities: model.NormalizeCapabilitySet(capabilities),
 		Capabilities:        model.AdminEffectiveCapabilities(),
 	}
+	wrapper.Props = maps.Clone(saved.Props)
 	wrapper.EnsureCapabilities()
 	return wrapper, nil
 }
@@ -347,6 +349,7 @@ func (s *Service) buildSpaceWithAccess(space *model.Space, userID string, knownD
 	}
 
 	wrapper := &model.SpaceWithAccess{Space: *space, DefaultCapabilities: defaultCapabilities, Capabilities: capabilities}
+	wrapper.Props = maps.Clone(space.Props)
 	wrapper.EnsureCapabilities()
 	return wrapper, nil
 }
@@ -369,9 +372,12 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 		return nil, appErr
 	}
 
-	// Whether the scheme was actually repointed. Both no-op branches below leave it false, so a
-	// caller resubmitting the set the space already carries produces no space_updated broadcast.
-	var repointed bool
+	// Whether the space's effective default capabilities actually changed: either the backing
+	// channel was repointed at a different scheme, or the channel already pointed at the target
+	// scheme but that scheme's roles needed a genuine permission rewrite (the recovery case below).
+	// The pure no-op — resubmitting a set the space already carries with roles already correct —
+	// leaves it false, so it produces no space_updated broadcast.
+	var changed bool
 	// The normalized set the space carries once this returns, carried out of the closure so the
 	// response is projected from it rather than re-read from the roles just written.
 	var requested []string
@@ -398,6 +404,11 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 		// whose roles were never configured projects to the same empty set as the read-only preset,
 		// and shortcutting there would strand the space on that unconfigured scheme with no way to
 		// move off it.
+		//
+		// The projection reads only the User role (spaceDefaultCapabilitiesFromChannel), so this
+		// shortcut relies on configureSharedScheme writing Admin and Guest before User: a matching
+		// User-role projection is proof the scheme is fully configured only because nothing else in
+		// the scheme's write order still needs to land once it reads correctly.
 		if !requestedIsPreset && liveCapabilitiesErr == nil && slices.Equal(liveCapabilities, requested) {
 			return nil
 		}
@@ -415,9 +426,11 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 			// resubmitting the intended set recover such a space; it is a no-op in effect once the
 			// permission sets already match.
 			if pooledRoles != nil {
-				if cfgErr := s.configureSharedScheme(pooledRoles, requested); cfgErr != nil {
+				rolesChanged, cfgErr := s.configureSharedScheme(pooledRoles, requested)
+				if cfgErr != nil {
 					return schemeAppError("SetSpaceDefaultCapabilities", cfgErr)
 				}
+				changed = rolesChanged
 			}
 			return nil
 		}
@@ -426,7 +439,7 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 		if updErr := s.client.Channel.Update(channel); updErr != nil {
 			return mmmodel.NewAppError("SetSpaceDefaultCapabilities", "app.space.default_capabilities.repoint_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(updErr)
 		}
-		repointed = true
+		changed = true
 
 		// The repoint above is what lets core admit role writes carrying space permissions, so a
 		// pooled scheme's roles are written only now. A failure leaves the space on a scheme whose
@@ -441,7 +454,7 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 		// — so the window is accepted rather than closed. It is bounded by the role writes below,
 		// self-heals, and does not recur once the pooled scheme is configured.
 		if pooledRoles != nil {
-			if cfgErr := s.configureSharedScheme(pooledRoles, requested); cfgErr != nil {
+			if _, cfgErr := s.configureSharedScheme(pooledRoles, requested); cfgErr != nil {
 				channel.SchemeId = &currentSchemeID
 				if rollbackErr := s.client.Channel.Update(channel); rollbackErr != nil {
 					s.log.Error("failed to restore the previous space scheme after a failed scheme configuration; the space is left on a scheme whose roles may be unconfigured", "channel_id", space.ChannelId, "scheme_id", targetSchemeID, "previous_scheme_id", currentSchemeID, "err", rollbackErr)
@@ -451,7 +464,7 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 					// case in monitoring.
 					return mmmodel.NewAppError("SetSpaceDefaultCapabilities", "app.space.default_capabilities.scheme_configure_rollback_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(cfgErr)
 				}
-				repointed = false
+				changed = false
 				return mmmodel.NewAppError("SetSpaceDefaultCapabilities", "app.space.default_capabilities.scheme_configure_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(cfgErr)
 			}
 		}
@@ -475,12 +488,12 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 		// success as an error; project the response from the requested set and the pre-update
 		// space instead, still firing the WS event.
 		s.log.Warn("SetSpaceDefaultCapabilities: post-commit re-read failed; responding from the requested set", "space_id", space.Id, "err", getErr)
-		if repointed {
+		if changed {
 			s.publishToChannels(wsEventSpaceUpdated, map[string]any{"space_id": space.Id}, space.ChannelId)
 		}
 		return s.buildSpaceWithAccess(space, actingUserID, requested)
 	}
-	if repointed {
+	if changed {
 		s.publishToChannels(wsEventSpaceUpdated, map[string]any{"space_id": fresh.Id}, fresh.ChannelId)
 	}
 	return s.buildSpaceWithAccess(fresh, actingUserID, requested)

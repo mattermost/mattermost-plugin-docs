@@ -18,8 +18,9 @@ Building locally is only needed for a branch that has not been pushed. Core's ow
 server image for every commit as `mattermostdevelopment/mattermost-team-edition:<7-char-sha>`, so
 once the paired core change is up as a PR, `CORE_IMAGE` can point at that tag and no local image
 build is required — that is exactly how the `e2e` job in `.github/workflows/ci.yml` runs, reading
-the tag from the `CORE_IMAGE` repository variable. Once those core changes merge and ship in a
-release, point `CORE_IMAGE` at the released image instead and this suite runs unchanged.
+the tag from the `CORE_IMAGE` repository variable. That stays the shape after the core changes
+merge and ship: `CORE_IMAGE` always names a per-commit sha image, because the pin check compares
+it against `build/core-commit.txt`, which only ever holds a commit sha.
 
 Which core commit that variable is allowed to name is recorded in `build/core-commit.txt`, and CI
 fails the suite when the two disagree. The pin lives in a file of its own rather than being read
@@ -31,16 +32,15 @@ core behaviour.
 The image this script builds is **API-only**: server binary plus i18n, templates and fonts, and an
 empty `client/`. That is all the suites here need — every assertion is an HTTP call.
 
-The browser suite does not use this image, or Testcontainers, at all. The System Console spec in
-core's Playwright tests (`./scripts/run-tests.sh core-ui-e2e`) runs in Playwright's default
-*external* mode against the docs-core server `start-docs-core-server.sh` already runs, so a run
-costs seconds rather than a container boot. It needs that server to serve the webapp, which a
-core checkout does not do out of the box:
+The browser suites do not use this image, or Testcontainers, at all. Both the System Console spec in
+the core checkout and the plugin's own suite under `e2e/` run in Playwright's default *external*
+mode against a server that is already running, so a run costs seconds rather than a container boot.
+They need that server to serve the webapp, which a core checkout does not do out of the box — build
+the core webapp once, copy it into the server's `client/` directory, and restart the server:
 
 ```sh
-(cd ../MM-69269-core/webapp && npm run build)              # once
-cp -R ../MM-69269-core/webapp/channels/dist/. ../MM-69269-core/server/client/
-./scripts/stop-docs-core-server.sh && ./scripts/start-docs-core-server.sh
+(cd <core-checkout>/webapp && npm run build)              # once
+cp -R <core-checkout>/webapp/channels/dist/. <core-checkout>/server/client/
 ```
 
 Two details that are easy to lose an afternoon to: a **symlink** into `server/client` serves

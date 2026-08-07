@@ -22,7 +22,6 @@ describe('client/space_permissions', () => {
     const fetchMock = jest.fn();
 
     beforeEach(() => {
-        jest.clearAllMocks();
         global.fetch = fetchMock as unknown as typeof fetch;
         Client4.setUrl('http://localhost:8065');
     });
@@ -54,13 +53,26 @@ describe('client/space_permissions', () => {
         expect(JSON.parse(options.body)).toEqual({default_capabilities: ['edit_page']});
     });
 
-    it('raises the server message and status on a refusal', async () => {
-        fetchMock.mockResolvedValue(jsonResponse({id: 'app.space.member.last_admin.app_error', message: 'Cannot demote the last admin.'}, false, 409));
+    it('raises the server message and status from the nested conflict envelope on a refusal', async () => {
+        fetchMock.mockResolvedValue(jsonResponse({
+            error: {id: 'app.space.member.last_admin.app_error', message: 'Cannot demote the last admin.', status_code: 409},
+            current_page: null,
+        }, false, 409));
 
         await expect(setMemberCapabilities('space1', 'user2', [])).rejects.toMatchObject({
             status: 409,
             message: 'Cannot demote the last admin.',
             server_error_id: 'app.space.member.last_admin.app_error',
+        });
+    });
+
+    it('raises the server message and status from a flat AppError body on a non-conflict refusal', async () => {
+        fetchMock.mockResolvedValue(jsonResponse({id: 'app.space.not_found.app_error', message: 'Space not found.'}, false, 404));
+
+        await expect(setMemberCapabilities('space1', 'user2', [])).rejects.toMatchObject({
+            status: 404,
+            message: 'Space not found.',
+            server_error_id: 'app.space.not_found.app_error',
         });
     });
 

@@ -15,39 +15,69 @@ const PLUGIN_ID = 'com.mattermost.docs';
  * from a jsdom tree that never mounts the product route, and invisible to an HTTP-only suite.
  *
  * @precondition
- * A running server, serving the webapp, with EnableDocs on and the plugin deployed. All three are
- * asserted rather than arranged: EnableDocs is read only at boot, and deploying a bundle from here
- * would make the suite own a server it is designed not to own. Each failure names its own remedy.
+ * A running server, serving the webapp, with EnableDocs on and the plugin deployed. EnableDocs and
+ * the bundle are asserted rather than arranged: EnableDocs is read only at boot, and deploying a
+ * bundle from here would make the suite own a server it is designed not to own. Each failure names
+ * its own remedy.
+ *
+ * The plugin's enabled state is the exception, and is arranged. initSetup replaces the whole config
+ * with a fixed baseline whose PluginStates names four unrelated plugins, which disables every other
+ * installed plugin — this one included. Asserting it is therefore impossible: the reset happens
+ * after the precondition is met and before any assertion could read it.
  */
 test(
     'the space overflow menu opens the permissions modal',
     {tag: ['@docs', '@permissions']},
     async ({pw}) => {
+        // # Capture the plugin directories the server booted with — initSetup's config baseline
+        // resets them to the defaults, while the running plugin environment keeps its boot-time
+        // paths. On a server with custom directories that mismatch makes every later plugin
+        // upload fail 500 ("plugin not found"), so they are restored right after initSetup.
+        const {adminClient: preSetupClient} = await pw.getAdminClient();
+        const bootPluginSettings = (await preSetupClient.getConfig()).PluginSettings;
+
+        // # Initialize a user and team on the running server
         const {adminClient, user, team} = await pw.initSetup();
 
+        // # Restore the boot-time plugin directories; see the capture comment above
+        await adminClient.patchConfig({
+            PluginSettings: {
+                Directory: bootPluginSettings.Directory,
+                ClientDirectory: bootPluginSettings.ClientDirectory,
+            },
+        });
+
+        // * Verify EnableDocs is on (read only at boot, so it cannot be arranged from here)
         const config = await adminClient.getConfig();
         expect(
             String(config.FeatureFlags?.EnableDocs),
             'EnableDocs must be on — restart the server with MM_FEATUREFLAGS_ENABLEDOCS=true',
         ).toBe('true');
 
+        // # Re-enable the plugin after initSetup's config reset disabled it; see @precondition
+        await adminClient.enablePlugin(PLUGIN_ID);
+
+        // * Verify the plugin bundle is deployed and active
         const plugins = await adminClient.getPlugins();
         expect(
             plugins.active.map((plugin) => plugin.id),
-            `the ${PLUGIN_ID} plugin must be deployed and enabled on this server`,
+            `the ${PLUGIN_ID} plugin must be deployed on this server`,
         ).toContain(PLUGIN_ID);
 
+        // # Log in and open the Docs product route
         const {page} = await pw.testBrowser.login(user);
         await page.goto(`/${team.name}/spaces`);
 
-        // Every space row carries the same menu; the first is enough to assert the product
-        // mounted and rendered its sidebar.
+        // * Verify the product mounted and rendered its sidebar. Every space row carries the
+        // same menu; the first is enough.
         const spaceMenu = page.getByRole('button', {name: /^Space options for /}).first();
         await expect(spaceMenu).toBeVisible();
 
+        // # Open the space menu and choose its permissions entry
         await spaceMenu.click();
-        await page.getByText('Space permissions').click();
+        await page.getByRole('menuitem', {name: 'Space permissions'}).click();
 
+        // * Verify the permissions modal opened
         await expect(page.getByRole('heading', {name: /^Permissions for /})).toBeVisible();
     },
 );

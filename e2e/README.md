@@ -11,6 +11,12 @@ suites, and the narrowest:
 
 ## Running it
 
+**The suite is destructive to its target server.** `pw.initSetup()` replaces the entire server
+config with the library's baseline (disabling unrelated plugins) and creates users and teams;
+there is no restoring teardown. Point it ONLY at a disposable dev server — never one whose
+configuration you care about. (The spec restores `PluginSettings.Directory`/`ClientDirectory`
+after the reset so the server stays deployable, but nothing else is restored.)
+
 The suite never starts a server. Point it at one that is already running, serving the webapp,
 with the plugin deployed and `EnableDocs` on:
 

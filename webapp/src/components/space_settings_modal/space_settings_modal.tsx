@@ -10,7 +10,7 @@ import {
     setMemberCapabilities,
 } from 'client/space_permissions';
 import {useAppSelector} from 'hooks/redux';
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 
 import type {UserProfile} from '@mattermost/types/users';
@@ -54,6 +54,7 @@ const SpaceSettingsModal = ({space, onClose}: Props) => {
 
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+    const [loadFailed, setLoadFailed] = useState(false);
 
     const [defaults, setDefaults] = useState<Capability[]>([]);
     const [savedDefaults, setSavedDefaults] = useState<Capability[]>([]);
@@ -61,7 +62,30 @@ const SpaceSettingsModal = ({space, onClose}: Props) => {
 
     const [members, setMembers] = useState<SpaceMember[]>([]);
     const [hasMoreMembers, setHasMoreMembers] = useState(false);
-    const [savingMember, setSavingMember] = useState('');
+
+    // Tracked per member (not a single id) so that editing two members
+    // concurrently doesn't let one row's completion clear the other's
+    // in-flight state. The ref guards against a second save starting for the
+    // same member before the state update from the first has committed; the
+    // state copy drives the aria-busy indication.
+    const savingMembersRef = useRef<Set<string>>(new Set());
+    const [savingMemberIds, setSavingMemberIds] = useState<Set<string>>(new Set());
+
+    // A toggle that arrives while that member's save is still in flight is not
+    // dropped: it is recorded here and picked up as soon as the in-flight save
+    // settles, so a quick double-toggle ends up persisting both, not just the
+    // first.
+    const pendingMemberSavesRef = useRef<Map<string, Capability[]>>(new Map());
+
+    // Member saves are triggered from click handlers, not the load effect, so
+    // they need their own unmount guard: the same cancelled-flag shape as the
+    // load effect below, but held in a ref since it must survive across calls.
+    const unmountedRef = useRef(false);
+    useEffect(() => {
+        return () => {
+            unmountedRef.current = true;
+        };
+    }, []);
 
     // Whether the caller may edit the space-wide default. Manage authority is
     // enough to reach this screen and change a member's grants, but repointing
@@ -86,6 +110,7 @@ const SpaceSettingsModal = ({space, onClose}: Props) => {
         const load = async () => {
             setLoading(true);
             setError('');
+            setLoadFailed(false);
             try {
                 const access = await getSpaceAccess(space.id);
                 if (cancelled) {
@@ -126,6 +151,7 @@ const SpaceSettingsModal = ({space, onClose}: Props) => {
             } catch (accessErr) {
                 if (!cancelled) {
                     setError(describeError(accessErr));
+                    setLoadFailed(true);
                 }
             } finally {
                 if (!cancelled) {
@@ -154,16 +180,76 @@ const SpaceSettingsModal = ({space, onClose}: Props) => {
         }
     };
 
-    const saveMember = async (userId: string, granted: Capability[]) => {
-        setSavingMember(userId);
-        setError('');
+    // Sends the desired set, then recurses on whatever toggle was coalesced
+    // while that request was in flight, so a fast run of toggles ends with
+    // every one of them persisted rather than just the first. `fallback` is
+    // the last value the server actually confirmed, for reverting to on
+    // failure — the member's prior state on the first call, the previous
+    // round's response on every recursion after that.
+    const applyMemberSave = async (userId: string, desired: Capability[], fallback: SpaceMember | undefined): Promise<void> => {
         try {
-            const updated = await setMemberCapabilities(space.id, userId, granted);
+            const updated = await setMemberCapabilities(space.id, userId, desired);
+            if (unmountedRef.current) {
+                return;
+            }
             setMembers((current) => current.map((member) => (member.user_id === userId ? updated : member)));
+
+            const pending = pendingMemberSavesRef.current.get(userId);
+            pendingMemberSavesRef.current.delete(userId);
+            if (pending === undefined || sameSet(pending, updated.granted_capabilities)) {
+                return;
+            }
+            await applyMemberSave(userId, pending, updated);
         } catch (err) {
+            // The toggle that arrived while this attempt was in flight gets
+            // its own attempt before anything reverts: only give up and fall
+            // back to server truth once there is no newer desired state left
+            // to try.
+            const pending = pendingMemberSavesRef.current.get(userId);
+            pendingMemberSavesRef.current.delete(userId);
+            if (pending !== undefined) {
+                await applyMemberSave(userId, pending, fallback);
+                return;
+            }
+            if (unmountedRef.current) {
+                return;
+            }
             setError(describeError(err));
+            if (fallback) {
+                setMembers((current) => current.map((member) => (member.user_id === userId ? fallback : member)));
+            }
+        }
+    };
+
+    const saveMember = async (userId: string, granted: Capability[]) => {
+        // Every toggle is reflected immediately, whether or not a save is
+        // already in flight for this member, so the checkbox never appears to
+        // ignore a click. A save failure reverts it to the last value the
+        // server confirmed.
+        setMembers((current) => current.map((member) => (member.user_id === userId ? {...member, granted_capabilities: granted} : member)));
+
+        // A toggle for a member whose save is already in flight is coalesced
+        // into the pending set rather than disabling the row (which would
+        // blur focus away from the checkbox the user just clicked): the
+        // in-flight save picks it up once it settles.
+        if (savingMembersRef.current.has(userId)) {
+            pendingMemberSavesRef.current.set(userId, granted);
+            return;
+        }
+
+        const originalMember = members.find((member) => member.user_id === userId);
+
+        savingMembersRef.current.add(userId);
+        setSavingMemberIds(new Set(savingMembersRef.current));
+        setError('');
+
+        try {
+            await applyMemberSave(userId, granted, originalMember);
         } finally {
-            setSavingMember('');
+            savingMembersRef.current.delete(userId);
+            if (!unmountedRef.current) {
+                setSavingMemberIds(new Set(savingMembersRef.current));
+            }
         }
     };
 
@@ -198,14 +284,16 @@ const SpaceSettingsModal = ({space, onClose}: Props) => {
                     </div>
                 )}
 
-                {loading ? (
+                {loading && (
                     <p className={styles.note}>
                         <FormattedMessage
                             id='docs.spaceSettings.loading'
                             defaultMessage='Loading permissions…'
                         />
                     </p>
-                ) : (
+                )}
+
+                {!loading && !loadFailed && (
                     <>
                         <section className={styles.section}>
                             <h2 className={styles.sectionTitle}>
@@ -268,6 +356,14 @@ const SpaceSettingsModal = ({space, onClose}: Props) => {
                                         className={styles.member}
                                     >
                                         <div className={styles.memberName}>{memberName(member.user_id)}</div>
+                                        {member.auto_joined && (
+                                            <p className={styles.note}>
+                                                <FormattedMessage
+                                                    id='docs.spaceSettings.members.autoJoined'
+                                                    defaultMessage='Joined automatically'
+                                                />
+                                            </p>
+                                        )}
                                         {member.is_guest ? (
                                             <p className={styles.note}>
                                                 <FormattedMessage
@@ -284,7 +380,7 @@ const SpaceSettingsModal = ({space, onClose}: Props) => {
                                                 )}
                                                 options={MEMBER_CAPABILITY_ORDER}
                                                 selected={member.granted_capabilities}
-                                                disabled={savingMember === member.user_id}
+                                                busy={savingMemberIds.has(member.user_id)}
                                                 onChange={(next) => saveMember(member.user_id, next)}
                                             />
                                         )}

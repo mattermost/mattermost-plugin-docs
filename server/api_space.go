@@ -4,6 +4,7 @@
 package main
 
 import (
+	"maps"
 	"net/http"
 
 	"github.com/gorilla/mux"
@@ -109,21 +110,37 @@ func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 	if !p.decodeJSONBody(w, r, maxSpaceBodyBytes, &req, "handleUpdateSpace", false) {
 		return
 	}
+	// Answered with the same SpaceWithAccess wrapper the create and single-read routes return.
+	// Returning a bare space here would flatten to a body a client cannot tell apart from the
+	// wrapper, so refreshing a cached record from this response would silently drop the capability
+	// fields the other two routes supplied. Resolved BEFORE the mutation, on the pre-update space
+	// already in hand from the gate, so a failure here aborts with nothing committed and a still-valid
+	// baseline for the caller's retry — rather than leaving a fallible lookup after the commit that
+	// could turn a successful write into a reported failure.
+	preWrapper, wrapErr := p.service.BuildSpaceWithAccess(space, userID)
+	if wrapErr != nil {
+		p.writeAppError(w, wrapErr)
+		return
+	}
+
 	patch := &model.SpacePatch{Title: req.Title, Description: req.Description, Icon: req.Icon, Props: req.Props, ViewAccess: req.ViewAccess}
 	updated, appErr := p.service.UpdateSpace(space, patch, req.ExpectedUpdateAt, req.Force, userID)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return
 	}
-	// Answered with the same SpaceWithAccess wrapper the create and single-read routes return.
-	// Returning a bare space here would flatten to a body a client cannot tell apart from the
-	// wrapper, so refreshing a cached record from this response would silently drop the capability
-	// fields the other two routes supplied.
-	wrapper, wrapErr := p.service.BuildSpaceWithAccess(updated, userID)
-	if wrapErr != nil {
-		p.writeAppError(w, wrapErr)
-		return
+	// The capability fields resolved above still hold: this route's patch touches only
+	// title/description/icon/props/view_access, never member roles or the scheme's default
+	// capabilities, and requireSpaceManage/UpdateSpace's stricter admin gate on a ViewAccess change
+	// mean the caller already held whatever capabilities they hold now before this call — so
+	// carrying them over is exact, not an approximation, of a fresh post-commit resolution.
+	wrapper := &model.SpaceWithAccess{
+		Space:               *updated,
+		DefaultCapabilities: preWrapper.DefaultCapabilities,
+		Capabilities:        preWrapper.Capabilities,
 	}
+	wrapper.Space.Props = maps.Clone(updated.Props)
+	wrapper.EnsureCapabilities()
 	writeJSON(w, http.StatusOK, wrapper)
 }
 

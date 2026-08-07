@@ -128,6 +128,53 @@ func TestPresetRoundTrip(t *testing.T) {
 	})
 }
 
+// TestGrantableCapabilitySets pins the exact vocabulary ValidateGrantedCapabilities and
+// ValidateDefaultCapabilities each accept — the full known capability set, checked one token at a
+// time — so an unintended token added to (or a valid one dropped from) grantableMemberCapabilities
+// or grantableDefaultCapabilities fails here, rather than surfacing later as an unnoticed grant or
+// space default this suite's other tests, which only ever pass the tokens already expected, would
+// never exercise.
+func TestGrantableCapabilitySets(t *testing.T) {
+	wantMember := map[string]bool{
+		model.CapabilityReadPage:      false,
+		model.CapabilityCreatePage:    true,
+		model.CapabilityCommentPage:   true,
+		model.CapabilityEditPage:      true,
+		model.CapabilityDeleteOwnPage: true,
+		model.CapabilityDeletePage:    true,
+		model.CapabilityAdminSpace:    true,
+	}
+	wantDefault := map[string]bool{
+		model.CapabilityReadPage:      false,
+		model.CapabilityCreatePage:    true,
+		model.CapabilityCommentPage:   true,
+		model.CapabilityEditPage:      true,
+		model.CapabilityDeleteOwnPage: true,
+		model.CapabilityDeletePage:    true,
+		model.CapabilityAdminSpace:    false,
+	}
+	for capability, grantable := range wantMember {
+		t.Run("member/"+capability, func(t *testing.T) {
+			aerr := model.ValidateGrantedCapabilities([]string{capability})
+			if grantable {
+				require.Nil(t, aerr, "%s must be grantable to a member", capability)
+			} else {
+				require.NotNil(t, aerr, "%s must not be grantable to a member", capability)
+			}
+		})
+	}
+	for capability, isDefault := range wantDefault {
+		t.Run("default/"+capability, func(t *testing.T) {
+			aerr := model.ValidateDefaultCapabilities([]string{capability})
+			if isDefault {
+				require.Nil(t, aerr, "%s must be a valid space default", capability)
+			} else {
+				require.NotNil(t, aerr, "%s must not be a valid space default", capability)
+			}
+		})
+	}
+}
+
 // TestValidateGrantedCapabilities verifies the per-member grant validator: read_page is rejected
 // as the non-grantable baseline, admin_space is accepted, and an unknown token is rejected.
 func TestValidateGrantedCapabilities(t *testing.T) {

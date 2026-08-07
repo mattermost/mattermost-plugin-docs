@@ -176,49 +176,63 @@ func rolesFromScheme(scheme *mmmodel.Scheme) *schemeRoles {
 // above), or for a scheme a space backing channel already references, and it does not accept a
 // caller-chosen scheme name as proof.
 // Idempotent, so re-running it against an already-configured pooled scheme is a no-op in effect.
-func (s *Service) configureSharedScheme(roles *schemeRoles, capabilities []string) error {
+// changed reports whether any role's stored permission set was actually rewritten, so a caller that
+// only runs this as a no-op recovery check (the space's channel already points at the target scheme)
+// can tell a real permission change from an already-correct set and broadcast accordingly.
+//
+// The User role is written LAST, not first: SetSpaceDefaultCapabilities' no-op shortcut projects a
+// space's default capabilities from the User role alone (spaceDefaultCapabilitiesFromChannel) and
+// treats a projection matching the request as proof the scheme is fully configured, skipping the
+// recovery call that would otherwise re-run this. Writing Admin and Guest before User makes that
+// projection true only once both have already landed, so a mid-loop failure can never leave the
+// admin/guest roles stranded at core's broader channel defaults behind a User role that reads as
+// already correct.
+func (s *Service) configureSharedScheme(roles *schemeRoles, capabilities []string) (changed bool, err error) {
 	capabilities = model.NormalizeCapabilitySet(capabilities)
 	roleSets := []struct {
 		name  string
 		perms []string
 	}{
-		{roles.UserRoleName, append([]string{model.CapabilityReadPage}, capabilities...)},
 		{roles.AdminRoleName, mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions)},
 		{roles.GuestRoleName, []string{model.CapabilityReadPage}},
+		{roles.UserRoleName, append([]string{model.CapabilityReadPage}, capabilities...)},
 	}
 	for _, rs := range roleSets {
-		if err := s.setRolePermissions(rs.name, rs.perms); err != nil {
-			return err
+		rsChanged, err := s.setRolePermissions(rs.name, rs.perms)
+		if err != nil {
+			return changed, err
 		}
+		changed = changed || rsChanged
 	}
-	return nil
+	return changed, nil
 }
 
 // setRolePermissions replaces the named role's permission set with permissions. Returns
 // store.ErrNotFound for a missing role, matching getRolePermissionsByName's translation of the same
-// lookup so both surface the same status through storeAppError.
-func (s *Service) setRolePermissions(roleName string, permissions []string) error {
+// lookup so both surface the same status through storeAppError. changed reports whether the stored
+// set differed and was actually patched.
+func (s *Service) setRolePermissions(roleName string, permissions []string) (changed bool, err error) {
 	role, err := s.client.Role.GetByName(roleName)
 	if err != nil {
 		if errors.Is(err, pluginapi.ErrNotFound) {
-			return &store.ErrNotFound{EntityName: "Role", ID: roleName}
+			return false, &store.ErrNotFound{EntityName: "Role", ID: roleName}
 		}
-		return err
+		return false, err
 	}
 	// configureSharedScheme runs on every resolution, not only when the scheme is created, so that a
 	// scheme a racing caller left mid-configuration still converges. Once the stored set matches,
 	// rewriting it would invalidate the role in core's cache on every node, for every space sharing
 	// this pooled scheme, so a matching set is left as it stands.
 	if permissionSetsEqual(role.Permissions, permissions) {
-		return nil
+		return false, nil
 	}
 	// Patched by id rather than by handing back the role just read: core re-reads the stored role
 	// so its scope guard judges a SchemeId the caller cannot influence.
 	if _, err = s.client.Role.Patch(role.Id, &mmmodel.RolePatch{Permissions: &permissions}); err != nil {
 		if errors.Is(err, pluginapi.ErrNotFound) {
-			return &store.ErrNotFound{EntityName: "Role", ID: roleName}
+			return false, &store.ErrNotFound{EntityName: "Role", ID: roleName}
 		}
-		return err
+		return false, err
 	}
-	return nil
+	return true, nil
 }

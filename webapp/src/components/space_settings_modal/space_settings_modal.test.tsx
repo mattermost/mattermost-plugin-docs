@@ -65,7 +65,6 @@ const memberSection = (name: string) => within(screen.getByRole('group', {name: 
 
 describe('SpaceSettingsModal', () => {
     beforeEach(() => {
-        jest.clearAllMocks();
         api.getSpaceAccess.mockResolvedValue(adminAccess);
         api.getSpaceMembers.mockResolvedValue(memberPage([ordinaryMember]));
         api.getMemberProfiles.mockResolvedValue([{id: 'user2', username: 'bob'}]);
@@ -211,5 +210,241 @@ describe('SpaceSettingsModal', () => {
 
         expect(await screen.findByText('user2')).toBeInTheDocument();
         expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('shows an error and hides the defaults and members sections when the initial load fails', async () => {
+        api.getSpaceAccess.mockRejectedValue(new RestError('http://localhost/x', 500, 'Something went wrong.', undefined));
+
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong.');
+        expect(screen.queryByRole('group', {name: 'Default permissions'})).not.toBeInTheDocument();
+        expect(screen.queryByText('Individual members')).not.toBeInTheDocument();
+    });
+
+    it('surfaces the server message when saving defaults is refused, without losing the panel', async () => {
+        api.setDefaultCapabilities.mockRejectedValue(new RestError('http://localhost/x', 409, 'Defaults could not be saved.', undefined));
+
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        await screen.findByRole('group', {name: 'Default permissions'});
+        fireEvent.click(defaultSection().getByLabelText('Comment on pages'));
+        fireEvent.click(screen.getByRole('button', {name: 'Save defaults'}));
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('Defaults could not be saved.');
+        expect(defaultSection().getByLabelText('Create pages')).toBeInTheDocument();
+    });
+
+    it('keeps the toggled input enabled and focused while its save is in flight', async () => {
+        let resolveSave: (value: unknown) => void = () => {};
+        api.setMemberCapabilities.mockImplementation(() => new Promise((resolve) => {
+            resolveSave = resolve;
+        }));
+
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        await screen.findByRole('group', {name: 'Permissions for bob'});
+        const checkbox = memberSection('bob').getByLabelText('Administer space');
+        checkbox.focus();
+        fireEvent.click(checkbox);
+
+        expect(checkbox).not.toBeDisabled();
+        expect(checkbox).toHaveFocus();
+
+        resolveSave({...ordinaryMember, granted_capabilities: ['admin_space']});
+        await waitFor(() => expect(checkbox).toBeChecked());
+    });
+
+    it('persists both capabilities when a member is toggled twice before the first save settles', async () => {
+        let resolveFirst: (value: unknown) => void = () => {};
+        const firstSave = new Promise((resolve) => {
+            resolveFirst = resolve;
+        });
+        api.setMemberCapabilities.
+            mockImplementationOnce(() => firstSave).
+            mockImplementationOnce(() => Promise.resolve({...ordinaryMember, granted_capabilities: ['delete_page', 'admin_space']}));
+
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        await screen.findByRole('group', {name: 'Permissions for bob'});
+        fireEvent.click(memberSection('bob').getByLabelText('Administer space'));
+        fireEvent.click(memberSection('bob').getByLabelText('Delete any page'));
+
+        expect(api.setMemberCapabilities).toHaveBeenCalledTimes(1);
+        expect(memberSection('bob').getByLabelText('Delete any page')).toBeChecked();
+
+        resolveFirst({...ordinaryMember, granted_capabilities: ['admin_space']});
+
+        await waitFor(() => expect(api.setMemberCapabilities).toHaveBeenCalledTimes(2));
+        expect(api.setMemberCapabilities).toHaveBeenLastCalledWith('space1', 'user2', ['delete_page', 'admin_space']);
+        await waitFor(() => {
+            expect(memberSection('bob').getByLabelText('Administer space')).toBeChecked();
+            expect(memberSection('bob').getByLabelText('Delete any page')).toBeChecked();
+        });
+    });
+
+    it('reconciles to the last server-confirmed set when the coalesced save fails', async () => {
+        let resolveFirst: (value: unknown) => void = () => {};
+        const firstSave = new Promise((resolve) => {
+            resolveFirst = resolve;
+        });
+        api.setMemberCapabilities.
+            mockImplementationOnce(() => firstSave).
+            mockImplementationOnce(() => Promise.reject(new RestError('http://localhost/x', 409, 'This is the last administrator of the space.', undefined)));
+
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        await screen.findByRole('group', {name: 'Permissions for bob'});
+        fireEvent.click(memberSection('bob').getByLabelText('Administer space'));
+        fireEvent.click(memberSection('bob').getByLabelText('Delete any page'));
+
+        resolveFirst({...ordinaryMember, granted_capabilities: ['admin_space']});
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('This is the last administrator of the space.');
+        await waitFor(() => {
+            expect(memberSection('bob').getByLabelText('Administer space')).toBeChecked();
+            expect(memberSection('bob').getByLabelText('Delete any page')).not.toBeChecked();
+        });
+    });
+
+    it('gives the coalesced toggle its own attempt after a failed save, and surfaces success if it lands', async () => {
+        let rejectFirst: (reason?: unknown) => void = () => {};
+        const firstSave = new Promise((_resolve, reject) => {
+            rejectFirst = reject;
+        });
+        api.setMemberCapabilities.
+            mockImplementationOnce(() => firstSave).
+            mockImplementationOnce(() => Promise.resolve({...ordinaryMember, granted_capabilities: ['delete_page', 'admin_space']}));
+
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        await screen.findByRole('group', {name: 'Permissions for bob'});
+        fireEvent.click(memberSection('bob').getByLabelText('Administer space'));
+        fireEvent.click(memberSection('bob').getByLabelText('Delete any page'));
+
+        rejectFirst(new RestError('http://localhost/x', 409, 'This is the last administrator of the space.', undefined));
+
+        await waitFor(() => expect(api.setMemberCapabilities).toHaveBeenCalledTimes(2));
+        expect(api.setMemberCapabilities).toHaveBeenLastCalledWith('space1', 'user2', ['delete_page', 'admin_space']);
+        await waitFor(() => {
+            expect(memberSection('bob').getByLabelText('Administer space')).toBeChecked();
+            expect(memberSection('bob').getByLabelText('Delete any page')).toBeChecked();
+        });
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('reverts to the original state and surfaces the error when both the initial and coalesced saves fail', async () => {
+        let rejectFirst: (reason?: unknown) => void = () => {};
+        const firstSave = new Promise((_resolve, reject) => {
+            rejectFirst = reject;
+        });
+        api.setMemberCapabilities.
+            mockImplementationOnce(() => firstSave).
+            mockImplementationOnce(() => Promise.reject(new RestError('http://localhost/x', 409, 'This is the last administrator of the space.', undefined)));
+
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        await screen.findByRole('group', {name: 'Permissions for bob'});
+        fireEvent.click(memberSection('bob').getByLabelText('Administer space'));
+        fireEvent.click(memberSection('bob').getByLabelText('Delete any page'));
+
+        rejectFirst(new RestError('http://localhost/x', 500, 'Something went wrong.', undefined));
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('This is the last administrator of the space.');
+        await waitFor(() => {
+            expect(memberSection('bob').getByLabelText('Administer space')).not.toBeChecked();
+            expect(memberSection('bob').getByLabelText('Delete any page')).not.toBeChecked();
+        });
+    });
+
+    it('lets two members save concurrently without one clearing the other in-flight state', async () => {
+        const memberTwo = {
+            user_id: 'user3',
+            capabilities: ['read_page', 'create_page', 'edit_page'],
+            granted_capabilities: [],
+            is_admin: false,
+            is_guest: false,
+        };
+        api.getSpaceMembers.mockResolvedValue(memberPage([ordinaryMember, memberTwo]));
+        api.getMemberProfiles.mockResolvedValue([
+            {id: 'user2', username: 'bob'},
+            {id: 'user3', username: 'ann'},
+        ]);
+
+        let resolveFirst: (value: unknown) => void = () => {};
+        const firstSave = new Promise((resolve) => {
+            resolveFirst = resolve;
+        });
+        api.setMemberCapabilities.mockImplementation((_spaceId: string, userId: string) => {
+            if (userId === 'user2') {
+                return firstSave;
+            }
+            return Promise.resolve({...memberTwo, granted_capabilities: ['delete_page']});
+        });
+
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        await screen.findByRole('group', {name: 'Permissions for bob'});
+        fireEvent.click(memberSection('bob').getByLabelText('Administer space'));
+        fireEvent.click(memberSection('ann').getByLabelText('Delete any page'));
+
+        await waitFor(() => expect(memberSection('ann').getByLabelText('Delete any page')).toBeChecked());
+        expect(memberSection('bob').getByLabelText('Administer space')).toBeChecked();
+
+        resolveFirst({...ordinaryMember, granted_capabilities: ['admin_space']});
+        await waitFor(() => expect(memberSection('bob').getByLabelText('Administer space')).toBeChecked());
+    });
+
+    it('shows an automatic-join note for a member added without an explicit grant', async () => {
+        api.getSpaceMembers.mockResolvedValue(memberPage([{...ordinaryMember, auto_joined: true}]));
+
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        expect(await screen.findByText('Joined automatically')).toBeInTheDocument();
     });
 });

@@ -94,6 +94,7 @@
   "docs.spaceSettings.defaults.title": "Everyone in this space",
   "docs.spaceSettings.genericError": "Something went wrong. Please try again.",
   "docs.spaceSettings.loading": "Loading permissions…",
+  "docs.spaceSettings.members.autoJoined": "Joined automatically",
   "docs.spaceSettings.members.description": "Grants added on top of the space default. Clearing them leaves the member with the default.",
   "docs.spaceSettings.members.guest": "Guests can only view pages, and cannot be granted more.",
   "docs.spaceSettings.members.legend": "Permissions for {name}",

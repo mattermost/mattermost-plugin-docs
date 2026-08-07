@@ -112,6 +112,13 @@ func PresetSchemeID(name string) string {
 	return presetSchemeFixtures[name].schemeID
 }
 
+// PresetUserRoleName returns the generated user-role name StubPresetSchemes stubbed for the named
+// preset — exported for callers pinning the exact role argument DefaultRolesGrantPermission passes
+// to RolesGrantPermission, rather than accepting any role via mock.Anything.
+func PresetUserRoleName(name string) string {
+	return presetSchemeFixtures[name].userRole
+}
+
 // StubPresetSchemes registers .Maybe() stubs on mockAPI resolving each of the three preset space
 // schemes by name, plus their three generated roles by name — the shape
 // getSchemeIDByName/getRolePermissionsByName resolve through the plugin API in production. Call

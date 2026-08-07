@@ -8,6 +8,7 @@
 package app_test
 
 import (
+	"net/http"
 	"slices"
 	"testing"
 
@@ -640,6 +641,34 @@ func TestServiceRemoveSpaceMember_PublishesMemberRemovedEvent(t *testing.T) {
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_removed",
 		map[string]any{"space_id": space.Id, "user_id": targetID},
 		&mmmodel.WebsocketBroadcast{UserId: targetID})
+}
+
+// TestServiceSetSpaceMemberCapabilities_DefaultCapabilitiesFailureAbortsBeforeCommit covers the
+// ordering fix: resolving the space's default capabilities (defaultCapabilitiesForRoles) now runs
+// inside the lock, before the role write, rather than after it. A failure there must abort before
+// UpdateChannelMemberRoles ever runs — not surface a write that already committed as an error while
+// silently skipping its WS event.
+func TestServiceSetSpaceMemberCapabilities_DefaultCapabilitiesFailureAbortsBeforeCommit(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	targetUserID := mmmodel.NewId()
+	// Registered before the harness so it wins over StubPresetSchemes' GetRoleByName stub for the
+	// same role name: mock.Mock matches expectations in registration order.
+	mockAPI.On("GetRoleByName", "space_contribute_user_role").
+		Return((*mmmodel.Role)(nil), &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
+	h := openTestServiceWithAPI(t, mockAPI)
+	space, actingUserID := createSpaceForMemberTests(t, h, mockAPI)
+
+	mockAPI.On("GetChannelMember", space.ChannelId, targetUserID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: targetUserID}, nil)
+
+	_, appErr := h.svc.SetSpaceMemberCapabilities(space, targetUserID, []string{model.CapabilityEditPage}, actingUserID)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
+	// space.ChannelId's creator-role assignment during createSpaceForMemberTests' CreateSpace call
+	// already exercised UpdateChannelMemberRoles once, so the assertion is scoped to targetUserID —
+	// the only call SetSpaceMemberCapabilities itself would make.
+	mockAPI.AssertNotCalled(t, "UpdateChannelMemberRoles", space.ChannelId, targetUserID, mock.Anything)
+	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "space_member_capabilities_updated", mock.Anything, mock.Anything)
 }
 
 // TestServiceSetSpaceMemberCapabilities_PublishesToChannelAndUser pins

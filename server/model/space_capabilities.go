@@ -164,7 +164,8 @@ type MemberCapabilities struct {
 
 // CapabilitiesFromMember reverse-projects a member's raw role state onto the capability vocabulary.
 // explicitRoles is the raw space-delimited ChannelMember.ExplicitRoles string; any token that is
-// not an atomic capability role is ignored (harmless if the base scheme token is passed too).
+// not an atomic capability role (a generated per-scheme role granting exactly one page capability)
+// is ignored (harmless if the base scheme token is passed too).
 // defaultCapabilities is the space's default capability set (wire form, read_page-free).
 //
 // A SchemeGuest member's effective set is read_page alone — neither the space default nor its own

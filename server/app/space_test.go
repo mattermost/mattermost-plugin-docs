@@ -32,6 +32,7 @@ func openTestServiceWithAPI(t *testing.T, mockAPI *plugintest.API) *testHarness 
 	h := openTestService(t)
 	testutil.StubDefaultSpacePermissions(mockAPI)
 	testutil.StubPresetSchemes(mockAPI)
+	testutil.StubKVStore(mockAPI)
 	mockAPI.On("GetConfig").Return(&mmmodel.Config{}).Maybe()
 	// Mutations publish best-effort WS events through the client; tests that assert event
 	// content override this with exact-argument expectations.
@@ -853,6 +854,55 @@ func TestServiceSetSpaceDefaultCapabilities_SameSchemeStillConfiguresRoles(t *te
 	require.ElementsMatch(t, []string{model.CapabilityReadPage, model.CapabilityCreatePage},
 		unconfiguredUserRole.Permissions,
 		"resubmitting the set a space already resolves to must write the roles it was left without")
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_updated",
+		map[string]any{"space_id": space.Id}, &mmmodel.WebsocketBroadcast{ChannelId: channelID})
+}
+
+// TestServiceSetSpaceDefaultCapabilities_UserRoleAloneUnconfiguredStillWritesIt models the residual
+// state a User-role-only mid-loop failure leaves under configureSharedScheme's Admin/Guest-before-
+// User write order: Admin and Guest already hold their correct permissions, User is still at core's
+// unconfigured baseline. The no-op shortcut's projection (User role alone) must read this as
+// incorrect and fall through to the recovery branch, which reaches configureSharedScheme and writes
+// the User role — the shortcut must not report the space as already configured.
+func TestServiceSetSpaceDefaultCapabilities_UserRoleAloneUnconfiguredStillWritesIt(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	sysadminID := mmmodel.NewId()
+	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true)
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	capabilities := []string{model.CapabilityCreatePage}
+	pooledName := model.SharedSchemeNameForCapabilities(capabilities)
+	schemeID := mmmodel.NewId()
+	userRoleName, adminRoleName, guestRoleName := pooledName+"_user", pooledName+"_admin", pooledName+"_guest"
+	mockAPI.On("GetSchemeByName", pooledName).Return(&mmmodel.Scheme{
+		Id:                      schemeID,
+		Name:                    pooledName,
+		Scope:                   mmmodel.SchemeScopeChannel,
+		DefaultChannelUserRole:  userRoleName,
+		DefaultChannelAdminRole: adminRoleName,
+		DefaultChannelGuestRole: guestRoleName,
+	}, nil)
+	testutil.RegisterSchemeRoles(schemeID, guestRoleName, userRoleName, adminRoleName)
+
+	unconfiguredUserRole := testutil.StubRole(mockAPI, userRoleName, nil)
+	testutil.StubRole(mockAPI, adminRoleName, mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions))
+	testutil.StubRole(mockAPI, guestRoleName, []string{model.CapabilityReadPage})
+	testutil.StubPatchRole(mockAPI)
+
+	channelID := mmmodel.NewId()
+	testutil.StubChannelScheme(mockAPI, channelID, &mmmodel.Channel{
+		Id: channelID, Type: mmmodel.ChannelTypeSpace, SchemeId: &schemeID,
+	})
+	space := mustCreateSpace(t, h.store, h.db, channelID)
+
+	updated, appErr := h.svc.SetSpaceDefaultCapabilities(space, capabilities, sysadminID)
+
+	require.Nil(t, appErr)
+	require.Equal(t, capabilities, updated.DefaultCapabilities)
+	require.ElementsMatch(t, []string{model.CapabilityReadPage, model.CapabilityCreatePage},
+		unconfiguredUserRole.Permissions,
+		"the recovery branch must be reached and write the still-unconfigured user role")
+	mockAPI.AssertCalled(t, "PatchRole", unconfiguredUserRole.Id, mock.AnythingOfType("*model.RolePatch"))
 }
 
 // TestServiceSetSpaceDefaultCapabilities_ResponseReflectsRequestedNotStaleReadback covers the

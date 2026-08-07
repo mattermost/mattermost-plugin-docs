@@ -75,6 +75,7 @@ func openTestPlugin(t *testing.T, mockAPI *plugintest.API) *apiTestHarness {
 	mockAPI.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	testutil.StubDefaultSpacePermissions(mockAPI)
 	testutil.StubPresetSchemes(mockAPI)
+	testutil.StubKVStore(mockAPI)
 	// Resolves any channel to the contribute preset, and serves the channel read/write that
 	// UpdateSpace's best-effort metadata sync (syncSpaceChannelMetadata) performs. Registered last
 	// because mock.Mock matches in registration order: a test seeding a channel at a specific
@@ -341,10 +342,15 @@ func TestHandler_UpdateSpace(t *testing.T) {
 		"expected_update_at": space.UpdateAt,
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
-	var updated model.Space
+	var updated model.SpaceWithAccess
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updated))
 	require.Equal(t, "Renamed", updated.Title)
 	require.Equal(t, "New description", updated.Description)
+	// The wrapper's capability fields are resolved pre-commit and carried over, not dropped: they
+	// must reflect the caller's real, non-empty access — not the empty-slice shape EnsureCapabilities
+	// alone would also produce for a lost value.
+	require.NotEmpty(t, updated.DefaultCapabilities)
+	require.NotEmpty(t, updated.Capabilities)
 
 	// A stale baseline now conflicts (the optimistic lock is client-supplied).
 	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, adminID, map[string]any{
@@ -352,6 +358,37 @@ func TestHandler_UpdateSpace(t *testing.T) {
 		"expected_update_at": space.UpdateAt,
 	})
 	require.Equal(t, http.StatusConflict, rec.Code)
+}
+
+// TestHandler_UpdateSpace_WrapperFailureAbortsBeforeCommit covers the resolution order:
+// BuildSpaceWithAccess runs on the pre-update space BEFORE UpdateSpace, so a failure there must
+// abort with nothing committed — the caller's baseline stays valid for a retry, and no WS event
+// fires for a write that never happened.
+func TestHandler_UpdateSpace_WrapperFailureAbortsBeforeCommit(t *testing.T) {
+	mockAPI := newEnabledMockAPI()
+	adminID := mmmodel.NewId()
+	grantSpaceManage(mockAPI, adminID)
+	channelID := mmmodel.NewId()
+	// Registered before the harness so it wins over StubDefaultChannelScheme's catch-all: mock.Mock
+	// matches expectations in registration order.
+	mockAPI.On("GetSchemeRolesForChannel", channelID).
+		Return("", "", "", &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, channelID)
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, adminID, map[string]any{
+		"title":              "Renamed",
+		"expected_update_at": space.UpdateAt,
+	})
+	require.Equal(t, http.StatusInternalServerError, rec.Code,
+		"a pre-commit access-wrapper failure must abort the request, not silently drop capabilities")
+
+	fresh, err := h.store.GetSpace(space.Id, false)
+	require.NoError(t, err)
+	require.Equal(t, space.UpdateAt, fresh.UpdateAt, "nothing must have committed")
+	require.Equal(t, space.Title, fresh.Title)
+
+	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "space_updated", mock.Anything, mock.Anything)
 }
 
 // TestHandler_UpdateSpace_NonManageMemberForbidden verifies an ordinary contribute-default member

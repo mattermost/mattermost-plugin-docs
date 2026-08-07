@@ -5,11 +5,12 @@
     "description": "Browser end-to-end suite for the Docs plugin UI",
     "scripts": {
         "test": "playwright test --project=chrome",
-        "tsc": "tsc --noEmit"
+        "tsc": "tsc --noEmit",
+        "check": "npm run tsc"
     },
     "dependencies": {
         "@mattermost/playwright-lib": "11.4.0",
-        "@playwright/test": "1.55.0"
+        "@playwright/test": "^1.62.1"
     },
     "devDependencies": {
         "@types/node": "22.15.31",

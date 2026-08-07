@@ -33,6 +33,21 @@ jobs:
       - name: ci/lint
         uses: mattermost/actions/plugin-ci/lint@0256d363493a1e6b9e361ea788c62a0a73bc00be
 
+      # The browser suite is its own npm package with its own toolchain, so it type-checks through
+      # its own `check` script rather than the plugin's check-style — the arrangement core and the
+      # other plugin repos use. It runs here rather than in the e2e job because it needs no server,
+      # no Docker and no core image, and that job is gated on CORE_IMAGE being configured.
+      - name: ci/setup-node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: ci/e2e-check
+        working-directory: e2e
+        run: |
+          npm ci
+          npm run check
+
   test:
     if: ${{ github.repository_owner == 'mattermost' || github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
@@ -96,7 +111,9 @@ jobs:
   #
   # It needs a server image carrying the paired core branch's space-permission changes. Core CI
   # publishes one per commit as mattermostdevelopment/mattermost-team-edition:<7-char-sha>, so set
-  # the CORE_IMAGE repository variable to that tag (or to a release tag once those changes ship).
+  # the CORE_IMAGE repository variable to that tag. That stays the shape even after the core
+  # changes ship in a release: the pin below compares against build/core-commit.txt, which only
+  # ever names a commit sha, so CORE_IMAGE is always a per-commit sha tag.
   # While CORE_IMAGE is unset this job does not run: no available image could satisfy it, and a
   # silent pass would be worse than an absent one.
   #
@@ -107,8 +124,13 @@ jobs:
   # For the same reason it is not in delivery/release `needs:` yet: a skipped dependency skips the
   # dependent job. Add it to both once CORE_IMAGE is populated, so a permission regression blocks
   # publishing.
+  #
+  # Fork PRs are excluded: repository variables (CORE_IMAGE) are visible to fork runs, but secrets
+  # (the Enterprise test license below) are not, so the licensed scenarios would fail on every
+  # fork PR. When this job becomes a required check that exclusion needs its own answer — a
+  # skipped required check passes branch protection, so fork PRs would bypass the suite.
   e2e:
-    if: ${{ vars.CORE_IMAGE != '' && (github.repository_owner == 'mattermost' || github.event_name != 'schedule') }}
+    if: ${{ vars.CORE_IMAGE != '' && (github.repository_owner == 'mattermost' || github.event_name != 'schedule') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     needs: build
     timeout-minutes: 20
@@ -131,8 +153,8 @@ jobs:
       # change would surface here as a test failure with no corresponding commit in this repo.
       - name: ci/verify-core-image-pin
         run: |
-          if [[ ! "$CORE_IMAGE" =~ :([0-9a-f]{7,40}|v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-            echo "CORE_IMAGE must be pinned to a commit sha or a release tag; got '$CORE_IMAGE'." >&2
+          if [[ ! "$CORE_IMAGE" =~ :[0-9a-f]{7,40}$ ]]; then
+            echo "CORE_IMAGE must be pinned to a commit sha; got '$CORE_IMAGE'." >&2
             echo "Core CI publishes one image per commit as <repo>:<7-char-sha>." >&2
             exit 1
           fi
@@ -149,11 +171,6 @@ jobs:
           pinned_commit="$(grep -vE '^\s*(#|$)' build/core-commit.txt | head -1 | tr -d '[:space:]')"
           if [[ ! "$pinned_commit" =~ ^[0-9a-f]{7,40}$ ]]; then
             echo "build/core-commit.txt must hold one core commit sha; got '${pinned_commit}'." >&2
-            exit 1
-          fi
-          if [[ ! "$image_tag" =~ ^[0-9a-f]{7,40}$ ]]; then
-            echo "build/core-commit.txt pins unreleased core commit ${pinned_commit}, but CORE_IMAGE is release tag '${image_tag}'." >&2
-            echo "A released image cannot carry that commit's changes. Point CORE_IMAGE at the core build for ${pinned_commit}." >&2
             exit 1
           fi
           # Core CI tags images with a 7-char sha while the pin carries the full 40, so compare on

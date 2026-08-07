@@ -42,6 +42,7 @@ export type SpaceMember = {
     granted_capabilities: Capability[];
     is_admin: boolean;
     is_guest: boolean;
+    auto_joined?: boolean;
 };
 
 // Mirrors server/model/space.go SpaceWithAccess. The Space fields are flattened

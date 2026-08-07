@@ -74,7 +74,7 @@ func TestAutoJoin_JoinsWhenDefaultGrants(t *testing.T) {
 	stubNonMember(mockAPI, userID)
 	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
 
-	mockAPI.On("RolesGrantPermission", mock.Anything, mmmodel.PermissionCreatePage.Id).Return(true)
+	mockAPI.On("RolesGrantPermission", []string{testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)}, mmmodel.PermissionCreatePage.Id).Return(true)
 	// Not yet a member: the join path runs only when the membership probe misses.
 	mockAPI.On("GetChannelMember", space.ChannelId, userID).Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: 404})
 	mockAPI.On("AddChannelMember", space.ChannelId, userID).
@@ -86,6 +86,198 @@ func TestAutoJoin_JoinsWhenDefaultGrants(t *testing.T) {
 	mockAPI.AssertCalled(t, "AddChannelMember", space.ChannelId, userID)
 }
 
+// TestAutoJoin_ProvenanceMarkerLifecycle covers the auto-join provenance marker end to end: set on
+// a successful auto-join and visible through GetSpaceMembers, then cleared by a deliberate admin
+// capability change on the same member (SetSpaceMemberCapabilities), which must supersede it.
+func TestAutoJoin_ProvenanceMarkerLifecycle(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	stubNonMember(mockAPI, userID)
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	roleName := testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)
+	mockAPI.On("RolesGrantPermission", []string{roleName}, mmmodel.PermissionCreatePage.Id).Return(true)
+	mockAPI.On("GetChannelMember", space.ChannelId, userID).
+		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: 404}).Once()
+	mockAPI.On("AddChannelMember", space.ChannelId, userID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
+
+	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
+	require.Nil(t, appErr)
+	require.True(t, joined)
+
+	mockAPI.On("GetChannelMembers", space.ChannelId, 0, 60).
+		Return(mmmodel.ChannelMembers{{ChannelId: space.ChannelId, UserId: userID}}, nil)
+
+	members, _, appErr := h.svc.GetSpaceMembers(space, 0, 60)
+	require.Nil(t, appErr)
+	require.Len(t, members, 1)
+	require.True(t, members[0].AutoJoined, "a member added by the auto-join pre-step must be marked auto-joined")
+
+	// A deliberate admin act on this member's capabilities supersedes how they got here.
+	mockAPI.On("GetChannelMember", space.ChannelId, userID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
+
+	_, appErr = h.svc.SetSpaceMemberCapabilities(space, userID, []string{model.CapabilityCommentPage}, mmmodel.NewId())
+	require.Nil(t, appErr)
+
+	members, _, appErr = h.svc.GetSpaceMembers(space, 0, 60)
+	require.Nil(t, appErr)
+	require.Len(t, members, 1)
+	require.False(t, members[0].AutoJoined, "a deliberate admin capability change must clear the auto-join marker")
+}
+
+// TestUndoAutoJoin_ClearsProvenanceMarker covers the other half of the marker's lifecycle: undoing
+// a join a rejected write triggered must clear the marker too, so a later deliberate re-add of the
+// same user is not misreported as auto-joined.
+func TestUndoAutoJoin_ClearsProvenanceMarker(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	stubNonMember(mockAPI, userID)
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	roleName := testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)
+	mockAPI.On("RolesGrantPermission", []string{roleName}, mmmodel.PermissionCreatePage.Id).Return(true)
+	mockAPI.On("GetChannelMember", space.ChannelId, userID).
+		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: 404}).Once()
+	mockAPI.On("AddChannelMember", space.ChannelId, userID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
+
+	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
+	require.Nil(t, appErr)
+	require.True(t, joined)
+
+	mockAPI.On("DeleteChannelMember", space.ChannelId, userID).Return(nil)
+	h.svc.UndoAutoJoin(joined, space, userID)
+	mockAPI.AssertCalled(t, "DeleteChannelMember", space.ChannelId, userID)
+
+	// Re-added deliberately, not through auto-join: if UndoAutoJoin left the marker behind, this
+	// membership would incorrectly resurface as auto-joined.
+	_, appErr = h.svc.AddSpaceMember(space, userID)
+	require.Nil(t, appErr)
+
+	mockAPI.On("GetChannelMembers", space.ChannelId, 0, 60).
+		Return(mmmodel.ChannelMembers{{ChannelId: space.ChannelId, UserId: userID}}, nil)
+	members, _, appErr := h.svc.GetSpaceMembers(space, 0, 60)
+	require.Nil(t, appErr)
+	require.Len(t, members, 1)
+	require.False(t, members[0].AutoJoined,
+		"UndoAutoJoin must clear the provenance marker rather than leave it for a later deliberate add")
+}
+
+// TestRemoveSpaceMember_ClearsProvenanceMarker covers the third clearing path: removing an
+// auto-joined member must clear their marker too, so a later deliberate re-add of the same user is
+// not misreported as auto-joined.
+func TestRemoveSpaceMember_ClearsProvenanceMarker(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	otherID := mmmodel.NewId()
+	stubNonMember(mockAPI, userID)
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	roleName := testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)
+	mockAPI.On("RolesGrantPermission", []string{roleName}, mmmodel.PermissionCreatePage.Id).Return(true)
+	mockAPI.On("GetChannelMember", space.ChannelId, userID).
+		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: 404}).Once()
+	mockAPI.On("AddChannelMember", space.ChannelId, userID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
+
+	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
+	require.Nil(t, appErr)
+	require.True(t, joined)
+
+	// otherAuthorizedMembers' reachability walk needs another active member so removing userID does
+	// not trip the last-member guard.
+	mockAPI.On("GetChannelMembers", space.ChannelId, 0, app.PerPageMaximum).
+		Return(mmmodel.ChannelMembers{
+			{ChannelId: space.ChannelId, UserId: userID},
+			{ChannelId: space.ChannelId, UserId: otherID},
+		}, nil)
+	mockAPI.On("GetChannelMember", space.ChannelId, userID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
+	mockAPI.On("DeleteChannelMember", space.ChannelId, userID).Return(nil)
+
+	appErr = h.svc.RemoveSpaceMember(space, userID, mmmodel.NewId())
+	require.Nil(t, appErr)
+
+	// Re-added deliberately: if RemoveSpaceMember left the marker behind, this would incorrectly
+	// resurface as auto-joined.
+	_, appErr = h.svc.AddSpaceMember(space, userID)
+	require.Nil(t, appErr)
+
+	mockAPI.On("GetChannelMembers", space.ChannelId, 0, 60).
+		Return(mmmodel.ChannelMembers{{ChannelId: space.ChannelId, UserId: userID}}, nil)
+	members, _, appErr := h.svc.GetSpaceMembers(space, 0, 60)
+	require.Nil(t, appErr)
+	require.Len(t, members, 1)
+	require.False(t, members[0].AutoJoined,
+		"RemoveSpaceMember must clear the provenance marker rather than leave it for a later deliberate add")
+}
+
+// TestUndoAutoJoin_SkipsRemovalWhenLegitimizedConcurrently is the marker guard's positive case: an
+// admin capability grant lands, clearing the marker, in the window between the auto-join and the
+// undo of the rejected write it admitted. The undo must leave the now-deliberate membership intact.
+func TestUndoAutoJoin_SkipsRemovalWhenLegitimizedConcurrently(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	stubNonMember(mockAPI, userID)
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	roleName := testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)
+	mockAPI.On("RolesGrantPermission", []string{roleName}, mmmodel.PermissionCreatePage.Id).Return(true)
+	mockAPI.On("GetChannelMember", space.ChannelId, userID).
+		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: 404}).Once()
+	mockAPI.On("AddChannelMember", space.ChannelId, userID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
+
+	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
+	require.Nil(t, appErr)
+	require.True(t, joined)
+
+	// A deliberate admin act legitimizes the membership before the guarded write's own rejection
+	// reaches UndoAutoJoin — clearing the marker, exactly as SetSpaceMemberCapabilities does.
+	mockAPI.On("GetChannelMember", space.ChannelId, userID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
+	_, appErr = h.svc.SetSpaceMemberCapabilities(space, userID, []string{model.CapabilityCommentPage}, mmmodel.NewId())
+	require.Nil(t, appErr)
+
+	h.svc.UndoAutoJoin(joined, space, userID)
+
+	mockAPI.AssertNotCalled(t, "DeleteChannelMember", space.ChannelId, userID)
+}
+
+// TestUndoAutoJoin_SkipsRemovalWhenLegitimizedByDeliberateReAdd is
+// TestUndoAutoJoin_SkipsRemovalWhenLegitimizedConcurrently's counterpart for the other legitimizing
+// act: a deliberate re-add via AddSpaceMember (not just a capability grant) also clears the marker,
+// and does so atomically with the add under the space-keyed lock, so UndoAutoJoin can only ever see
+// the clear wholly before or wholly after its own locked marker check — never in between.
+func TestUndoAutoJoin_SkipsRemovalWhenLegitimizedByDeliberateReAdd(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	stubNonMember(mockAPI, userID)
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	roleName := testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)
+	mockAPI.On("RolesGrantPermission", []string{roleName}, mmmodel.PermissionCreatePage.Id).Return(true)
+	mockAPI.On("GetChannelMember", space.ChannelId, userID).
+		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: 404}).Once()
+	mockAPI.On("AddChannelMember", space.ChannelId, userID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
+
+	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
+	require.Nil(t, appErr)
+	require.True(t, joined)
+
+	// An admin deliberately re-adds the same user before the guarded write's own rejection reaches
+	// UndoAutoJoin. Core affirms the re-add of an existing member; AddSpaceMember clears the marker.
+	_, appErr = h.svc.AddSpaceMember(space, userID)
+	require.Nil(t, appErr)
+
+	h.svc.UndoAutoJoin(joined, space, userID)
+
+	mockAPI.AssertNotCalled(t, "DeleteChannelMember", space.ChannelId, userID)
+}
+
 // TestAutoJoin_DefaultDoesNotGrant covers the admission test: the fall-through alone never joins.
 // A space whose default capability set withholds the permission leaves the caller a non-member, so
 // the write gate that follows denies them rather than silently granting access by joining first.
@@ -95,7 +287,7 @@ func TestAutoJoin_DefaultDoesNotGrant(t *testing.T) {
 	stubNonMember(mockAPI, userID)
 	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
 
-	mockAPI.On("RolesGrantPermission", mock.Anything, mmmodel.PermissionCreatePage.Id).Return(false)
+	mockAPI.On("RolesGrantPermission", []string{testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)}, mmmodel.PermissionCreatePage.Id).Return(false)
 
 	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
 	require.Nil(t, appErr)
@@ -114,7 +306,7 @@ func TestAutoJoin_PrivateFlipAbortsJoin(t *testing.T) {
 
 	// Granted, so the re-validation below is the only thing that can abort the join — the pre-step's
 	// own admission test must not be what makes this pass.
-	mockAPI.On("RolesGrantPermission", mock.Anything, mmmodel.PermissionCreatePage.Id).Return(true)
+	mockAPI.On("RolesGrantPermission", []string{testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)}, mmmodel.PermissionCreatePage.Id).Return(true)
 
 	// The caller still holds the open-space record it was admitted against; the stored row has
 	// since flipped private, which is what the pre-step re-reads.
@@ -139,7 +331,7 @@ func TestAutoJoin_DeletedSpaceIsNoOp(t *testing.T) {
 	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
 
 	// Granted, so the deleted-space branch below is the only thing that can prevent the join.
-	mockAPI.On("RolesGrantPermission", mock.Anything, mmmodel.PermissionCreatePage.Id).Return(true)
+	mockAPI.On("RolesGrantPermission", []string{testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)}, mmmodel.PermissionCreatePage.Id).Return(true)
 
 	require.NoError(t, h.store.DeleteSpace(space.Id))
 
@@ -158,7 +350,7 @@ func TestAutoJoin_OwnerCheckGatesJoin(t *testing.T) {
 	stubNonMember(mockAPI, userID)
 	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
 
-	mockAPI.On("RolesGrantPermission", mock.Anything, mmmodel.PermissionDeleteOwnPage.Id).Return(true)
+	mockAPI.On("RolesGrantPermission", []string{testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)}, mmmodel.PermissionDeleteOwnPage.Id).Return(true)
 
 	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough,
 		mmmodel.PermissionDeleteOwnPage, func() (bool, error) { return false, nil })
@@ -176,7 +368,7 @@ func TestAutoJoin_OwnerCheckFailurePropagates(t *testing.T) {
 	stubNonMember(mockAPI, userID)
 	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
 
-	mockAPI.On("RolesGrantPermission", mock.Anything, mmmodel.PermissionDeleteOwnPage.Id).Return(true)
+	mockAPI.On("RolesGrantPermission", []string{testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)}, mmmodel.PermissionDeleteOwnPage.Id).Return(true)
 
 	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough,
 		mmmodel.PermissionDeleteOwnPage, func() (bool, error) { return false, errors.New("lookup failed") })
@@ -193,7 +385,7 @@ func TestAutoJoin_AlreadyMemberIsNoOp(t *testing.T) {
 	stubNonMember(mockAPI, userID)
 	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
 
-	mockAPI.On("RolesGrantPermission", mock.Anything, mmmodel.PermissionCreatePage.Id).Return(true)
+	mockAPI.On("RolesGrantPermission", []string{testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)}, mmmodel.PermissionCreatePage.Id).Return(true)
 	mockAPI.On("GetChannelMember", space.ChannelId, userID).
 		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
 

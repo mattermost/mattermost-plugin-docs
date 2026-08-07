@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
@@ -355,8 +356,9 @@ func (s *Service) RequireSpacePublish(where string, space *model.Space, userID s
 }
 
 // DefaultRolesGrantPermission reports whether space's current default capability set (the scheme's
-// generated user role) grants perm to a plain member — the auto-join admission test. Channel
-// without a scheme (ErrNotFound) reports false, not an error.
+// generated user role) grants perm to a plain member — the auto-join admission test. ErrNotFound
+// from the underlying lookup — a channel without a scheme, or one that no longer exists at all —
+// reports false, not an error.
 func (s *Service) DefaultRolesGrantPermission(space *model.Space, perm *mmmodel.Permission) (bool, error) {
 	// Checked before the lookup below, which reaches through the client itself.
 	if s.client == nil || space == nil {
@@ -463,6 +465,12 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 		}
 		joined = true
 		joinedUserID, joinedChannelID = member.UserId, fresh.ChannelId
+		// Best-effort: the membership itself is what the write gate re-checks next, so a marker
+		// write failure must not fail an auto-join that otherwise succeeded. It only degrades the
+		// membership review's provenance signal for this member.
+		if markErr := s.markAutoJoined(fresh.Id, member.UserId); markErr != nil {
+			s.log.Warn("failed to record auto-join provenance marker", "space_id", fresh.Id, "user_id", member.UserId, "err", markErr)
+		}
 		return nil
 	})
 	if lockErr != nil {
@@ -491,16 +499,47 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 // Removal is best-effort and reported only in the log: the caller is already returning the write's
 // own error, and replacing it with a cleanup failure would hide why the request was rejected. A
 // leftover membership grants no more than the space defaults already granted the caller.
+//
+// Guarded by the auto-join provenance marker: the pre-step releases the membership lock before the
+// guarded write it admits runs, so an admin can legitimize the same membership (a capability grant
+// or a deliberate re-add, both of which clear the marker) in the window before this call re-takes
+// the lock. Deleting unconditionally would then discard a membership the admin just granted, on the
+// strength of a request that has nothing to do with it. The marker is checked here, not before the
+// lock, so the check and the delete/clear observe one consistent state.
 func (s *Service) UndoAutoJoin(joined bool, space *model.Space, userID string) {
 	if !joined || space == nil || s.client == nil {
 		return
 	}
+	removed := false
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
-		return s.client.Channel.DeleteMember(space.ChannelId, userID)
+		ids, idsErr := s.autoJoinedIDs(space.Id)
+		if idsErr != nil {
+			// Cannot confirm the marker either way; fail closed toward leaving the membership in
+			// place rather than risking discarding one an admin just legitimized.
+			s.log.Warn("failed to check auto-join provenance marker before undo; leaving the membership in place", "space_id", space.Id, "user_id", userID, "err", idsErr)
+			return nil
+		}
+		if !slices.Contains(ids, userID) {
+			s.log.Debug("auto-join undo skipped: membership was legitimized concurrently", "space_id", space.Id, "user_id", userID)
+			return nil
+		}
+		if err := s.client.Channel.DeleteMember(space.ChannelId, userID); err != nil {
+			return err
+		}
+		removed = true
+		if clearErr := s.clearAutoJoined(space.Id, userID); clearErr != nil {
+			// Best-effort, matching the marker write itself: the membership is already gone, which
+			// is what the write gate re-checks; a stale marker only degrades the provenance signal.
+			s.log.Warn("failed to clear auto-join provenance marker", "space_id", space.Id, "user_id", userID, "err", clearErr)
+		}
+		return nil
 	})
 	if lockErr != nil {
 		s.log.Error("failed to remove the membership an auto-join created for a rejected write; the user remains a member of the space",
 			"space_id", space.Id, "user_id", userID, "err", lockErr)
+		return
+	}
+	if !removed {
 		return
 	}
 	payload := map[string]any{"space_id": space.Id, "user_id": userID}
