@@ -36,7 +36,8 @@ var (
 )
 
 // grantableMemberCapabilities is the wire vocabulary a caller may explicitly grant to a member:
-// the five atomic per-page capabilities plus the admin capability.
+// the five atomic per-page capabilities plus the admin capability. Atomic here and throughout
+// means indivisible — one generated role granting exactly one capability, never a bundle.
 var grantableMemberCapabilities = map[string]bool{
 	CapabilityCreatePage:    true,
 	CapabilityCommentPage:   true,

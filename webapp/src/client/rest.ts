@@ -7,13 +7,8 @@ import {ClientError} from '@mattermost/client';
 
 import {Client4} from 'mattermost-redux/client';
 
-// Shared plumbing for calls to the Docs plugin REST API.
-//
-// Deliberately a subset: the Spaces UI branch (PR #12) carries a fuller version
-// of this module at the same path with the same exported names, adding the verbs
-// and the paginated listAll this permissions surface does not need. Matching its
-// names means the two resolve to "take the superset" when the branches meet,
-// rather than leaving a second REST client behind.
+// Shared request helpers for calls to the Docs plugin REST API.
+// GET/PUT/PATCH only — this permissions surface does not need the other verbs.
 
 // Client4.url is the host-configured site URL including any subpath, so this
 // resolves on subpath-hosted instances without extra wiring. Deferred to call

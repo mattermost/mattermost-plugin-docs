@@ -702,7 +702,7 @@ func TestResolveSpaceRead_GuestDeniedOpenFallthrough(t *testing.T) {
 
 // TestResolveSpaceRead_InvalidUserIDIsBadRequest keeps a malformed user id reporting as a caller
 // fault. Collapsing it into the existence-hiding 403 every genuine denial returns would make a
-// plumbing bug indistinguishable from an ordinary authorization failure.
+// caller-input bug indistinguishable from an ordinary authorization failure.
 func TestResolveSpaceRead_InvalidUserIDIsBadRequest(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)

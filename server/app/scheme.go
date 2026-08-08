@@ -247,9 +247,9 @@ func (s *Service) setRolePermissions(roleName string, permissions []string) (cha
 		return false, err
 	}
 	// configureSharedScheme runs on every resolution, not only when the scheme is created, so that a
-	// scheme a racing caller left mid-configuration still converges. Once the stored set matches,
-	// rewriting it would invalidate the role in core's cache on every node, for every space sharing
-	// this pooled scheme, so a matching set is left as it stands.
+	// scheme a racing caller left mid-configuration still converges. A matching set is left in
+	// place, avoiding a role-cache invalidation on every node for every space sharing this pooled
+	// scheme.
 	if permissionSetsEqual(role.Permissions, permissions) {
 		return false, nil
 	}

@@ -10,10 +10,9 @@ import {Client4} from 'mattermost-redux/client';
 import type {Capability, Paginated, SpaceAccess, SpaceMember, SpaceViewAccess} from 'types/permissions';
 
 // The space-permissions calls: the space's default capability set and each
-// member's granted set. Kept apart from the Docs data source (spaces, pages)
-// because those still read from the mock source until the Spaces UI branch
-// lands its API-backed one; a permission control that wrote to a fixture would
-// be worse than no control.
+// member's granted set. Kept apart from the Docs data source (spaces, pages),
+// which still reads from a mock fixture; a permission control that wrote to a
+// fixture would be worse than no control.
 
 // Ids are server-generated and URL-safe, so this is defence in depth: an id that
 // ever arrives malformed cannot reshape the request path.

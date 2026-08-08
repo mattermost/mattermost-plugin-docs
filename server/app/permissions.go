@@ -103,8 +103,7 @@ func (s *Service) readResolutionFrom(sysadmin bool, member *mmmodel.TeamMember, 
 // admitted so callers can gate auto-join to the fall-through case only. where identifies the
 // calling operation for the 500 an activeTeamMember lookup failure surfaces as. On that
 // failure the returned resolution is ReadDenied but the error is non-nil, so callers must check
-// the error first — treating the resolution alone as authoritative would misreport an outage as
-// "not authorized".
+// the error before trusting the resolution.
 func (s *Service) ResolveSpaceRead(where string, space *model.Space, userID string) (ReadResolution, *mmmodel.AppError) {
 	member, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
 	if appErr != nil {
@@ -180,8 +179,8 @@ func (s *Service) isGuest(userID string) (bool, error) {
 // holds one, and nil when active was established without reading the row.
 //
 // A guest is held to read_page whatever the composed channel permission says. Demoting a user to
-// guest clears SchemeUser/SchemeAdmin but leaves the atomic capability roles a prior grant wrote
-// into ExplicitRoles, and core composes those into the member's channel permissions regardless of
+// guest clears SchemeUser/SchemeAdmin but leaves the atomic capability roles (one role per granted
+// capability) a prior grant wrote into ExplicitRoles, and core composes those into the member's channel permissions regardless of
 // guest standing — so a gate that trusted the composed permission alone would let a demoted guest
 // keep writing.
 func (s *Service) evaluatePagePermission(where string, space *model.Space, userID string, perm *mmmodel.Permission, active bool, member *mmmodel.TeamMember) *mmmodel.AppError {
