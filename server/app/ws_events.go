@@ -59,6 +59,13 @@ const (
 // publishToChannels publishes a WebSocket event broadcast to each non-empty, distinct channel ID.
 // WS events are best-effort and must not fail the primary mutation; a nil client (store-only unit
 // tests) makes this a no-op.
+//
+// Core's hub delivers a channel broadcast to every raw ChannelMembers row with no team check, and
+// former team members keep their backing-channel rows after leaving the team — so each broadcast
+// carries an omit list of the members who fail the team half of the access gate, mirroring the
+// predicate the REST surface enforces. When the omit list cannot be resolved the event is dropped
+// for that channel rather than delivered unfiltered: a missed refresh signal degrades liveness
+// only, while unfiltered delivery leaks space activity to users the read gate already rejects.
 func (s *Service) publishToChannels(event string, payload map[string]any, channelIDs ...string) {
 	if s.client == nil {
 		return
@@ -69,7 +76,19 @@ func (s *Service) publishToChannels(event string, payload map[string]any, channe
 			continue
 		}
 		seen[chID] = struct{}{}
-		s.client.Frontend.PublishWebSocketEvent(event, payload, &mmmodel.WebsocketBroadcast{ChannelId: chID})
+		omitted, err := s.store.InactiveTeamChannelMembers(chID)
+		if err != nil {
+			s.log.Warn("failed to resolve the WS omit list; dropping the event for this channel", "event", event, "channel_id", chID, "err", err)
+			continue
+		}
+		broadcast := &mmmodel.WebsocketBroadcast{ChannelId: chID}
+		if len(omitted) > 0 {
+			broadcast.OmitUsers = make(map[string]bool, len(omitted))
+			for _, id := range omitted {
+				broadcast.OmitUsers[id] = true
+			}
+		}
+		s.client.Frontend.PublishWebSocketEvent(event, payload, broadcast)
 	}
 }
 

@@ -90,3 +90,6 @@ export const restGet = <T>(url: string): Promise<T> =>
 
 export const restPut = <T>(url: string, body: unknown): Promise<T> =>
     request<T>(url, {method: 'PUT', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}});
+
+export const restPatch = <T>(url: string, body: unknown): Promise<T> =>
+    request<T>(url, {method: 'PATCH', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}});

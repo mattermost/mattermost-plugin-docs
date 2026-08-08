@@ -34,24 +34,68 @@ func OpenTestStore(t *testing.T) (*store.Store, *sql.DB) {
 	t.Cleanup(func() { _ = s.Close() })
 	require.NoError(t, s.RunMigrations(), "run migrations")
 
-	// The team listing joins core's ChannelMembers table for visibility, but the isolated test
-	// database contains only plugin tables. Create a minimal stand-in with the columns the join
-	// reads; production never creates this table — core owns it there.
+	// The team listing and the membership guards join core's ChannelMembers, TeamMembers, and
+	// Channels tables, but the isolated test database contains only plugin tables. Create minimal
+	// stand-ins with the columns those queries read; production never creates these tables — core
+	// owns them there. SchemeAdmin is nullable, as in core's schema, so seeding through
+	// MustAddChannelMember exercises the queries' NULL handling.
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS ChannelMembers (
 		ChannelId varchar(26) NOT NULL,
 		UserId varchar(26) NOT NULL,
+		SchemeAdmin boolean,
 		PRIMARY KEY (ChannelId, UserId)
 	)`)
 	require.NoError(t, err, "create ChannelMembers stand-in")
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS TeamMembers (
+		TeamId varchar(26) NOT NULL,
+		UserId varchar(26) NOT NULL,
+		DeleteAt bigint NOT NULL DEFAULT 0,
+		PRIMARY KEY (TeamId, UserId)
+	)`)
+	require.NoError(t, err, "create TeamMembers stand-in")
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS Channels (
+		Id varchar(26) NOT NULL,
+		TeamId varchar(26) NOT NULL,
+		PRIMARY KEY (Id)
+	)`)
+	require.NoError(t, err, "create Channels stand-in")
 
 	return s, db
 }
 
 // MustAddChannelMember seeds a ChannelMembers row (see the stand-in table in OpenTestStore) so
 // store queries that resolve visibility through channel membership can see channelID as userID.
+// SchemeAdmin is left NULL, as core's schema allows.
 func MustAddChannelMember(t *testing.T, db *sql.DB, channelID, userID string) {
 	t.Helper()
 	_, err := db.Exec(`INSERT INTO ChannelMembers (ChannelId, UserId) VALUES ($1, $2)`, channelID, userID)
+	require.NoError(t, err)
+}
+
+// MustAddChannelAdmin seeds a ChannelMembers row with SchemeAdmin set, for queries that
+// distinguish admins from plain members.
+func MustAddChannelAdmin(t *testing.T, db *sql.DB, channelID, userID string) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO ChannelMembers (ChannelId, UserId, SchemeAdmin) VALUES ($1, $2, TRUE)`, channelID, userID)
+	require.NoError(t, err)
+}
+
+// MustAddTeamMember seeds a TeamMembers row (see the stand-in table in OpenTestStore). Core keeps
+// removed team members as rows with DeleteAt set, so pass a non-zero deleteAt to seed a former
+// member.
+func MustAddTeamMember(t *testing.T, db *sql.DB, teamID, userID string, deleteAt int64) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO TeamMembers (TeamId, UserId, DeleteAt) VALUES ($1, $2, $3)`, teamID, userID, deleteAt)
+	require.NoError(t, err)
+}
+
+// MustAddChannel seeds a Channels row (see the stand-in table in OpenTestStore) so queries that
+// resolve a channel's team through the Channels table can see it.
+func MustAddChannel(t *testing.T, db *sql.DB, channelID, teamID string) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO Channels (Id, TeamId) VALUES ($1, $2)`, channelID, teamID)
 	require.NoError(t, err)
 }
 

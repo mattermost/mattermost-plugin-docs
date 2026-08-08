@@ -8,6 +8,7 @@ import {
     getSpaceMembers,
     setDefaultCapabilities,
     setMemberCapabilities,
+    setSpaceViewAccess,
 } from 'client/space_permissions';
 import {useAppSelector} from 'hooks/redux';
 import React, {useCallback, useEffect, useRef, useState} from 'react';
@@ -22,7 +23,7 @@ import {PrimaryButton, TertiaryButton} from 'components/form-controls/button';
 import GenericModal from 'components/generic_modal/generic_modal';
 
 import type {Space} from 'types/docs';
-import type {Capability, SpaceMember} from 'types/permissions';
+import type {Capability, SpaceMember, SpaceViewAccess} from 'types/permissions';
 import {Capabilities, DEFAULT_CAPABILITY_ORDER, MEMBER_CAPABILITY_ORDER} from 'types/permissions';
 
 import CapabilityToggles, {useCapabilityLabels} from './capability_toggles';
@@ -55,6 +56,15 @@ const SpaceSettingsModal = ({space, onClose}: Props) => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     const [loadFailed, setLoadFailed] = useState(false);
+
+    const [viewAccess, setViewAccess] = useState<SpaceViewAccess>('open');
+    const [savedViewAccess, setSavedViewAccess] = useState<SpaceViewAccess>('open');
+    const [savingViewAccess, setSavingViewAccess] = useState(false);
+
+    // Sent back as expected_update_at on save, so a concurrent edit to the
+    // space surfaces as the server's conflict message rather than silently
+    // overwriting it.
+    const [updateAt, setUpdateAt] = useState(0);
 
     const [defaults, setDefaults] = useState<Capability[]>([]);
     const [savedDefaults, setSavedDefaults] = useState<Capability[]>([]);
@@ -119,6 +129,9 @@ const SpaceSettingsModal = ({space, onClose}: Props) => {
                 setDefaults(access.default_capabilities);
                 setSavedDefaults(access.default_capabilities);
                 setCanEditDefaults(access.capabilities.includes(Capabilities.ADMIN_SPACE));
+                setViewAccess(access.view_access);
+                setSavedViewAccess(access.view_access);
+                setUpdateAt(access.update_at);
 
                 try {
                     const page = await getSpaceMembers(space.id, 0, MEMBERS_PER_PAGE);
@@ -165,6 +178,32 @@ const SpaceSettingsModal = ({space, onClose}: Props) => {
             cancelled = true;
         };
     }, [space.id, describeError]);
+
+    const saveVisibility = async () => {
+        setSavingViewAccess(true);
+        setError('');
+        try {
+            const updated = await setSpaceViewAccess(space.id, viewAccess, updateAt);
+            setViewAccess(updated.view_access);
+            setSavedViewAccess(updated.view_access);
+            setUpdateAt(updated.update_at);
+        } catch (err) {
+            setError(describeError(err));
+
+            // A conflict means the baseline is stale; re-read it so a retry
+            // can succeed. The pending selection is kept — only the baseline
+            // and the saved value move.
+            if (err instanceof RestError && err.status === 409) {
+                const fresh = await getSpaceAccess(space.id).catch(() => undefined);
+                if (fresh) {
+                    setSavedViewAccess(fresh.view_access);
+                    setUpdateAt(fresh.update_at);
+                }
+            }
+        } finally {
+            setSavingViewAccess(false);
+        }
+    };
 
     const saveDefaults = async () => {
         setSavingDefaults(true);
@@ -295,6 +334,73 @@ const SpaceSettingsModal = ({space, onClose}: Props) => {
 
                 {!loading && !loadFailed && (
                     <>
+                        <section className={styles.section}>
+                            <h2 className={styles.sectionTitle}>
+                                <FormattedMessage
+                                    id='docs.spaceSettings.visibility.title'
+                                    defaultMessage='Visibility'
+                                />
+                            </h2>
+                            <fieldset className={styles.toggles}>
+                                <legend className={styles.togglesLegend}>
+                                    {formatMessage({id: 'docs.spaceSettings.visibility.legend', defaultMessage: 'Space visibility'})}
+                                </legend>
+                                <div className={styles.toggle}>
+                                    <input
+                                        id='docs-space-visibility-open'
+                                        type='radio'
+                                        name='docs-space-visibility'
+                                        checked={viewAccess === 'open'}
+                                        disabled={!canEditDefaults || savingViewAccess}
+                                        onChange={() => setViewAccess('open')}
+                                    />
+                                    <label htmlFor='docs-space-visibility-open'>
+                                        {formatMessage({id: 'docs.spaceSettings.visibility.open.option', defaultMessage: 'Open — Anyone on this team can find and read this space.'})}
+                                    </label>
+                                </div>
+                                <div className={styles.toggle}>
+                                    <input
+                                        id='docs-space-visibility-private'
+                                        type='radio'
+                                        name='docs-space-visibility'
+                                        checked={viewAccess === 'private'}
+                                        disabled={!canEditDefaults || savingViewAccess}
+                                        onChange={() => setViewAccess('private')}
+                                    />
+                                    <label htmlFor='docs-space-visibility-private'>
+                                        {formatMessage({id: 'docs.spaceSettings.visibility.private.option', defaultMessage: 'Private — Only members can find and read this space.'})}
+                                    </label>
+                                </div>
+                            </fieldset>
+                            {viewAccess === 'private' && savedViewAccess === 'open' && (
+                                <p
+                                    className={styles.note}
+                                    role='status'
+                                >
+                                    <FormattedMessage
+                                        id='docs.spaceSettings.visibility.privatizeNote'
+                                        defaultMessage='Members keep their access — review the member list below. "Joined automatically" marks members who arrived while the space was open.'
+                                    />
+                                </p>
+                            )}
+                            {canEditDefaults ? (
+                                <PrimaryButton
+                                    type='button'
+                                    disabled={savingViewAccess || viewAccess === savedViewAccess}
+                                    onClick={saveVisibility}
+                                >
+                                    {formatMessage({id: 'docs.spaceSettings.visibility.save', defaultMessage: 'Save visibility'})}
+                                </PrimaryButton>
+                            ) : (
+                                <p className={styles.note}>
+                                    <FormattedMessage
+                                        id='docs.spaceSettings.visibility.readOnly'
+                                        defaultMessage='Only a space administrator can change the space visibility.'
+                                    />
+                                </p>
+                            )}
+                        </section>
+
                         <section className={styles.section}>
                             <h2 className={styles.sectionTitle}>
                                 <FormattedMessage

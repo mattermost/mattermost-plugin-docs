@@ -9,6 +9,7 @@ import {
     getSpaceMembers,
     setDefaultCapabilities,
     setMemberCapabilities,
+    setSpaceViewAccess,
 } from './space_permissions';
 
 const jsonResponse = (body: unknown, ok = true, status = 200) => ({
@@ -51,6 +52,17 @@ describe('client/space_permissions', () => {
 
         const [, options] = fetchMock.mock.calls[0];
         expect(JSON.parse(options.body)).toEqual({default_capabilities: ['edit_page']});
+    });
+
+    it('sends a visibility change as a PATCH carrying the optimistic-lock baseline', async () => {
+        fetchMock.mockResolvedValue(jsonResponse({id: 'space1', default_capabilities: [], capabilities: [], view_access: 'private', update_at: 101}));
+
+        await setSpaceViewAccess('space1', 'private', 100);
+
+        const [url, options] = fetchMock.mock.calls[0];
+        expect(url).toBe('http://localhost:8065/plugins/com.mattermost.docs/api/v1/spaces/space1');
+        expect(options.method).toBe('PATCH');
+        expect(JSON.parse(options.body)).toEqual({view_access: 'private', expected_update_at: 100});
     });
 
     it('raises the server message and status from the nested conflict envelope on a refusal', async () => {

@@ -1,13 +1,13 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {apiUrl, restGet, restPut} from 'client/rest';
+import {apiUrl, restGet, restPatch, restPut} from 'client/rest';
 
 import type {UserProfile} from '@mattermost/types/users';
 
 import {Client4} from 'mattermost-redux/client';
 
-import type {Capability, Paginated, SpaceAccess, SpaceMember} from 'types/permissions';
+import type {Capability, Paginated, SpaceAccess, SpaceMember, SpaceViewAccess} from 'types/permissions';
 
 // The space-permissions calls: the space's default capability set and each
 // member's granted set. Kept apart from the Docs data source (spaces, pages)
@@ -43,6 +43,15 @@ export const setDefaultCapabilities = (spaceId: string, capabilities: Capability
     restPut<SpaceAccess>(
         `${apiUrl()}/spaces/${seg(spaceId)}/default-capabilities`,
         {default_capabilities: capabilities},
+    );
+
+// setSpaceViewAccess flips the space between open and private. Requires space
+// admin. expectedUpdateAt is sent so a concurrent edit surfaces as the
+// server's 409 conflict message rather than silently overwriting it.
+export const setSpaceViewAccess = (spaceId: string, viewAccess: SpaceViewAccess, expectedUpdateAt: number): Promise<SpaceAccess> =>
+    restPatch<SpaceAccess>(
+        `${apiUrl()}/spaces/${seg(spaceId)}`,
+        {view_access: viewAccess, expected_update_at: expectedUpdateAt},
     );
 
 // getMemberProfiles resolves member ids to user profiles for display. A platform

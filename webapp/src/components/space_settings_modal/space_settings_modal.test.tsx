@@ -20,6 +20,7 @@ jest.mock('client/space_permissions', () => {
         getMemberProfiles: jest.fn(),
         setDefaultCapabilities: jest.fn(),
         setMemberCapabilities: jest.fn(),
+        setSpaceViewAccess: jest.fn(),
     };
 });
 
@@ -41,7 +42,12 @@ const adminAccess = {
     id: 'space1',
     default_capabilities: ['create_page', 'edit_page'],
     capabilities: ['read_page', 'create_page', 'edit_page', 'admin_space'],
+    view_access: 'open',
+    update_at: 100,
 };
+
+const OPEN_VISIBILITY_LABEL = 'Open — Anyone on this team can find and read this space.';
+const PRIVATE_VISIBILITY_LABEL = 'Private — Only members can find and read this space.';
 
 const memberPage = (members: unknown[], hasMore = false) => ({
     items: members,
@@ -62,6 +68,7 @@ const ordinaryMember = {
 // is scoped to the fieldset it belongs to.
 const defaultSection = () => within(screen.getByRole('group', {name: 'Default permissions'}));
 const memberSection = (name: string) => within(screen.getByRole('group', {name: `Permissions for ${name}`}));
+const visibilitySection = () => within(screen.getByRole('group', {name: 'Space visibility'}));
 
 describe('SpaceSettingsModal', () => {
     beforeEach(() => {
@@ -82,6 +89,154 @@ describe('SpaceSettingsModal', () => {
         expect(defaultSection().getByLabelText('Create pages')).toBeChecked();
         expect(defaultSection().getByLabelText('Edit pages')).toBeChecked();
         expect(defaultSection().getByLabelText('Comment on pages')).not.toBeChecked();
+    });
+
+    it('shows the current space visibility', async () => {
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        await screen.findByRole('group', {name: 'Space visibility'});
+        expect(visibilitySection().getByLabelText(OPEN_VISIBILITY_LABEL)).toBeChecked();
+        expect(visibilitySection().getByLabelText(PRIVATE_VISIBILITY_LABEL)).not.toBeChecked();
+    });
+
+    it('flips visibility from open to private, sending expected_update_at, and reflects the response', async () => {
+        api.setSpaceViewAccess.mockResolvedValue({...adminAccess, view_access: 'private', update_at: 101});
+
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        await screen.findByRole('group', {name: 'Space visibility'});
+        fireEvent.click(visibilitySection().getByLabelText(PRIVATE_VISIBILITY_LABEL));
+        fireEvent.click(screen.getByRole('button', {name: 'Save visibility'}));
+
+        await waitFor(() => expect(api.setSpaceViewAccess).toHaveBeenCalledWith('space1', 'private', 100));
+        await waitFor(() => expect(visibilitySection().getByLabelText(PRIVATE_VISIBILITY_LABEL)).toBeChecked());
+        expect(screen.getByRole('button', {name: 'Save visibility'})).toBeDisabled();
+    });
+
+    it('renders the visibility section read-only for a caller without space-admin', async () => {
+        api.getSpaceAccess.mockResolvedValue({...adminAccess, capabilities: ['read_page', 'create_page']});
+
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        await screen.findByRole('group', {name: 'Space visibility'});
+        expect(visibilitySection().getByLabelText(OPEN_VISIBILITY_LABEL)).toBeDisabled();
+        expect(await screen.findByText('Only a space administrator can change the space visibility.')).toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Save visibility'})).not.toBeInTheDocument();
+    });
+
+    it('surfaces the server message when a visibility save conflicts', async () => {
+        api.setSpaceViewAccess.mockRejectedValue(new RestError('http://localhost/x', 409, 'The space changed since you loaded it.', undefined));
+
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        await screen.findByRole('group', {name: 'Space visibility'});
+        fireEvent.click(visibilitySection().getByLabelText(PRIVATE_VISIBILITY_LABEL));
+        fireEvent.click(screen.getByRole('button', {name: 'Save visibility'}));
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('The space changed since you loaded it.');
+    });
+
+    it('sends the refreshed update_at baseline on a second save', async () => {
+        api.setSpaceViewAccess.mockResolvedValueOnce({...adminAccess, view_access: 'private', update_at: 101});
+        api.setSpaceViewAccess.mockResolvedValueOnce({...adminAccess, view_access: 'open', update_at: 102});
+
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        await screen.findByRole('group', {name: 'Space visibility'});
+        fireEvent.click(visibilitySection().getByLabelText(PRIVATE_VISIBILITY_LABEL));
+        fireEvent.click(screen.getByRole('button', {name: 'Save visibility'}));
+        await waitFor(() => expect(screen.getByRole('button', {name: 'Save visibility'})).toBeDisabled());
+
+        fireEvent.click(visibilitySection().getByLabelText(OPEN_VISIBILITY_LABEL));
+        fireEvent.click(screen.getByRole('button', {name: 'Save visibility'}));
+
+        await waitFor(() => expect(api.setSpaceViewAccess).toHaveBeenNthCalledWith(2, 'space1', 'open', 101));
+    });
+
+    it('re-baselines from the server after a conflict so a retry can succeed', async () => {
+        api.setSpaceViewAccess.mockRejectedValueOnce(new RestError('http://localhost/x', 409, 'The space changed since you loaded it.', undefined));
+        api.setSpaceViewAccess.mockResolvedValueOnce({...adminAccess, view_access: 'private', update_at: 151});
+        api.getSpaceAccess.mockResolvedValueOnce(adminAccess);
+        api.getSpaceAccess.mockResolvedValueOnce({...adminAccess, update_at: 150});
+
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        await screen.findByRole('group', {name: 'Space visibility'});
+        fireEvent.click(visibilitySection().getByLabelText(PRIVATE_VISIBILITY_LABEL));
+        fireEvent.click(screen.getByRole('button', {name: 'Save visibility'}));
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('The space changed since you loaded it.');
+        await waitFor(() => expect(screen.getByRole('button', {name: 'Save visibility'})).not.toBeDisabled());
+
+        fireEvent.click(screen.getByRole('button', {name: 'Save visibility'}));
+
+        await waitFor(() => expect(api.setSpaceViewAccess).toHaveBeenNthCalledWith(2, 'space1', 'private', 150));
+        await waitFor(() => expect(screen.getByRole('button', {name: 'Save visibility'})).toBeDisabled());
+    });
+
+    it('loads an already-private space with no pending change and no privatize note', async () => {
+        api.getSpaceAccess.mockResolvedValue({...adminAccess, view_access: 'private'});
+
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        await screen.findByRole('group', {name: 'Space visibility'});
+        expect(visibilitySection().getByLabelText(PRIVATE_VISIBILITY_LABEL)).toBeChecked();
+        expect(visibilitySection().getByLabelText(OPEN_VISIBILITY_LABEL)).not.toBeChecked();
+        expect(screen.queryByText(/Members keep their access/)).not.toBeInTheDocument();
+        expect(screen.getByRole('button', {name: 'Save visibility'})).toBeDisabled();
+    });
+
+    it('shows the privatize note only while the pending selection is private and the saved value is open', async () => {
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        await screen.findByRole('group', {name: 'Space visibility'});
+        expect(screen.queryByText(/Members keep their access/)).not.toBeInTheDocument();
+
+        fireEvent.click(visibilitySection().getByLabelText(PRIVATE_VISIBILITY_LABEL));
+        expect(screen.getByText(/Members keep their access/)).toBeInTheDocument();
+
+        fireEvent.click(visibilitySection().getByLabelText(OPEN_VISIBILITY_LABEL));
+        expect(screen.queryByText(/Members keep their access/)).not.toBeInTheDocument();
     });
 
     it('sends the whole default set, not just the toggled capability', async () => {

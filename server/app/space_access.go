@@ -74,60 +74,15 @@ func (s *Service) teamPermGranted(member *mmmodel.TeamMember, userID, teamID str
 	return s.client.User.HasPermissionToTeam(userID, teamID, perm)
 }
 
-// forEachChannelMember visits every member of channelID page by page. Iteration ends early
-// when visit returns stop=true or an error; the error is returned as-is.
-func (s *Service) forEachChannelMember(channelID string, visit func(cm *mmmodel.ChannelMember) (stop bool, err error)) error {
-	for page := 0; ; page++ {
-		members, err := s.client.Channel.ListMembers(channelID, page, PerPageMaximum)
-		if err != nil {
-			return err
-		}
-		for _, cm := range members {
-			stop, visitErr := visit(cm)
-			if visitErr != nil {
-				return visitErr
-			}
-			if stop {
-				return nil
-			}
-		}
-		if len(members) < PerPageMaximum {
-			return nil
-		}
-	}
-}
-
 // otherAuthorizedMembers answers both reachability questions the membership guards ask — is there
-// another member who can still reach the space, and is one of them an admin — in a single walk,
-// disregarding excludeUserID (the member being demoted or removed). Former team members keep their
+// another member who can still reach the space, and is one of them an admin — disregarding
+// excludeUserID (the member being demoted or removed). Former team members keep their
 // channel-member rows after leaving the team, so counting raw rows would let the last reachable
 // member be removed and leave the space stranded behind members who all fail the team half of the
-// access gate. Iteration stops once both answers are known, and a row that cannot change either
-// answer is skipped before its team lookup.
+// access gate. Answered as a single query on the plugin's master DB handle: these invariants
+// guard membership writes committed on the primary a moment earlier, and the plugin API's
+// replica-backed reads could still see a just-demoted admin as current and let the actual last
+// admin go.
 func (s *Service) otherAuthorizedMembers(space *model.Space, excludeUserID string) (anyMember, anyAdmin bool, err error) {
-	err = s.forEachChannelMember(space.ChannelId, func(cm *mmmodel.ChannelMember) (bool, error) {
-		if cm.UserId == excludeUserID {
-			return false, nil
-		}
-		// Once a reachable member is known, only an admin row can still teach us anything.
-		if anyMember && !cm.SchemeAdmin {
-			return false, nil
-		}
-		active, activeErr := s.isActiveTeamMember(space.TeamId, cm.UserId)
-		if activeErr != nil {
-			return false, activeErr
-		}
-		if !active {
-			return false, nil
-		}
-		anyMember = true
-		if cm.SchemeAdmin {
-			anyAdmin = true
-		}
-		return anyMember && anyAdmin, nil
-	})
-	if err != nil {
-		return false, false, err
-	}
-	return anyMember, anyAdmin, nil
+	return s.store.OtherAuthorizedMembers(space.ChannelId, space.TeamId, excludeUserID)
 }

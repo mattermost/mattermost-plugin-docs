@@ -753,21 +753,15 @@ func (s *Service) DeleteSpace(space *model.Space) *mmmodel.AppError {
 	return nil
 }
 
-// snapshotSpaceMemberIDs returns the user IDs of every backing-channel member of space. A nil
+// snapshotSpaceMemberIDs returns the user IDs of the backing-channel members of space who are
+// still active members of its team — the audience the space's events may reach. Former team
+// members keep their channel rows but fail the read gate, so they are not delivered to. A nil
 // client or a space with no backing channel yields no members and no error.
 func (s *Service) snapshotSpaceMemberIDs(space *model.Space) ([]string, error) {
 	if s.client == nil || space.ChannelId == "" {
 		return nil, nil
 	}
-	var ids []string
-	err := s.forEachChannelMember(space.ChannelId, func(cm *mmmodel.ChannelMember) (bool, error) {
-		ids = append(ids, cm.UserId)
-		return false, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return ids, nil
+	return s.store.ActiveTeamChannelMembers(space.ChannelId)
 }
 
 // RestoreSpace un-deletes a soft-deleted space by ID and un-archives its backing channel, returning

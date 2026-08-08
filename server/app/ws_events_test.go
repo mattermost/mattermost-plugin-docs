@@ -19,6 +19,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/app"
+	"github.com/mattermost/mattermost-plugin-docs/server/internal/testutil"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
@@ -626,11 +627,9 @@ func TestServiceRemoveSpaceMember_PublishesMemberRemovedEvent(t *testing.T) {
 
 	targetID := mmmodel.NewId()
 	mockAPI.On("GetChannelMember", space.ChannelId, targetID).Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: targetID}, nil)
-	mockAPI.On("GetChannelMembers", space.ChannelId, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{
-			{ChannelId: space.ChannelId, UserId: creatorID},
-			{ChannelId: space.ChannelId, UserId: targetID},
-		}, nil)
+	// Master-DB membership: the creator remains, so the removal passes the last-member guard.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, creatorID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, creatorID, 0)
 	mockAPI.On("DeleteChannelMember", space.ChannelId, targetID).Return(nil)
 
 	require.Nil(t, h.svc.RemoveSpaceMember(space, targetID, ""))

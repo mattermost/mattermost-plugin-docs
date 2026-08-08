@@ -75,8 +75,8 @@ func TestAutoJoin_JoinsWhenDefaultGrants(t *testing.T) {
 	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
 
 	mockAPI.On("RolesGrantPermission", []string{testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)}, mmmodel.PermissionCreatePage.Id).Return(true)
-	// Not yet a member: the join path runs only when the membership probe misses.
-	mockAPI.On("GetChannelMember", space.ChannelId, userID).Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: 404})
+	// Not yet a member: no ChannelMembers row is seeded, so the master-side membership probe
+	// misses and the join path runs.
 	mockAPI.On("AddChannelMember", space.ChannelId, userID).
 		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
 
@@ -97,8 +97,6 @@ func TestAutoJoin_ProvenanceMarkerLifecycle(t *testing.T) {
 
 	roleName := testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("RolesGrantPermission", []string{roleName}, mmmodel.PermissionCreatePage.Id).Return(true)
-	mockAPI.On("GetChannelMember", space.ChannelId, userID).
-		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: 404}).Once()
 	mockAPI.On("AddChannelMember", space.ChannelId, userID).
 		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
 
@@ -138,8 +136,6 @@ func TestUndoAutoJoin_ClearsProvenanceMarker(t *testing.T) {
 
 	roleName := testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("RolesGrantPermission", []string{roleName}, mmmodel.PermissionCreatePage.Id).Return(true)
-	mockAPI.On("GetChannelMember", space.ChannelId, userID).
-		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: 404}).Once()
 	mockAPI.On("AddChannelMember", space.ChannelId, userID).
 		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
 
@@ -177,8 +173,6 @@ func TestRemoveSpaceMember_ClearsProvenanceMarker(t *testing.T) {
 
 	roleName := testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("RolesGrantPermission", []string{roleName}, mmmodel.PermissionCreatePage.Id).Return(true)
-	mockAPI.On("GetChannelMember", space.ChannelId, userID).
-		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: 404}).Once()
 	mockAPI.On("AddChannelMember", space.ChannelId, userID).
 		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
 
@@ -186,13 +180,10 @@ func TestRemoveSpaceMember_ClearsProvenanceMarker(t *testing.T) {
 	require.Nil(t, appErr)
 	require.True(t, joined)
 
-	// otherAuthorizedMembers' reachability walk needs another active member so removing userID does
-	// not trip the last-member guard.
-	mockAPI.On("GetChannelMembers", space.ChannelId, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{
-			{ChannelId: space.ChannelId, UserId: userID},
-			{ChannelId: space.ChannelId, UserId: otherID},
-		}, nil)
+	// The reachability guard reads membership from the master DB; seed another active member so
+	// removing userID does not trip the last-member guard.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, otherID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, otherID, 0)
 	mockAPI.On("GetChannelMember", space.ChannelId, userID).
 		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
 	mockAPI.On("DeleteChannelMember", space.ChannelId, userID).Return(nil)
@@ -225,8 +216,6 @@ func TestUndoAutoJoin_SkipsRemovalWhenLegitimizedConcurrently(t *testing.T) {
 
 	roleName := testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("RolesGrantPermission", []string{roleName}, mmmodel.PermissionCreatePage.Id).Return(true)
-	mockAPI.On("GetChannelMember", space.ChannelId, userID).
-		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: 404}).Once()
 	mockAPI.On("AddChannelMember", space.ChannelId, userID).
 		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
 
@@ -259,8 +248,6 @@ func TestUndoAutoJoin_SkipsRemovalWhenLegitimizedByDeliberateReAdd(t *testing.T)
 
 	roleName := testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("RolesGrantPermission", []string{roleName}, mmmodel.PermissionCreatePage.Id).Return(true)
-	mockAPI.On("GetChannelMember", space.ChannelId, userID).
-		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: 404}).Once()
 	mockAPI.On("AddChannelMember", space.ChannelId, userID).
 		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
 
@@ -386,8 +373,11 @@ func TestAutoJoin_AlreadyMemberIsNoOp(t *testing.T) {
 	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
 
 	mockAPI.On("RolesGrantPermission", []string{testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)}, mmmodel.PermissionCreatePage.Id).Return(true)
-	mockAPI.On("GetChannelMember", space.ChannelId, userID).
-		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
+	// The membership already exists on the master DB. No GetChannelMember stub: the probe must
+	// read the master through the plugin store, never the replica-backed plugin API — a stale
+	// replica miss here would adopt this existing membership as a fresh join, and the undo paired
+	// with it would then remove a membership the caller already held.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, userID)
 
 	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
 	require.Nil(t, appErr)
@@ -757,4 +747,34 @@ func TestRequireSpacePagePermission_DemotedGuestKeepsRead(t *testing.T) {
 	require.Nil(t, appErr)
 	// The read arm is decided by the channel grant alone; the user is never read for it.
 	mockAPI.AssertNotCalled(t, "GetUser", mock.Anything)
+}
+
+// TestAutoJoin_PublishOmitsFormerTeamMembers pins the WS omit list: a channel-scoped event must
+// not reach backing-channel members who are no longer active members of the space's team — their
+// rows survive the departure, and core's hub applies no team check of its own.
+func TestAutoJoin_PublishOmitsFormerTeamMembers(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	stubNonMember(mockAPI, userID)
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	// The omit query resolves the channel's team through its Channels row; one member left the team.
+	former := mmmodel.NewId()
+	testutil.MustAddChannel(t, h.db, space.ChannelId, space.TeamId)
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, former)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, former, 1)
+
+	mockAPI.On("RolesGrantPermission", []string{testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)}, mmmodel.PermissionCreatePage.Id).Return(true)
+	mockAPI.On("AddChannelMember", space.ChannelId, userID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
+
+	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
+	require.Nil(t, appErr)
+	require.True(t, joined)
+
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_added",
+		map[string]any{"space_id": space.Id, "user_id": userID},
+		mock.MatchedBy(func(b *mmmodel.WebsocketBroadcast) bool {
+			return b.ChannelId == space.ChannelId && b.OmitUsers[former]
+		}))
 }

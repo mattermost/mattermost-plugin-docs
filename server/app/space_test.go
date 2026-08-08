@@ -32,7 +32,6 @@ func openTestServiceWithAPI(t *testing.T, mockAPI *plugintest.API) *testHarness 
 	h := openTestService(t)
 	testutil.StubDefaultSpacePermissions(mockAPI)
 	testutil.StubPresetSchemes(mockAPI)
-	testutil.StubKVStore(mockAPI)
 	mockAPI.On("GetConfig").Return(&mmmodel.Config{}).Maybe()
 	// Mutations publish best-effort WS events through the client; tests that assert event
 	// content override this with exact-argument expectations.
@@ -1212,11 +1211,11 @@ func TestServiceRemoveSpaceMember_RemoveFails(t *testing.T) {
 	targetID := mmmodel.NewId()
 	// The target-existence resolve runs before the last-member/last-admin guards.
 	mockAPI.On("GetChannelMember", space.ChannelId, targetID).Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: targetID}, nil)
-	// The last-member guard scans the member list before removing; report another (active,
-	// via the default GetTeamMember stub) member so the removal proceeds to the failing
-	// DeleteChannelMember call.
-	mockAPI.On("GetChannelMembers", space.ChannelId, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{{ChannelId: space.ChannelId, UserId: targetID}, {ChannelId: space.ChannelId, UserId: mmmodel.NewId()}}, nil)
+	// The last-member guard reads membership from the master DB; seed another active member so
+	// the removal proceeds to the failing DeleteChannelMember call.
+	otherID := mmmodel.NewId()
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, otherID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, otherID, 0)
 	mockAPI.On("DeleteChannelMember", space.ChannelId, targetID).
 		Return(&mmmodel.AppError{Id: "app.channel.remove_member.app_error", StatusCode: http.StatusInternalServerError})
 
@@ -1280,8 +1279,9 @@ func TestServiceRemoveSpaceMember_LastMemberRejected(t *testing.T) {
 
 	soleID := mmmodel.NewId()
 	mockAPI.On("GetChannelMember", space.ChannelId, soleID).Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: soleID}, nil)
-	mockAPI.On("GetChannelMembers", space.ChannelId, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{{ChannelId: space.ChannelId, UserId: soleID}}, nil)
+	// The sole membership lives on the master DB; no other authorized member exists.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, soleID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, soleID, 0)
 
 	appErr := h.svc.RemoveSpaceMember(space, soleID, "")
 	require.NotNil(t, appErr)
@@ -1298,17 +1298,15 @@ func TestServiceRemoveSpaceMember_LastActiveMemberRejected(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	activeID := mmmodel.NewId()
 	formerID := mmmodel.NewId()
-	// testify matches expectations first-registered-first, so the former-member stub must be
-	// registered before the harness's catch-all active-member GetTeamMember stub; keying it on
-	// formerID keeps every other user (the creator, activeID) on the catch-all.
-	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), formerID).
-		Return(&mmmodel.TeamMember{UserId: formerID, DeleteAt: 1}, nil)
 	h := openTestServiceWithAPI(t, mockAPI)
 	space, _ := createSpaceForMemberTests(t, h, mockAPI)
 
 	mockAPI.On("GetChannelMember", space.ChannelId, activeID).Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: activeID}, nil)
-	mockAPI.On("GetChannelMembers", space.ChannelId, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{{ChannelId: space.ChannelId, UserId: activeID}, {ChannelId: space.ChannelId, UserId: formerID}}, nil)
+	// Master-DB membership: the only other row belongs to a member who already left the team.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, activeID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, activeID, 0)
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, formerID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, formerID, 1)
 
 	appErr := h.svc.RemoveSpaceMember(space, activeID, "")
 	require.NotNil(t, appErr)
@@ -1327,8 +1325,11 @@ func TestServiceRemoveSpaceMember_FormerTeamMemberRemovable(t *testing.T) {
 	activeID := mmmodel.NewId()
 	formerID := mmmodel.NewId()
 	mockAPI.On("GetChannelMember", space.ChannelId, formerID).Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: formerID}, nil)
-	mockAPI.On("GetChannelMembers", space.ChannelId, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{{ChannelId: space.ChannelId, UserId: activeID}, {ChannelId: space.ChannelId, UserId: formerID}}, nil)
+	// Master-DB membership: an active member remains, and the target already left the team.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, activeID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, activeID, 0)
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, formerID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, formerID, 1)
 	mockAPI.On("DeleteChannelMember", space.ChannelId, formerID).Return(nil)
 
 	appErr := h.svc.RemoveSpaceMember(space, formerID, "")

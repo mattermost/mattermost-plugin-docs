@@ -443,16 +443,19 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 				return nil
 			}
 		}
-		_, memErr := s.client.Channel.GetMember(fresh.ChannelId, userID)
-		if memErr == nil {
-			return nil // Already a member.
-		}
-		// Only an absence means "not a member yet". A failed lookup must not fall through to the add
-		// below: core returns the existing membership unchanged for an add of a current member, so
-		// this would report a join that never happened, and the undo paired with it would then
-		// remove a membership the caller already held.
-		if !errors.Is(memErr, pluginapi.ErrNotFound) {
+		// The existence check must not miss a member: core returns the existing membership
+		// unchanged for an add of a current member, so a false negative here would fall through to
+		// the add below, report a join that never happened, and the undo paired with it would then
+		// remove a membership the caller already held. The plugin API answers this lookup from a
+		// read replica, which can miss a membership committed on the primary a moment earlier, so
+		// the check reads the master through the plugin store instead. A failed lookup must not
+		// fall through either — only a clean "not a member" may reach the add.
+		isMember, memErr := s.store.IsChannelMember(fresh.ChannelId, userID)
+		if memErr != nil {
 			return mmmodel.NewAppError("AutoJoinIfDefaultGranted", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memErr)
+		}
+		if isMember {
+			return nil // Already a member.
 		}
 		member, addErr := s.client.Channel.AddMember(fresh.ChannelId, userID)
 		if addErr != nil {

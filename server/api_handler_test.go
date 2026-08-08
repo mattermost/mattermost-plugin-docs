@@ -75,7 +75,6 @@ func openTestPlugin(t *testing.T, mockAPI *plugintest.API) *apiTestHarness {
 	mockAPI.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	testutil.StubDefaultSpacePermissions(mockAPI)
 	testutil.StubPresetSchemes(mockAPI)
-	testutil.StubKVStore(mockAPI)
 	// Resolves any channel to the contribute preset, and serves the channel read/write that
 	// UpdateSpace's best-effort metadata sync (syncSpaceChannelMetadata) performs. Registered last
 	// because mock.Mock matches in registration order: a test seeding a channel at a specific
@@ -700,14 +699,15 @@ func TestHandler_RemoveSpaceMember(t *testing.T) {
 		Return(&mmmodel.TeamMember{}, nil)
 	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.ChannelMember{}, nil)
-	// The last-member guard scans the member list before removing; report another (active)
-	// member so the removal proceeds.
-	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{{ChannelId: channelID, UserId: targetUserID}, {ChannelId: channelID, UserId: mmmodel.NewId()}}, nil)
 	mockAPI.On("DeleteChannelMember", channelID, targetUserID).Return(nil)
 	h := openTestPlugin(t, mockAPI)
 
 	space := seedSpace(t, h.store, channelID)
+	// The last-member guard reads membership from the master DB; seed another active member so
+	// the removal proceeds.
+	otherID := mmmodel.NewId()
+	testutil.MustAddChannelMember(t, h.db, channelID, otherID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, otherID, 0)
 
 	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID, adminID, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -738,12 +738,15 @@ func TestHandler_RemoveSpaceMember_Self(t *testing.T) {
 		Return(&mmmodel.TeamMember{}, nil)
 	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.ChannelMember{}, nil)
-	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{{ChannelId: channelID, UserId: selfID}, {ChannelId: channelID, UserId: mmmodel.NewId()}}, nil)
 	mockAPI.On("DeleteChannelMember", channelID, selfID).Return(nil)
 	h := openTestPlugin(t, mockAPI)
 
 	space := seedSpace(t, h.store, channelID)
+	// The last-member guard reads membership from the master DB; seed another active member so
+	// the self-removal proceeds.
+	otherID := mmmodel.NewId()
+	testutil.MustAddChannelMember(t, h.db, channelID, otherID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, otherID, 0)
 
 	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/members/"+selfID, selfID, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -1804,9 +1807,8 @@ func TestHandler_DeletePage_NonMemberAutoJoinsViaDeletePageDefault(t *testing.T)
 	mockAPI.On("HasPermissionToChannel", stranger, channelID, mmmodel.PermissionReadPage).Return(false)
 	mockAPI.On("HasPermissionToChannel", stranger, channelID, mmmodel.PermissionDeletePage).Return(true)
 	mockAPI.On("RolesGrantPermission", mock.Anything, mmmodel.PermissionDeletePage.Id).Return(true)
-	// Not yet a member: the join path runs only when the membership probe misses.
-	mockAPI.On("GetChannelMember", channelID, stranger).
-		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: http.StatusNotFound})
+	// Not yet a member: no ChannelMembers row is seeded, so the master-side membership probe
+	// misses and the join path runs.
 	mockAPI.On("AddChannelMember", channelID, stranger).
 		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: stranger}, nil)
 
@@ -2157,11 +2159,11 @@ func TestHandler_SetSpaceMemberCapabilities_LastAdminConflict(t *testing.T) {
 		Return(&mmmodel.TeamMember{}, nil)
 	mockAPI.On("GetChannelMember", channelID, targetUserID).
 		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: targetUserID, SchemeAdmin: true}, nil)
-	// The last-admin guard scans the member list: only the sole target holds SchemeAdmin.
-	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{{ChannelId: channelID, UserId: targetUserID, SchemeAdmin: true}}, nil)
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, channelID)
+	// The last-admin guard reads membership from the master DB: only the target holds SchemeAdmin.
+	testutil.MustAddChannelAdmin(t, h.db, channelID, targetUserID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, targetUserID, 0)
 
 	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
 		"granted_capabilities": []string{},
@@ -2182,10 +2184,9 @@ func TestHandler_SetSpaceMemberCapabilities_LastAdminConflict(t *testing.T) {
 // TestHandler_SetSpaceMemberCapabilities_OtherAdminAllowsDemote verifies the positive side of the
 // last-admin guard: demoting an admin succeeds once another reachable admin remains.
 //
-// The member list deliberately places a non-admin ahead of the surviving admin. The guard's scan
-// stops only once it has answered both of its questions, so a scan that stopped at the first
-// reachable member would never see the admin behind it and would reject this demote as removing
-// the last one.
+// The membership deliberately includes a plain member alongside the surviving admin, so the guard
+// must answer both of its questions — another reachable member AND another admin — rather than
+// settling for the first reachable row.
 func TestHandler_SetSpaceMemberCapabilities_OtherAdminAllowsDemote(t *testing.T) {
 	channelID := mmmodel.NewId()
 	targetUserID := mmmodel.NewId()
@@ -2199,14 +2200,14 @@ func TestHandler_SetSpaceMemberCapabilities_OtherAdminAllowsDemote(t *testing.T)
 		Return(&mmmodel.TeamMember{}, nil)
 	mockAPI.On("GetChannelMember", channelID, targetUserID).
 		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: targetUserID, SchemeAdmin: true}, nil)
-	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{
-			{ChannelId: channelID, UserId: targetUserID, SchemeAdmin: true},
-			{ChannelId: channelID, UserId: plainMemberID},
-			{ChannelId: channelID, UserId: otherAdminID, SchemeAdmin: true},
-		}, nil)
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, channelID)
+	testutil.MustAddChannelAdmin(t, h.db, channelID, targetUserID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, targetUserID, 0)
+	testutil.MustAddChannelMember(t, h.db, channelID, plainMemberID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, plainMemberID, 0)
+	testutil.MustAddChannelAdmin(t, h.db, channelID, otherAdminID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, otherAdminID, 0)
 
 	rec := h.do(t, http.MethodPut, "/api/v1/spaces/"+space.Id+"/members/"+targetUserID+"/capabilities", adminID, map[string]any{
 		"granted_capabilities": []string{},

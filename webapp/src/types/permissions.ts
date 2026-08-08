@@ -45,13 +45,20 @@ export type SpaceMember = {
     auto_joined?: boolean;
 };
 
+// The space's own read/discover setting — distinct from the capability
+// vocabulary above, and from the create-space flow's SpaceVisibility, which
+// speaks 'public' rather than 'open' (types/docs.ts).
+export type SpaceViewAccess = 'open' | 'private';
+
 // Mirrors server/model/space.go SpaceWithAccess. The Space fields are flattened
-// into the same object server-side; only the two access fields are modelled
-// here, since that is all the permissions surface reads.
+// into the same object server-side; only the fields the permissions surface
+// reads are modelled here.
 export type SpaceAccess = {
     id: string;
     default_capabilities: Capability[];
     capabilities: Capability[];
+    view_access: SpaceViewAccess;
+    update_at: number;
 };
 
 // The list-endpoint envelope (paginatedResponse in server/api.go).
