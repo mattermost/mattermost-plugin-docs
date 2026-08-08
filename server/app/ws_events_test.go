@@ -647,8 +647,10 @@ func TestServiceRemoveSpaceMember_PublishesMemberRemovedEvent(t *testing.T) {
 	space, creatorID := createSpaceForMemberTests(t, h, mockAPI)
 
 	targetID := mmmodel.NewId()
-	mockAPI.On("GetChannelMember", space.ChannelId, targetID).Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: targetID}, nil)
-	// Master-DB membership: the creator remains, so the removal passes the last-member guard.
+	// The target-existence resolve and the last-member guard both read membership from the master
+	// DB; seed the target's own row plus the creator, who remains so the removal passes the
+	// last-member guard.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, targetID)
 	testutil.MustAddChannelMember(t, h.db, space.ChannelId, creatorID)
 	testutil.MustAddTeamMember(t, h.db, space.TeamId, creatorID, 0)
 	mockAPI.On("DeleteChannelMember", space.ChannelId, targetID).Return(nil)
@@ -678,9 +680,6 @@ func TestServiceSetSpaceMemberCapabilities_DefaultCapabilitiesFailureAbortsBefor
 	h := openTestServiceWithAPI(t, mockAPI)
 	space, actingUserID := createSpaceForMemberTests(t, h, mockAPI)
 
-	mockAPI.On("GetChannelMember", space.ChannelId, targetUserID).
-		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: targetUserID}, nil)
-
 	_, appErr := h.svc.SetSpaceMemberCapabilities(space, targetUserID, []string{model.CapabilityEditPage}, actingUserID)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
@@ -703,9 +702,9 @@ func TestServiceSetSpaceMemberCapabilities_PublishesToChannelAndUser(t *testing.
 
 	// A non-admin capability granted to another non-admin member reaches neither the
 	// admin-affecting nor the self-targeted arm of the escalation guard, so no space-admin
-	// permission is read here.
-	mockAPI.On("GetChannelMember", space.ChannelId, targetUserID).
-		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: targetUserID}, nil)
+	// permission is read here. The target's flags come from the master-backed store read, so seed
+	// its row directly.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, targetUserID)
 
 	_, appErr := h.svc.SetSpaceMemberCapabilities(space, targetUserID,
 		[]string{model.CapabilityEditPage}, actingUserID)

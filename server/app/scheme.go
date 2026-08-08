@@ -92,16 +92,16 @@ func (s *Service) schemeRolesFromChannel(channelID string, channel *mmmodel.Chan
 	}, nil
 }
 
-// getSchemeIDByName returns the id of the scheme with the given name.
-func (s *Service) getSchemeIDByName(name string) (string, error) {
+// getSchemeByName returns the scheme with the given name.
+func (s *Service) getSchemeByName(name string) (*mmmodel.Scheme, error) {
 	scheme, err := s.client.Scheme.GetByName(name)
 	if err != nil {
 		if errors.Is(err, pluginapi.ErrNotFound) {
-			return "", &store.ErrNotFound{EntityName: "Scheme", ID: name}
+			return nil, &store.ErrNotFound{EntityName: "Scheme", ID: name}
 		}
-		return "", err
+		return nil, err
 	}
-	return scheme.Id, nil
+	return scheme, nil
 }
 
 // getRolePermissionsByName returns the permission ids granted by the named role.
@@ -130,6 +130,9 @@ func (s *Service) getRolePermissionsByName(roleName string) ([]string, error) {
 func (s *Service) getOrCreateSharedScheme(capabilities []string) (string, *schemeRoles, error) {
 	name := model.SharedSchemeNameForCapabilities(capabilities)
 	if scheme, err := s.client.Scheme.GetByName(name); err == nil {
+		if scopeErr := s.adoptableSharedScheme(scheme, capabilities); scopeErr != nil {
+			return "", nil, scopeErr
+		}
 		// Logged because the configure that follows rewrites roles every space already on this
 		// scheme resolves against, not just this caller's space. The write is idempotent while the
 		// capability-to-permission mapping is correct, so a mapping regression is otherwise
@@ -150,11 +153,35 @@ func (s *Service) getOrCreateSharedScheme(capabilities []string) (string, *schem
 		// The name is unique, so a concurrent first use of the same capability set loses this
 		// create and adopts the winner's scheme rather than failing the caller.
 		if existing, getErr := s.client.Scheme.GetByName(name); getErr == nil {
+			if scopeErr := s.adoptableSharedScheme(existing, capabilities); scopeErr != nil {
+				return "", nil, scopeErr
+			}
 			return existing.Id, rolesFromScheme(existing), nil
 		}
 		return "", nil, err
 	}
 	return scheme.Id, rolesFromScheme(scheme), nil
+}
+
+// adoptableSharedScheme validates a scheme found under a pooled name before the pool adopts it.
+// configureSharedScheme rewrites an adopted scheme's roles wholesale, so a scheme that merely
+// occupies the name — creatable only by an actor with scheme-management privilege outside this
+// plugin — must not silently have its roles overwritten and be pointed at by a space.
+//
+// The scope check is the hard gate: a channel cannot reference a non-channel scheme, so adopting
+// one could never work. A display-name mismatch only warns: the display name is operator-facing
+// and renameable in the System Console, so refusing on it would permanently brick every space
+// using that capability set on an ordinary rename — while as an identity signal it is forgeable by
+// exactly the actors it would exclude, who can already edit schemes and roles at will.
+func (s *Service) adoptableSharedScheme(scheme *mmmodel.Scheme, capabilities []string) error {
+	if scheme.Scope != mmmodel.SchemeScopeChannel {
+		return errors.New("scheme " + scheme.Name + " under the pooled name has scope " + scheme.Scope + "; the pool only adopts channel-scoped schemes")
+	}
+	if expected := model.SharedSchemeDisplayNameForCapabilities(capabilities); scheme.DisplayName != expected {
+		s.log.Warn("adopting a pooled space scheme whose display name is not the pool's; its roles will be rewritten to the pool's permission sets",
+			"scheme_id", scheme.Id, "scheme_name", scheme.Name, "display_name", scheme.DisplayName, "expected_display_name", expected)
+	}
+	return nil
 }
 
 // rolesFromScheme names the three roles core generated for scheme.

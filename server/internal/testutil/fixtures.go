@@ -37,12 +37,13 @@ func OpenTestStore(t *testing.T) (*store.Store, *sql.DB) {
 	// The team listing and the membership guards join core's ChannelMembers, TeamMembers, and
 	// Channels tables, but the isolated test database contains only plugin tables. Create minimal
 	// stand-ins with the columns those queries read; production never creates these tables — core
-	// owns them there. SchemeAdmin is nullable, as in core's schema, so seeding through
-	// MustAddChannelMember exercises the queries' NULL handling.
+	// owns them there. SchemeAdmin and SchemeGuest are nullable, as in core's schema, so seeding
+	// through MustAddChannelMember exercises the queries' NULL handling.
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS ChannelMembers (
 		ChannelId varchar(26) NOT NULL,
 		UserId varchar(26) NOT NULL,
 		SchemeAdmin boolean,
+		SchemeGuest boolean,
 		PRIMARY KEY (ChannelId, UserId)
 	)`)
 	require.NoError(t, err, "create ChannelMembers stand-in")
@@ -79,6 +80,14 @@ func MustAddChannelMember(t *testing.T, db *sql.DB, channelID, userID string) {
 func MustAddChannelAdmin(t *testing.T, db *sql.DB, channelID, userID string) {
 	t.Helper()
 	_, err := db.Exec(`INSERT INTO ChannelMembers (ChannelId, UserId, SchemeAdmin) VALUES ($1, $2, TRUE)`, channelID, userID)
+	require.NoError(t, err)
+}
+
+// MustAddChannelGuest seeds a ChannelMembers row with SchemeGuest set, for queries that
+// distinguish guests from plain members.
+func MustAddChannelGuest(t *testing.T, db *sql.DB, channelID, userID string) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO ChannelMembers (ChannelId, UserId, SchemeGuest) VALUES ($1, $2, TRUE)`, channelID, userID)
 	require.NoError(t, err)
 }
 

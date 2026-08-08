@@ -55,6 +55,12 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	if sharedEnv != nil && sharedEnv.container != nil {
+		if code != 0 {
+			// A server-side failure leaves its diagnosis in the container's log, and the teardown
+			// below deletes the container — so on failure the log is printed here, while it still
+			// exists. CI has no later step that could read it.
+			dumpContainerLogs(sharedEnv.container)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		if err := sharedEnv.container.Terminate(ctx); err != nil {
 			fmt.Printf("failed to terminate shared e2e container: %v\n", err)
@@ -63,6 +69,20 @@ func TestMain(m *testing.M) {
 	}
 
 	os.Exit(code)
+}
+
+// dumpContainerLogs prints the tail of the Mattermost container's log, best-effort, on its own
+// short context so a hung server cannot consume the caller's teardown budget. GetLogs runs mmctl
+// inside the container, so it needs the server process alive; when the server never came up, the
+// error printed here is the only diagnosis available.
+func dumpContainerLogs(container *mmcontainer.MattermostContainer) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if logs, err := container.GetLogs(ctx, 400); err != nil {
+		fmt.Printf("failed to read the mattermost container log: %v\n", err)
+	} else {
+		fmt.Printf("===== mattermost container log (last 400 lines) =====\n%s\n", logs)
+	}
 }
 
 // getEnv returns the shared test environment, starting the container on first use.
@@ -112,8 +132,11 @@ func startEnv() (*testEnv, error) {
 
 	// Teardown runs on its own context: the likeliest failure below is ctx's own deadline expiring,
 	// and Terminate cannot clean up on an already-expired context — leaving a Mattermost+Postgres
-	// pair running on the CI agent or dev machine.
+	// pair running on the CI agent or dev machine. The log dump runs first: a boot or migration
+	// failure lands here, never in TestMain's failure dump, because this terminate deletes the
+	// container before any test runs.
 	terminate := func() {
+		dumpContainerLogs(container)
 		termCtx, termCancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer termCancel()
 		_ = container.Terminate(termCtx)

@@ -826,6 +826,7 @@ func TestServiceSetSpaceDefaultCapabilities_SameSchemeStillConfiguresRoles(t *te
 	mockAPI.On("GetSchemeByName", pooledName).Return(&mmmodel.Scheme{
 		Id:                      schemeID,
 		Name:                    pooledName,
+		DisplayName:             model.SharedSchemeDisplayNameForCapabilities(capabilities),
 		Scope:                   mmmodel.SchemeScopeChannel,
 		DefaultChannelUserRole:  userRole,
 		DefaultChannelAdminRole: adminRole,
@@ -876,6 +877,7 @@ func TestServiceSetSpaceDefaultCapabilities_UserRoleAloneUnconfiguredStillWrites
 	mockAPI.On("GetSchemeByName", pooledName).Return(&mmmodel.Scheme{
 		Id:                      schemeID,
 		Name:                    pooledName,
+		DisplayName:             model.SharedSchemeDisplayNameForCapabilities(capabilities),
 		Scope:                   mmmodel.SchemeScopeChannel,
 		DefaultChannelUserRole:  userRoleName,
 		DefaultChannelAdminRole: adminRoleName,
@@ -1209,10 +1211,10 @@ func TestServiceRemoveSpaceMember_RemoveFails(t *testing.T) {
 	space, _ := createSpaceForMemberTests(t, h, mockAPI)
 
 	targetID := mmmodel.NewId()
-	// The target-existence resolve runs before the last-member/last-admin guards.
-	mockAPI.On("GetChannelMember", space.ChannelId, targetID).Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: targetID}, nil)
-	// The last-member guard reads membership from the master DB; seed another active member so
-	// the removal proceeds to the failing DeleteChannelMember call.
+	// The target-existence resolve and the last-member guard both read membership from the master
+	// DB; seed the target's own row plus another active member so the removal proceeds to the
+	// failing DeleteChannelMember call.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, targetID)
 	otherID := mmmodel.NewId()
 	testutil.MustAddChannelMember(t, h.db, space.ChannelId, otherID)
 	testutil.MustAddTeamMember(t, h.db, space.TeamId, otherID, 0)
@@ -1237,8 +1239,6 @@ func TestServiceRemoveSpaceMember_SelfNonMemberOnOpenSpaceIs404(t *testing.T) {
 	require.Equal(t, model.ViewAccessOpen, space.ViewAccess, "fixture must be open for this case")
 
 	selfID := mmmodel.NewId()
-	mockAPI.On("GetChannelMember", space.ChannelId, selfID).
-		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: http.StatusNotFound})
 
 	appErr := h.svc.RemoveSpaceMember(space, selfID, selfID)
 	require.NotNil(t, appErr)
@@ -1260,8 +1260,6 @@ func TestServiceRemoveSpaceMember_SelfNonMemberOnPrivateSpaceIs403(t *testing.T)
 	require.NoError(t, err)
 
 	selfID := mmmodel.NewId()
-	mockAPI.On("GetChannelMember", updated.ChannelId, selfID).
-		Return((*mmmodel.ChannelMember)(nil), &mmmodel.AppError{StatusCode: http.StatusNotFound})
 
 	appErr := h.svc.RemoveSpaceMember(updated, selfID, selfID)
 	require.NotNil(t, appErr)
@@ -1278,7 +1276,6 @@ func TestServiceRemoveSpaceMember_LastMemberRejected(t *testing.T) {
 	space, _ := createSpaceForMemberTests(t, h, mockAPI)
 
 	soleID := mmmodel.NewId()
-	mockAPI.On("GetChannelMember", space.ChannelId, soleID).Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: soleID}, nil)
 	// The sole membership lives on the master DB; no other authorized member exists.
 	testutil.MustAddChannelMember(t, h.db, space.ChannelId, soleID)
 	testutil.MustAddTeamMember(t, h.db, space.TeamId, soleID, 0)
@@ -1301,7 +1298,6 @@ func TestServiceRemoveSpaceMember_LastActiveMemberRejected(t *testing.T) {
 	h := openTestServiceWithAPI(t, mockAPI)
 	space, _ := createSpaceForMemberTests(t, h, mockAPI)
 
-	mockAPI.On("GetChannelMember", space.ChannelId, activeID).Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: activeID}, nil)
 	// Master-DB membership: the only other row belongs to a member who already left the team.
 	testutil.MustAddChannelMember(t, h.db, space.ChannelId, activeID)
 	testutil.MustAddTeamMember(t, h.db, space.TeamId, activeID, 0)
@@ -1324,7 +1320,6 @@ func TestServiceRemoveSpaceMember_FormerTeamMemberRemovable(t *testing.T) {
 
 	activeID := mmmodel.NewId()
 	formerID := mmmodel.NewId()
-	mockAPI.On("GetChannelMember", space.ChannelId, formerID).Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: formerID}, nil)
 	// Master-DB membership: an active member remains, and the target already left the team.
 	testutil.MustAddChannelMember(t, h.db, space.ChannelId, activeID)
 	testutil.MustAddTeamMember(t, h.db, space.TeamId, activeID, 0)

@@ -112,9 +112,11 @@ func TestAutoJoin_ProvenanceMarkerLifecycle(t *testing.T) {
 	require.Len(t, members, 1)
 	require.True(t, members[0].AutoJoined, "a member added by the auto-join pre-step must be marked auto-joined")
 
-	// A deliberate admin act on this member's capabilities supersedes how they got here.
-	mockAPI.On("GetChannelMember", space.ChannelId, userID).
-		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
+	// A deliberate admin act on this member's capabilities supersedes how they got here. The
+	// last-admin/target read is master-backed, not the plugin API's GetChannelMember, so seed the
+	// stand-in row directly (the auto-join above only ran through the mocked pluginapi call, which
+	// does not write this table).
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, userID)
 
 	_, appErr = h.svc.SetSpaceMemberCapabilities(space, userID, []string{model.CapabilityCommentPage}, mmmodel.NewId())
 	require.Nil(t, appErr)
@@ -180,12 +182,13 @@ func TestRemoveSpaceMember_ClearsProvenanceMarker(t *testing.T) {
 	require.Nil(t, appErr)
 	require.True(t, joined)
 
-	// The reachability guard reads membership from the master DB; seed another active member so
-	// removing userID does not trip the last-member guard.
+	// The target lookup and the reachability guard both read membership from the master DB; the
+	// auto-join above only ran through the mocked pluginapi call, which does not write this table, so
+	// userID's own row must be seeded too, alongside another active member so removing userID does
+	// not trip the last-member guard.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, userID)
 	testutil.MustAddChannelMember(t, h.db, space.ChannelId, otherID)
 	testutil.MustAddTeamMember(t, h.db, space.TeamId, otherID, 0)
-	mockAPI.On("GetChannelMember", space.ChannelId, userID).
-		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
 	mockAPI.On("DeleteChannelMember", space.ChannelId, userID).Return(nil)
 
 	appErr = h.svc.RemoveSpaceMember(space, userID, mmmodel.NewId())
@@ -224,9 +227,10 @@ func TestUndoAutoJoin_SkipsRemovalWhenLegitimizedConcurrently(t *testing.T) {
 	require.True(t, joined)
 
 	// A deliberate admin act legitimizes the membership before the guarded write's own rejection
-	// reaches UndoAutoJoin — clearing the marker, exactly as SetSpaceMemberCapabilities does.
-	mockAPI.On("GetChannelMember", space.ChannelId, userID).
-		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
+	// reaches UndoAutoJoin — clearing the marker, exactly as SetSpaceMemberCapabilities does. The
+	// target read is master-backed; the auto-join above only ran through the mocked pluginapi call,
+	// which does not write this table, so seed it directly.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, userID)
 	_, appErr = h.svc.SetSpaceMemberCapabilities(space, userID, []string{model.CapabilityCommentPage}, mmmodel.NewId())
 	require.Nil(t, appErr)
 
@@ -525,6 +529,9 @@ func TestResolveSpaceRead_ComplianceModeSuppressesOpenFallthrough(t *testing.T) 
 	mockAPI.On("GetConfig").
 		Return(&mmmodel.Config{ComplianceSettings: mmmodel.ComplianceSettings{Enable: mmmodel.NewPointer(true)}}).Once()
 	h := openTestServiceWithAPI(t, mockAPI)
+	// Asserted on this mock — the one wired into the service — so the test fails if the
+	// resolution stops consulting the config at all.
+	t.Cleanup(func() { mockAPI.AssertExpectations(t) })
 
 	// The default space fixture is open, and the harness stubs GetTeamMember to an active
 	// membership, so the stranger clears the team gate and reaches the open-space fall-through.
@@ -548,6 +555,9 @@ func TestResolveSpaceRead_UnreadableConfigSuppressesOpenFallthrough(t *testing.T
 	mockAPI.On("HasPermissionToChannel", strangerID, mock.Anything, mmmodel.PermissionReadPage).Return(false)
 	mockAPI.On("GetConfig").Return((*mmmodel.Config)(nil)).Once()
 	h := openTestServiceWithAPI(t, mockAPI)
+	// Asserted on this mock — the one wired into the service — so the test fails if the
+	// resolution stops consulting the config at all.
+	t.Cleanup(func() { mockAPI.AssertExpectations(t) })
 
 	// The default space fixture is open, and the harness stubs GetTeamMember to an active
 	// membership, so the stranger clears the team gate and reaches the open-space fall-through.

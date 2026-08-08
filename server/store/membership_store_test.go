@@ -11,7 +11,59 @@ import (
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/internal/testutil"
+	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
+
+func TestMemberSchemeFlags(t *testing.T) {
+	s, db := testutil.OpenTestStore(t)
+
+	t.Run("plain member reads as neither admin nor guest", func(t *testing.T) {
+		channelID := mmmodel.NewId()
+		userID := mmmodel.NewId()
+		testutil.MustAddChannelMember(t, db, channelID, userID)
+
+		schemeAdmin, schemeGuest, err := s.MemberSchemeFlags(channelID, userID)
+		require.NoError(t, err)
+		require.False(t, schemeAdmin)
+		require.False(t, schemeGuest)
+	})
+
+	t.Run("admin row reads SchemeAdmin true", func(t *testing.T) {
+		channelID := mmmodel.NewId()
+		userID := mmmodel.NewId()
+		testutil.MustAddChannelAdmin(t, db, channelID, userID)
+
+		schemeAdmin, schemeGuest, err := s.MemberSchemeFlags(channelID, userID)
+		require.NoError(t, err)
+		require.True(t, schemeAdmin)
+		require.False(t, schemeGuest)
+	})
+
+	t.Run("guest row reads SchemeGuest true", func(t *testing.T) {
+		channelID := mmmodel.NewId()
+		userID := mmmodel.NewId()
+		testutil.MustAddChannelGuest(t, db, channelID, userID)
+
+		schemeAdmin, schemeGuest, err := s.MemberSchemeFlags(channelID, userID)
+		require.NoError(t, err)
+		require.False(t, schemeAdmin)
+		require.True(t, schemeGuest)
+	})
+
+	t.Run("absent row is not found", func(t *testing.T) {
+		_, _, err := s.MemberSchemeFlags(mmmodel.NewId(), mmmodel.NewId())
+		require.Error(t, err)
+		require.True(t, store.IsErrNotFound(err))
+	})
+
+	t.Run("empty ids are rejected", func(t *testing.T) {
+		_, _, err := s.MemberSchemeFlags("", mmmodel.NewId())
+		require.Error(t, err)
+
+		_, _, err = s.MemberSchemeFlags(mmmodel.NewId(), "")
+		require.Error(t, err)
+	})
+}
 
 func TestIsChannelMember(t *testing.T) {
 	s, db := testutil.OpenTestStore(t)

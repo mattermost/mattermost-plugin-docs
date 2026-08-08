@@ -353,6 +353,23 @@ describe('SpaceSettingsModal', () => {
         expect(await screen.findByRole('alert')).toHaveTextContent('This is the last administrator of the space.');
     });
 
+    it('drops the member row and shows the memberGone message when a save 404s', async () => {
+        api.setMemberCapabilities.mockRejectedValue(new RestError('http://localhost/x', 404, 'Not found', undefined));
+
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        await screen.findByRole('group', {name: 'Permissions for bob'});
+        fireEvent.click(memberSection('bob').getByLabelText('Administer space'));
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('That person is no longer a member of this space.');
+        expect(screen.queryByRole('group', {name: 'Permissions for bob'})).not.toBeInTheDocument();
+    });
+
     it('falls back to the user id when the profile lookup fails', async () => {
         api.getMemberProfiles.mockRejectedValue(new Error('network'));
 

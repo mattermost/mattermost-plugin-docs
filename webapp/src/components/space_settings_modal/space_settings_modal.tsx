@@ -253,6 +253,15 @@ const SpaceSettingsModal = ({space, onClose}: Props) => {
             if (unmountedRef.current) {
                 return;
             }
+
+            // A 404 means the member was removed while this screen was open.
+            // Reverting would resurrect a row whose every further save gets the
+            // same rejection, so the row is dropped instead.
+            if (err instanceof RestError && err.status === 404) {
+                setError(formatMessage({id: 'docs.spaceSettings.memberGone', defaultMessage: 'That person is no longer a member of this space.'}));
+                setMembers((current) => current.filter((member) => member.user_id !== userId));
+                return;
+            }
             setError(describeError(err));
             if (fallback) {
                 setMembers((current) => current.map((member) => (member.user_id === userId ? fallback : member)));
@@ -324,7 +333,10 @@ const SpaceSettingsModal = ({space, onClose}: Props) => {
                 )}
 
                 {loading && (
-                    <p className={styles.note}>
+                    <p
+                        className={styles.note}
+                        role='status'
+                    >
                         <FormattedMessage
                             id='docs.spaceSettings.loading'
                             defaultMessage='Loading permissions…'

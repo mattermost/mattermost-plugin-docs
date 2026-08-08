@@ -219,8 +219,10 @@ jobs:
         env:
           MM_LICENSE: ${{ secrets.MM_E2E_TEST_LICENSE_ONPREM_ENT }}
 
-      # The suite boots the server in a container, so a boot or migration failure leaves its
-      # diagnosis in the container's log rather than in the test output.
+      # On an ordinary test failure the suite prints the container log itself (TestMain), because
+      # it tears the container down before the process exits and no later step could read it. This
+      # fallback covers only the paths that skip that teardown — a test-binary panic or crash —
+      # where the container is still running.
       - name: ci/e2e-logs
         if: failure()
         run: docker ps -aq | xargs -r -I{} sh -c 'echo "===== {} ====="; docker logs {} 2>&1 | tail -400'

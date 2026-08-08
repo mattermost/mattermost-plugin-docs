@@ -12,6 +12,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/pluginapi"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
+	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
 // GetSpaceMembers returns one page of space's members plus whether more members exist beyond
@@ -137,10 +138,7 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 		return nil, membershipLockAppError("AddSpaceMember", lockErr)
 	}
 	payload := map[string]any{"space_id": space.Id, "user_id": member.UserId}
-	s.publishToChannels(wsEventSpaceMemberAdded, payload, space.ChannelId)
-	// Also delivered directly: the channel-scoped broadcast may not resolve a member added moments
-	// earlier, and the new member has no other signal that they now have the space.
-	s.publishToUser(wsEventSpaceMemberAdded, payload, member.UserId)
+	s.publishMembershipEvent(wsEventSpaceMemberAdded, payload, space.ChannelId, member.UserId)
 	return toSpaceMember(member, defaultCapabilities, false), nil
 }
 
@@ -211,25 +209,29 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 		}
 		defaultCapabilities = defaults
 
-		target, memErr := s.client.Channel.GetMember(space.ChannelId, targetUserID)
+		// Master-backed on purpose: the plugin API's membership reads come from a replica, and the
+		// admin flag read here decides whether the escalation and last-admin guards below run at
+		// all — a lagging replica hiding a just-committed promotion would skip both (see the
+		// rationale at the top of store/membership_store.go).
+		targetAdmin, targetGuest, memErr := s.store.MemberSchemeFlags(space.ChannelId, targetUserID)
 		if memErr != nil {
-			if errors.Is(memErr, pluginapi.ErrNotFound) {
+			if store.IsErrNotFound(memErr) {
 				return mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(memErr)
 			}
 			return mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memErr)
 		}
-		if target.SchemeGuest {
+		if targetGuest {
 			return mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.member.guest_not_assignable.app_error", nil, "", http.StatusBadRequest)
 		}
 
-		adminAffected := target.SchemeAdmin || requestedAdmin
+		adminAffected := targetAdmin || requestedAdmin
 		if adminAffected || selfTargeted {
 			if e := s.RequireSpaceAdminOrSysadmin("SetSpaceMemberCapabilities", space, actingUserID); e != nil {
 				return e
 			}
 		}
 
-		if target.SchemeAdmin && !newSchemeAdmin {
+		if targetAdmin && !newSchemeAdmin {
 			if e := s.requireNotLastAdmin("SetSpaceMemberCapabilities", space, targetUserID); e != nil {
 				return e
 			}
@@ -264,11 +266,7 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 	result := toSpaceMember(updatedMember, defaultCapabilities, false)
 
 	payload := map[string]any{"space_id": space.Id, "user_id": targetUserID}
-	// Delivered both ways deliberately: the channel-scoped broadcast covers observers, and the
-	// direct publish guarantees the target learns its own capabilities changed even if the
-	// channel-scoped resolution misses them on a space ("S") channel.
-	s.publishToUser(wsEventSpaceMemberCapabilitiesUpdated, payload, targetUserID)
-	s.publishToChannels(wsEventSpaceMemberCapabilitiesUpdated, payload, space.ChannelId)
+	s.publishMembershipEvent(wsEventSpaceMemberCapabilitiesUpdated, payload, space.ChannelId, targetUserID)
 	return result, nil
 }
 
@@ -295,9 +293,13 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 	// the space-keyed advisory lock, alongside the mutation itself. This applies to self-removal
 	// too, since the last-admin invariant covers the sole admin's self-leave.
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
-		target, memErr := s.client.Channel.GetMember(space.ChannelId, userID)
+		// Master-backed on purpose: the plugin API's membership reads come from a replica, and the
+		// admin flag read here decides whether the escalation and last-admin guards below run at
+		// all — a lagging replica hiding a just-committed promotion would skip both (see the
+		// rationale at the top of store/membership_store.go).
+		targetAdmin, _, memErr := s.store.MemberSchemeFlags(space.ChannelId, userID)
 		if memErr != nil {
-			if !errors.Is(memErr, pluginapi.ErrNotFound) {
+			if !store.IsErrNotFound(memErr) {
 				return mmmodel.NewAppError("RemoveSpaceMember", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memErr)
 			}
 			// Non-member target. Removing someone else means the caller already cleared the manage
@@ -316,7 +318,7 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 		}
 
 		// Resolved before the scan below so an unauthorized caller is rejected without running it.
-		if target.SchemeAdmin {
+		if targetAdmin {
 			if e := s.RequireSpaceAdminOrSysadmin("RemoveSpaceMember", space, actingUserID); e != nil {
 				return e
 			}
@@ -327,12 +329,12 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 		if guardErr != nil {
 			// Attributed to whichever invariant the caller is actually being held to, so the failure
 			// of the shared walk reports the same id each guard reported when it walked alone.
-			if target.SchemeAdmin {
+			if targetAdmin {
 				return mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.admin_count_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(guardErr)
 			}
 			return mmmodel.NewAppError("RemoveSpaceMember", "app.space.remove_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(guardErr)
 		}
-		if target.SchemeAdmin && !hasOtherAdmin {
+		if targetAdmin && !hasOtherAdmin {
 			return mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.last_admin.app_error", nil, "", http.StatusConflict)
 		}
 		if !hasOther {
@@ -357,9 +359,6 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 		return membershipLockAppError("RemoveSpaceMember", lockErr)
 	}
 	payload := map[string]any{"space_id": space.Id, "user_id": userID}
-	s.publishToChannels(wsEventSpaceMemberRemoved, payload, space.ChannelId)
-	// The removed user has already left the backing channel, so the channel-scoped broadcast
-	// above never reaches them; send the event to their own connections directly.
-	s.publishToUser(wsEventSpaceMemberRemoved, payload, userID)
+	s.publishMembershipEvent(wsEventSpaceMemberRemoved, payload, space.ChannelId, userID)
 	return nil
 }

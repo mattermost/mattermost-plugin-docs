@@ -121,7 +121,7 @@ func PresetUserRoleName(name string) string {
 
 // StubPresetSchemes registers .Maybe() stubs on mockAPI resolving each of the three preset space
 // schemes by name, plus their three generated roles by name — the shape
-// getSchemeIDByName/getRolePermissionsByName resolve through the plugin API in production. Call
+// getSchemeByName/getRolePermissionsByName resolve through the plugin API in production. Call
 // this once per mockAPI, alongside StubDefaultSpacePermissions.
 func StubPresetSchemes(mockAPI *plugintest.API) {
 	for name, fx := range presetSchemeFixtures {

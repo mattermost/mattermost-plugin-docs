@@ -53,7 +53,7 @@ func existenceHidingForbidden(where string) *mmmodel.AppError {
 
 // ExistenceHidingForbidden is existenceHidingForbidden for the API layer, whose own gate helpers
 // have to deny in the same indistinguishable terms. Exported so that message stays defined in one
-// place: a second literal spelling of it elsewhere could drift and make the denials tellable apart.
+// place: a second literal spelling of it elsewhere could drift and make the denials distinguishable.
 func ExistenceHidingForbidden(where string) *mmmodel.AppError {
 	return existenceHidingForbidden(where)
 }
@@ -483,10 +483,7 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 	// for its whole duration.
 	if joined {
 		payload := map[string]any{"space_id": space.Id, "user_id": joinedUserID}
-		s.publishToChannels(wsEventSpaceMemberAdded, payload, joinedChannelID)
-		// Also delivered directly, matching AddSpaceMember: the channel-scoped broadcast may not
-		// resolve the just-joined member, who has no other signal that the auto-join happened.
-		s.publishToUser(wsEventSpaceMemberAdded, payload, joinedUserID)
+		s.publishMembershipEvent(wsEventSpaceMemberAdded, payload, joinedChannelID, joinedUserID)
 	}
 	return joined, nil
 }
@@ -546,8 +543,5 @@ func (s *Service) UndoAutoJoin(joined bool, space *model.Space, userID string) {
 		return
 	}
 	payload := map[string]any{"space_id": space.Id, "user_id": userID}
-	s.publishToChannels(wsEventSpaceMemberRemoved, payload, space.ChannelId)
-	// The user has already left the backing channel, so the channel-scoped broadcast above never
-	// reaches them; send the event to their own connections directly.
-	s.publishToUser(wsEventSpaceMemberRemoved, payload, userID)
+	s.publishMembershipEvent(wsEventSpaceMemberRemoved, payload, space.ChannelId, userID)
 }

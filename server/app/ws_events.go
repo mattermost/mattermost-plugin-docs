@@ -100,3 +100,12 @@ func (s *Service) publishToUser(event string, payload map[string]any, userID str
 	}
 	s.client.Frontend.PublishWebSocketEvent(event, payload, &mmmodel.WebsocketBroadcast{UserId: userID})
 }
+
+// publishMembershipEvent delivers a membership event both to the space's backing channel (the
+// observers) and directly to the affected user's own connections: the channel-scoped broadcast may
+// not resolve a member whose membership changed moments earlier, and cannot reach one who was just
+// removed — yet the affected user is exactly who must learn their access changed.
+func (s *Service) publishMembershipEvent(event string, payload map[string]any, channelID, userID string) {
+	s.publishToChannels(event, payload, channelID)
+	s.publishToUser(event, payload, userID)
+}

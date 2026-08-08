@@ -52,29 +52,35 @@ func (s *Service) archiveOrphanChannel(channelID, reason string, cause error) {
 // scheme; any other set resolves to a scheme in the shared pool keyed by the set itself, created
 // on first use and thereafter shared by every space configured that way.
 //
-// pooledRoles is non-nil for the pooled case and names the roles the caller must write through
+// roles names the three generated roles of the resolved scheme in both cases, so no caller has to
+// re-resolve them through a channel lookup — re-reading a just-created channel can miss it under
+// replica lag. pooled reports the shared-pool case, whose roles the caller must write through
 // configureSharedScheme once a backing channel points at the scheme — which is what lets core
-// admit those writes. A preset's roles are seeded already and are never rewritten, so the preset
-// case returns nil. Nothing here is owned by one space, so no failure path deletes a scheme.
-func (s *Service) resolveSpaceScheme(capabilities []string) (schemeID string, pooledRoles *schemeRoles, err error) {
+// admit those writes. A preset's roles are seeded already and are never rewritten. Nothing here is
+// owned by one space, so no failure path deletes a scheme.
+func (s *Service) resolveSpaceScheme(capabilities []string) (schemeID string, roles *schemeRoles, pooled bool, err error) {
 	// Normalize before the permission set is persisted: the validators are dedup-tolerant, so
 	// without this a request repeating one allowlisted token would write that repetition verbatim
 	// into the generated role's Permissions column.
 	capabilities = model.NormalizeCapabilitySet(capabilities)
 	if presetName, ok := model.SchemeNameForDefaultCapabilities(capabilities); ok {
-		id, getErr := s.getSchemeIDByName(presetName)
+		scheme, getErr := s.getSchemeByName(presetName)
 		if getErr != nil {
 			// Core seeds the presets; the plugin only reads them. A miss therefore means the server
 			// is unseeded, not that the caller named something that does not exist, so it is tagged
 			// to keep it out of the shared not-found translation.
 			if store.IsErrNotFound(getErr) {
-				return "", nil, fmt.Errorf("%w: %s", errPresetSchemeMissing, presetName)
+				return "", nil, false, fmt.Errorf("%w: %s", errPresetSchemeMissing, presetName)
 			}
-			return "", nil, getErr
+			return "", nil, false, getErr
 		}
-		return id, nil, nil
+		return scheme.Id, rolesFromScheme(scheme), false, nil
 	}
-	return s.getOrCreateSharedScheme(capabilities)
+	id, pooledRoles, poolErr := s.getOrCreateSharedScheme(capabilities)
+	if poolErr != nil {
+		return "", nil, false, poolErr
+	}
+	return id, pooledRoles, true, nil
 }
 
 // CreateSpace creates a ChannelTypeSpace ("S") backing channel via pluginapi, saves the
@@ -157,7 +163,7 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultCapabili
 		return nil, capErr
 	}
 
-	schemeID, pooledRoles, schemeErr := s.resolveSpaceScheme(capabilities)
+	schemeID, resolvedRoles, pooled, schemeErr := s.resolveSpaceScheme(capabilities)
 	if schemeErr != nil {
 		return nil, schemeAppError("CreateSpace", schemeErr)
 	}
@@ -185,8 +191,8 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultCapabili
 	// Only now that the backing channel points at the scheme will core admit role writes carrying
 	// space permissions, so a freshly created pooled scheme gets its exact permission sets here
 	// rather than at create time.
-	if pooledRoles != nil {
-		if _, cfgErr := s.configureSharedScheme(pooledRoles, capabilities); cfgErr != nil {
+	if pooled {
+		if _, cfgErr := s.configureSharedScheme(resolvedRoles, capabilities); cfgErr != nil {
 			s.archiveOrphanChannel(backingChannel.Id, "pooled scheme role configuration failed", cfgErr)
 			return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.scheme_configure_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(cfgErr)
 		}
@@ -203,12 +209,9 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultCapabili
 	// The creator is added as SchemeAdmin — both the scheme's resolved generated role names, never
 	// literals: on a scheme-backed channel core rejects the literal channel_user/channel_admin
 	// tokens. The base user-role token is required, not optional (core resets all scheme flags and
-	// rejects a string that leaves SchemeUser unset).
-	resolvedRoles, rolesErr := s.getSchemeRolesForChannel(backingChannel.Id)
-	if rolesErr != nil {
-		s.archiveOrphanChannel(backingChannel.Id, "scheme role lookup failed", rolesErr)
-		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.scheme_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(rolesErr)
-	}
+	// rejects a string that leaves SchemeUser unset). The role names come from the scheme resolved
+	// above, not from a fresh channel lookup: re-reading the just-created channel can miss it under
+	// replica lag and fail a create that already succeeded.
 	if _, roleErr := s.client.Channel.UpdateChannelMemberRoles(backingChannel.Id, userID, resolvedRoles.UserRoleName+" "+resolvedRoles.AdminRoleName); roleErr != nil {
 		s.archiveOrphanChannel(backingChannel.Id, "creator admin role assignment failed", roleErr)
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.admin_role_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(roleErr)
@@ -413,7 +416,7 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 			return nil
 		}
 
-		targetSchemeID, pooledRoles, schemeErr := s.resolveSpaceScheme(requested)
+		targetSchemeID, pooledRoles, pooled, schemeErr := s.resolveSpaceScheme(requested)
 		if schemeErr != nil {
 			return schemeAppError("SetSpaceDefaultCapabilities", schemeErr)
 		}
@@ -425,7 +428,7 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 			// would take this branch and never reach that configure. Running it here is what lets
 			// resubmitting the intended set recover such a space; it is a no-op in effect once the
 			// permission sets already match.
-			if pooledRoles != nil {
+			if pooled {
 				rolesChanged, cfgErr := s.configureSharedScheme(pooledRoles, requested)
 				if cfgErr != nil {
 					return schemeAppError("SetSpaceDefaultCapabilities", cfgErr)
@@ -453,7 +456,7 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 		// a role write carrying space permissions only once a channel already references the scheme
 		// — so the window is accepted rather than closed. It is bounded by the role writes below,
 		// self-heals, and does not recur once the pooled scheme is configured.
-		if pooledRoles != nil {
+		if pooled {
 			if _, cfgErr := s.configureSharedScheme(pooledRoles, requested); cfgErr != nil {
 				channel.SchemeId = &currentSchemeID
 				if rollbackErr := s.client.Channel.Update(channel); rollbackErr != nil {

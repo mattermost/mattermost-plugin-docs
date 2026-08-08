@@ -28,9 +28,13 @@ func TestGetOrCreateSharedScheme_ConcurrentCreateAdoptsWinner(t *testing.T) {
 	capabilities := []string{"create_page"}
 	name := model.SharedSchemeNameForCapabilities(capabilities)
 
+	// Shaped exactly as the racing plugin instance would have created it — name, scope, and
+	// display name all derived from the capability set — since adoption verifies that shape.
 	winner := &mmmodel.Scheme{
 		Id:                      mmmodel.NewId(),
 		Name:                    name,
+		DisplayName:             model.SharedSchemeDisplayNameForCapabilities(capabilities),
+		Scope:                   mmmodel.SchemeScopeChannel,
 		DefaultChannelUserRole:  "winner_user_role",
 		DefaultChannelAdminRole: "winner_admin_role",
 		DefaultChannelGuestRole: "winner_guest_role",
@@ -56,6 +60,58 @@ func TestGetOrCreateSharedScheme_ConcurrentCreateAdoptsWinner(t *testing.T) {
 	require.Equal(t, "winner_admin_role", roles.AdminRoleName)
 	require.Equal(t, "winner_guest_role", roles.GuestRoleName)
 	mockAPI.AssertExpectations(t)
+}
+
+// TestGetOrCreateSharedScheme_AdoptionGuard covers the adoption guard's two outcomes: a
+// same-named scheme of another scope must fail the resolution (a channel could never reference
+// it), while a channel-scoped scheme with a foreign display name — an operator rename is enough —
+// is still adopted, since refusing would permanently brick the capability set.
+func TestGetOrCreateSharedScheme_AdoptionGuard(t *testing.T) {
+	capabilities := []string{"create_page"}
+	name := model.SharedSchemeNameForCapabilities(capabilities)
+
+	t.Run("team scope refused", func(t *testing.T) {
+		s, _ := testutil.OpenTestStore(t)
+		mockAPI := &plugintest.API{}
+		mockAPI.On("GetSchemeByName", name).Return(&mmmodel.Scheme{
+			Id:          mmmodel.NewId(),
+			Name:        name,
+			DisplayName: model.SharedSchemeDisplayNameForCapabilities(capabilities),
+			Scope:       mmmodel.SchemeScopeTeam,
+		}, nil).Once()
+
+		client := pluginapi.NewClient(mockAPI, nil)
+		svc := New(s, nil, client)
+
+		_, _, err := svc.getOrCreateSharedScheme(capabilities)
+		require.Error(t, err, "a non-channel scheme squatting the pooled name must not be adopted")
+		mockAPI.AssertNotCalled(t, "PatchRole", mock.Anything, mock.Anything)
+		mockAPI.AssertExpectations(t)
+	})
+
+	t.Run("renamed display name adopted", func(t *testing.T) {
+		s, _ := testutil.OpenTestStore(t)
+		mockAPI := &plugintest.API{}
+		renamed := &mmmodel.Scheme{
+			Id:                      mmmodel.NewId(),
+			Name:                    name,
+			DisplayName:             "Renamed By An Operator",
+			Scope:                   mmmodel.SchemeScopeChannel,
+			DefaultChannelUserRole:  "renamed_user_role",
+			DefaultChannelAdminRole: "renamed_admin_role",
+			DefaultChannelGuestRole: "renamed_guest_role",
+		}
+		mockAPI.On("GetSchemeByName", name).Return(renamed, nil).Once()
+
+		client := pluginapi.NewClient(mockAPI, nil)
+		svc := New(s, nil, client)
+
+		schemeID, roles, err := svc.getOrCreateSharedScheme(capabilities)
+		require.NoError(t, err, "a display-name rename must not brick the capability set")
+		require.Equal(t, renamed.Id, schemeID)
+		require.Equal(t, "renamed_user_role", roles.UserRoleName)
+		mockAPI.AssertExpectations(t)
+	})
 }
 
 // TestConfigureSharedScheme_PartialFailureLeavesPriorWritesInPlace covers the non-atomicity of the

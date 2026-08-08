@@ -4,6 +4,8 @@
 package store
 
 import (
+	"database/sql"
+
 	sq "github.com/mattermost/squirrel"
 	"github.com/pkg/errors"
 )
@@ -16,6 +18,43 @@ import (
 // instant earlier; under replica lag a replica read can miss it even while the space membership
 // lock serializes the writers. Reads only: membership writes keep going through the plugin API so
 // core's caching and events stay correct.
+
+// activeTeamMemberJoin is the TeamMembers join shared by every query in this file that counts
+// only active team members, so the predicate cannot drift between copies. teamRef is the SQL
+// expression supplying the team id — a bind placeholder or a joined column reference.
+func activeTeamMemberJoin(teamRef string) string {
+	return "TeamMembers tm ON tm.UserId = cm.UserId AND tm.TeamId = " + teamRef + " AND tm.DeleteAt = 0"
+}
+
+// MemberSchemeFlags returns the SchemeAdmin and SchemeGuest flags of userID's ChannelMembers row
+// for channelID, answered from the master. Both flags are nullable in core's schema; NULL reads
+// as false, matching core's own scan-time handling. Returns ErrNotFound when no row exists, so
+// callers can distinguish a non-member from an ordinary member.
+func (s *Store) MemberSchemeFlags(channelID, userID string) (schemeAdmin, schemeGuest bool, err error) {
+	if channelID == "" || userID == "" {
+		return false, false, &ErrInvalidInput{Entity: "ChannelMember", Field: "id", Value: channelID + "/" + userID}
+	}
+
+	builder := s.getQueryBuilder().
+		Select(
+			"COALESCE(SchemeAdmin, FALSE) AS SchemeAdmin",
+			"COALESCE(SchemeGuest, FALSE) AS SchemeGuest",
+		).
+		From("ChannelMembers").
+		Where(sq.Eq{"ChannelId": channelID, "UserId": userID})
+
+	var row struct {
+		SchemeAdmin bool `db:"schemeadmin"`
+		SchemeGuest bool `db:"schemeguest"`
+	}
+	if qErr := s.getBuilder(s.db, &row, builder); qErr != nil {
+		if errors.Is(qErr, sql.ErrNoRows) {
+			return false, false, &ErrNotFound{EntityName: "ChannelMember", ID: channelID + "/" + userID}
+		}
+		return false, false, errors.Wrap(qErr, "unable_to_get_member_scheme_flags")
+	}
+	return row.SchemeAdmin, row.SchemeGuest, nil
+}
 
 // IsChannelMember reports whether userID has a ChannelMembers row for channelID, answered from
 // the master.
@@ -53,7 +92,7 @@ func (s *Store) OtherAuthorizedMembers(channelID, teamID, excludeUserID string) 
 			"COALESCE(BOOL_OR(COALESCE(cm.SchemeAdmin, FALSE)), FALSE) AS AnyAdmin",
 		).
 		From("ChannelMembers cm").
-		Join("TeamMembers tm ON tm.UserId = cm.UserId AND tm.TeamId = ? AND tm.DeleteAt = 0", teamID).
+		Join(activeTeamMemberJoin("?"), teamID).
 		Where(sq.Eq{"cm.ChannelId": channelID}).
 		Where(sq.NotEq{"cm.UserId": excludeUserID})
 
@@ -80,7 +119,7 @@ func (s *Store) InactiveTeamChannelMembers(channelID string) ([]string, error) {
 		Select("cm.UserId").
 		From("ChannelMembers cm").
 		Join("Channels c ON c.Id = cm.ChannelId").
-		LeftJoin("TeamMembers tm ON tm.UserId = cm.UserId AND tm.TeamId = c.TeamId AND tm.DeleteAt = 0").
+		LeftJoin(activeTeamMemberJoin("c.TeamId")).
 		Where(sq.Eq{"cm.ChannelId": channelID}).
 		Where("tm.UserId IS NULL")
 
@@ -102,7 +141,7 @@ func (s *Store) ActiveTeamChannelMembers(channelID string) ([]string, error) {
 		Select("cm.UserId").
 		From("ChannelMembers cm").
 		Join("Channels c ON c.Id = cm.ChannelId").
-		Join("TeamMembers tm ON tm.UserId = cm.UserId AND tm.TeamId = c.TeamId AND tm.DeleteAt = 0").
+		Join(activeTeamMemberJoin("c.TeamId")).
 		Where(sq.Eq{"cm.ChannelId": channelID})
 
 	var ids []string
