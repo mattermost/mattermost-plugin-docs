@@ -8,6 +8,7 @@
 package app_test
 
 import (
+	"database/sql"
 	"net/http"
 	"slices"
 	"testing"
@@ -513,15 +514,16 @@ func TestServiceDeleteSpace_PublishesDeletedEvent(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
 
+	teamID := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	testutil.MustAddChannel(t, h.db, channelID, teamID)
+	space := seedSpaceForTeam(t, h.store, h.db, channelID, teamID)
 	memberA := mmmodel.NewId()
 	memberB := mmmodel.NewId()
-	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{
-			{ChannelId: channelID, UserId: memberA},
-			{ChannelId: channelID, UserId: memberB},
-		}, nil)
+	testutil.MustAddChannelMember(t, h.db, channelID, memberA)
+	testutil.MustAddTeamMember(t, h.db, teamID, memberA, 0)
+	testutil.MustAddChannelMember(t, h.db, channelID, memberB)
+	testutil.MustAddTeamMember(t, h.db, teamID, memberB, 0)
 	mockAPI.On("DeleteChannel", channelID).Return(nil)
 
 	require.Nil(t, h.svc.DeleteSpace(space))
@@ -542,12 +544,32 @@ func TestServiceDeleteSpace_PublishesDeletedEvent(t *testing.T) {
 // channel-scoped broadcast to an archived channel resolves zero recipients.
 func TestServiceDeleteSpace_SnapshotFailureFallsBackToChannelBroadcast(t *testing.T) {
 	mockAPI := &plugintest.API{}
+	// The member snapshot and the fallback broadcast's omit list both read the TeamMembers
+	// stand-in, so failing the snapshot by dropping the table (below) would break the fallback
+	// too. Recreate the table from the snapshot-failure warning, which the service logs after the
+	// snapshot has failed and before the fallback publish resolves its omit list. Registered
+	// before openTestServiceWithAPI's catch-all LogWarn stubs so testify matches it first; the db
+	// handle is captured by reference because the harness doesn't exist yet.
+	var db *sql.DB
+	mockAPI.On("LogWarn", "DeleteSpace: failed to snapshot backing-channel members for space_deleted delivery",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Run(func(mock.Arguments) {
+			_, err := db.Exec(`CREATE TABLE TeamMembers (
+				TeamId varchar(26) NOT NULL,
+				UserId varchar(26) NOT NULL,
+				DeleteAt bigint NOT NULL DEFAULT 0,
+				PRIMARY KEY (TeamId, UserId)
+			)`)
+			require.NoError(t, err)
+		}).Return()
 	h := openTestServiceWithAPI(t, mockAPI)
+	db = h.db
 
 	channelID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, h.db, channelID)
-	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).
-		Return(nil, &mmmodel.AppError{Message: "boom", StatusCode: 500})
+	// The test database is per-test, so dropping the stand-in is invisible to other tests.
+	_, dbErr := h.db.Exec(`DROP TABLE TeamMembers`)
+	require.NoError(t, dbErr)
 	mockAPI.On("DeleteChannel", channelID).Return(nil)
 
 	require.Nil(t, h.svc.DeleteSpace(space))
@@ -581,7 +603,6 @@ func TestServiceRestoreSpace_PublishesRestoredEvent(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, h.db, channelID)
-	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).Return(mmmodel.ChannelMembers{}, nil)
 	mockAPI.On("DeleteChannel", channelID).Return(nil)
 	mockAPI.On("RestoreChannel", channelID).Return(nil)
 
