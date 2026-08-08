@@ -18,5 +18,11 @@ server/manifest.go
 # Local deploy/dev scripts
 /scripts/
 
+# Browser e2e artifacts (the suite itself is checked in). storage_state holds authenticated
+# session cookies written by playwright-lib per test user — never commit them.
+/e2e/node_modules/
+/e2e/results/
+/e2e/storage_state/
+
 # Implementation plans (local, not shared)
 /plans/

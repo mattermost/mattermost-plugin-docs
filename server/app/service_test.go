@@ -13,10 +13,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
+	"github.com/mattermost/mattermost/server/public/pluginapi"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/app"
 	"github.com/mattermost/mattermost-plugin-docs/server/internal/testutil"
@@ -51,18 +53,37 @@ func openTestService(t *testing.T) *testHarness {
 
 	s, db := testutil.OpenTestStore(t)
 
-	// nil pluginapi client: these tests seed data directly through the store and
-	// never exercise the client, so no mock is needed.
-	svc := app.New(s, nil, nil)
+	// A permissive client rather than nil: most tests here seed data through the store and never
+	// touch it, but the ones that publish a draft go through PublishPageDraft's own permission
+	// gate, which needs a wired client. The stub grants the ordinary contribute-member set, so a
+	// test asserting publish behaviour is not also asserting authorization.
+	mockAPI := &plugintest.API{}
+	t.Cleanup(func() { mockAPI.AssertExpectations(t) })
+	testutil.StubDefaultSpacePermissions(mockAPI)
+	mockAPI.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
+	mockAPI.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
+	// The page-write gate reads the acting user to hold guests to read_page. Defaults to an
+	// ordinary (non-guest) user; a test exercising the guest refusal registers its own stub first.
+	mockAPI.On("GetUser", mock.Anything).Return(&mmmodel.User{}, nil).Maybe()
+	// With a client wired, the WS publishes and channel side-effects these paths perform are no
+	// longer no-ops. Tests that assert on specific events register their own expectations against
+	// their own mock.
+	mockAPI.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	mockAPI.On("GetChannelMembers", mock.Anything, mock.AnythingOfType("int"), mock.AnythingOfType("int")).
+		Return(mmmodel.ChannelMembers{}, nil).Maybe()
+	mockAPI.On("DeleteChannel", mock.Anything).Return(nil).Maybe()
+	mockAPI.On("RestoreChannel", mock.Anything).Return(nil).Maybe()
+	mockAPI.On("GetChannelOfType", mock.Anything, mock.Anything).Return((*mmmodel.Channel)(nil), nil).Maybe()
+	svc := app.New(s, nil, pluginapi.NewClient(mockAPI, nil))
 
 	return &testHarness{svc: svc, store: s, db: db}
 }
 
 // helpers to create test data directly on the store (bypassing business logic where the
 // higher-level Create methods need channel/space state that may not exist).
-func mustCreateSpace(t *testing.T, s *store.Store, channelID string) *model.Space {
+func mustCreateSpace(t *testing.T, s *store.Store, db *sql.DB, channelID string) *model.Space {
 	t.Helper()
-	return seedSpaceForTeam(t, s, channelID, mmmodel.NewId())
+	return seedSpaceForTeam(t, s, db, channelID, mmmodel.NewId())
 }
 
 func mustCreatePage(t *testing.T, s *store.Store, spaceID, channelID, userID, parentID string) *model.Page {
@@ -75,7 +96,7 @@ func TestServiceGetSpace(t *testing.T) {
 
 	t.Run("found", func(t *testing.T) {
 		channelID := mmmodel.NewId()
-		saved := mustCreateSpace(t, h.store, channelID)
+		saved := mustCreateSpace(t, h.store, h.db, channelID)
 
 		got, err := h.svc.GetSpace(saved.Id)
 		require.Nil(t, err)
@@ -97,13 +118,13 @@ func TestServiceCreatePageParentDifferentSpace(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 
 	// Create a real second space (different channel) and seed the rogue parent into it.
 	// Using a real space avoids a foreign-key violation (Pages.SpaceId references Spaces)
 	// and produces a page whose SpaceId is genuinely different from `space.Id`.
 	otherChannelID := mmmodel.NewId()
-	otherSpace := mustCreateSpace(t, h.store, otherChannelID)
+	otherSpace := mustCreateSpace(t, h.store, h.db, otherChannelID)
 	rogueParent := mustCreatePage(t, h.store, otherSpace.Id, otherChannelID, userID, "")
 
 	_, err := h.svc.CreatePage(space.Id, rogueParent.Id, "Child", "", userID)
@@ -133,7 +154,7 @@ func TestServiceDeleteSpace(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	saved := mustCreateSpace(t, h.store, channelID)
+	saved := mustCreateSpace(t, h.store, h.db, channelID)
 
 	require.Nil(t, h.svc.DeleteSpace(saved))
 
@@ -147,7 +168,7 @@ func TestServiceGetPage(t *testing.T) {
 
 	t.Run("found", func(t *testing.T) {
 		channelID := mmmodel.NewId()
-		space := mustCreateSpace(t, h.store, channelID)
+		space := mustCreateSpace(t, h.store, h.db, channelID)
 		created := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 		got, err := h.svc.GetPage(created.Id)
@@ -166,7 +187,7 @@ func TestServiceUpdatePage(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
@@ -194,7 +215,7 @@ func TestServiceUpdatePageSearchTextWithoutBody(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
@@ -213,7 +234,7 @@ func TestServiceUpdatePageBodyDerivesSearchText(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
@@ -230,7 +251,7 @@ func TestServiceUpdatePageSearchTextIgnoredOnBodyClear(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
@@ -251,7 +272,7 @@ func TestServiceUpdatePageClearSearchTextAlone(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
@@ -269,7 +290,7 @@ func TestServiceUpdatePageForce(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
@@ -310,7 +331,7 @@ func TestServiceUpdatePageInvalidUserID(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	created := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 	t.Run("UpdatePage rejects malformed userID", func(t *testing.T) {
@@ -324,7 +345,7 @@ func TestServiceGetPageChildren(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 	parent := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 	child := mustCreatePage(t, h.store, space.Id, channelID, userID, parent.Id)
@@ -339,7 +360,7 @@ func TestServiceGetSpacePages(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 	for range 3 {
 		mustCreatePage(t, h.store, space.Id, channelID, userID, "")
@@ -355,7 +376,7 @@ func TestServiceGetSpacePages(t *testing.T) {
 		// new space must not leak the old space's pages.
 		require.Nil(t, h.svc.DeleteSpace(space))
 
-		space2 := mustCreateSpace(t, h.store, channelID)
+		space2 := mustCreateSpace(t, h.store, h.db, channelID)
 		mustCreatePage(t, h.store, space2.Id, channelID, userID, "")
 
 		pages2, _, err := h.svc.GetSpacePages(space2, 0, 0)
@@ -383,7 +404,7 @@ func TestServiceGetTeamSpaces(t *testing.T) {
 	teamID := mmmodel.NewId()
 	userID := mmmodel.NewId()
 	for range 2 {
-		sp := &model.Space{ChannelId: mmmodel.NewId(), TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "Test Space"}
+		sp := &model.Space{ChannelId: mmmodel.NewId(), TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "Test Space", ViewAccess: model.ViewAccessOpen}
 		_, err := h.store.CreateSpace(sp)
 		require.NoError(t, err)
 		testutil.MustAddChannelMember(t, h.db, sp.ChannelId, userID)
@@ -409,7 +430,7 @@ func TestServiceCreatePageDerivesChannelFromSpace(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 
 	created, err := h.svc.CreatePage(space.Id, "", "My Page", "", userID)
@@ -422,7 +443,7 @@ func TestServiceCreatePageDerivesChannelFromSpace(t *testing.T) {
 func TestServiceCreatePage(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 
 	t.Run("rejects invalid space id", func(t *testing.T) {
@@ -460,7 +481,7 @@ func TestServiceCreatePage(t *testing.T) {
 
 	t.Run("rejects parent in a different space", func(t *testing.T) {
 		otherChannelID := mmmodel.NewId()
-		otherSpace := mustCreateSpace(t, h.store, otherChannelID)
+		otherSpace := mustCreateSpace(t, h.store, h.db, otherChannelID)
 		parent := mustCreatePage(t, h.store, otherSpace.Id, otherChannelID, userID, "")
 		_, err := h.svc.CreatePage(space.Id, parent.Id, "Title", "", userID)
 		require.NotNil(t, err)
@@ -470,7 +491,7 @@ func TestServiceCreatePage(t *testing.T) {
 	t.Run("rejects exceeding max depth", func(t *testing.T) {
 		// Own channel/space so the deep chain does not pollute the shared fixture.
 		depthChannelID := mmmodel.NewId()
-		depthSpace := mustCreateSpace(t, h.store, depthChannelID)
+		depthSpace := mustCreateSpace(t, h.store, h.db, depthChannelID)
 		// Build a full-depth chain (root at depth 1 up to MaxPageDepth); the next
 		// child would be at depth MaxPageDepth+1 and must be rejected.
 		parentID := ""
@@ -518,7 +539,7 @@ func TestServiceUpdatePageNothingToUpdate(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	created := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 	_, err := h.svc.UpdatePage(created.Id, created.SpaceId, &model.PagePatch{}, new(created.EditAt), false, mmmodel.NewId())
@@ -533,7 +554,7 @@ func TestServiceUpdatePageOversizedBody(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	created := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 	oversized := strings.Repeat("x", model.PageBodyMaxBytes+1)
@@ -549,7 +570,7 @@ func TestServiceUpdatePageOversizedSearchTextIgnored(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	created := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 	oversized := strings.Repeat("x", model.PageSearchTextMaxBytes+1)
@@ -564,7 +585,7 @@ func TestServiceCreatePageOversizedBody(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 
 	oversized := strings.Repeat("x", model.PageBodyMaxBytes+1)
 	_, err := h.svc.CreatePage(space.Id, "", "Title", oversized, mmmodel.NewId())
@@ -579,7 +600,7 @@ func TestServiceUpdatePageCanSetEmptyBody(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 	created := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
@@ -602,7 +623,7 @@ func TestServiceCreatePageSearchTextDerivedFromBody(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 
 	created, err := h.svc.CreatePage(space.Id, "", "Title", "", mmmodel.NewId())
 	require.Nil(t, err)
@@ -615,7 +636,7 @@ func TestServiceGetPageWithDeleted(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	actorID := mmmodel.NewId()
 	created := mustCreatePage(t, h.store, space.Id, channelID, actorID, "")
 	requireStoreDeletePage(t, h.store, created.Id, created.SpaceId, actorID)
@@ -657,7 +678,7 @@ func TestServiceDeletePage(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 
 	t.Run("deletes a page so the live get returns 404", func(t *testing.T) {
@@ -700,7 +721,7 @@ func TestServiceRestorePage(t *testing.T) {
 	h := openTestService(t)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	space := mustCreateSpace(t, h.store, h.db, channelID)
 	userID := mmmodel.NewId()
 
 	t.Run("restores a soft-deleted page", func(t *testing.T) {
@@ -765,7 +786,7 @@ func TestServiceRestoreSpace(t *testing.T) {
 	h := openTestService(t)
 
 	t.Run("restores a soft-deleted space", func(t *testing.T) {
-		space := mustCreateSpace(t, h.store, mmmodel.NewId())
+		space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
 		require.Nil(t, h.svc.DeleteSpace(space))
 
 		got, err := h.svc.RestoreSpace(space.Id)
@@ -774,7 +795,7 @@ func TestServiceRestoreSpace(t *testing.T) {
 	})
 
 	t.Run("a non-deleted space returns 409", func(t *testing.T) {
-		space := mustCreateSpace(t, h.store, mmmodel.NewId())
+		space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
 		_, err := h.svc.RestoreSpace(space.Id)
 		require.NotNil(t, err)
 		require.Equal(t, http.StatusConflict, err.StatusCode)
@@ -790,12 +811,12 @@ func TestServiceRestoreSpace(t *testing.T) {
 
 	t.Run("restoring over a channel a new live space owns returns 409", func(t *testing.T) {
 		channelID := mmmodel.NewId()
-		original := mustCreateSpace(t, h.store, channelID)
+		original := mustCreateSpace(t, h.store, h.db, channelID)
 		require.Nil(t, h.svc.DeleteSpace(original))
 
 		// A new live space now owns the backing channel; restoring the original would breach
 		// the partial unique index uq_docs_space_channel_id.
-		mustCreateSpace(t, h.store, channelID)
+		mustCreateSpace(t, h.store, h.db, channelID)
 
 		_, err := h.svc.RestoreSpace(original.Id)
 		require.NotNil(t, err)

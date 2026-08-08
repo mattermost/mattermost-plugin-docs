@@ -3,6 +3,10 @@ version: "2"
 run:
   timeout: 5m
   modules-download-mode: readonly
+  # The e2e suite is behind a build tag, so without it every linter — including the
+  # skip ban below — sees a package with no buildable files and reports nothing.
+  build-tags:
+    - e2e
 
 linters:
   default: none

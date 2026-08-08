@@ -43,7 +43,7 @@ func (p *Plugin) handleUpdatePageDraft(w http.ResponseWriter, r *http.Request) {
 	pageID := vars["page_id"]
 	userID := userIDFromRequest(r)
 
-	space, ok := p.requireSpaceMembership(w, spaceID, userID, false)
+	space, _, joined, ok := p.requireDraftWrite(w, spaceID, userID)
 	if !ok {
 		return
 	}
@@ -57,6 +57,7 @@ func (p *Plugin) handleUpdatePageDraft(w http.ResponseWriter, r *http.Request) {
 		BaseEditAt *int64                   `json:"base_edit_at"`
 	}
 	if !p.decodeJSONBody(w, r, maxDraftBodyBytes, &req, "handleUpdatePageDraft", false) {
+		p.service.UndoAutoJoin(joined, space, userID)
 		return
 	}
 
@@ -83,6 +84,7 @@ func (p *Plugin) handleUpdatePageDraft(w http.ResponseWriter, r *http.Request) {
 	// req.Props nil → preserve; non-nil → replace the whole map (an empty map clears all keys).
 	saved, appErr := p.service.UpdatePageDraft(draft, req.ParentId, req.FileIds, req.Props, space.ChannelId)
 	if appErr != nil {
+		p.service.UndoAutoJoin(joined, space, userID)
 		p.writeAppError(w, appErr)
 		return
 	}
@@ -97,7 +99,7 @@ func (p *Plugin) handleGetPageDraft(w http.ResponseWriter, r *http.Request) {
 	pageID := vars["page_id"]
 	userID := userIDFromRequest(r)
 
-	if _, ok := p.requireSpaceMembership(w, spaceID, userID, false); !ok {
+	if _, _, ok := p.requireSpaceRead(w, spaceID, userID); !ok {
 		return
 	}
 
@@ -117,7 +119,7 @@ func (p *Plugin) handleDeletePageDraft(w http.ResponseWriter, r *http.Request) {
 	pageID := vars["page_id"]
 	userID := userIDFromRequest(r)
 
-	space, ok := p.requireSpaceMembership(w, spaceID, userID, false)
+	space, _, ok := p.requireSpaceRead(w, spaceID, userID)
 	if !ok {
 		return
 	}
@@ -143,7 +145,14 @@ func (p *Plugin) handleCreateSpaceDraft(w http.ResponseWriter, r *http.Request) 
 	spaceID := vars["space_id"]
 	userID := userIDFromRequest(r)
 
-	if _, ok := p.requireSpaceMembership(w, spaceID, userID, false); !ok {
+	// Reserving a page id is the first act of page creation, so this gates on create_page rather
+	// than the looser draft-write pair.
+	space, resolution, ok := p.requireSpaceRead(w, spaceID, userID)
+	if !ok {
+		return
+	}
+	joined, writeOK := p.requirePageWriteFrom(w, space, userID, mmmodel.PermissionCreatePage, resolution)
+	if !writeOK {
 		return
 	}
 
@@ -152,11 +161,13 @@ func (p *Plugin) handleCreateSpaceDraft(w http.ResponseWriter, r *http.Request) 
 		ParentId string `json:"parent_id"`
 	}
 	if !p.decodeJSONBody(w, r, maxPageStructBodyBytes, &req, "handleCreateSpaceDraft", false) {
+		p.service.UndoAutoJoin(joined, space, userID)
 		return
 	}
 
 	saved, appErr := p.service.CreateSpaceDraft(userID, spaceID, req.Title, req.ParentId)
 	if appErr != nil {
+		p.service.UndoAutoJoin(joined, space, userID)
 		p.writeAppError(w, appErr)
 		return
 	}
@@ -181,7 +192,8 @@ func (p *Plugin) handlePublishPageDraft(w http.ResponseWriter, r *http.Request) 
 	pageID := vars["page_id"]
 	userID := userIDFromRequest(r)
 
-	if _, ok := p.requireSpaceMembership(w, spaceID, userID, false); !ok {
+	space, resolution, ok := p.requireSpaceRead(w, spaceID, userID)
+	if !ok {
 		return
 	}
 
@@ -195,7 +207,7 @@ func (p *Plugin) handlePublishPageDraft(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	page, wasCreated, appErr := p.service.PublishPageDraft(userID, spaceID, pageID, req.Force)
+	page, wasCreated, appErr := p.service.PublishPageDraft(space, userID, pageID, req.Force, resolution)
 	if appErr != nil {
 		if page != nil {
 			p.writeConflictWithPage(w, appErr, page)
@@ -219,7 +231,7 @@ func (p *Plugin) handleGetPageDraftsForSpace(w http.ResponseWriter, r *http.Requ
 	spaceID := vars["space_id"]
 	userID := userIDFromRequest(r)
 
-	if _, ok := p.requireSpaceMembership(w, spaceID, userID, false); !ok {
+	if _, _, ok := p.requireSpaceRead(w, spaceID, userID); !ok {
 		return
 	}
 

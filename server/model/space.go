@@ -19,7 +19,19 @@ const (
 
 	// SpacePropsMaxBytes caps the serialized size of the opaque Props map.
 	SpacePropsMaxBytes = 64 * 1024
+
+	// ViewAccessOpen makes a space readable by any active member of its team, not just backing-
+	// channel members (see the app-layer read resolver). ViewAccessPrivate restricts reads to
+	// backing-channel members. There is no third value; PreSave deliberately does not default
+	// ViewAccess — the caller (app layer) always decides it explicitly.
+	ViewAccessOpen    ViewAccess = "open"
+	ViewAccessPrivate ViewAccess = "private"
 )
+
+// ViewAccess is a space's non-member read policy, one of ViewAccessOpen/ViewAccessPrivate. The
+// defined type keeps the closed vocabulary visible at every call site, mirroring core's ChannelType;
+// it marshals as a plain JSON string, so the wire format is a bare "open"/"private".
+type ViewAccess string
 
 // Space is stored in the DOCS_Space table. Each space owns a backing MM channel (ChannelId).
 // A soft-deleted space (DeleteAt>0) retains its pages; pages share the same DeleteAt via a
@@ -33,10 +45,48 @@ type Space struct {
 	Description string                  `json:"description,omitempty"`
 	Icon        string                  `json:"icon,omitempty"`
 	Props       mmmodel.StringInterface `json:"props"`
-	CreateAt    int64                   `json:"create_at"`
-	UpdateAt    int64                   `json:"update_at"`
-	DeleteAt    int64                   `json:"delete_at"`
-	SortOrder   int64                   `json:"sort_order"`
+	// ViewAccess is one of ViewAccessOpen/ViewAccessPrivate. It gates non-member reads only —
+	// a member's read is always settled by membership.
+	ViewAccess ViewAccess `json:"view_access"`
+	CreateAt   int64      `json:"create_at"`
+	UpdateAt   int64      `json:"update_at"`
+	DeleteAt   int64      `json:"delete_at"`
+	SortOrder  int64      `json:"sort_order"`
+}
+
+// SpaceWithAccess carries the caller-relevant access state alongside the plain Space fields. The
+// anonymous Space embed keeps the JSON flat, mirroring core's ChannelMemberWithTeamData pattern.
+// DefaultCapabilities is the space's default capability set, read_page-free (the implicit
+// baseline). Capabilities is the caller's own effective set and does include read_page, since an
+// effective set states what the caller may actually do rather than what was granted on top of the
+// baseline. Both are non-nil-on-empty.
+//
+// An endpoint returns this wrapper when it establishes access state (CreateSpace), changes it
+// (SetSpaceDefaultCapabilities), reads a space directly (GET /spaces/{id}), or patches one
+// (PATCH /spaces/{id}): a patch may alter view_access, which moves who may read the space, and
+// answering with the wrapper keeps a client refreshing its cached entry from dropping the
+// capability fields. The endpoints that return a bare Space are the restore route, which alters
+// neither field, and the team listing, which omits them because resolving a capability set per
+// space would cost a scheme-and-role lookup per row.
+//
+// Because the embed is flat, a bare Space and this wrapper are indistinguishable to a client that
+// types them alike: a client caching a space must merge a bare-Space response into its cached
+// entry rather than replace it, or it will drop the capability fields an earlier read supplied.
+type SpaceWithAccess struct {
+	Space
+	DefaultCapabilities []string `json:"default_capabilities"`
+	Capabilities        []string `json:"capabilities"`
+}
+
+// EnsureCapabilities normalizes DefaultCapabilities and Capabilities to non-nil slices so they
+// marshal as JSON [] rather than null, mirroring the Space.GetProps discipline.
+func (w *SpaceWithAccess) EnsureCapabilities() {
+	if w.DefaultCapabilities == nil {
+		w.DefaultCapabilities = []string{}
+	}
+	if w.Capabilities == nil {
+		w.Capabilities = []string{}
+	}
 }
 
 // SpacePatch carries a partial update to a space's mutable fields. A nil field is left unchanged; a
@@ -46,20 +96,45 @@ type SpacePatch struct {
 	Description *string                  `json:"description"`
 	Icon        *string                  `json:"icon"`
 	Props       *mmmodel.StringInterface `json:"props"`
+	ViewAccess  *ViewAccess              `json:"view_access"`
 }
 
 // SpaceMember is the API-facing view of a user's membership in a space. Membership is backed by
-// the space's channel, but the channel-membership mechanics (channel id, roles, notify props)
-// stay internal — only the user is exposed, mirroring how Space hides its ChannelId.
+// the space's channel; this type projects the caller's effective membership state — capabilities,
+// admin/guest standing — while the raw channel mechanics (channel id, generated scheme-role names,
+// ExplicitRoles string, notify props) stay internal.
 type SpaceMember struct {
 	UserId string `json:"user_id"`
+	// Capabilities is the member's effective capability set (space default union granted),
+	// including the read_page baseline.
+	Capabilities []string `json:"capabilities"`
+	// GrantedCapabilities is the member's per-member granted set beyond the space default,
+	// read_page-free since the baseline is never independently granted.
+	GrantedCapabilities []string `json:"granted_capabilities"`
+	IsAdmin             bool     `json:"is_admin"`
+	IsGuest             bool     `json:"is_guest"`
+	// AutoJoined reports whether the member was added by the open-space auto-join pre-step rather
+	// than invited/added deliberately, so a membership review (e.g. after an open->private flip)
+	// can tell the two apart.
+	AutoJoined bool `json:"auto_joined"`
+}
+
+// EnsureCapabilities normalizes Capabilities and GrantedCapabilities to non-nil slices so they
+// marshal as JSON [] rather than null, mirroring the Space.GetProps discipline.
+func (m *SpaceMember) EnsureCapabilities() {
+	if m.Capabilities == nil {
+		m.Capabilities = []string{}
+	}
+	if m.GrantedCapabilities == nil {
+		m.GrantedCapabilities = []string{}
+	}
 }
 
 // IsValid rejects a nil patch and an all-nil-fields patch — both no-ops that would otherwise bump
 // UpdateAt and consume the optimistic-lock baseline without a real change. Enforced here, not just
 // in the service, so callers that bypass the service still uphold it — mirroring PagePatch.IsValid.
 func (p *SpacePatch) IsValid() *mmmodel.AppError {
-	if p == nil || (p.Title == nil && p.Description == nil && p.Icon == nil && p.Props == nil) {
+	if p == nil || (p.Title == nil && p.Description == nil && p.Icon == nil && p.Props == nil && p.ViewAccess == nil) {
 		return mmmodel.NewAppError("SpacePatch.IsValid", "model.space.patch.nothing_to_update.app_error", nil, "", http.StatusBadRequest)
 	}
 	return nil
@@ -83,6 +158,9 @@ func (s *Space) Patch(patch *SpacePatch) {
 	}
 	if patch.Props != nil {
 		s.Props = maps.Clone(*patch.Props)
+	}
+	if patch.ViewAccess != nil {
+		s.ViewAccess = *patch.ViewAccess
 	}
 }
 
@@ -134,6 +212,7 @@ func (s *Space) Auditable() map[string]any {
 		"description": s.Description,
 		"icon":        s.Icon,
 		"props":       s.GetProps(),
+		"view_access": s.ViewAccess,
 		"create_at":   s.CreateAt,
 		"update_at":   s.UpdateAt,
 		"delete_at":   s.DeleteAt,
@@ -185,6 +264,10 @@ func (s *Space) IsValid() *mmmodel.AppError {
 
 	if err := ValidatePropsSize("Space.IsValid", "id="+s.Id, s.Props, SpacePropsMaxBytes); err != nil {
 		return err
+	}
+
+	if s.ViewAccess != ViewAccessOpen && s.ViewAccess != ViewAccessPrivate {
+		return mmmodel.NewAppError("Space.IsValid", "model.space.is_valid.view_access.app_error", nil, "id="+s.Id, http.StatusBadRequest)
 	}
 
 	return nil

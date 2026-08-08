@@ -11,15 +11,22 @@ import (
 // can refresh the affected space list and page tree without a full reload. The platform prepends
 // "custom_<pluginid>_" to each name on the wire, so the names carry no redundant plugin prefix.
 //
-// Every event is scoped to the space's backing channel, matching the visibility boundary the REST
-// API enforces: reads are membership-gated (CheckSpaceMembership) and the team space list is
-// filtered to the caller's channel memberships, so a broader broadcast would leak space existence
-// and activity to users who cannot read the space. For the same reason a cross-space move
-// publishes a separate payload to each side — the source channel learns only the source space's
-// half (source space and old parent), the target channel only the target's half — rather than one
-// payload naming both spaces. A member removal is additionally sent to the
-// removed user directly, who has already left the channel when the channel-scoped broadcast fires
-// and would otherwise never learn of it. space_deleted is likewise delivered to each member
+// Every event is scoped to the space's backing channel. Reads are not purely
+// membership-gated (an open space also allows non-member reads via the team read_public_channel
+// fall-through, and the team space list includes open spaces the caller hasn't joined), but WS
+// delivery deliberately stays channel-scoped: a non-member reader of an open space receives no
+// live updates until a write auto-joins them. This is narrower than the read set — an accepted
+// UX consequence, not a leak, since the same caller can always re-fetch. For the same reason a
+// cross-space move publishes a separate payload to each side — the source channel learns only the
+// source space's half (source space and old parent), the target channel only the target's half —
+// rather than one payload naming both spaces. A member removal is additionally sent to the removed
+// user directly: they have already left the channel when the channel-scoped broadcast fires, so
+// this is their only signal of the removal. space_member_added and
+// space_member_capabilities_updated are sent to the affected user directly for the mirror-image
+// reason: the channel-scoped broadcast resolves recipients on a space ("S") channel, which may not
+// yet include a member added moments earlier, and that user has no other signal that their access
+// changed.
+// space_deleted is likewise delivered to each member
 // directly, from a snapshot taken before the backing channel is archived — channel-scoped
 // delivery resolves recipients from live channels only, so a broadcast to the just-archived
 // channel would reach nobody. A space delete or restore cascades to every live page in
@@ -40,17 +47,25 @@ const (
 	// follow-up fetch.
 	wsEventPagePresenceUpdated = "page_presence_updated"
 
-	wsEventSpaceCreated       = "space_created"
-	wsEventSpaceUpdated       = "space_updated"
-	wsEventSpaceDeleted       = "space_deleted"
-	wsEventSpaceRestored      = "space_restored"
-	wsEventSpaceMemberAdded   = "space_member_added"
-	wsEventSpaceMemberRemoved = "space_member_removed"
+	wsEventSpaceCreated                   = "space_created"
+	wsEventSpaceUpdated                   = "space_updated"
+	wsEventSpaceDeleted                   = "space_deleted"
+	wsEventSpaceRestored                  = "space_restored"
+	wsEventSpaceMemberAdded               = "space_member_added"
+	wsEventSpaceMemberRemoved             = "space_member_removed"
+	wsEventSpaceMemberCapabilitiesUpdated = "space_member_capabilities_updated"
 )
 
 // publishToChannels publishes a WebSocket event broadcast to each non-empty, distinct channel ID.
 // WS events are best-effort and must not fail the primary mutation; a nil client (store-only unit
 // tests) makes this a no-op.
+//
+// Core's hub delivers a channel broadcast to every raw ChannelMembers row with no team check, and
+// former team members keep their backing-channel rows after leaving the team — so each broadcast
+// carries an omit list of the members who fail the team half of the access gate, mirroring the
+// predicate the REST surface enforces. When the omit list cannot be resolved the event is dropped
+// for that channel rather than delivered unfiltered: a missed refresh signal degrades liveness
+// only, while unfiltered delivery leaks space activity to users the read gate already rejects.
 func (s *Service) publishToChannels(event string, payload map[string]any, channelIDs ...string) {
 	if s.client == nil {
 		return
@@ -61,7 +76,19 @@ func (s *Service) publishToChannels(event string, payload map[string]any, channe
 			continue
 		}
 		seen[chID] = struct{}{}
-		s.client.Frontend.PublishWebSocketEvent(event, payload, &mmmodel.WebsocketBroadcast{ChannelId: chID})
+		omitted, err := s.store.InactiveTeamChannelMembers(chID)
+		if err != nil {
+			s.log.Warn("failed to resolve the WS omit list; dropping the event for this channel", "event", event, "channel_id", chID, "err", err)
+			continue
+		}
+		broadcast := &mmmodel.WebsocketBroadcast{ChannelId: chID}
+		if len(omitted) > 0 {
+			broadcast.OmitUsers = make(map[string]bool, len(omitted))
+			for _, id := range omitted {
+				broadcast.OmitUsers[id] = true
+			}
+		}
+		s.client.Frontend.PublishWebSocketEvent(event, payload, broadcast)
 	}
 }
 
@@ -72,4 +99,13 @@ func (s *Service) publishToUser(event string, payload map[string]any, userID str
 		return
 	}
 	s.client.Frontend.PublishWebSocketEvent(event, payload, &mmmodel.WebsocketBroadcast{UserId: userID})
+}
+
+// publishMembershipEvent delivers a membership event both to the space's backing channel (the
+// observers) and directly to the affected user's own connections: the channel-scoped broadcast may
+// not resolve a member whose membership changed moments earlier, and cannot reach one who was just
+// removed — yet the affected user is exactly who must learn their access changed.
+func (s *Service) publishMembershipEvent(event string, payload map[string]any, channelID, userID string) {
+	s.publishToChannels(event, payload, channelID)
+	s.publishToUser(event, payload, userID)
 }

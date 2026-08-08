@@ -19,7 +19,7 @@ import (
 )
 
 var spaceSelectColumns = []string{
-	"Id", "ChannelId", "TeamId", "CreatorId", "Title", "Description", "Icon", "Props",
+	"Id", "ChannelId", "TeamId", "CreatorId", "Title", "Description", "Icon", "Props", "ViewAccess",
 	"CreateAt", "UpdateAt", "DeleteAt", "SortOrder",
 }
 
@@ -43,7 +43,7 @@ func (s *Store) CreateSpace(space *model.Space) (*model.Space, error) {
 	builder := s.getQueryBuilder().
 		Insert("DOCS_Space").
 		Columns(spaceSelectColumns...).
-		Values(space.Id, space.ChannelId, space.TeamId, space.CreatorId, space.Title, space.Description, space.Icon, space.GetProps(),
+		Values(space.Id, space.ChannelId, space.TeamId, space.CreatorId, space.Title, space.Description, space.Icon, space.GetProps(), space.ViewAccess,
 			space.CreateAt, space.UpdateAt, space.DeleteAt, space.SortOrder)
 
 	if _, err := s.execBuilder(s.db, builder); err != nil {
@@ -81,13 +81,16 @@ func (s *Store) GetSpace(spaceID string, includeDeleted bool) (*model.Space, err
 	return &space, nil
 }
 
-// GetSpacesForTeam returns live spaces for the given team visible to userID, ordered by
-// SortOrder ascending with CreateAt then Id as stable tie-breakers. Visibility is membership
-// of the space's backing channel, resolved by a read-only join against core's ChannelMembers
-// table: space ("S") channels are excluded from the generic channel-listing plugin APIs, so
-// the caller cannot supply its visible-channel set. There is deliberately no unfiltered
-// variant, so a listing can never bypass the membership filter. limit must be > 0.
-func (s *Store) GetSpacesForTeam(teamID, userID string, offset, limit int) ([]*model.Space, error) {
+// GetSpacesForTeam returns one page of the given team's live spaces visible to userID, ordered by
+// SortOrder ascending with CreateAt then Id as stable tie-breakers. A space is visible when the
+// caller is a member of its backing channel (a read-only EXISTS against core's ChannelMembers
+// table: space ("S") channels are excluded from the generic channel-listing plugin APIs, so the
+// caller cannot supply its visible-channel set), or when the space is ViewAccess='open' and
+// callerHasOpenFallthrough is true — a single app-layer-computed boolean carrying the caller's
+// team-active/read_public_channel/compliance-mode conjunct (see the app-layer read resolver);
+// the store never evaluates permissions itself. There is deliberately no unfiltered variant, so a
+// listing can never bypass this predicate. limit must be > 0.
+func (s *Store) GetSpacesForTeam(teamID, userID string, callerHasOpenFallthrough bool, offset, limit int) ([]*model.Space, error) {
 	if teamID == "" {
 		return nil, &ErrInvalidInput{Entity: "Space", Field: "teamID", Value: teamID}
 	}
@@ -98,11 +101,16 @@ func (s *Store) GetSpacesForTeam(teamID, userID string, offset, limit int) ([]*m
 		return nil, err
 	}
 
+	visible := sq.Or{sq.Expr("EXISTS (SELECT 1 FROM ChannelMembers cm WHERE cm.ChannelId = sp.ChannelId AND cm.UserId = ?)", userID)}
+	if callerHasOpenFallthrough {
+		visible = append(visible, sq.Eq{"sp.ViewAccess": model.ViewAccessOpen})
+	}
+
 	builder := s.getQueryBuilder().
 		Select(columnsWithAlias("sp", spaceSelectColumns)...).
 		From("DOCS_Space sp").
-		Join("ChannelMembers cm ON cm.ChannelId = sp.ChannelId").
-		Where(sq.Eq{"sp.TeamId": teamID, "sp.DeleteAt": 0, "cm.UserId": userID}).
+		Where(sq.Eq{"sp.TeamId": teamID, "sp.DeleteAt": 0}).
+		Where(visible).
 		OrderBy("sp.SortOrder ASC", "sp.CreateAt DESC", "sp.Id ASC")
 	builder = applyLimitOffset(builder, offset, limit)
 
@@ -115,10 +123,10 @@ func (s *Store) GetSpacesForTeam(teamID, userID string, offset, limit int) ([]*m
 
 // UpdateSpace applies patch to a live space's mutable fields (Title, Description, Icon,
 // Props). The patch is merged into the row read under lock, so fields the patch leaves nil
-// keep any concurrent writer's value rather than being clobbered by the caller's stale
-// snapshot. expectedUpdateAt is the optimistic-lock baseline (first-one-wins): a mismatch
-// returns ErrConflict. Passing force skips the check (last-write-wins), but the merge into
-// the locked row still applies.
+// keep any concurrent writer's value rather than being overwritten by the caller's stale
+// snapshot. expectedUpdateAt is the optimistic-lock baseline: a mismatch returns ErrConflict,
+// so the first update to commit is the one kept. Passing force skips that check and applies the
+// caller's update over whatever is stored, but the merge into the locked row still applies.
 func (s *Store) UpdateSpace(spaceID string, patch *model.SpacePatch, expectedUpdateAt int64, force bool) (_ *model.Space, err error) {
 	if spaceID == "" {
 		return nil, &ErrInvalidInput{Entity: "Space", Field: "Id", Value: spaceID}
@@ -130,10 +138,11 @@ func (s *Store) UpdateSpace(spaceID string, patch *model.SpacePatch, expectedUpd
 		return nil, &ErrInvalidInput{Entity: "Space", Field: "Patch", Value: validErr.Error(), Reason: validErr.Id}
 	}
 
-	tx, err := s.db.Beginx()
+	tx, cancel, err := s.beginBoundedTx()
 	if err != nil {
 		return nil, errors.Wrap(err, "begin_transaction")
 	}
+	defer cancel()
 	defer s.finalizeTransaction(tx, &err)
 
 	var existing model.Space
@@ -167,6 +176,7 @@ func (s *Store) UpdateSpace(spaceID string, patch *model.SpacePatch, expectedUpd
 		Set("Description", existing.Description).
 		Set("Icon", existing.Icon).
 		Set("Props", existing.GetProps()).
+		Set("ViewAccess", existing.ViewAccess).
 		Set("UpdateAt", existing.UpdateAt).
 		Where(sq.Eq{"Id": existing.Id, "DeleteAt": 0})
 
@@ -355,13 +365,17 @@ const (
 // WithSpaceMembershipLock runs fn while holding spaceID's membership advisory lock, serializing
 // membership mutations for one space across processes. Guards that span multiple non-database
 // calls — read the member list, then mutate it — are atomic with respect to each other only
-// under this lock. The lock is session-scoped on a dedicated pooled connection, with no open
-// transaction: fn does no database work of its own, so wrapping it in a transaction would only
-// expose the guard to idle-in-transaction timeouts. The connection is still intentionally held
-// for fn's whole duration — cross-process serialization of a read-modify-write that spans
-// non-database calls has no cheaper primitive — so fn must stay short. fn's error is returned
-// unchanged. When the lock cannot be acquired within spaceMembershipLockAcquireTimeout,
-// ErrConflict is returned so the caller can surface a retryable conflict.
+// under this lock. The lock is session-scoped on a dedicated pooled connection with no open
+// transaction of its own. fn may perform store work of its own — reads and its own transactions
+// — so each in-flight caller holds two pooled connections for the critical section: this
+// lock's session connection plus any connection fn's own transaction acquires. Any transaction fn
+// opens must therefore bound its connection acquisition (see beginBoundedTx), or a saturated pool
+// can leave every lock holder waiting on a connection no other holder will release. fn must also
+// stay short: the lock connection is held for fn's whole duration, and cross-process
+// serialization of a read-modify-write that spans non-database calls has no cheaper primitive.
+// fn's error is returned unchanged. When the lock cannot be acquired within
+// spaceMembershipLockAcquireTimeout, ErrConflict is returned so the caller can surface a
+// retryable conflict.
 func (s *Store) WithSpaceMembershipLock(spaceID string, fn func() error) error {
 	return s.withSpaceMembershipLock(spaceID, spaceMembershipLockAcquireTimeout, fn)
 }
@@ -400,7 +414,7 @@ func (s *Store) withSpaceMembershipLock(spaceID string, acquireTimeout time.Dura
 				}
 			}
 			if ctx.Err() != nil {
-				return &ErrConflict{Resource: "Space membership lock space_id=" + spaceID}
+				return &ErrConflict{Resource: "Space membership lock space_id=" + spaceID, Reason: ReasonLockTimeout}
 			}
 			return errors.Wrap(lockErr, "failed to acquire space membership advisory lock")
 		}
@@ -409,7 +423,7 @@ func (s *Store) withSpaceMembershipLock(spaceID string, acquireTimeout time.Dura
 		}
 		select {
 		case <-ctx.Done():
-			return &ErrConflict{Resource: "Space membership lock space_id=" + spaceID}
+			return &ErrConflict{Resource: "Space membership lock space_id=" + spaceID, Reason: ReasonLockTimeout}
 		case <-time.After(spaceMembershipLockRetryInterval):
 		}
 	}
