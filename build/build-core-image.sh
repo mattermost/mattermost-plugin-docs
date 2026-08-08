@@ -68,9 +68,14 @@ fi
 # build/core-commit.txt is what CI holds CORE_IMAGE to. Building ahead of it is the normal way to
 # develop a paired change, so this reports rather than refuses — but the pin has to be bumped
 # before CI will accept an image built from the newer commit.
-PINNED_COMMIT="$(grep -vE '^\s*(#|$)' "$REPO_ROOT/build/core-commit.txt" | head -1 | tr -d '[:space:]')"
+# Wrapped so a missing or comment-only pin file cannot abort the build under `set -euo pipefail`
+# (grep's no-match exit 1, or its SIGPIPE when head closes the pipe first): this block only
+# reports drift, so an unreadable pin degrades to the note below rather than a silent death.
+PINNED_COMMIT="$( { grep -vE '^\s*(#|$)' "$REPO_ROOT/build/core-commit.txt" || true; } | head -1 | tr -d '[:space:]')"
 CORE_HEAD="$(git -C "$MM_SERVER_REPO" rev-parse HEAD)"
-if [[ "$CORE_HEAD" != "$PINNED_COMMIT" ]]; then
+if [[ -z "$PINNED_COMMIT" ]]; then
+    echo "NOTE: build/core-commit.txt holds no pinned commit; skipping the drift check." >&2
+elif [[ "$CORE_HEAD" != "$PINNED_COMMIT" ]]; then
     echo "NOTE: core is at $CORE_HEAD but build/core-commit.txt pins $PINNED_COMMIT." >&2
     echo "      Bump the pin once this image is the one CI should run against." >&2
 fi

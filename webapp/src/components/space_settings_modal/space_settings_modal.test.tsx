@@ -72,6 +72,12 @@ const visibilitySection = () => within(screen.getByRole('group', {name: 'Space v
 
 describe('SpaceSettingsModal', () => {
     beforeEach(() => {
+        // clearMocks only clears call history; implementations (mockRejectedValue,
+        // never-resolving mockImplementation) set by one test would otherwise leak
+        // into the next, so the write mocks are fully reset here.
+        api.setDefaultCapabilities.mockReset();
+        api.setMemberCapabilities.mockReset();
+        api.setSpaceViewAccess.mockReset();
         api.getSpaceAccess.mockResolvedValue(adminAccess);
         api.getSpaceMembers.mockResolvedValue(memberPage([ordinaryMember]));
         api.getMemberProfiles.mockResolvedValue([{id: 'user2', username: 'bob'}]);

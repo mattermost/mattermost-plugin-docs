@@ -52,6 +52,8 @@ describe('SpaceItemMenu', () => {
             id: space.id,
             default_capabilities: [],
             capabilities: ['read_page'],
+            view_access: 'open',
+            update_at: 0,
         });
         api.getSpaceMembers.mockResolvedValue({items: [], page: 0, per_page: 100, has_more: false});
         api.getMemberProfiles.mockResolvedValue([]);

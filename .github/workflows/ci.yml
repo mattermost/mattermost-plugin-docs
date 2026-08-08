@@ -141,6 +141,7 @@ jobs:
       # Lifted to env because the secrets context is not available in a step-level `if`, and the
       # login below has to be skippable: the repository defines no Docker Hub credentials today.
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -203,8 +204,10 @@ jobs:
       # shared anonymous per-IP limit, which GitHub-hosted runners exhaust as a pull failure that
       # reads like a test failure. Skipped when no credentials are configured: the pull still works
       # anonymously, just against the lower limit, so a missing secret must not fail the suite.
+      # Both halves of the credential are required: a username with no token would make the
+      # login action itself fail, which is exactly the suite-killing outcome being avoided.
       - name: ci/docker-login
-        if: env.DOCKERHUB_USERNAME != ''
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
         uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}

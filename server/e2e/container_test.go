@@ -231,7 +231,11 @@ func resolveBundlePath() (string, error) {
 // a hard error. A namespaced tag (registry/repo:tag) is one CI publishes per core commit, so
 // Testcontainers can pull it and a local miss is expected rather than a failure.
 func checkImageExists(imageTag string) error {
-	cmd := exec.Command("docker", "image", "inspect", imageTag) // #nosec -- imageTag is test config (CORE_IMAGE env var), not untrusted input
+	// Bounded so an unresponsive Docker daemon fails this pre-check promptly instead of hanging
+	// the suite before the boot context even starts counting.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "image", "inspect", imageTag) // #nosec -- imageTag is test config (CORE_IMAGE env var), not untrusted input
 	if err := cmd.Run(); err == nil {
 		return nil
 	}

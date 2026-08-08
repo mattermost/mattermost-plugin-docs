@@ -697,7 +697,7 @@ func TestServiceCreateSpace_CustomSchemeConfiguredAfterChannelAttach(t *testing.
 
 	channel := testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
 
-	// Registered before stubCustomSchemeCreate's own catch-all PatchRole so this one matches first
+	// Registered before stubSchemeCreate's own catch-all PatchRole so this one matches first
 	// (mock.Mock matches in registration order) and can record the permission set per role.
 	channelAttached := false
 	patched := map[string][]string{}

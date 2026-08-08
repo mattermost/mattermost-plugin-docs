@@ -297,9 +297,7 @@ func stubPooledRoles(mockAPI *plugintest.API) {
 // production patches by id. Returns the shared Role.
 func StubRole(mockAPI *plugintest.API, roleName string, permissions []string) *mmmodel.Role {
 	role := &mmmodel.Role{Id: mmmodel.NewId(), Name: roleName, Permissions: permissions}
-	roleRegistry.Lock()
-	roleRegistry.byID[role.Id] = role
-	roleRegistry.Unlock()
+	registerRoleByID(role)
 	mockAPI.On("GetRoleByName", roleName).Return(role, nil).Maybe()
 	return role
 }

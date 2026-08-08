@@ -193,7 +193,7 @@ func TestTeamChannelMemberAudience(t *testing.T) {
 	inactive, err := s.InactiveTeamChannelMembers(channelID)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{former, noTeamRow}, inactive,
-		"both the soft-deleted team member and the row without a team membership must be omitted")
+		"the soft-deleted team member and the row without a team membership must both read as inactive")
 
 	activeIDs, err := s.ActiveTeamChannelMembers(channelID)
 	require.NoError(t, err)

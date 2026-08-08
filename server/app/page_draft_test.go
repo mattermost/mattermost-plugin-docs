@@ -17,6 +17,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/app"
+	"github.com/mattermost/mattermost-plugin-docs/server/internal/testutil"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
@@ -1092,4 +1093,48 @@ func TestUpdatePageDraftRejectsInvalidFileId(t *testing.T) {
 			require.Equal(t, "model.draft.is_valid.file_id.app_error", appErr.Id)
 		})
 	}
+}
+
+// TestPublishPageDraftUndoesAutoJoinOnLaterRejection covers the deferred rollback inside
+// PublishPageDraft: the auto-join pre-step admits a fall-through caller by creating a membership,
+// the write gate then passes, and a rejection landing after the gate (here the parent guard's 409
+// on a no-longer-live parent) must remove that membership rather than leave it behind.
+func TestPublishPageDraftUndoesAutoJoinOnLaterRejection(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	// Registered ahead of the harness's catch-all channel grants: only read_page is withheld, so
+	// the pre-step's in-lock re-validation still resolves the open-space fall-through while the
+	// write gate's create_page re-check after the join passes as a member.
+	mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionReadPage).Return(false).Maybe()
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	roleName := testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)
+	mockAPI.On("RolesGrantPermission", []string{roleName}, mmmodel.PermissionCreatePage.Id).Return(true)
+	mockAPI.On("AddChannelMember", space.ChannelId, userID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
+	mockAPI.On("DeleteChannelMember", space.ChannelId, userID).Return(nil)
+
+	// A draft whose parent is live at draft time but not at publish: the parent guard rejects the
+	// publish only after the gate has run, which is what routes the failure through the deferred
+	// rollback rather than the gate's own error path. The parent row is soft-deleted directly —
+	// store.DeletePage would reparent the pending draft as part of its cascade — reproducing the
+	// stale-ParentId race the guard exists for.
+	parent := mustCreatePage(t, h.store, space.Id, space.ChannelId, mmmodel.NewId(), "")
+	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Rolled back", parent.Id)
+	require.Nil(t, appErr)
+	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: draft.PageId, Title: "Rolled back", Body: docWith("kept private")}, nil, nil, nil, "")
+	require.Nil(t, appErr)
+	_, err := h.db.Exec(`UPDATE docs_page SET deleteat = $1 WHERE id = $2`, mmmodel.GetMillis(), parent.Id)
+	require.NoError(t, err)
+
+	page, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, draft.PageId, false, app.ReadViaOpenFallthrough)
+	require.Nil(t, page)
+	require.False(t, wasCreated)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusConflict, appErr.StatusCode)
+
+	mockAPI.AssertCalled(t, "AddChannelMember", space.ChannelId, userID)
+	// The membership the auto-join pre-step created must be removed when the publish is rejected
+	// after the gate.
+	mockAPI.AssertCalled(t, "DeleteChannelMember", space.ChannelId, userID)
 }
