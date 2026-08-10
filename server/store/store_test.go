@@ -1843,3 +1843,48 @@ func TestWithSpaceMembershipLockAcquireTimeout(t *testing.T) {
 	}))
 	require.True(t, ran)
 }
+
+// TestNewConfiguresConnectionPoolLimits verifies that New bounds the plugin's own connection
+// pool instead of leaving it unlimited, so a burst of concurrent requests cannot open an
+// unbounded number of connections against the shared master DB.
+func TestNewConfiguresConnectionPoolLimits(t *testing.T) {
+	s := openTestDB(t)
+
+	stats := s.DBStatsForTest()
+	require.Equal(t, store.PluginMaxOpenConnsForTest, stats.MaxOpenConnections,
+		"New must cap MaxOpenConns well below the server's shared master pool")
+	require.Positive(t, store.PluginMaxOpenConnsForTest, "the configured cap itself must not be unbounded (0 means unlimited)")
+}
+
+// TestNewConnectionPoolLimitEnforcedUnderConcurrency verifies the configured MaxOpenConns cap
+// actually bounds concurrently open connections: firing far more concurrent queries than the
+// cap never observes more open connections than the configured limit.
+func TestNewConnectionPoolLimitEnforcedUnderConcurrency(t *testing.T) {
+	s := openTestDB(t)
+
+	const concurrent = 50
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var maxObserved atomic.Int64
+	for range concurrent {
+		wg.Go(func() {
+			<-start
+			_, err := s.RawExecForTest("SELECT pg_sleep(0.05)")
+			require.NoError(t, err)
+			for {
+				open := int64(s.DBStatsForTest().OpenConnections)
+				prev := maxObserved.Load()
+				if open <= prev || maxObserved.CompareAndSwap(prev, open) {
+					break
+				}
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	require.LessOrEqual(t, int(maxObserved.Load()), store.PluginMaxOpenConnsForTest,
+		"observed open connections must never exceed the configured MaxOpenConns cap")
+	require.Positive(t, s.DBStatsForTest().WaitCount,
+		"at least one query must have waited for a connection to confirm the cap was actually exercised")
+}
