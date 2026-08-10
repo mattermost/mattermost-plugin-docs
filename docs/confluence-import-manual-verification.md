@@ -493,6 +493,51 @@ Expect `InvalidationPending = false`. A crash between the commit and the publish
 hourly maintenance sweep republishes it — duplicating an idempotent invalidation is harmless, while losing
 one leaves every client showing a page tree that no longer matches the database.
 
+## 4f. Download the reports
+
+Two reports exist per job, and they answer different questions. The preflight report is the plan you reviewed;
+the final report is what actually happened. A finished import never presents its old classifications as
+outcomes — that distinction is the whole reason both are kept.
+
+```bash
+curl -sS -D- -o /tmp/preflight.json "$API/imports/$JOB/report?stage=preflight" -H "$AUTH"
+curl -sS -D- -o /tmp/final.json     "$API/imports/$JOB/report?stage=final"     -H "$AUTH"
+jq '{report_version, stage, generated_at, source, target, fidelity, counts}' /tmp/final.json
+jq '.results | group_by(.outcome) | map({outcome: .[0].outcome, n: length})' /tmp/final.json
+jq '.issues | group_by(.code) | map({code: .[0].code, n: length})' /tmp/final.json
+```
+
+Expect `Content-Type: application/json` and
+`Content-Disposition: attachment; filename="docs-import-<job>-final.json"`. The body is streamed rather than
+assembled, so there is no `Content-Length`: a report covers every entity a job touched, and building one in
+memory would scale with the bundle.
+
+What to check in the two files:
+
+- The preflight report's results carry `planned_action` and no `actual_action`; the final report's carry both,
+  so a `not_attempted` page still says what it *would* have been.
+- Both carry the same immutable inspection findings — those describe the bundle, not the plan or the outcome.
+- The final report's `counts` are actual results. A canceled or failed job reports `not_attempted` rather than
+  the plan's `create`/`update` tallies.
+- `fidelity.full_fidelity` is `false` in both, always. The fidelity block states the importer's *policy*;
+  `counts` and the per-page results state what actually happened, and the two must never be read as the same
+  claim.
+- No hashes, page bodies, `SearchText`, bundle digests, archive paths, or manifest user rows anywhere in either
+  file. A report explains outcomes; the baselines that make applying them safe stay server-side.
+
+Readiness and access, both worth exercising:
+
+| Attempt | Result |
+|---|---|
+| `stage=final` before the job is terminal | `409` — the job is real and the report will exist, just not yet |
+| `stage=preflight` on a job canceled before any preflight ran | `409` |
+| A stage other than `preflight` or `final` (including omitted) | `400` |
+| Another user's job | `404`, never `403` |
+| The owner after losing access to the target Space | `404` |
+
+The last one is worth doing deliberately: a report is a standing copy of Space content, so removing yourself
+from the target Space must make it unreadable, not merely hide the job listing.
+
 ## 5. Verify the rejection paths
 
 Each mode breaks exactly one contract rule:
@@ -670,4 +715,5 @@ go test ./server/importer/ -run TestClassify -v                 # the reimport d
 go test ./server/ -run 'TestImportPreflight|TestImportSourceSelection|TestImportConfirm' -v
 go test ./server/ -run TestImportExecution -v                   # provisioning, page writes, reimport, cancel
 go test ./server/ -run 'TestImportWorker|TestImportTerminalization' -v
+go test ./server/ -run TestImportReport -v                      # report streaming, redaction, readiness
 ```

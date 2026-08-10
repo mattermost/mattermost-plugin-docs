@@ -216,6 +216,33 @@ func (p *Plugin) handleCancelImport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, view)
 }
 
+// handleGetImportReport handles GET /api/v1/imports/{job_id}/report?stage=preflight|final.
+//
+// The response is streamed rather than assembled: a report covers every entity a job touched, so building one
+// in memory would scale with the bundle. Everything that could refuse the request is decided before the first
+// byte, because the status line cannot be revised once the body has started — after that point a write failure
+// can only be logged, and the client sees a truncated download rather than an error it can act on.
+func (p *Plugin) handleGetImportReport(w http.ResponseWriter, r *http.Request) {
+	actorID := userIDFromRequest(r)
+	jobID := mux.Vars(r)["job_id"]
+
+	report, appErr := p.service.PrepareImportReport(jobID, actorID, r.URL.Query().Get("stage"))
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+report.Filename()+`"`)
+	// No Content-Length: the body's size is not known until it has been written, and guessing would be worse
+	// than letting the transport chunk it.
+	w.WriteHeader(http.StatusOK)
+	if err := report.Stream(w); err != nil {
+		p.API.LogError("Failed to stream an import report after the response had started",
+			"job_id", jobID, "actor_id", actorID, "err", err.Error())
+	}
+}
+
 // handleGetImport handles GET /api/v1/imports/{job_id}.
 func (p *Plugin) handleGetImport(w http.ResponseWriter, r *http.Request) {
 	actorID := userIDFromRequest(r)
