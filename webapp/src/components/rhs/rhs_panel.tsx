@@ -50,7 +50,7 @@ type Props = {
  */
 const RhsPanel = ({name, title, widthKey, onBack, onClose, children}: Props) => {
     const {formatMessage} = useIntl();
-    const {width, setWidth, commitWidth} = useSidebarWidth(widthKey, DEFAULT_WIDTH);
+    const {width, setWidth, commitWidth} = useSidebarWidth(widthKey, DEFAULT_WIDTH, {minWidth: MIN_WIDTH, maxWidth: MAX_WIDTH});
     const [resizing, setResizing] = useState(false);
 
     return (

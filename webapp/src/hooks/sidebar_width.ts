@@ -30,14 +30,22 @@ const setStoredWidth = (key: string, width: number): void => {
     }
 };
 
+type SidebarWidthBounds = {
+    minWidth: number;
+    maxWidth: number;
+};
+
+const clampWidth = (width: number, {minWidth, maxWidth}: SidebarWidthBounds): number =>
+    Math.min(maxWidth, Math.max(minWidth, width));
+
 // Idempotent: memoizes the initial localStorage read so getSnapshot stays stable.
-const currentWidth = (userId: string, name: string, defaultWidth: number): number => {
+const currentWidth = (userId: string, name: string, defaultWidth: number, bounds: SidebarWidthBounds): number => {
     const key = storeKey(userId, name);
     const known = widths.get(key);
     if (known !== undefined) {
-        return known;
+        return clampWidth(known, bounds);
     }
-    const initial = readSidebarWidth(userId, name) ?? defaultWidth;
+    const initial = clampWidth(readSidebarWidth(userId, name) ?? defaultWidth, bounds);
     widths.set(key, initial);
     return initial;
 };
@@ -60,18 +68,21 @@ type SidebarWidth = {
  * Calling this with the same `name` anywhere returns the same live value, so a
  * read-only consumer can just call it instead of receiving the width as a prop.
  */
-export function useSidebarWidth(name: string, defaultWidth: number): SidebarWidth {
+export function useSidebarWidth(name: string, defaultWidth: number, bounds: SidebarWidthBounds): SidebarWidth {
     const userId = useAppSelector(getCurrentUserId);
     const key = storeKey(userId, name);
+    const {minWidth, maxWidth} = bounds;
+    const clamp = useCallback((next: number) => clampWidth(next, {minWidth, maxWidth}), [minWidth, maxWidth]);
 
-    const width = useSyncExternalStore(subscribe, () => currentWidth(userId, name, defaultWidth));
+    const width = useSyncExternalStore(subscribe, () => currentWidth(userId, name, defaultWidth, {minWidth, maxWidth}));
 
-    const setWidth = useCallback((next: number) => setStoredWidth(key, next), [key]);
+    const setWidth = useCallback((next: number) => setStoredWidth(key, clamp(next)), [key, clamp]);
 
     const commitWidth = useCallback((next: number) => {
-        setStoredWidth(key, next);
-        writeSidebarWidth(userId, name, next);
-    }, [key, userId, name]);
+        const clamped = clamp(next);
+        setStoredWidth(key, clamped);
+        writeSidebarWidth(userId, name, clamped);
+    }, [key, userId, name, clamp]);
 
     return {width, setWidth, commitWidth};
 }

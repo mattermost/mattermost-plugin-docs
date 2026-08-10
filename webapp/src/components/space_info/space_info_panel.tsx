@@ -3,6 +3,7 @@
 
 import classNames from 'classnames';
 import {useSpaceMemberProfiles} from 'hooks/members';
+import {useCanManageSpaceMembers} from 'hooks/permissions';
 import {useAppDispatch} from 'hooks/redux';
 import {useSpaceStats} from 'hooks/spaces';
 import React, {useCallback} from 'react';
@@ -15,7 +16,6 @@ import type {TimestampUnit} from 'webapp_globals';
 import PencilOutlineIcon from '@mattermost/compass-icons/components/pencil-outline';
 
 import {updateSpace} from 'store/actions';
-import {useSpacePermissions} from 'store/permissions';
 
 import BasicInputModal from 'components/basic_input_modal/basic_input_modal';
 import {Button} from 'components/form_controls/button';
@@ -60,7 +60,7 @@ const SpaceInfoPanel = ({space, view, onViewChange, onClose}: Props) => {
     const {pageCount, memberCount} = useSpaceStats(space.id);
     const members = useSpaceMemberProfiles(space.id);
     const dispatch = useAppDispatch();
-    const {canManageMembers} = useSpacePermissions(space.id);
+    const canManageMembers = useCanManageSpaceMembers(space.id);
 
     const editDescriptionLabel = formatMessage({id: 'docs.spaceInfo.editDescription', defaultMessage: 'Edit description'});
 

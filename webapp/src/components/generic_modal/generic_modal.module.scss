@@ -86,20 +86,12 @@
     opacity: 0;
 }
 
-// A nested modal's backdrop is additive: the modal below it is already dimming the
-// app, so this one's job is to dim that modal — it is the whole layering cue now
-// that the covered surface stays opaque. Kept well below full strength so levels
-// don't compound toward black.
+// Every modal above level zero gets an additive backdrop: the modal below it is
+// already dimming the app, so this one's job is to dim that modal. Keeping the
+// lower backdrop painted also prevents a flash while an imperatively stacked
+// modal's own backdrop enters or exits. The reduced alpha limits compounding.
 .backdropNested {
     background: rgba(0, 0, 0, 0.32);
-}
-
-// Only the topmost backdrop dims. Stacked blacks would compound toward black, so
-// lower ones stay mounted — Base UI dismisses through them — but paint nothing.
-// Declared after `.backdropNested` deliberately: a backdrop can be both nested and
-// covered, they have equal specificity, and "covered" has to win.
-.backdropCovered {
-    background: transparent;
 }
 
 .header {

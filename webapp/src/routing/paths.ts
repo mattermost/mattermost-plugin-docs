@@ -80,6 +80,9 @@ export const FULLSCREEN_QUERY = 'fs';
 export const editPagePath = (teamName: string, spaceId: string, pageId: string): string =>
     `${pagePath(teamName, spaceId, pageId)}?${EDIT_QUERY}=1`;
 
+export const editDraftPath = (teamName: string, spaceId: string, pageId: string): string =>
+    `${draftPath(teamName, spaceId, pageId)}?${EDIT_QUERY}=1`;
+
 export const docsPath = (teamName: string, spaceId?: string, pageId?: string): string => {
     if (!spaceId) {
         return docsHomePath(teamName);

@@ -15,6 +15,11 @@ import {renderWithContext} from '../../../tests/react_testing_utils';
 const mockAddMembers = jest.fn();
 const mockRemoveMember = jest.fn();
 const mockLeave = jest.fn();
+let mockCanManageMembers = true;
+
+jest.mock('hooks/permissions', () => ({
+    useCanManageSpaceMembers: () => mockCanManageMembers,
+}));
 
 jest.mock('hooks/space_members', () => ({
     useManageSpaceMembers: () => ({
@@ -64,7 +69,10 @@ const confirm = async (name: RegExp) => {
 };
 
 describe('ShareSpaceModal', () => {
-    beforeEach(() => jest.clearAllMocks());
+    beforeEach(() => {
+        jest.clearAllMocks();
+        mockCanManageMembers = true;
+    });
 
     afterEach(() => act(() => {
         closeAllDocsModals();
@@ -104,11 +112,14 @@ describe('ShareSpaceModal', () => {
 
     // Leaving destroys your access to what is behind the modal, so the modal goes too.
     it('leaves and closes the modal from your own row once confirmed', async () => {
+        mockCanManageMembers = false;
         mockLeave.mockResolvedValue(undefined);
         const onClose = jest.fn();
 
         renderModal(onClose);
 
+        expect(screen.queryByRole('button', {name: 'Add'})).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: /Ada/})).not.toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', {name: /Caleb/}));
         fireEvent.click(await screen.findByRole('menuitem', {name: 'Leave space'}));
 

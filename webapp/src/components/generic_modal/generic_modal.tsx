@@ -69,7 +69,8 @@ const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, in
     // route puts one dialog above another.
     const {level: stackLevel, covered} = useDocsModalLayer();
     const nesting = useContext(ModalNestingContext);
-    const layerStyle = {'--docs-modal-level': stackLevel + nesting} as React.CSSProperties;
+    const modalLevel = stackLevel + nesting;
+    const layerStyle = {'--docs-modal-level': modalLevel} as React.CSSProperties;
     const isCovered = covered > 0;
 
     // Closing is driven from here rather than by the owner unmounting us, so the
@@ -130,14 +131,13 @@ const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, in
             <Dialog.Portal>
                 {/* forceRender because Base UI renders no backdrop for a nested
                     dialog by default (DialogBackdrop: `enabled: forceRender ||
-                    !nested`), which left a modal opened from inside another with
-                    nothing to dim or click away on. Its alpha is reduced instead,
-                    since the modal below already dims the app. */}
+                    !nested`). Every modal above level zero uses a reduced additive
+                    backdrop while the lower backdrop stays painted, so stacked and
+                    React-nested dialogs transition without a gap between them. */}
                 <Dialog.Backdrop
                     forceRender={true}
                     className={classNames(styles.backdrop, {
-                        [styles.backdropNested]: nesting > 0,
-                        [styles.backdropCovered]: isCovered,
+                        [styles.backdropNested]: modalLevel > 0,
                     })}
                     style={layerStyle}
                 />
@@ -154,32 +154,32 @@ const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, in
                         initialFocus={initialFocus}
                         aria-label={ariaLabel}
                     >
-                        <div className={classNames(styles.header, {[styles.headerDivider]: headerDivider}, headerClassName)}>
-                            <div className={styles.titleRow}>
-                                <Dialog.Title render={<h1 className={styles.title}/>}>
-                                    {title}
-                                </Dialog.Title>
-                                {titleActions != null && <div className={styles.titleActions}>{titleActions}</div>}
-                                {showCloseButton && (
-                                    <WithTooltip title={closeLabel}>
-                                        <Dialog.Close
-                                            render={(
-                                                <button
-                                                    type='button'
-                                                    className={styles.close}
-                                                    aria-label={closeLabel}
-                                                />
-                                            )}
-                                        >
-                                            <CloseIcon size={24}/>
-                                        </Dialog.Close>
-                                    </WithTooltip>
-                                )}
-                            </div>
-                            {headerContent}
-                        </div>
                         <ModalNestingContext.Provider value={nesting + 1}>
                             <ModalCloseContext.Provider value={closeWith}>
+                                <div className={classNames(styles.header, {[styles.headerDivider]: headerDivider}, headerClassName)}>
+                                    <div className={styles.titleRow}>
+                                        <Dialog.Title render={<h1 className={styles.title}/>}>
+                                            {title}
+                                        </Dialog.Title>
+                                        {titleActions != null && <div className={styles.titleActions}>{titleActions}</div>}
+                                        {showCloseButton && (
+                                            <WithTooltip title={closeLabel}>
+                                                <Dialog.Close
+                                                    render={(
+                                                        <button
+                                                            type='button'
+                                                            className={styles.close}
+                                                            aria-label={closeLabel}
+                                                        />
+                                                    )}
+                                                >
+                                                    <CloseIcon size={24}/>
+                                                </Dialog.Close>
+                                            </WithTooltip>
+                                        )}
+                                    </div>
+                                    {headerContent}
+                                </div>
                                 {children}
                                 {footer && <div className={classNames(styles.footer, {[styles.footerDivider]: footerDivider})}>{footer}</div>}
                             </ModalCloseContext.Provider>

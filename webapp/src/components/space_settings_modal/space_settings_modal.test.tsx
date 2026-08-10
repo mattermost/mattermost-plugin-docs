@@ -73,7 +73,7 @@ describe('SpaceSettingsModal', () => {
         expect(screen.getByRole('tab', {name: /Archive space/})).toBeInTheDocument();
     });
 
-    it('surfaces the save bar after a change, then dispatches updateSpace', () => {
+    it('surfaces the save bar after a change, then dispatches updateSpace', async () => {
         const onClose = jest.fn();
         renderWithContext(
             <SpaceSettingsModal
@@ -99,6 +99,22 @@ describe('SpaceSettingsModal', () => {
             description: '',
             props: {default_page_id: ''},
         });
+        await waitFor(() => expect(save).toBeEnabled());
+    });
+
+    it('renders a failed save once in the save bar', async () => {
+        mockUpdateSpace.mockImplementationOnce(() => () => Promise.reject(new Error('Save failed')));
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+        );
+
+        fireEvent.change(screen.getByLabelText('Space name'), {target: {value: 'Renamed'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+
+        await waitFor(() => expect(screen.getAllByText('Save failed')).toHaveLength(1));
     });
 
     it('archives the space through a confirm dialog', async () => {
@@ -121,6 +137,7 @@ describe('SpaceSettingsModal', () => {
         fireEvent.click(await screen.findByRole('button', {name: 'Archive'}));
 
         expect(mockDeleteSpace).toHaveBeenCalledWith('space-1');
+        await waitFor(() => expect(onClose).toHaveBeenCalled());
         await waitFor(() => expect(mockGoHome).toHaveBeenCalled());
     });
 });

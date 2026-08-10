@@ -2,7 +2,6 @@
 // See LICENSE.txt for license information.
 
 import {Toast} from '@base-ui-components/react/toast';
-import {useMemo} from 'react';
 import type {ReactNode} from 'react';
 
 export type DocsToastVariant = 'success' | 'error' | 'warning' | 'info';
@@ -54,7 +53,7 @@ const createToastApi = (add: AddToast, close: CloseToast): DocsToastApi => {
 
 /**
  * The Docs product's toast manager. `<DocsToaster/>` binds to it; prefer the
- * `toast` API or `useToast()` over using this directly.
+ * `toast` API over using this directly.
  */
 export const docsToastManager = Toast.createToastManager();
 
@@ -67,10 +66,3 @@ export const toast: DocsToastApi = createToastApi(
     (options) => docsToastManager.add(options),
     (id) => docsToastManager.close(id),
 );
-
-/** Hook flavour of {@link toast} for components that prefer hooks. */
-export const useToast = (): DocsToastApi => {
-    const {add, close} = Toast.useToastManager();
-
-    return useMemo(() => createToastApi(add, close), [add, close]);
-};

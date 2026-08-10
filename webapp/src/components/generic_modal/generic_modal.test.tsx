@@ -4,7 +4,7 @@
 import {fireEvent, screen} from '@testing-library/react';
 import React from 'react';
 
-import GenericModal from './generic_modal';
+import GenericModal, {useModalClose} from './generic_modal';
 
 import {renderWithContext} from '../../../tests/react_testing_utils';
 
@@ -12,6 +12,8 @@ const baseProps = {
     title: 'My modal',
     onClose: jest.fn(),
 };
+
+const CloseContextProbe = () => <span>{useModalClose() ? 'Close available' : 'Close missing'}</span>;
 
 describe('GenericModal', () => {
     it('renders the title, body, and footer', () => {
@@ -55,6 +57,19 @@ describe('GenericModal', () => {
         );
 
         expect(screen.queryByRole('button', {name: 'Close'})).not.toBeInTheDocument();
+    });
+
+    it('provides modal close behavior to title actions', () => {
+        renderWithContext(
+            <GenericModal
+                {...baseProps}
+                titleActions={<CloseContextProbe/>}
+            >
+                <p>{'Body'}</p>
+            </GenericModal>,
+        );
+
+        expect(screen.getByText('Close available')).toBeInTheDocument();
     });
 
     // A modal rendered inside another's JSX stacks through Base UI's nesting

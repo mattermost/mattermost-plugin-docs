@@ -29,14 +29,14 @@ import {useAppDispatch, useAppSelector} from './redux';
  */
 export function useCreateRootPage(spaceId: string) {
     const dispatch = useAppDispatch();
-    const {goToDraft} = useDocsNavigation();
+    const {goToEditDraft} = useDocsNavigation();
     const {formatMessage} = useIntl();
     const untitled = formatMessage(UNTITLED_PAGE_TITLE);
 
     return useCallback(async () => {
         try {
             const draft = await dispatch(createDraft(spaceId, untitled));
-            goToDraft(spaceId, draft.page_id);
+            goToEditDraft(spaceId, draft.page_id);
         } catch (error) {
             // Without this the add-page buttons look inert on failure.
             toast.error(formatMessage({id: 'docs.pageTree.addFailed', defaultMessage: 'Could not create the page. Please try again.'}));
@@ -44,7 +44,7 @@ export function useCreateRootPage(spaceId: string) {
             // eslint-disable-next-line no-console
             console.error('Docs: failed to create page', error);
         }
-    }, [dispatch, spaceId, untitled, goToDraft, formatMessage]);
+    }, [dispatch, spaceId, untitled, goToEditDraft, formatMessage]);
 }
 
 export type RoutedPage = {

@@ -10,10 +10,10 @@ import {createSpaceFormSchema} from 'validation/space_schema';
 
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
-import {createSpace, fetchPages, fetchSpace, fetchSpaceMembers} from 'store/actions';
+import {createSpace, fetchDrafts, fetchPages, fetchSpace, fetchSpaceMembers} from 'store/actions';
 import {areMembersLoadedForSpace, getAllSpaces, getPagesForSpace, getSpace, getSpaceMemberIds, getSpacesForCurrentTeam} from 'store/selectors';
 
-import {useToast} from 'components/toast';
+import {toast} from 'components/toast';
 
 import type {Space, SpaceSummary, SpaceVisibility} from 'types/docs';
 
@@ -101,15 +101,17 @@ export type SpaceStats = {
     memberCount?: number;
 };
 
-// Loads and returns a space's page and member counts. Fetches on mount into the
-// store, so the page tree and member avatars can reuse the same data later. The
-// view count has no server source yet, so it isn't included.
+// Loads and returns a space's page and member counts. Fetches the space's pages,
+// members, and the caller's drafts on mount, so the page tree and member avatars
+// can reuse the same data later. The view count has no server source yet, so it
+// isn't included.
 export function useSpaceStats(spaceId: string): SpaceStats {
     const dispatch = useAppDispatch();
 
     useEffect(() => {
         dispatch(fetchPages(spaceId));
         dispatch(fetchSpaceMembers(spaceId));
+        dispatch(fetchDrafts(spaceId));
     }, [dispatch, spaceId]);
 
     const pages = useAppSelector((state) => getPagesForSpace(state, spaceId));
@@ -151,7 +153,6 @@ type CreateSpaceOptions = {
 export function useCreateSpace({onCreated}: CreateSpaceOptions = {}) {
     const dispatch = useAppDispatch();
     const {formatMessage} = useIntl();
-    const toast = useToast();
 
     const formSchema = useMemo(() => createSpaceFormSchema(), []);
 
@@ -179,7 +180,7 @@ export function useCreateSpace({onCreated}: CreateSpaceOptions = {}) {
         }));
         // eslint-disable-next-line no-console
         console.error('Docs: failed to create space', error);
-    }), [form, formatMessage, toast]);
+    }), [form, formatMessage]);
 
     return {form, changeName, submit};
 }

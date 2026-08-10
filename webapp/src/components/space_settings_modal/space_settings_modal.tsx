@@ -366,7 +366,6 @@ const InfoTab = ({space, info, url}: {space: Space; info: InfoTabState; url: str
                 onChange={info.setLandingPageId}
             />
 
-            {info.error && <div className={styles.error}>{info.error}</div>}
         </Section>
     );
 };
@@ -400,12 +399,15 @@ const ArchiveTab = ({space, onClose}: {space: Space; onClose: () => void}) => {
         setError(undefined);
         try {
             await dispatch(deleteSpace(space.id));
-            onClose();
-            goHome();
         } catch (err) {
             setError(err instanceof Error ? err.message : String(err));
+            setConfirming(false);
+            return;
         }
+
         setConfirming(false);
+        onClose();
+        goHome();
     };
 
     return (

@@ -21,12 +21,14 @@ import {makeTestStore} from '../../tests/react_testing_utils';
 let mockRoute: {pageId?: string; isOverview: boolean} = {isOverview: false};
 const mockGoToPage = jest.fn();
 const mockGoToDraft = jest.fn();
+const mockGoToEditDraft = jest.fn();
 
 jest.mock('hooks/navigation', () => ({
     useDocsNavigation: () => ({
         ...mockRoute,
         goToPage: mockGoToPage,
         goToDraft: mockGoToDraft,
+        goToEditDraft: mockGoToEditDraft,
         paths: {page: (spaceId: string, pageId: string) => `/docs/${spaceId}/${pageId}`},
     }),
 }));
@@ -136,8 +138,8 @@ describe('useCreateRootPage', () => {
     });
 
     // A new page starts as a draft so nobody else sees a half-written page, and it
-    // opens at the draft URL, which is where an unpublished page lives.
-    it('creates a draft and opens it', async () => {
+    // opens at the draft URL in edit mode, ready for the title/body input.
+    it('creates a draft and opens it for editing', async () => {
         const create = renderCreate();
 
         await act(async () => {
@@ -145,7 +147,8 @@ describe('useCreateRootPage', () => {
         });
 
         expect(mockCreateDraft).toHaveBeenCalledWith('eng', 'Untitled');
-        expect(mockGoToDraft).toHaveBeenCalledWith('eng', 'new');
+        expect(mockGoToEditDraft).toHaveBeenCalledWith('eng', 'new');
+        expect(mockGoToDraft).not.toHaveBeenCalled();
         expect(mockGoToPage).not.toHaveBeenCalled();
     });
 
@@ -161,5 +164,6 @@ describe('useCreateRootPage', () => {
 
         expect(toast.error).toHaveBeenCalled();
         expect(mockGoToDraft).not.toHaveBeenCalled();
+        expect(mockGoToEditDraft).not.toHaveBeenCalled();
     });
 });

@@ -9,7 +9,7 @@ import {useDocsNavigation, useTogglePageEditMode} from './navigation';
 import {renderWithContext} from '../../tests/react_testing_utils';
 
 function Probe() {
-    const {teamName, spaceId, pageId, isDraft, isEditing, goToEditPage} = useDocsNavigation();
+    const {teamName, spaceId, pageId, isDraft, isEditing, goToEditDraft, goToEditPage} = useDocsNavigation();
     return (
         <ul>
             <li data-testid='team'>{teamName}</li>
@@ -17,6 +17,12 @@ function Probe() {
             <li data-testid='page'>{pageId ?? ''}</li>
             <li data-testid='draft'>{String(isDraft)}</li>
             <li data-testid='edit'>{String(isEditing)}</li>
+            <li>
+                <button
+                    data-testid='go-edit-draft'
+                    onClick={() => goToEditDraft('space1', 'pageX')}
+                />
+            </li>
             <li>
                 <button
                     data-testid='go-edit'
@@ -101,6 +107,19 @@ describe('useDocsNavigation goToEditPage', () => {
 
         expect(history.location.pathname + history.location.search).toBe('/myteam/spaces/space1/pageX?edit=1');
         expect(history.length).toBe(2);
+    });
+});
+
+describe('useDocsNavigation goToEditDraft', () => {
+    it('pushes the draft edit URL', () => {
+        const {history} = renderWithContext(<Probe/>, {
+            route: '/myteam/spaces/space1',
+            state: {currentTeam: {id: 't1', name: 'myteam'}},
+        });
+
+        fireEvent.click(screen.getByTestId('go-edit-draft'));
+
+        expect(history.location.pathname + history.location.search).toBe('/myteam/spaces/space1/drafts/pageX?edit=1');
     });
 });
 

@@ -33,8 +33,11 @@ const DocsRoot = () => {
     useBootstrapDocs();
 
     const {formatMessage} = useIntl();
-    const {spaceId} = useDocsNavigation();
-    const {width, setWidth, commitWidth} = useSidebarWidth('spaces', DEFAULT_SPACES_WIDTH);
+    const {spaceId, goToSpace} = useDocsNavigation();
+    const {width, setWidth, commitWidth} = useSidebarWidth('spaces', DEFAULT_SPACES_WIDTH, {
+        minWidth: MIN_SPACES_WIDTH,
+        maxWidth: MAX_SPACES_WIDTH,
+    });
 
     // Fullscreen gives the page the window by dropping this column; the space header
     // grows a "Back to all spaces" control to stand in for it.
@@ -47,8 +50,13 @@ const DocsRoot = () => {
     const closeSwitcher = useCallback(() => setSwitcherOpen(false), []);
 
     const openCreateSpace = useCallback(() => {
-        openDocsModal((modal) => <CreateSpaceModal onClose={modal.close}/>);
-    }, []);
+        openDocsModal((modal) => (
+            <CreateSpaceModal
+                onClose={modal.close}
+                onCreated={(space) => goToSpace(space.id)}
+            />
+        ));
+    }, [goToSpace]);
 
     // stopPropagation so the Docs switcher wins the shortcut over the host's.
     useHotkeys('mod+k', (e) => {

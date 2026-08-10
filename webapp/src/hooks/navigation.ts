@@ -4,7 +4,7 @@
 import {useTeamContext} from 'hooks/team';
 import {useCallback} from 'react';
 import {useHistory, useLocation, useRouteMatch} from 'react-router-dom';
-import {DOCS_DRAFT_ROUTE, DOCS_ROUTE, DOCS_SPACE_OVERVIEW_ROUTE, EDIT_QUERY, docsHomePath, docsPath, draftPath, editPagePath, overviewPath, pagePath, spacePath} from 'routing/paths';
+import {DOCS_DRAFT_ROUTE, DOCS_ROUTE, DOCS_SPACE_OVERVIEW_ROUTE, EDIT_QUERY, docsHomePath, docsPath, draftPath, editDraftPath, editPagePath, overviewPath, pagePath, spacePath} from 'routing/paths';
 import {withQuery} from 'routing/query';
 
 type DocsRouteParams = {
@@ -63,6 +63,7 @@ export function useDocsNavigation() {
         }
     }, [history, teamName]);
     const goToDraft = useCallback((space: string, page: string) => history.push(draftPath(teamName, space, page)), [history, teamName]);
+    const goToEditDraft = useCallback((space: string, page: string) => history.push(editDraftPath(teamName, space, page)), [history, teamName]);
     const goToEditPage = useCallback((space: string, page: string) => history.push(editPagePath(teamName, space, page)), [history, teamName]);
     const goToOverview = useCallback((space: string) => history.push(overviewPath(teamName, space)), [history, teamName]);
     const goHome = useCallback(() => history.push(docsHomePath(teamName)), [history, teamName]);
@@ -82,6 +83,7 @@ export function useDocsNavigation() {
         goToSpace,
         goToPage,
         goToDraft,
+        goToEditDraft,
         goToEditPage,
         goToOverview,
         goHome,

@@ -50,6 +50,7 @@ const ResizableDivider = ({ariaLabel, side, width, minWidth, maxWidth, defaultWi
     const [snapped, setSnapped] = useState(false);
     const startX = useRef(0);
     const startWidth = useRef(0);
+    const lastWidth = useRef(width);
 
     const clamp = (value: number) => Math.min(maxWidth, Math.max(minWidth, Math.round(value)));
 
@@ -79,6 +80,7 @@ const ResizableDivider = ({ariaLabel, side, width, minWidth, maxWidth, defaultWi
         event.preventDefault();
         startX.current = event.clientX;
         startWidth.current = width;
+        lastWidth.current = width;
         setDragging(true);
         event.currentTarget.setPointerCapture(event.pointerId);
     };
@@ -88,11 +90,12 @@ const ResizableDivider = ({ariaLabel, side, width, minWidth, maxWidth, defaultWi
             return;
         }
         const next = widthFor(event.clientX);
+        lastWidth.current = next;
         setSnapped(next === defaultWidth);
         onResize(next);
     };
 
-    const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    const endDrag = (event: React.PointerEvent<HTMLDivElement>, finalWidth: number) => {
         if (!dragging) {
             return;
         }
@@ -101,7 +104,7 @@ const ResizableDivider = ({ariaLabel, side, width, minWidth, maxWidth, defaultWi
         if (event.currentTarget.hasPointerCapture(event.pointerId)) {
             event.currentTarget.releasePointerCapture(event.pointerId);
         }
-        onResizeEnd(widthFor(event.clientX));
+        onResizeEnd(finalWidth);
     };
 
     // Double-click restores the default width, as core's divider does.
@@ -146,8 +149,8 @@ const ResizableDivider = ({ariaLabel, side, width, minWidth, maxWidth, defaultWi
             aria-valuemax={maxWidth}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
-            onPointerUp={endDrag}
-            onPointerCancel={endDrag}
+            onPointerUp={(event) => endDrag(event, widthFor(event.clientX))}
+            onPointerCancel={(event) => endDrag(event, lastWidth.current)}
             onDoubleClick={onDoubleClick}
             onKeyDown={onKeyDown}
         />

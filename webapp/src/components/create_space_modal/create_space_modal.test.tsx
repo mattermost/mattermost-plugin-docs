@@ -7,15 +7,15 @@ import React from 'react';
 
 import {makeSpace, makeTeam} from 'store/test_fixtures';
 
+import {toast} from 'components/toast';
+
 import CreateSpaceModal from './create_space_modal';
 
 import {renderWithContext} from '../../../tests/react_testing_utils';
 
 const team = makeTeam('team1', 'myteam');
 let createSpaceSpy: jest.SpyInstance;
-const mockToastError = jest.fn();
-
-jest.mock('components/toast', () => ({useToast: () => ({error: mockToastError})}));
+let toastErrorSpy: jest.SpyInstance;
 
 function typeName(value: string) {
     fireEvent.change(screen.getByLabelText('Space name'), {target: {value}});
@@ -29,6 +29,7 @@ describe('CreateSpaceModal', () => {
         createSpaceSpy = jest.spyOn(docsDataSource, 'createSpace').mockImplementation(
             async (_teamId, input) => makeSpace('new-space-id', input.title.trim(), 'team1'),
         );
+        toastErrorSpy = jest.spyOn(toast, 'error').mockReturnValue('toast-id');
     });
 
     afterEach(() => {
@@ -75,7 +76,7 @@ describe('CreateSpaceModal', () => {
         typeName('Fresh Space');
         fireEvent.click(screen.getByRole('button', {name: 'Create'}));
 
-        await waitFor(() => expect(mockToastError).toHaveBeenCalledWith('Could not create the space. Please try again.'));
+        await waitFor(() => expect(toastErrorSpy).toHaveBeenCalledWith('Could not create the space. Please try again.'));
         expect(onClose).not.toHaveBeenCalled();
     });
 

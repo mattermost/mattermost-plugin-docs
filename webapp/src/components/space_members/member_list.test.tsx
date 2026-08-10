@@ -99,7 +99,7 @@ describe('MemberList', () => {
 describe('MemberList confirmations', () => {
     const state = {currentUser: {id: 'u1', username: 'ada'}};
 
-    const renderRoster = (actions: {onRemove: jest.Mock; onLeave: jest.Mock}) => renderWithContext(
+    const renderRoster = (actions: {onRemove?: jest.Mock; onLeave: jest.Mock}) => renderWithContext(
         <>
             <MemberList
                 members={members}
@@ -143,6 +143,13 @@ describe('MemberList confirmations', () => {
         fireEvent.click(screen.getByRole('button', {name: 'Yes, leave space'}));
 
         await waitFor(() => expect(actions.onLeave).toHaveBeenCalled());
+    });
+
+    it('shows only the current user action when removal is unavailable', () => {
+        renderRoster({onLeave: jest.fn()});
+
+        expect(screen.getByRole('button', {name: /Ada/})).toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: /Grace/})).not.toBeInTheDocument();
     });
 
     it('does nothing when the confirmation is cancelled', async () => {

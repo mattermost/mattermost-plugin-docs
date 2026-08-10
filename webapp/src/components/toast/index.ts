@@ -2,5 +2,5 @@
 // See LICENSE.txt for license information.
 
 export {default as DocsToaster} from './docs_toaster';
-export {toast, useToast, docsToastManager} from './toast';
+export {toast, docsToastManager} from './toast';
 export type {DocsToastApi, DocsToastOptions, DocsToastVariant} from './toast';

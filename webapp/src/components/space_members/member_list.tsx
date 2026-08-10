@@ -16,7 +16,7 @@ import MemberRowMenu from './member_row_menu';
 import styles from './space_members.module.scss';
 
 export type MemberListActions = {
-    onRemove: (userId: string) => void;
+    onRemove?: (userId: string) => void;
     onLeave: () => void;
 
     /** A mutation is in flight; row actions are unavailable. */
@@ -69,7 +69,7 @@ const MemberList = ({members, avatarSize, showYouBadge = false, spaceTitle, acti
             // its own onClose, so a handler that doesn't close leaks a stack entry.
             onConfirm={() => {
                 modal.close();
-                actions?.onRemove(member.id);
+                actions?.onRemove?.(member.id);
             }}
             onCancel={modal.close}
         >
@@ -125,24 +125,28 @@ const MemberList = ({members, avatarSize, showYouBadge = false, spaceTitle, acti
 
     return (
         <div className={styles.memberList}>
-            {members.map((member) => (
-                <MemberRow
-                    key={member.id}
-                    member={member}
-                    avatarSize={avatarSize}
-                    isCurrentUser={member.id === currentUserId}
-                    showYouBadge={showYouBadge}
-                    trailing={actions && (
-                        <MemberRowMenu
-                            member={member}
-                            isCurrentUser={member.id === currentUserId}
-                            disabled={actions.disabled}
-                            onRemove={() => confirmRemove(member)}
-                            onLeave={confirmLeave}
-                        />
-                    )}
-                />
-            ))}
+            {members.map((member) => {
+                const isCurrentUser = member.id === currentUserId;
+                const hasAction = isCurrentUser ? Boolean(actions?.onLeave) : Boolean(actions?.onRemove);
+                return (
+                    <MemberRow
+                        key={member.id}
+                        member={member}
+                        avatarSize={avatarSize}
+                        isCurrentUser={isCurrentUser}
+                        showYouBadge={showYouBadge}
+                        trailing={hasAction && actions && (
+                            <MemberRowMenu
+                                member={member}
+                                isCurrentUser={isCurrentUser}
+                                disabled={actions.disabled}
+                                onRemove={() => confirmRemove(member)}
+                                onLeave={confirmLeave}
+                            />
+                        )}
+                    />
+                );
+            })}
         </div>
     );
 };

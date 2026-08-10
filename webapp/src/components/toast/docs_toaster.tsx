@@ -66,7 +66,7 @@ const DocsToastList = () => {
 
 /**
  * Renders the Docs product's toasts. Mount exactly once, at the Docs root; all
- * toasts are raised through the `toast` API or `useToast()`.
+ * toasts are raised through the `toast` API.
  */
 const DocsToaster = () => (
     <Toast.Provider toastManager={docsToastManager}>

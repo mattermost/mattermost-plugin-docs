@@ -3,6 +3,7 @@
 
 import {useSpaceMemberProfiles} from 'hooks/members';
 import {useDocsNavigation} from 'hooks/navigation';
+import {useCanManageSpaceMembers} from 'hooks/permissions';
 import {useManageSpaceMembers} from 'hooks/space_members';
 import React, {useMemo} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
@@ -11,8 +12,6 @@ import {copyToClipboard} from 'utils/clipboard';
 import ChevronDownIcon from '@mattermost/compass-icons/components/chevron-down';
 import ContentCopyIcon from '@mattermost/compass-icons/components/content-copy';
 import GlobeIcon from '@mattermost/compass-icons/components/globe';
-
-import {useSpacePermissions} from 'store/permissions';
 
 import {Button, SecondaryButton} from 'components/form_controls/button';
 import GenericModal from 'components/generic_modal/generic_modal';
@@ -34,16 +33,16 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
     const {formatMessage} = useIntl();
     const {paths} = useDocsNavigation();
     const members = useSpaceMemberProfiles(space.id);
-    const {canManageMembers} = useSpacePermissions(space.id);
+    const canManageMembers = useCanManageSpaceMembers(space.id);
     const {addMembers, removeMember, leave, busy} = useManageSpaceMembers(space);
 
     const memberIds = useMemo(() => members.map((member) => member.id), [members]);
 
-    const actions: MemberListActions | undefined = canManageMembers ? {
-        onRemove: removeMember,
+    const actions: MemberListActions = {
+        ...(canManageMembers && {onRemove: removeMember}),
         onLeave: () => leave().then(onClose),
         disabled: busy,
-    } : undefined;
+    };
 
     const copyLink = () => copyToClipboard(`${window.location.origin}${paths.space(space.id)}`);
 

@@ -5,6 +5,7 @@ import {act, fireEvent, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 
 import GenericModal from 'components/generic_modal/generic_modal';
+import modalStyles from 'components/generic_modal/generic_modal.module.scss';
 
 import DocsModalController, {useDocsModal, useDocsModalLayer} from './docs_modal_controller';
 import {closeAllDocsModals, getDocsModalStack, openDocsModal} from './modal_store';
@@ -103,6 +104,39 @@ describe('DocsModalController', () => {
             renderWithContext(<Layer name='Standalone'/>);
 
             expect(screen.getByText('Standalone: level 0, covered 0')).toBeInTheDocument();
+        });
+
+        it('composes stacked backdrops without clearing the lower one', async () => {
+            renderWithContext(<DocsModalController/>);
+
+            act(() => {
+                openDocsModal((modal) => (
+                    <GenericModal
+                        title='Outer'
+                        onClose={modal.close}
+                    >
+                        {'Outer body'}
+                    </GenericModal>
+                ));
+            });
+            await screen.findByText('Outer body');
+
+            act(() => {
+                openDocsModal((modal) => (
+                    <GenericModal
+                        title='Inner'
+                        onClose={modal.close}
+                    >
+                        {'Inner body'}
+                    </GenericModal>
+                ));
+            });
+            await screen.findByText('Inner body');
+
+            const backdrops = [...document.querySelectorAll(`.${modalStyles.backdrop}`)];
+            expect(backdrops).toHaveLength(2);
+            expect(backdrops[0].className).toBe(modalStyles.backdrop);
+            expect(backdrops[1]).toHaveClass(modalStyles.backdropNested);
         });
     });
 

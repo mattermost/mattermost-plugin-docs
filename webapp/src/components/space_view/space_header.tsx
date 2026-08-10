@@ -6,6 +6,7 @@ import {useSpaceFavoriteState, useToggleFavorite} from 'hooks/favorites';
 import {useFullscreen} from 'hooks/fullscreen';
 import {useLeaveSpace} from 'hooks/leave_space';
 import {useDocsNavigation} from 'hooks/navigation';
+import {useCanManageSpaceMembers} from 'hooks/permissions';
 import {useAppDispatch} from 'hooks/redux';
 import React, {useCallback} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
@@ -25,7 +26,6 @@ import StarIcon from '@mattermost/compass-icons/components/star';
 import StarOutlineIcon from '@mattermost/compass-icons/components/star-outline';
 
 import {deleteSpace} from 'store/actions';
-import {useSpacePermissions} from 'store/permissions';
 
 import ConfirmModal from 'components/confirm_modal/confirm_modal';
 import {Button, PrimaryButton} from 'components/form_controls/button';
@@ -54,7 +54,7 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}
     const {formatMessage} = useIntl();
     const dispatch = useAppDispatch();
     const {paths, spaceId, goHome} = useDocsNavigation();
-    const {canManageMembers} = useSpacePermissions(space.id);
+    const canManageMembers = useCanManageSpaceMembers(space.id);
     const {fullscreen} = useFullscreen();
     const leaveThisSpace = useLeaveSpace(space);
     const favoriteState = useSpaceFavoriteState(space.id);
