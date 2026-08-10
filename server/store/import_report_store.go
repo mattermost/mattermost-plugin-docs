@@ -78,38 +78,3 @@ func (s *Store) GetImportIssuesAfter(
 	}
 	return records, nil
 }
-
-// CountImportIssuesBySeverity counts a job's issues by severity across the given stages, for the report's
-// summary block. Counting in SQL is the point: the report streams its issue rows, so it cannot tally them on
-// the way past without buffering the whole set.
-func (s *Store) CountImportIssuesBySeverity(jobID string, stages []model.ImportIssueStage) (map[string]int, error) {
-	if jobID == "" {
-		return nil, &ErrInvalidInput{Entity: "ImportIssue", Field: "jobID", Value: jobID}
-	}
-	names := make([]string, 0, len(stages))
-	for _, stage := range stages {
-		if !stage.IsValid() {
-			return nil, &ErrInvalidInput{Entity: "ImportIssue", Field: "stage", Value: string(stage)}
-		}
-		names = append(names, string(stage))
-	}
-
-	var rows []struct {
-		Severity string
-		Cnt      int
-	}
-	builder := s.getQueryBuilder().
-		Select("Severity", "COUNT(*) AS cnt").
-		From("DOCS_ImportIssue").
-		Where(sq.Eq{"JobId": jobID, "Stage": names}).
-		GroupBy("Severity")
-	if err := s.selectBuilder(s.db, &rows, builder); err != nil {
-		return nil, errors.Wrap(err, "unable_to_count_import_issues_by_severity")
-	}
-
-	counts := map[string]int{}
-	for _, row := range rows {
-		counts[row.Severity] = row.Cnt
-	}
-	return counts, nil
-}

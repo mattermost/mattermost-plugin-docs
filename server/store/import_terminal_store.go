@@ -5,6 +5,7 @@ package store
 
 import (
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	sq "github.com/mattermost/squirrel"
 	"github.com/pkg/errors"
@@ -704,10 +705,10 @@ func (s *Store) GetImportJobsPendingCompensation(limit int) ([]*model.ImportJob,
 			string(model.ImportStateCompleted), string(model.ImportStateCompletedWithIssues),
 			string(model.ImportStateFailed), string(model.ImportStateCanceled),
 		}}).
-		Where(`EXISTS (
+		Where(sq.Expr(`EXISTS (
 			SELECT 1 FROM DOCS_ImportChannelAttempt a
-			WHERE a.JobId = DOCS_ImportJob.Id AND a.State = ? AND a.ChannelId <> ''
-		)`, string(model.ImportChannelPendingCompensation)).
+			WHERE a.JobId = DOCS_ImportJob.Id AND a.ChannelId <> '' AND a.State = ANY(?)
+		)`, pq.Array(ImportUncompensatedAttemptStates))).
 		OrderBy("FinishedAt ASC", "Id ASC")
 	builder = applyLimitOffset(builder, 0, limit)
 

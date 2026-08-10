@@ -526,6 +526,11 @@ func (s *Service) GetImportJobsForActor(actorID, teamID string, page, perPage in
 	// limit (perPage+1) are collected, so the probe row means what it means everywhere else in this
 	// repository.
 	views := make([]*model.ImportJobView, 0, limit)
+	// One entitlement answer per distinct target, not per row. Entitlement depends only on the target a job
+	// points at, and one actor's jobs point at very few distinct targets — so memoizing turns a scan of
+	// thousands of rows into a handful of membership lookups, which is what makes a scan cap generous enough to
+	// reach a long history affordable at all.
+	entitled := map[string]bool{}
 	skipped, scanned, storeOffset := 0, 0, 0
 	for len(views) < limit && scanned < importListScanLimit {
 		jobs, err := s.store.GetImportJobsForActor(actorID, teamID, storeOffset, importListScanBatch)
@@ -542,11 +547,17 @@ func (s *Service) GetImportJobsForActor(actorID, teamID string, page, perPage in
 			// Jobs whose target the actor can no longer reach are omitted entirely rather than downgraded:
 			// a list is a discovery surface, and a placeholder row would still disclose that an import
 			// exists for a Space the caller has lost access to.
-			entitled, appErr := s.actorStillEntitled(job, actorID)
-			if appErr != nil {
-				return nil, false, appErr
+			key := importTargetKey(job)
+			allowed, known := entitled[key]
+			if !known {
+				var appErr *mmmodel.AppError
+				allowed, appErr = s.actorStillEntitled(job, actorID)
+				if appErr != nil {
+					return nil, false, appErr
+				}
+				entitled[key] = allowed
 			}
-			if !entitled {
+			if !allowed {
 				continue
 			}
 			if skipped < offset {
@@ -564,22 +575,40 @@ func (s *Service) GetImportJobsForActor(actorID, teamID string, page, perPage in
 			break // the store is exhausted
 		}
 	}
-	// Hitting the scan cap means unexamined rows remain, so has-more is true either way: from the probe
-	// row when the page filled, or from the cap when it did not.
-	if scanned >= importListScanLimit && len(views) < limit {
-		trimmed, _ := trimPage(views, limit)
-		return trimmed, true, nil
-	}
+
 	views, hasMore := trimPage(views, limit)
+	if scanned >= importListScanLimit && len(views) == 0 {
+		// The cap was reached without finding a single row for this page. Reporting has-more here would be a
+		// promise this endpoint cannot keep: every subsequent page restarts the same scan, hits the same cap, and
+		// returns empty again — a client that trusts the flag pages forever and never reaches anything. Saying
+		// "no more" is the honest answer for a request this far past what an offset-paged scan can reach.
+		s.log.Warn("Import job listing hit its scan cap with nothing to return; jobs past this depth are unreachable by offset",
+			"actor_id", actorID, "team_id", teamID, "offset", offset, "scanned", scanned)
+		return views, false, nil
+	}
+	if scanned >= importListScanLimit && !hasMore {
+		// The page filled short of the cap's reach, so unexamined rows may remain.
+		return views, true, nil
+	}
 	return views, hasMore, nil
 }
 
-// Bounds for the entitlement-filtered job listing. Each scanned row costs an entitlement check (a team or
-// channel membership lookup), so the scan is capped: a caller deep into a long history of jobs they can no
-// longer reach gets an honest "there may be more" rather than an unbounded sweep.
+// importTargetKey identifies the target a job points at, for the entitlement memo. It includes the kind because
+// a pre-provisioning new-Space job is judged on its team while every other job is judged on its Space.
+func importTargetKey(job *model.ImportJob) string {
+	if job.TargetSpaceExisted {
+		return "space:" + job.TargetSpaceId
+	}
+	return "new:" + job.TeamId + ":" + job.TargetSpaceId
+}
+
+// Bounds for the entitlement-filtered job listing. The scan is capped so a caller deep into a long history of
+// jobs they can no longer reach cannot trigger an unbounded sweep. With the per-target entitlement memo above,
+// a scanned row costs one query row rather than a membership lookup, so the cap can be the store's own
+// unpaginated ceiling instead of the few hundred rows a per-row lookup would have made affordable.
 const (
-	importListScanBatch = 50
-	importListScanLimit = 500
+	importListScanBatch = 200
+	importListScanLimit = store.MaxRowsPerQuery
 )
 
 // GetImportIssues returns one page of a job's persisted issues, for the actor that owns the job.

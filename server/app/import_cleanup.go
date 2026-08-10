@@ -6,6 +6,7 @@ package app
 import (
 	stderrors "errors"
 	"net/http"
+	"slices"
 
 	"github.com/pkg/errors"
 
@@ -291,7 +292,9 @@ func (s *Service) ReconcileImportCompensations() int {
 			continue
 		}
 		for _, attempt := range attempts {
-			if attempt.State != model.ImportChannelPendingCompensation || attempt.ChannelId == "" {
+			// provisioned counts too: on a terminal job it means the attempt was never attached, which is what a
+			// compensation pass whose own state write failed leaves behind.
+			if attempt.ChannelId == "" || !slices.Contains(store.ImportUncompensatedAttemptStates, string(attempt.State)) {
 				continue
 			}
 			result := s.archiveImportChannelAttempt(job, attempt)

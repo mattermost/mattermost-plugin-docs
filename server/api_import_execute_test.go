@@ -905,3 +905,184 @@ func TestImportPreflight_SiblingCapacityBlocksOnlyTheOverflow(t *testing.T) {
 	require.Equal(t, 1, view.Preflight.Counts.Actions[string(model.ImportActionBlocked)],
 		"only the child that overflows the group may be blocked")
 }
+
+// TestImportExecution_MissingActorTerminatesRatherThanRetrying covers the difference between an actor who is
+// gone and a lookup that failed. Both used to read as inconclusive, and because a retryable failure leaves the
+// job in importing — the highest-priority state — the worker re-selected that same job on every pass and
+// nothing behind it ever ran.
+func TestImportExecution_MissingActorTerminatesRatherThanRetrying(t *testing.T) {
+	api := newEnabledMockAPI()
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	api.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
+	api.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
+	api.On("HasPermissionToTeam", mock.Anything, mock.Anything, mock.Anything).Return(true).Maybe()
+	api.On("GetTeam", mock.Anything).Return(&mmmodel.Team{Id: mmmodel.NewId(), Name: "myteam"}, nil).Maybe()
+	api.On("GetUserByUsername", mock.Anything).
+		Return(nil, mmmodel.NewAppError("GetUserByUsername", "not_found", nil, "", http.StatusNotFound)).Maybe()
+	stubImportChannelAPI(api, importMockOptions{})
+
+	// The actor exists until the switch is flipped, then reads as definitively absent — a 404, which pluginapi
+	// normalizes to its not-found sentinel.
+	actor := &mmmodel.User{Id: mmmodel.NewId()}
+	actorGone := false
+	api.On("GetUser", mock.Anything).
+		Return(func(string) (*mmmodel.User, *mmmodel.AppError) {
+			if actorGone {
+				return nil, mmmodel.NewAppError("GetUser", "not_found", nil, "", http.StatusNotFound)
+			}
+			return actor, nil
+		}).Maybe()
+
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+	jobID, view := h.uploadAndPreflight(t, actorID, newTargetRequest(mmmodel.NewId()),
+		importfixture.Options{Pages: 2}, "")
+	confirm := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/confirm", actorID, confirmBody(t, view, true))
+	require.Equal(t, http.StatusAccepted, confirm.Code, confirm.Body.String())
+
+	// A second job queues behind it, uploaded but not yet preflighted: draining now would execute the first job
+	// while the actor still resolves, which is not the situation under test.
+	later := h.uploadFixture(t, actorID, newTargetRequest(mmmodel.NewId()), importfixture.Options{Pages: 1})
+	require.Equal(t, http.StatusCreated, later.Code, later.Body.String())
+	laterID := decodeJobView(t, later).Id
+
+	actorGone = true
+	h.drainImportWorker(t)
+
+	stopped, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateFailed, stopped.State,
+		"an actor who definitively does not exist is a denial, not something to retry forever")
+	require.Equal(t, app.ImportErrorAuthorizationRevoked, stopped.ErrorCode)
+	require.Equal(t, 2, stopped.FinalSummary.Actions.NotAttempted)
+
+	laterJob, err := h.store.GetImportJob(laterID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateAwaitingConfirmation, laterJob.State,
+		"the blocked job must not starve later work")
+}
+
+// TestImportPreflight_TransientAuthorLookupDoesNotMisattribute covers the author resolution preflight persists.
+// Execution deliberately does not re-resolve it, so a fallback recorded because a lookup happened to fail would
+// permanently credit someone else's page to the importing actor.
+func TestImportPreflight_TransientAuthorLookupDoesNotMisattribute(t *testing.T) {
+	api := newEnabledMockAPI()
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	api.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
+	api.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
+	api.On("HasPermissionToTeam", mock.Anything, mock.Anything, mock.Anything).Return(true).Maybe()
+	api.On("GetTeam", mock.Anything).Return(&mmmodel.Team{Id: mmmodel.NewId(), Name: "myteam"}, nil).Maybe()
+	api.On("GetUser", mock.Anything).Return(&mmmodel.User{Id: mmmodel.NewId()}, nil).Maybe()
+	stubImportChannelAPI(api, importMockOptions{})
+
+	// The bundle's author exists, but the lookup fails inconclusively until the switch is flipped.
+	author := &mmmodel.User{Id: mmmodel.NewId()}
+	lookupFails := true
+	api.On("GetUserByUsername", mock.Anything).
+		Return(func(string) (*mmmodel.User, *mmmodel.AppError) {
+			if lookupFails {
+				return nil, mmmodel.NewAppError("GetUserByUsername", "boom", nil, "", http.StatusInternalServerError)
+			}
+			return author, nil
+		}).Maybe()
+
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+	rec := h.uploadFixture(t, actorID, newTargetRequest(mmmodel.NewId()), importfixture.Options{Pages: 2})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	jobID := decodeJobView(t, rec).Id
+
+	// The preflight cannot resolve the author, so it must not publish a plan that says "attribute this to the
+	// importer". It publishes nothing and the pass reports a failure.
+	worked, err := h.plugin.service.RunImportWork()
+	require.True(t, worked)
+	require.Error(t, err, "an inconclusive author lookup must fail the preflight, not be recorded as a fallback")
+	stalled, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Empty(t, stalled.PreflightRevision, "no plan may be published from an unresolved author")
+
+	// Once the lookup recovers, the pages are attributed to the real author.
+	lookupFails = false
+	h.drainImportWorker(t)
+	view := decodeJobView(t, h.do(t, http.MethodGet, "/api/v1/imports/"+jobID, actorID, nil))
+	require.Equal(t, model.ImportStateAwaitingConfirmation, view.State)
+	require.Equal(t, 2, view.Preflight.Counts.Authors["mapped"])
+	require.Zero(t, view.Preflight.Counts.Authors["fallback_to_actor"])
+
+	job := h.confirmAndExecute(t, actorID, jobID, view, true)
+	for _, page := range h.importedPages(t, job.SelectedImportSourceId) {
+		require.Equal(t, author.Id, page.UserId, "the page must be attributed to its resolved author")
+	}
+}
+
+// TestImportMaintenance_RetriesProvisionedOrphans covers the attempt whose own bookkeeping write failed. A
+// terminal job holding a provisioned attempt never got as far as attaching it, so the channel is as orphaned as
+// one marked pending — but recognizing only pending made it invisible: never retried, and eventually deleted
+// along with the job, taking the only pointer to a live channel with it.
+func TestImportMaintenance_RetriesProvisionedOrphans(t *testing.T) {
+	stub := newImportChannelStub()
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true, channelMember: true, channels: stub})
+	h := openTestPlugin(t, api)
+	actorID, teamID := mmmodel.NewId(), mmmodel.NewId()
+
+	rec := h.uploadFixture(t, actorID, newTargetRequest(teamID), importfixture.Options{Pages: 1})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	jobID := decodeJobView(t, rec).Id
+	require.Equal(t, http.StatusAccepted,
+		h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/cancel", actorID, nil).Code)
+
+	// A live channel whose attempt is still 'provisioned' on a terminal job: the state a compensation pass
+	// leaves behind when the archive fails *and* recording that failure also fails.
+	channelID := stub.addLive(teamID)
+	_, err := h.db.Exec(
+		`INSERT INTO DOCS_ImportChannelAttempt (JobId, AttemptId, ChannelName, ChannelId, State, CreateAt, UpdateAt)
+		 VALUES ($1, $2, 'docs-import', $3, 'provisioned', 1, 1)`,
+		jobID, mmmodel.NewId(), channelID)
+	require.NoError(t, err)
+	_, err = h.db.Exec(`UPDATE DOCS_ImportJob SET RetainUntil = 1 WHERE Id = $1`, jobID)
+	require.NoError(t, err)
+
+	counts, err := h.plugin.service.RunImportMaintenance()
+	require.NoError(t, err)
+	require.Equal(t, 1, counts.ResolvedCompensations, "a provisioned orphan must be retried, not ignored")
+	require.True(t, stub.archived(channelID), "the orphaned channel must actually be archived")
+	// Resolved in the same pass, so the job becomes deletable rather than being retained forever.
+	require.Equal(t, 1, counts.DeletedJobs)
+	_, err = h.store.GetImportJob(jobID)
+	require.Error(t, err)
+}
+
+// TestImportMaintenance_KeepsProvisionedOrphanUntilArchived is the other half: while the channel is still there,
+// retention must not delete the job, because the attempt row is the only pointer to it.
+func TestImportMaintenance_KeepsProvisionedOrphanUntilArchived(t *testing.T) {
+	stub := newImportChannelStub()
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true, channelMember: true, channels: stub})
+	h := openTestPlugin(t, api)
+	actorID, teamID := mmmodel.NewId(), mmmodel.NewId()
+
+	rec := h.uploadFixture(t, actorID, newTargetRequest(teamID), importfixture.Options{Pages: 1})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	jobID := decodeJobView(t, rec).Id
+	require.Equal(t, http.StatusAccepted,
+		h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/cancel", actorID, nil).Code)
+
+	channelID := stub.addLive(teamID)
+	stub.archiveFails = true
+	_, err := h.db.Exec(
+		`INSERT INTO DOCS_ImportChannelAttempt (JobId, AttemptId, ChannelName, ChannelId, State, CreateAt, UpdateAt)
+		 VALUES ($1, $2, 'docs-import', $3, 'provisioned', 1, 1)`,
+		jobID, mmmodel.NewId(), channelID)
+	require.NoError(t, err)
+	_, err = h.db.Exec(`UPDATE DOCS_ImportJob SET RetainUntil = 1 WHERE Id = $1`, jobID)
+	require.NoError(t, err)
+
+	counts, err := h.plugin.service.RunImportMaintenance()
+	require.NoError(t, err)
+	require.Zero(t, counts.ResolvedCompensations)
+	require.Zero(t, counts.DeletedJobs, "the job is the only pointer to a live channel and must survive")
+	require.Equal(t, 1, counts.KeptForCompensationJobs)
+	_, err = h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+}
