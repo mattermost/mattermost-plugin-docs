@@ -160,6 +160,14 @@
     "translation": "The team_id parameter is not a valid ID."
   },
   {
+    "id": "app.import.report.invalid_stage.app_error",
+    "translation": "The requested report stage is not valid. Use \"preflight\" or \"final\"."
+  },
+  {
+    "id": "app.import.report.not_ready.app_error",
+    "translation": "That report is not available yet. It becomes downloadable once this stage of the import has finished."
+  },
+  {
     "id": "app.import.source.missing.app_error",
     "translation": "The import source this import was pointed at no longer exists."
   },
