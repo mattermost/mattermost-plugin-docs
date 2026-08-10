@@ -130,7 +130,11 @@ func (s *Service) requireImportTargetStillAuthorized(job *model.ImportJob, actor
 		return mmmodel.NewAppError("requireImportTargetStillAuthorized", "app.import.target.actor_inactive.app_error", nil, "", http.StatusForbidden)
 	}
 
-	if job.TargetSpaceExisted {
+	targeted, targetErr := s.importTargetSpaceExists(job)
+	if targetErr != nil {
+		return mmmodel.NewAppError("requireImportTargetStillAuthorized", "app.import.entitlement.lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(targetErr)
+	}
+	if targeted {
 		if _, spaceErr := s.CheckSpaceMembership(job.TargetSpaceId, actorID, false); spaceErr != nil {
 			return spaceErr
 		}
@@ -147,6 +151,30 @@ func (s *Service) requireImportTargetStillAuthorized(job *model.ImportJob, actor
 		return mmmodel.NewAppError("requireImportTargetStillAuthorized", "app.import.target.cannot_create_space.app_error", nil, "", http.StatusForbidden)
 	}
 	return nil
+}
+
+// importTargetSpaceExists reports whether the job's target Space exists yet, which is what decides *which*
+// authorization gate applies.
+//
+// TargetSpaceExisted records what was true at upload and never changes, so it cannot answer this on its own.
+// A new-Space job has no Space to check before provisioning, and the team gate that authorized it is the only
+// gate available then — but the moment the Space row exists, membership of that Space is the real boundary. A
+// job that kept asking the team question would let an actor removed from the Space it just created carry on
+// writing pages into it, and would keep showing them target-identifying job fields afterwards.
+//
+// Soft-deleted Spaces count as existing: once a Space has been provisioned, the Space is the thing to
+// authorize against, and a deleted one must fail that check rather than fall back to a gate that would pass.
+func (s *Service) importTargetSpaceExists(job *model.ImportJob) (bool, error) {
+	if job.TargetSpaceExisted {
+		return true, nil
+	}
+	if _, err := s.store.GetSpace(job.TargetSpaceId, true); err != nil {
+		if store.IsErrNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // checkImportAcknowledgements requires every acknowledgement the job demands, and no more. The required

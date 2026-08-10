@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -17,6 +19,7 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/importer"
 	"github.com/mattermost/mattermost-plugin-docs/server/internal/importfixture"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
+	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
 // --- helpers ---
@@ -642,4 +645,263 @@ func TestImportExecution_MissingTargetSpaceFailsWithoutStarvingTheWorker(t *test
 	require.NoError(t, err)
 	require.Equal(t, model.ImportStateAwaitingConfirmation, later.State,
 		"the blocked job must not starve later work")
+}
+
+// TestImportExecution_LookupFailureDoesNotFakeCompensation covers the difference between "the channel is gone"
+// and "I could not find out". Only the first is compensation; reporting the second as success would tell an
+// operator a live orphan had been cleaned up.
+func TestImportExecution_LookupFailureDoesNotFakeCompensation(t *testing.T) {
+	stub := newImportChannelStub()
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true, channels: stub})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+
+	jobID, view := h.uploadAndPreflight(t, actorID, newTargetRequest(mmmodel.NewId()),
+		importfixture.Options{Pages: 2}, "")
+	job := h.confirmAndExecute(t, actorID, jobID, view, true)
+	channelID := mustProvisionedChannelID(t, h, jobID)
+
+	// Rewind to a job that owns a channel but never wrote its Space row, and make the channel lookup fail.
+	_, err := h.db.Exec(`DELETE FROM DOCS_ImportResult WHERE JobId=$1 AND Stage='execution'`, jobID)
+	require.NoError(t, err)
+	_, err = h.db.Exec(`DELETE FROM DOCS_Page WHERE SpaceId=$1`, job.TargetSpaceId)
+	require.NoError(t, err)
+	_, err = h.db.Exec(`DELETE FROM DOCS_ImportEntity WHERE ImportSourceId=$1`, job.SelectedImportSourceId)
+	require.NoError(t, err)
+	_, err = h.db.Exec(`DELETE FROM DOCS_Space WHERE Id=$1`, job.TargetSpaceId)
+	require.NoError(t, err)
+	_, err = h.db.Exec(`UPDATE DOCS_ImportChannelAttempt SET State='provisioned' WHERE JobId=$1`, jobID)
+	require.NoError(t, err)
+	_, err = h.db.Exec(
+		`UPDATE DOCS_ImportJob SET State='terminalizing', TerminalIntent='failed', ErrorCode='execution_failed',
+		   FinishedAt=0, InvalidationPending=FALSE, FinalSummary='{}'::jsonb WHERE Id=$1`, jobID)
+	require.NoError(t, err)
+	stub.lookupFails = true
+
+	h.drainImportWorker(t)
+
+	// The job still reaches a terminal state — a report is owed either way — but it says the channel is
+	// outstanding, and the attempt stays on the retry list.
+	failed, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateFailed, failed.State)
+	require.Contains(t, h.executionIssueCodes(t, jobID), importer.IssueChannelCompensationFailed)
+	require.NotContains(t, h.executionIssueCodes(t, jobID), importer.IssueChannelCompensated)
+
+	attempts, err := h.store.GetImportChannelAttempts(jobID)
+	require.NoError(t, err)
+	require.Len(t, attempts, 1)
+	require.Equal(t, model.ImportChannelPendingCompensation, attempts[0].State)
+	require.False(t, stub.archived(channelID), "nothing was archived, so nothing may be reported as archived")
+
+	// Once the lookup works again, maintenance archives it and corrects the finding in place — a report that
+	// still said "could not be removed" would send an operator hunting for something no longer there.
+	stub.lookupFails = false
+	require.Equal(t, 1, h.plugin.service.ReconcileImportCompensations())
+	require.True(t, stub.archived(channelID))
+	require.Contains(t, h.executionIssueCodes(t, jobID), importer.IssueChannelCompensated)
+	require.NotContains(t, h.executionIssueCodes(t, jobID), importer.IssueChannelCompensationFailed)
+}
+
+// TestImportExecution_UpdateNeverMovesEditAtBackwards covers the optimistic-lock token. in.Now is captured
+// before the page transaction takes its locks, so a concurrent edit can already hold a later timestamp; writing
+// the older value over it would let a client holding the stale token pass a compare-and-swap it should fail.
+func TestImportExecution_UpdateNeverMovesEditAtBackwards(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, channelMember: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+	space := seedSpace(t, h.store, mmmodel.NewId())
+
+	firstID, firstView := h.uploadAndPreflight(t, actorID, existingTargetRequest(space.Id),
+		importfixture.Options{Pages: 1}, newSourceSelection("Acme Confluence / DOCS"))
+	imported := h.confirmAndExecute(t, actorID, firstID, firstView, false)
+	page := h.importedPages(t, imported.SelectedImportSourceId)["100"]
+
+	// Push the page's timestamps far into the future, standing in for an edit that commits between the
+	// import's clock reading and its page lock.
+	future := mmmodel.GetMillis() + 60*60*1000
+	_, err := h.db.Exec(`UPDATE DOCS_Page SET UpdateAt=$2, EditAt=$2 WHERE Id=$1`, page.Id, future)
+	require.NoError(t, err)
+
+	// A revised bundle makes this page a plain update, so the import rewrites it.
+	secondID, secondView := h.uploadAndPreflight(t, actorID, existingTargetRequest(space.Id),
+		importfixture.Options{Pages: 1, Revision: 2}, existingSourceSelection(imported.SelectedImportSourceId))
+	second := h.confirmAndExecute(t, actorID, secondID, secondView, false)
+	require.Equal(t, 1, second.FinalSummary.Actions.Update)
+
+	written, err := h.store.GetPage(page.Id, false)
+	require.NoError(t, err)
+	require.Equal(t, "Imported page 1 (rev 2)", written.Title, "the update must have been applied")
+	require.Greater(t, written.EditAt, future, "EditAt is an optimistic-lock token and must only move forward")
+	require.Greater(t, written.UpdateAt, future)
+}
+
+// TestImportExecution_OversizedPagePropsBlocksTheUpdate covers a page whose own props leave no room for the
+// importer's namespace. The direct SQL update has no size constraint behind it, so writing anyway would leave a
+// page that model validation refuses — one the normal API could no longer edit.
+func TestImportExecution_OversizedPagePropsBlocksTheUpdate(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, channelMember: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+	space := seedSpace(t, h.store, mmmodel.NewId())
+
+	firstID, firstView := h.uploadAndPreflight(t, actorID, existingTargetRequest(space.Id),
+		importfixture.Options{Pages: 1}, newSourceSelection("Acme Confluence / DOCS"))
+	imported := h.confirmAndExecute(t, actorID, firstID, firstView, false)
+	page := h.importedPages(t, imported.SelectedImportSourceId)["100"]
+
+	// Add unrelated props filling the page to the model limit, *alongside* the importer's namespace rather than
+	// over it: replacing docs_import would change the applied-content hash and make this a conflict instead of
+	// the update the test is about.
+	filler, err := json.Marshal(map[string]string{"unrelated": strings.Repeat("x", model.PagePropsMaxBytes-64)})
+	require.NoError(t, err)
+	_, err = h.db.Exec(`UPDATE DOCS_Page SET Props = Props || $2::jsonb WHERE Id=$1`, page.Id, filler)
+	require.NoError(t, err)
+
+	secondID, secondView := h.uploadAndPreflight(t, actorID, existingTargetRequest(space.Id),
+		importfixture.Options{Pages: 1, Revision: 2}, existingSourceSelection(imported.SelectedImportSourceId))
+	second := h.confirmAndExecute(t, actorID, secondID, secondView, false)
+
+	require.Equal(t, 1, second.FinalSummary.Actions.Blocked)
+	require.Zero(t, second.FinalSummary.Actions.Update)
+	require.Equal(t, string(model.ImportOutcomeBlocked), h.executionOutcomes(t, secondID)["100"])
+	require.Contains(t, h.executionIssueCodes(t, secondID), importer.IssuePagePropsTooLarge)
+
+	// The page is left exactly as it was. Its own props were already over the limit before this import — the
+	// test put them there — so the property to check is that the import added nothing: the importer's namespace
+	// still names the first job, not the second.
+	untouched, err := h.store.GetPage(page.Id, false)
+	require.NoError(t, err)
+	require.Equal(t, "Imported page 1", untouched.Title)
+	require.Equal(t, firstID, importer.DocsImportNamespace(untouched.Props)[importer.DocsImportKeyLastJobID],
+		"a blocked page must not have the importer's bookkeeping rewritten")
+}
+
+// TestImportExecution_NewSpaceAuthorizesAgainstTheProvisionedSpace covers which gate applies after
+// provisioning. TargetSpaceExisted records what was true at upload and never changes, so a job that kept asking
+// the team question would let an actor removed from the Space it just created carry on writing into it.
+func TestImportExecution_NewSpaceAuthorizesAgainstTheProvisionedSpace(t *testing.T) {
+	// A team member with create-channel permission but no channel membership: the team gate passes and the
+	// Space gate does not, so the two answers are distinguishable.
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true, channelMember: false})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+
+	jobID, view := h.uploadAndPreflight(t, actorID, newTargetRequest(mmmodel.NewId()),
+		importfixture.Options{Pages: 2}, "")
+	job := h.confirmAndExecute(t, actorID, jobID, view, true)
+	require.Equal(t, 2, job.FinalSummary.Actions.Create, "provisioning happens under the team gate")
+
+	// Rewind the job to importing, as a restart mid-import would leave it. The Space now exists, so the
+	// pre-write recheck must judge the actor on membership of *it* — which this actor does not have — instead of
+	// re-asking the team question that authorized the upload.
+	_, err := h.db.Exec(
+		`UPDATE DOCS_ImportJob SET State='importing', TerminalIntent='', ErrorCode='', FinishedAt=0,
+		   InvalidationPending=FALSE, FinalSummary='{}'::jsonb WHERE Id=$1`, jobID)
+	require.NoError(t, err)
+
+	h.drainImportWorker(t)
+
+	stopped, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateFailed, stopped.State,
+		"once the Space exists, membership of it is the boundary")
+	require.Equal(t, app.ImportErrorAuthorizationRevoked, stopped.ErrorCode)
+
+	// The read surface agrees: a job whose target the actor cannot reach is redacted to the minimal view rather
+	// than still disclosing the Space and source it created.
+	got := h.do(t, http.MethodGet, "/api/v1/imports/"+jobID, actorID, nil)
+	require.Equal(t, http.StatusOK, got.Code)
+	redacted := decodeJobView(t, got)
+	require.Empty(t, redacted.Target.SpaceId, "target detail must not survive losing access to the target")
+	require.Nil(t, redacted.SelectedSource)
+}
+
+// TestImportExecution_TransientAuthorizationFailureIsRetried covers the difference between a denial and a
+// failure to find out. Failing an import on an inconclusive lookup destroys work — possibly half-written — over
+// a blip, and labels it with a reason that is not true.
+func TestImportExecution_TransientAuthorizationFailureIsRetried(t *testing.T) {
+	api := newEnabledMockAPI()
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	api.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
+	api.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
+	api.On("HasPermissionToTeam", mock.Anything, mock.Anything, mock.Anything).Return(true).Maybe()
+	api.On("GetTeam", mock.Anything).Return(&mmmodel.Team{Id: mmmodel.NewId(), Name: "myteam"}, nil).Maybe()
+	api.On("GetUserByUsername", mock.Anything).
+		Return(nil, mmmodel.NewAppError("GetUserByUsername", "not_found", nil, "", http.StatusNotFound)).Maybe()
+	stubImportChannelAPI(api, importMockOptions{})
+
+	// The actor resolves normally until the switch is flipped, then the lookup fails with a 500 — an answer
+	// that says nothing about whether they still have access.
+	actor := &mmmodel.User{Id: mmmodel.NewId()}
+	lookupFails := false
+	api.On("GetUser", mock.Anything).
+		Return(func(string) (*mmmodel.User, *mmmodel.AppError) {
+			if lookupFails {
+				return nil, mmmodel.NewAppError("GetUser", "boom", nil, "", http.StatusInternalServerError)
+			}
+			return actor, nil
+		}).Maybe()
+
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+	jobID, view := h.uploadAndPreflight(t, actorID, newTargetRequest(mmmodel.NewId()),
+		importfixture.Options{Pages: 2}, "")
+	confirm := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/confirm", actorID, confirmBody(t, view, true))
+	require.Equal(t, http.StatusAccepted, confirm.Code, confirm.Body.String())
+
+	lookupFails = true
+	worked, err := h.plugin.service.RunImportWork()
+	require.True(t, worked)
+	require.Error(t, err, "an inconclusive authorization lookup must be reported as a failed pass, not swallowed")
+
+	stalled, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateImporting, stalled.State,
+		"the job must stay executable rather than being failed as authorization_revoked")
+	require.Empty(t, stalled.ErrorCode)
+
+	// Once the lookup recovers, the same job completes on a later pass.
+	lookupFails = false
+	h.drainImportWorker(t)
+	completed, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.True(t, completed.State.IsTerminal())
+	require.Equal(t, 2, completed.FinalSummary.Actions.Create)
+	require.NotEqual(t, app.ImportErrorAuthorizationRevoked, completed.ErrorCode)
+}
+
+// TestImportPreflight_SiblingCapacityBlocksOnlyTheOverflow covers the projection's arithmetic. Comparing a
+// group against its *total* planned creates blocks every page under that parent as soon as one does not fit,
+// losing pages there was room for — and since a plan-blocked page now stays blocked at execution, that
+// pessimism is permanent rather than merely cautious.
+func TestImportPreflight_SiblingCapacityBlocksOnlyTheOverflow(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, channelMember: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+	space := seedSpace(t, h.store, mmmodel.NewId())
+
+	// An existing mapped page stands in for the bundle's root, so the bundle's two child pages both land in that
+	// page's sibling group.
+	sourceID, parent := seedImportSourceWithMapping(t, h, space, importfixture.RootExternalID, "", "")
+
+	// Fill that group to one short of the cap, so exactly one of the two new children fits. Seeded with raw SQL
+	// rather than one CreatePage call per row, which at this scale would dominate the test's runtime.
+	_, err := h.db.Exec(
+		`INSERT INTO DOCS_Page (Id, SpaceId, ChannelId, ParentId, Type, Title, Body, SearchText, UserId,
+		    LastModifiedBy, SortOrder, CreateAt, UpdateAt, EditAt, DeleteAt, OriginalId, Props)
+		 SELECT 'flr' || lpad(g::text, 23, '0'), $1, $2, $3, 'page', 'filler', '', '', $4, $4,
+		        g, 1, 1, 1, 0, '', '{}'::jsonb
+		   FROM generate_series(1, $5) g`,
+		space.Id, space.ChannelId, parent.Id, mmmodel.NewId(), store.MaxPageSiblingsLimit-1)
+	require.NoError(t, err)
+
+	_, view := h.uploadAndPreflight(t, actorID, existingTargetRequest(space.Id),
+		importfixture.Options{Pages: 3}, existingSourceSelection(sourceID))
+
+	require.Equal(t, 1, view.Preflight.Counts.Actions[string(model.ImportActionCreate)],
+		"the child that fits must still be created")
+	require.Equal(t, 1, view.Preflight.Counts.Actions[string(model.ImportActionBlocked)],
+		"only the child that overflows the group may be blocked")
 }

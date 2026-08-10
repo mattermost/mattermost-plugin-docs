@@ -439,7 +439,14 @@ func (s *Service) actorStillEntitled(job *model.ImportJob, actorID string) (bool
 		return false, nil
 	}
 
-	if job.TargetSpaceExisted {
+	// Which gate applies follows whether the target Space exists, not what was true at upload: a new-Space job
+	// that has since provisioned its Space must be judged on membership of that Space, or an actor removed from
+	// it would keep reading target- and source-identifying fields out of the job record.
+	targeted, targetErr := s.importTargetSpaceExists(job)
+	if targetErr != nil {
+		return false, mmmodel.NewAppError("actorStillEntitled", "app.import.entitlement.lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(targetErr)
+	}
+	if targeted {
 		// CheckSpaceMembership covers both halves of the access gate (active team member plus backing
 		// channel member) and yields 403 for any failure, which here simply means "not entitled".
 		if _, spaceErr := s.CheckSpaceMembership(job.TargetSpaceId, actorID, false); spaceErr != nil {
@@ -451,7 +458,7 @@ func (s *Service) actorStillEntitled(job *model.ImportJob, actorID string) (bool
 		return true, nil
 	}
 
-	// A new-Space job has no Space to check yet, so the entitlement is the one that authorized it.
+	// Before provisioning there is no Space to check, so the entitlement is the one that authorized the upload.
 	active, memberErr := s.isActiveTeamMember(job.TeamId, actorID)
 	if memberErr != nil {
 		return false, mmmodel.NewAppError("actorStillEntitled", "app.import.entitlement.lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memberErr)

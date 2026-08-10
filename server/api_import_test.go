@@ -42,6 +42,36 @@ type importMockOptions struct {
 	// channelCreateFails makes the backing-channel create for a new Space fail without producing a channel,
 	// which is the provisioning failure that needs no compensation.
 	channelCreateFails bool
+	// channels, when set, is the channel world the test controls: it can register live channels the plugin
+	// never created and make archiving fail on demand. Left nil, the stub keeps its own private world.
+	channels *importChannelStub
+}
+
+// importChannelStub is the in-memory channel world the import mocks operate on, so a test can pose the states
+// that only exist between a channel being created and its Space row being written.
+type importChannelStub struct {
+	channels map[string]*mmmodel.Channel
+	// archiveFails makes DeleteChannel fail, which is how a test holds an attempt in pending_compensation.
+	archiveFails bool
+	// lookupFails makes GetChannelOfType fail inconclusively, which must never read as "already gone".
+	lookupFails bool
+}
+
+func newImportChannelStub() *importChannelStub {
+	return &importChannelStub{channels: map[string]*mmmodel.Channel{}}
+}
+
+// addLive registers a live Space channel and returns its id.
+func (c *importChannelStub) addLive(teamID string) string {
+	id := mmmodel.NewId()
+	c.channels[id] = &mmmodel.Channel{Id: id, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}
+	return id
+}
+
+// archived reports whether a registered channel has been archived.
+func (c *importChannelStub) archived(channelID string) bool {
+	ch, ok := c.channels[channelID]
+	return ok && ch.DeleteAt != 0
 }
 
 // newImportMockAPI builds a plugintest API with only the stubs the import flow needs, so a test can
@@ -90,7 +120,11 @@ func newImportMockAPI(o importMockOptions) *plugintest.API {
 // created channel echoes back the requested fields with a fresh id, exactly as core does, so the recorded
 // ProvisionedChannelId and the resolve-on-restart path see a consistent channel.
 func stubImportChannelAPI(api *plugintest.API, o importMockOptions) {
-	created := map[string]*mmmodel.Channel{}
+	world := o.channels
+	if world == nil {
+		world = newImportChannelStub()
+	}
+	created := world.channels
 	if o.channelCreateFails {
 		// No channel comes back, so there is nothing for compensation to reconcile.
 		api.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
@@ -106,11 +140,22 @@ func stubImportChannelAPI(api *plugintest.API, o importMockOptions) {
 	}
 	api.On("AddChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
 	api.On("GetChannelOfType", mock.Anything, mock.Anything).
-		Return(func(channelID string, _ mmmodel.ChannelType) *mmmodel.Channel {
-			return created[channelID]
-		}, nil).Maybe()
+		Return(func(channelID string, _ mmmodel.ChannelType) (*mmmodel.Channel, *mmmodel.AppError) {
+			if world.lookupFails {
+				return nil, mmmodel.NewAppError("GetChannelOfType", "boom", nil, "", http.StatusInternalServerError)
+			}
+			if ch, ok := created[channelID]; ok {
+				return ch, nil
+			}
+			// Core reports an absent channel as 404, which pluginapi normalizes to its not-found sentinel. That
+			// distinction is load-bearing: only a definitive absence may count as successful compensation.
+			return nil, mmmodel.NewAppError("GetChannelOfType", "not_found", nil, "", http.StatusNotFound)
+		}).Maybe()
 	api.On("DeleteChannel", mock.Anything).
 		Return(func(channelID string) *mmmodel.AppError {
+			if world.archiveFails {
+				return mmmodel.NewAppError("DeleteChannel", "boom", nil, "", http.StatusInternalServerError)
+			}
 			if ch, ok := created[channelID]; ok {
 				ch.DeleteAt = mmmodel.GetMillis()
 			}
@@ -865,7 +910,8 @@ func TestHandleListImports_FiltersBeforePaginating(t *testing.T) {
 // would destroy the only pointer to an orphaned channel. The schema even carries a partial index over
 // exactly these rows, i.e. a work-list the cascade would silently empty.
 func TestImportMaintenance_KeepsJobsAwaitingCompensation(t *testing.T) {
-	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
+	stub := newImportChannelStub()
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true, channels: stub})
 	h := openTestPlugin(t, api)
 	actorID, teamID := mmmodel.NewId(), mmmodel.NewId()
 
@@ -876,11 +922,14 @@ func TestImportMaintenance_KeepsJobsAwaitingCompensation(t *testing.T) {
 	cancel := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/cancel", actorID, nil)
 	require.Equal(t, http.StatusAccepted, cancel.Code)
 
-	// A channel was provisioned and still needs compensating.
+	// A channel was provisioned, is still live, and cannot yet be archived — so compensation genuinely has
+	// something left to do rather than merely not having been tried.
+	channelID := stub.addLive(teamID)
+	stub.archiveFails = true
 	_, err := h.db.Exec(
 		`INSERT INTO DOCS_ImportChannelAttempt (JobId, AttemptId, ChannelName, ChannelId, State, CreateAt, UpdateAt)
 		 VALUES ($1, $2, 'docs-import', $3, 'pending_compensation', 1, 1)`,
-		jobID, mmmodel.NewId(), mmmodel.NewId())
+		jobID, mmmodel.NewId(), channelID)
 	require.NoError(t, err)
 
 	// Push the job past its terminal retention.
@@ -889,6 +938,7 @@ func TestImportMaintenance_KeepsJobsAwaitingCompensation(t *testing.T) {
 
 	counts, err := h.plugin.service.RunImportMaintenance()
 	require.NoError(t, err)
+	require.Zero(t, counts.ResolvedCompensations, "the archive failed, so nothing was resolved")
 	require.Zero(t, counts.DeletedJobs, "a job whose channel still needs compensation must not be deleted")
 	require.Equal(t, 1, counts.KeptForCompensationJobs)
 
@@ -901,11 +951,14 @@ func TestImportMaintenance_KeepsJobsAwaitingCompensation(t *testing.T) {
 		jobID).Scan(&attempts))
 	require.Equal(t, 1, attempts)
 
-	// Once compensation resolves the attempt, the next sweep deletes the job as usual.
-	_, err = h.db.Exec(`UPDATE DOCS_ImportChannelAttempt SET State = 'compensated' WHERE JobId = $1`, jobID)
-	require.NoError(t, err)
+	// Once the archive succeeds, maintenance itself resolves the attempt and the same sweep deletes the job.
+	// Without that retry the job would be retained forever: it is terminal, so it never re-enters
+	// terminalization, and nothing else would ever try the archive again.
+	stub.archiveFails = false
 	counts, err = h.plugin.service.RunImportMaintenance()
 	require.NoError(t, err)
+	require.Equal(t, 1, counts.ResolvedCompensations)
+	require.True(t, stub.archived(channelID), "the orphaned channel must actually be archived")
 	require.Equal(t, 1, counts.DeletedJobs)
 	require.Zero(t, counts.KeptForCompensationJobs)
 	_, err = h.store.GetImportJob(jobID)

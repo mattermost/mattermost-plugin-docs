@@ -52,6 +52,8 @@ const (
 	// IssueSkippedByReviewedPlan marks a page the reviewed plan refused which execution would otherwise now
 	// accept, because the condition that blocked it has since cleared.
 	IssueSkippedByReviewedPlan = "skipped_by_reviewed_plan"
+	// IssuePagePropsTooLarge marks a page whose existing props leave no room for the importer's own namespace.
+	IssuePagePropsTooLarge = "page_props_too_large"
 )
 
 // MappingBaseline is the durable per-page baseline a reimport compares against, taken from

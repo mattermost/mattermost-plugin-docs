@@ -442,6 +442,14 @@ Space row leaves a `compensated` one and an `import_channel_compensated` finding
 again, because a Space channel cannot be found by name and would otherwise be invisible orphan work. If the
 archive itself fails the attempt stays `pending_compensation` and the report carries an error-severity
 `import_channel_compensation_failed` naming the channel, which is real operator work rather than a footnote.
+
+Only a *definitive* answer counts as cleaned up. A lookup that merely failed says nothing about whether the
+channel is still there, so it leaves the attempt pending rather than claiming success. The hourly maintenance
+sweep retries those, and reports `resolved_compensations` when one succeeds — it also corrects the finding in
+the report from failed to compensated, because a report still saying "could not be removed" would send an
+operator hunting for something no longer there. Without that retry a single transient failure would strand the
+job forever: it is already terminal, so it never re-enters terminalization, and retention deliberately refuses
+to delete it while the attempt row is the only pointer to the orphan.
 The name is random rather than derived from the job id on purpose: a deterministic name would collide with
 that orphan on every retry and wedge the job permanently instead of leaving one channel to clean up.
 
@@ -460,6 +468,19 @@ UPDATE DOCS_Space SET DeleteAt = 1 WHERE Id = '<target space id>';
 Expect `state: "failed"` with `error.code: "authorization_revoked"`, a full set of `not_attempted_failed`
 outcomes, and — the point of the exercise — a second queued upload still reaching
 `awaiting_confirmation` on the same worker pass.
+
+**A failure that is merely inconclusive must not do that.** Only a definitive denial (403/404) revokes an
+import; a lookup that returns 500 leaves the job in `importing` for a later pass, because failing it would
+destroy a half-written import over a blip and label it with a reason that is not true. The same rule governs
+author revalidation: a user lookup that fails does not silently reattribute the page to you. Watch for
+`Import worker pass failed; backing off before retrying` in the log — a failed pass always waits, so a
+persistent fault cannot spin the worker.
+
+**A new Space's authorization boundary moves once the Space exists.** Before provisioning, the only gate
+available is the team membership that authorized the upload; afterwards, membership of the created Space is the
+real boundary. Remove yourself from the new Space's channel and re-run a job against it: the import stops, and
+`GET /imports/{job}` drops to the minimal projection rather than continuing to disclose the Space and source it
+created.
 
 Finally, a terminal job that changed the tree owes exactly one channel-scoped `space_imported` event
 carrying only the Space id, published after the terminal state commits and then cleared:

@@ -4,11 +4,13 @@
 package app
 
 import (
+	stderrors "errors"
 	"net/http"
 
 	"github.com/pkg/errors"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/pluginapi"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
@@ -226,6 +228,10 @@ func (s *Service) compensateImportChannels(job *model.ImportJob) []store.ImportC
 }
 
 // archiveImportChannelAttempt archives one attempt's channel, treating an already-gone channel as success.
+//
+// Only a definitive answer counts as resolved. A lookup that merely *failed* says nothing about whether the
+// channel is still there, and treating it as success would let the job publish "this channel was cleaned up"
+// while a live orphan remained — the exact claim the compensation record exists to make honestly.
 func (s *Service) archiveImportChannelAttempt(job *model.ImportJob, attempt *model.ImportChannelAttempt) store.ImportCompensation {
 	result := store.ImportCompensation{AttemptID: attempt.AttemptId, ChannelID: attempt.ChannelId}
 	if s.client == nil {
@@ -234,10 +240,15 @@ func (s *Service) archiveImportChannelAttempt(job *model.ImportJob, attempt *mod
 	}
 
 	channel, err := s.client.Channel.GetChannelOfType(attempt.ChannelId, mmmodel.ChannelTypeSpace)
-	if err != nil || channel == nil {
-		// Not found is the successful end state, not a failure: the channel this job would have to clean up is
-		// already gone.
+	switch {
+	case stderrors.Is(err, pluginapi.ErrNotFound), err == nil && channel == nil:
+		// Genuinely absent is the successful end state: there is nothing left to clean up.
 		result.Resolved = true
+		return result
+	case err != nil:
+		s.log.Warn("Could not determine whether an import's orphaned channel still exists; leaving it for a later pass",
+			"job_id", job.Id, "attempt_id", attempt.AttemptId, "channel_id", attempt.ChannelId, "err", err)
+		result.Reason = "lookup_failed"
 		return result
 	}
 	if channel.DeleteAt != 0 {
@@ -253,6 +264,60 @@ func (s *Service) archiveImportChannelAttempt(job *model.ImportJob, attempt *mod
 	result.Resolved = true
 	return result
 }
+
+// ReconcileImportCompensations retries the channel archives that failed while their jobs were terminalizing,
+// and returns how many it resolved.
+//
+// Without this a job whose archive failed once is stuck forever: it is already terminal, so it never re-enters
+// terminalizing, and retention deliberately refuses to delete it while a pending attempt row is the only
+// pointer to the orphaned channel. That is two leaks from one transient failure — the channel and the job's
+// retained reservation — neither of which anything else would ever clear.
+//
+// The report is corrected rather than appended to. A compensation finding is a statement about the channel's
+// current state, so once the channel is gone the honest report says compensated; leaving a permanent "could not
+// be removed" would send an operator looking for something that is no longer there.
+func (s *Service) ReconcileImportCompensations() int {
+	jobs, err := s.store.GetImportJobsPendingCompensation(importCompensationBatch)
+	if err != nil {
+		s.log.Warn("Could not scan for import channel compensations to retry", "err", err)
+		return 0
+	}
+
+	resolved := 0
+	for _, job := range jobs {
+		attempts, attemptErr := s.store.GetImportChannelAttempts(job.Id)
+		if attemptErr != nil {
+			s.log.Warn("Could not load import channel attempts to retry", "job_id", job.Id, "err", attemptErr)
+			continue
+		}
+		for _, attempt := range attempts {
+			if attempt.State != model.ImportChannelPendingCompensation || attempt.ChannelId == "" {
+				continue
+			}
+			result := s.archiveImportChannelAttempt(job, attempt)
+			if !result.Resolved {
+				continue
+			}
+			if stateErr := s.store.SetImportChannelAttemptState(
+				job.Id, attempt.AttemptId, model.ImportChannelCompensated, ""); stateErr != nil {
+				s.log.Warn("Could not record a retried import channel compensation",
+					"job_id", job.Id, "attempt_id", attempt.AttemptId, "err", stateErr)
+				continue
+			}
+			if issueErr := s.store.ResolveImportCompensationIssue(job.Id, attempt.AttemptId); issueErr != nil {
+				s.log.Warn("Could not correct the compensation finding in an import report",
+					"job_id", job.Id, "attempt_id", attempt.AttemptId, "err", issueErr)
+			}
+			s.log.Info("Archived an import's orphaned channel on a later pass",
+				"job_id", job.Id, "attempt_id", attempt.AttemptId, "channel_id", attempt.ChannelId)
+			resolved++
+		}
+	}
+	return resolved
+}
+
+// importCompensationBatch bounds one compensation-retry sweep.
+const importCompensationBatch = 50
 
 // PublishPendingImportInvalidations publishes any tree invalidation a terminal job still owes.
 //
@@ -343,6 +408,9 @@ func (s *Service) RunImportMaintenance() (store.ImportCleanupCounts, error) {
 	// Publish first: an invalidation a crash left owed is the one piece of maintenance whose delay users can
 	// see, because until it goes out every client shows a page tree the import has already changed.
 	counts.PublishedInvalidations = s.PublishPendingImportInvalidations()
+	// Then retry compensations, before the retention sweep below: a job it resolves becomes deletable in the
+	// same pass rather than waiting an hour for the next one.
+	counts.ResolvedCompensations = s.ReconcileImportCompensations()
 
 	expired, releasedExpired, releasedRetained, err := s.store.ExpireStalledImportJobs(now, ImportErrorJobExpired)
 	counts.ExpiredJobs = expired
@@ -377,17 +445,20 @@ func (s *Service) LogImportMaintenance(counts store.ImportCleanupCounts, err err
 			"deleted_jobs", counts.DeletedJobs, "kept_for_compensation_jobs", counts.KeptForCompensationJobs,
 			"released_staged_bytes", counts.ReleasedStagedBytes,
 			"published_invalidations", counts.PublishedInvalidations,
+			"resolved_compensations", counts.ResolvedCompensations,
 			"released_retained_bytes", counts.ReleasedRetainedBytes, "err", err)
 		return
 	}
 	if counts.ExpiredJobs == 0 && counts.PurgedStagedJobs == 0 && counts.DeletedJobs == 0 &&
-		counts.KeptForCompensationJobs == 0 && counts.PublishedInvalidations == 0 {
+		counts.KeptForCompensationJobs == 0 && counts.PublishedInvalidations == 0 &&
+		counts.ResolvedCompensations == 0 {
 		return
 	}
 	s.log.Info("Import maintenance pass completed",
 		"expired_jobs", counts.ExpiredJobs, "purged_staged_jobs", counts.PurgedStagedJobs,
 		"deleted_jobs", counts.DeletedJobs, "kept_for_compensation_jobs", counts.KeptForCompensationJobs,
 		"published_invalidations", counts.PublishedInvalidations,
+		"resolved_compensations", counts.ResolvedCompensations,
 		"released_staged_bytes", counts.ReleasedStagedBytes,
 		"released_retained_bytes", counts.ReleasedRetainedBytes)
 }

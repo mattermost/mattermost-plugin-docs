@@ -689,6 +689,63 @@ func (s *Store) GetImportJobsPendingInvalidation(limit int) ([]*model.ImportJob,
 	return jobs, nil
 }
 
+// GetImportJobsPendingCompensation returns terminal jobs that still own a channel attempt awaiting
+// compensation, oldest first.
+//
+// These are the jobs retention deliberately refuses to delete, because the attempt row is the only pointer to
+// a channel the import created and never cleaned up. Until something resolves them they hold that pointer and
+// their retained reservation indefinitely, so they need a retry path rather than only a first attempt.
+func (s *Store) GetImportJobsPendingCompensation(limit int) ([]*model.ImportJob, error) {
+	if err := requirePositiveLimit("ImportJob", limit); err != nil {
+		return nil, err
+	}
+	builder := s.importJobSelectQuery().
+		Where(sq.Eq{"State": []string{
+			string(model.ImportStateCompleted), string(model.ImportStateCompletedWithIssues),
+			string(model.ImportStateFailed), string(model.ImportStateCanceled),
+		}}).
+		Where(`EXISTS (
+			SELECT 1 FROM DOCS_ImportChannelAttempt a
+			WHERE a.JobId = DOCS_ImportJob.Id AND a.State = ? AND a.ChannelId <> ''
+		)`, string(model.ImportChannelPendingCompensation)).
+		OrderBy("FinishedAt ASC", "Id ASC")
+	builder = applyLimitOffset(builder, 0, limit)
+
+	jobs := []*model.ImportJob{}
+	if err := s.selectBuilder(s.db, &jobs, builder); err != nil {
+		return nil, errors.Wrap(err, "unable_to_list_import_jobs_pending_compensation")
+	}
+	return jobs, nil
+}
+
+// ResolveImportCompensationIssue rewrites one attempt's compensation finding from failed to compensated.
+//
+// The report is corrected in place rather than appended to. A compensation finding states what became of a
+// specific channel, so once the channel is gone the accurate report says so; leaving a permanent "could not be
+// removed" alongside a later success would send an operator hunting for something that no longer exists. The
+// row is located by the attempt id in its details, because the finding's ordinal depends on the attempt
+// ordering at terminalization and is not recomputable here.
+func (s *Store) ResolveImportCompensationIssue(jobID, attemptID string) error {
+	code := importer.IssueChannelCompensated
+	builder := s.getQueryBuilder().
+		Update("DOCS_ImportIssue").
+		Set("Code", code).
+		Set("Severity", string(importer.IssueSeverity(code))).
+		Set("Message", importer.IssueMessage(code)).
+		Set("Remediation", importer.IssueRemediation(code)).
+		Set("Details", sq.Expr("Details - 'reason'")).
+		Where(sq.Eq{
+			"JobId": jobID,
+			"Stage": string(model.ImportStageExecution),
+			"Code":  importer.IssueChannelCompensationFailed,
+		}).
+		Where("Details->>'attempt_id' = ?", attemptID)
+	if _, err := s.execBuilder(s.db, builder); err != nil {
+		return errors.Wrap(err, "unable_to_resolve_import_compensation_issue")
+	}
+	return nil
+}
+
 // ClearImportInvalidationPending clears the flag after the invalidation event has been published.
 func (s *Store) ClearImportInvalidationPending(jobID string) error {
 	builder := s.getQueryBuilder().

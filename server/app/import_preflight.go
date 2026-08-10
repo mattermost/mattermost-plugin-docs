@@ -142,8 +142,10 @@ type preflightState struct {
 	plans   []store.ImportStagedPagePlan
 	results []*model.ImportResultRecord
 	issues  []*model.ImportIssueRecord
-	// issueBytes is what the issues recorded so far have spent of the flat per-job allowance;
-	// issuesDropped counts the findings omitted once it ran out.
+	// issueBudget is what this job may still spend on issue rows, taken from the job at the start of the
+	// computation so anything inspection already recorded is subtracted rather than ignored. issueBytes is what
+	// the issues recorded so far have spent of it; issuesDropped counts the findings omitted once it ran out.
+	issueBudget        int64
 	issueBytes         int64
 	issuesDropped      int
 	truncationRecorded bool
@@ -198,6 +200,10 @@ func (s *Service) computeImportPreflight(job *model.ImportJob, mappingRevision i
 		createsPerParent:  map[string]int{},
 		createDepthNeeded: map[string]int{},
 		plannedCreateIDs:  map[string]struct{}{},
+		// One budget for the whole job, not one per stage: inspection has already written issue rows against the
+		// same flat allowance, so starting from the constant would let a bundle with many inspection findings
+		// retain more than admission ever reserved.
+		issueBudget: job.IssueBudgetRemaining(),
 	}
 
 	users, err := s.store.GetImportManifestUsers(job.Id)
@@ -571,7 +577,7 @@ func (st *preflightState) recordIssues(page *model.ImportStagedPage, classificat
 			st.truncateIssues(len(codes) - i)
 			return
 		}
-		st.issues = append(st.issues, &model.ImportIssueRecord{
+		st.appendIssue(&model.ImportIssueRecord{
 			JobId:       st.job.Id,
 			Stage:       model.ImportStagePreflight,
 			Ordinal:     page.Ordinal*model.ImportIssuesPerPage + i,
@@ -585,13 +591,30 @@ func (st *preflightState) recordIssues(page *model.ImportStagedPage, classificat
 			Remediation: importer.IssueRemediation(code),
 			Details:     issueDetails(code, author),
 		})
-		st.issueBytes += estimateIssueRowBytes(code)
 	}
 }
 
-// issueBudgetSpent reports whether the plan has used its discretionary issue allowance.
+// issueBudgetSpent reports whether the plan has used what the job had left of its issue allowance.
 func (st *preflightState) issueBudgetSpent() bool {
-	return st.issueBytes >= int64(model.ImportRetainedIssueBudgetBytes)
+	return st.issueBytes >= st.issueBudget
+}
+
+// appendIssue records one issue row if the job's remaining issue allowance covers it, and reports whether it
+// did.
+//
+// Every issue producer goes through here. Issues are the discretionary half of the retained budget and there
+// are three separate places that emit them — per-page findings, stale entries, and the structural projection —
+// so a check in only one of them bounds nothing: a source with thousands of stale mappings would blow through
+// the allowance without the per-page check ever firing.
+func (st *preflightState) appendIssue(record *model.ImportIssueRecord) bool {
+	cost := estimateIssueRowBytes(record.Code)
+	if st.issueBytes+cost > st.issueBudget {
+		st.truncateIssues(1)
+		return false
+	}
+	st.issues = append(st.issues, record)
+	st.issueBytes += cost
+	return true
 }
 
 // truncateIssues records, exactly once, that the report stopped listing findings. A silent cap would read
@@ -602,6 +625,8 @@ func (st *preflightState) truncateIssues(dropped int) {
 		return
 	}
 	st.truncationRecorded = true
+	// The one issue row deliberately written without charging the budget: it is the row that says the budget ran
+	// out, so refusing it for want of budget would leave the report silently short instead of honestly truncated.
 	st.issues = append(st.issues, &model.ImportIssueRecord{
 		JobId:       st.job.Id,
 		Stage:       model.ImportStagePreflight,
@@ -680,7 +705,7 @@ func (s *Service) appendStaleResults(st *preflightState) {
 			CreateAt:      now,
 			UpdateAt:      now,
 		})
-		st.issues = append(st.issues, &model.ImportIssueRecord{
+		st.appendIssue(&model.ImportIssueRecord{
 			JobId:       st.job.Id,
 			Stage:       model.ImportStagePreflight,
 			Ordinal:     model.ImportJobIssueOrdinalBase + i,
@@ -735,6 +760,8 @@ func (s *Service) applyStructuralProjections(st *preflightState) error {
 	// Walk the planned creates in ordinal order, which the producer guarantees is parents before children.
 	// One pass therefore resolves every projected depth and propagates every block.
 	projectedDepth := make(map[string]int, len(st.plannedCreates))
+	// accepted counts, per intended parent, how many creates this walk has actually admitted so far.
+	accepted := make(map[string]int, len(st.createsPerParent))
 	blocks := map[int]string{}
 	for _, create := range st.plannedCreates {
 		// A blocked ancestor blocks the whole subtree: parenting a page under an id that will never exist
@@ -761,9 +788,16 @@ func (s *Service) applyStructuralProjections(st *preflightState) error {
 		case depth > model.MaxPageDepth:
 			st.blocked[create.externalID] = struct{}{}
 			blocks[create.ordinal] = importer.IssueTargetDepthExceeded
-		case existingChildren[create.parentLocalID]+st.createsPerParent[create.parentLocalID] > store.MaxPageSiblingsLimit:
+		// Only the creates that actually overflow are blocked, counted in ordinal order against what the group has
+		// already accepted. Comparing against the group's *total* planned creates instead would block every page
+		// under a parent as soon as one did not fit — ninety-nine existing children plus two new ones would lose
+		// both, though there was room for one. Counting accepted rather than planned additions also means a page
+		// blocked for any other reason frees the slot it would have taken.
+		case existingChildren[create.parentLocalID]+accepted[create.parentLocalID]+1 > store.MaxPageSiblingsLimit:
 			st.blocked[create.externalID] = struct{}{}
 			blocks[create.ordinal] = importer.IssueTargetSiblingCapacityExceeded
+		default:
+			accepted[create.parentLocalID]++
 		}
 	}
 	if len(blocks) == 0 {
@@ -799,7 +833,7 @@ func (s *Service) applyProjectionBlocks(st *preflightState, blocks map[int]strin
 		result.LocalId = ""
 		st.actions.Create--
 		st.actions.Blocked++
-		st.issues = append(st.issues, &model.ImportIssueRecord{
+		st.appendIssue(&model.ImportIssueRecord{
 			JobId:       st.job.Id,
 			Stage:       model.ImportStagePreflight,
 			Ordinal:     plan.Ordinal*model.ImportIssuesPerPage + model.ImportMaxIssueCodesPerPage,

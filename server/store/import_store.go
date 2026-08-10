@@ -1003,6 +1003,8 @@ type ImportCleanupCounts struct {
 	ReleasedRetainedBytes int64
 	// PublishedInvalidations counts tree invalidations a previous pass left owed, republished by this one.
 	PublishedInvalidations int
+	// ResolvedCompensations counts orphaned channels a previous pass failed to archive and this one did.
+	ResolvedCompensations int
 }
 
 // importCleanupBatch bounds how many jobs one sweep touches per category, so a large backlog is

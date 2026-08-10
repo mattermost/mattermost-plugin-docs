@@ -70,6 +70,30 @@ const importMaintenanceInterval = time.Hour
 // its preflight starting; short enough to feel immediate, long enough to be a negligible query load.
 const importWorkerIdleInterval = 2 * time.Second
 
+// importWorkerErrorBackoff is how long the worker waits after a failed pass. It is deliberately much longer
+// than the idle interval: an idle worker is healthy and should stay responsive, while a failing one is usually
+// failing for a reason that will not have changed two seconds later.
+const importWorkerErrorBackoff = 30 * time.Second
+
+// importWorkerDelay decides what the worker does after one pass: drain straight into the next unit of work, or
+// wait, and for how long.
+//
+// A failed pass always waits, whatever it reported doing. RunImportWork reports worked=true whenever it selected
+// a job, error or not, so draining on error would spin the same failing job as fast as the database can answer —
+// turning one persistent fault, a backend outage or a job that cannot advance, into a CPU and log storm. The
+// error wait is much longer than the idle wait because an idle worker is healthy and should stay responsive,
+// while a failing one is usually failing for a reason that will not have changed two seconds later.
+func importWorkerDelay(worked bool, err error) (time.Duration, bool) {
+	switch {
+	case err != nil:
+		return importWorkerErrorBackoff, false
+	case worked:
+		return 0, true
+	default:
+		return importWorkerIdleInterval, false
+	}
+}
+
 // startImportWorker launches the single import worker.
 //
 // It drains available work before idling, so a backlog is worked down promptly rather than one job per
@@ -99,13 +123,13 @@ func (p *Plugin) startImportWorker() {
 
 			worked, err := p.service.RunImportWork()
 			if err != nil {
-				p.API.LogError("Import worker pass failed", "err", err)
+				p.API.LogError("Import worker pass failed; backing off before retrying", "err", err)
 			}
-			if worked {
+			delay, drain := importWorkerDelay(worked, err)
+			if drain {
 				continue
 			}
-
-			idle.Reset(importWorkerIdleInterval)
+			idle.Reset(delay)
 			select {
 			case <-ctx.Done():
 				return
