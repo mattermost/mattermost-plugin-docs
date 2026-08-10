@@ -325,14 +325,15 @@ type ErrInvalidInput struct {
 // Reason codes for invariants decided atomically under a row lock (see RestorePage, RestoreSpace,
 // CreatePage). Callers map these to their own error keys.
 const (
-	ReasonNotRestorable           = "not_restorable"
-	ReasonNotDeleted              = "not_deleted"
-	ReasonMaxDepthExceeded        = "max_depth_exceeded"
-	ReasonSubtreeMaxDepthExceeded = "subtree_max_depth_exceeded"
-	ReasonParentNotLive           = "parent_not_live"
-	ReasonDraftCycle              = "draft_cycle"
-	ReasonDraftTooDeep            = "draft_too_deep"
-	ReasonDraftQuotaExceeded      = "draft_quota_exceeded"
+	ReasonNotRestorable             = "not_restorable"
+	ReasonNotDeleted                = "not_deleted"
+	ReasonMaxDepthExceeded          = "max_depth_exceeded"
+	ReasonSubtreeMaxDepthExceeded   = "subtree_max_depth_exceeded"
+	ReasonParentNotLive             = "parent_not_live"
+	ReasonDraftCycle                = "draft_cycle"
+	ReasonDraftTooDeep              = "draft_too_deep"
+	ReasonDraftQuotaExceeded        = "draft_quota_exceeded"
+	ReasonSubtreeTotalBytesExceeded = "subtree_total_bytes_exceeded"
 	// ReasonPageNotLive marks an autosave whose target is not addressable in the request's space:
 	// the page was deleted, snapshotted, or moved out of it, the existing draft belongs to another
 	// space, or the page id was never reserved at all (no page row and no draft). The caller maps
