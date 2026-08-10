@@ -5,15 +5,19 @@ import manifest from 'manifest';
 
 import {ClientError} from '@mattermost/client';
 
-import {makePage} from 'store/test_fixtures';
+import {makePage, makeSpace, makeTeam} from 'store/test_fixtures';
 
 import {SpaceTypes} from './action_types';
-import {addSpaceMember, addSpaceMembers, isLastSpaceMemberError, isNotTeamMemberError, leaveSpace, movePage, removeSpaceMember} from './actions';
+import {addSpaceMember, addSpaceMembers, createSpace, fetchAllSpaces, isLastSpaceMemberError, isNotTeamMemberError, leaveSpace, movePage, removeSpaceMember} from './actions';
+
+import {makeTestState} from '../../tests/react_testing_utils';
 
 const mockAddSpaceMember = jest.fn();
 const mockRemoveSpaceMember = jest.fn();
 const mockMovePage = jest.fn();
 const mockListPages = jest.fn();
+const mockListSpaces = jest.fn();
+const mockCreateSpace = jest.fn();
 
 jest.mock('data', () => ({
     docsDataSource: {
@@ -21,6 +25,8 @@ jest.mock('data', () => ({
         removeSpaceMember: (...args: unknown[]) => mockRemoveSpaceMember(...args as []),
         movePage: (...args: unknown[]) => mockMovePage(...args as []),
         listPages: (...args: unknown[]) => mockListPages(...args as []),
+        listSpaces: (...args: unknown[]) => mockListSpaces(...args as []),
+        createSpace: (...args: unknown[]) => mockCreateSpace(...args as []),
     },
 }));
 
@@ -41,6 +47,42 @@ const run = <T>(thunk: (dispatch: jest.Mock, getState: () => unknown) => T, stat
 const stateWithPage = {
     [`plugins-${manifest.id}`]: {entities: {pages: {[PAGE.id]: PAGE}}},
 };
+
+describe('fetchAllSpaces', () => {
+    beforeEach(() => jest.clearAllMocks());
+
+    it('dispatches successful team results when another team fails', async () => {
+        const team1 = makeTeam('team1', 'one');
+        const team2 = makeTeam('team2', 'two');
+        const space = makeSpace('space1', 'One', team1.id);
+        const error = new Error('no access');
+        mockListSpaces.mockImplementation((teamId: string) => (
+            teamId === team1.id ? Promise.resolve([space]) : Promise.reject(error)
+        ));
+        const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+        const state = makeTestState({teams: [team1, team2], currentUser: {id: 'user1'}});
+
+        const {result, dispatch} = run((d, g) => fetchAllSpaces()(d as never, g as never, undefined as never), state);
+        await result;
+
+        expect(dispatch).toHaveBeenCalledWith({type: SpaceTypes.RECEIVED_SPACES, spaces: [space]});
+        expect(consoleError).toHaveBeenCalledWith('Docs: failed to load spaces for team', team2.id, error);
+        consoleError.mockRestore();
+    });
+});
+
+describe('createSpace', () => {
+    beforeEach(() => jest.clearAllMocks());
+
+    it('rejects before calling the data source without a current team', async () => {
+        const input = {title: 'New space', visibility: 'public' as const};
+
+        const {result} = run((d, g) => createSpace(input)(d as never, g as never, undefined as never), makeTestState());
+
+        await expect(result).rejects.toThrow('cannot create a space without a current team');
+        expect(mockCreateSpace).not.toHaveBeenCalled();
+    });
+});
 
 describe('isLastSpaceMemberError', () => {
     // The REST layer keeps only {message, status_code}, so 409 is all a caller has

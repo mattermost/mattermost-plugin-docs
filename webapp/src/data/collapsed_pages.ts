@@ -11,6 +11,7 @@ const KEY_PREFIX = 'docs_collapsed_pages_';
 // Per-user so multiple accounts on one browser don't share collapse state.
 const storageKey = (userId: string): string => `${KEY_PREFIX}${userId}`;
 
+// TODO: Validate this with a shared, versioned Zod schema in a future storage revision.
 const read = (userId: string): string[] => {
     try {
         const raw = window.localStorage.getItem(storageKey(userId));

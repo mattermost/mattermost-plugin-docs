@@ -5,7 +5,8 @@ import {combineReducers} from 'redux';
 import type {UnknownAction} from 'redux';
 
 import type {Page, Space} from 'types/docs';
-import type {Draft, DraftSummary} from 'types/drafts';
+import {isFullDraft} from 'types/drafts';
+import type {Draft, StoredDraft} from 'types/drafts';
 
 import {DraftTypes, PageTypes, SpaceTypes} from './action_types';
 
@@ -26,7 +27,7 @@ type SpaceMemberAction = {spaceId: string; userId: string};
 
 // `spaceId` marks a full list for that space, seeding its index entry even when the
 // space has no drafts — the same "loaded" signal RECEIVED_PAGES uses.
-type ReceivedDraftsAction = {drafts: Array<Draft | DraftSummary>; spaceId?: string};
+type ReceivedDraftsAction = {drafts: StoredDraft[]; spaceId?: string};
 type ReceivedDraftAction = {draft: Draft};
 type DeletedDraftAction = {spaceId: string; pageId: string};
 
@@ -140,6 +141,9 @@ function spaces(state: Record<string, Space> = {}, action: UnknownAction): Recor
 }
 
 function addSpaceToTeam(state: Record<string, Set<string>>, space: Space): Record<string, Set<string>> {
+    if (!(space.team_id in state)) {
+        return state;
+    }
     const next = new Set(state[space.team_id]);
     next.add(space.id);
     return {...state, [space.team_id]: next};
@@ -188,11 +192,13 @@ function spacesInTeam(state: Record<string, Set<string>> = {}, action: UnknownAc
 function pages(state: Record<string, Page> = {}, action: UnknownAction): Record<string, Page> {
     switch (action.type) {
     case PageTypes.RECEIVED_PAGES: {
-        const {pages: received} = action as unknown as ReceivedPagesAction;
-        if (received.length === 0) {
+        const {pages: received, spaceId} = action as unknown as ReceivedPagesAction;
+        if (received.length === 0 && spaceId === undefined) {
             return state;
         }
-        const next = {...state};
+        const next = spaceId === undefined ? {...state} : Object.fromEntries(
+            Object.entries(state).filter(([, page]) => page.space_id !== spaceId),
+        );
         for (const page of received) {
             next[page.id] = page;
         }
@@ -235,16 +241,16 @@ function pagesInSpace(state: Record<string, Set<string>> = {}, action: UnknownAc
     switch (action.type) {
     case PageTypes.RECEIVED_PAGES: {
         const {pages: received, spaceId} = action as unknown as ReceivedPagesAction;
-        if (received.length === 0 && (spaceId === undefined || spaceId in state)) {
+        if (spaceId !== undefined) {
+            return {
+                ...state,
+                [spaceId]: new Set(received.filter((page) => page.space_id === spaceId).map((page) => page.id)),
+            };
+        }
+        if (received.length === 0) {
             return state;
         }
         const next = {...state};
-
-        // A listed space always gets an entry, so its presence means "this
-        // space's pages are loaded" even when the space has none.
-        if (spaceId !== undefined && !(spaceId in next)) {
-            next[spaceId] = new Set();
-        }
         for (const page of received) {
             const set = new Set(next[page.space_id]);
             set.add(page.id);
@@ -254,7 +260,11 @@ function pagesInSpace(state: Record<string, Set<string>> = {}, action: UnknownAc
     }
     case DraftTypes.PUBLISHED_DRAFT: {
         const {page} = action as unknown as PublishedDraftAction;
-        const set = new Set(state[page.space_id]);
+        const current = state[page.space_id];
+        if (!current || current.has(page.id)) {
+            return state;
+        }
+        const set = new Set(current);
         set.add(page.id);
         return {...state, [page.space_id]: set};
     }
@@ -332,7 +342,7 @@ function spaceMembers(state: Record<string, string[]> = {}, action: UnknownActio
  * id alone is a sufficient key here, but the maps must stay separate or one user's
  * unpublished title would render in another's tree.
  */
-function drafts(state: Record<string, Draft> = {}, action: UnknownAction): Record<string, Draft> {
+function drafts(state: Record<string, StoredDraft> = {}, action: UnknownAction): Record<string, StoredDraft> {
     switch (action.type) {
     case DraftTypes.RECEIVED_DRAFTS: {
         const {drafts: received} = action as unknown as ReceivedDraftsAction;
@@ -341,9 +351,10 @@ function drafts(state: Record<string, Draft> = {}, action: UnknownAction): Recor
         }
         const next = {...state};
         for (const draft of received) {
-            // A summary carries no body; merging preserves a body already fetched
-            // for that page rather than blanking it on a list refresh.
-            next[draft.page_id] = {...next[draft.page_id], ...draft} as Draft;
+            const current = next[draft.page_id];
+            next[draft.page_id] = current && isFullDraft(current) && !isFullDraft(draft) ?
+                {...current, ...draft} :
+                draft;
         }
         return next;
     }
@@ -387,7 +398,7 @@ function drafts(state: Record<string, Draft> = {}, action: UnknownAction): Recor
 // Page ids of the caller's drafts, keyed by space id. Mirrors pagesInSpace so
 // "this space has no drafts" can be told from "not fetched yet".
 function draftsInSpace(state: Record<string, Set<string>> = {}, action: UnknownAction): Record<string, Set<string>> {
-    const withDraft = (current: Record<string, Set<string>>, draft: Draft | DraftSummary) => {
+    const withDraft = (current: Record<string, Set<string>>, draft: StoredDraft) => {
         const set = new Set(current[draft.space_id]);
         set.add(draft.page_id);
         return {...current, [draft.space_id]: set};

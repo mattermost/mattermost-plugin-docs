@@ -5,12 +5,15 @@ import {useForm} from '@tanstack/react-form';
 import {getSpaceViews, recordSpaceView} from 'data/recent_spaces';
 import {useAppDispatch, useAppSelector} from 'hooks/redux';
 import {useCallback, useEffect, useMemo, useState} from 'react';
+import {useIntl} from 'react-intl';
 import {createSpaceFormSchema} from 'validation/space_schema';
 
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
 import {createSpace, fetchPages, fetchSpace, fetchSpaceMembers} from 'store/actions';
 import {areMembersLoadedForSpace, getAllSpaces, getPagesForSpace, getSpace, getSpaceMemberIds, getSpacesForCurrentTeam} from 'store/selectors';
+
+import {useToast} from 'components/toast';
 
 import type {Space, SpaceSummary, SpaceVisibility} from 'types/docs';
 
@@ -147,6 +150,8 @@ type CreateSpaceOptions = {
 // through TanStack's validators (its issues distribute to fields by path).
 export function useCreateSpace({onCreated}: CreateSpaceOptions = {}) {
     const dispatch = useAppDispatch();
+    const {formatMessage} = useIntl();
+    const toast = useToast();
 
     const formSchema = useMemo(() => createSpaceFormSchema(), []);
 
@@ -167,7 +172,14 @@ export function useCreateSpace({onCreated}: CreateSpaceOptions = {}) {
         form.setFieldValue('name', name);
     }, [form]);
 
-    const submit = useCallback(() => form.handleSubmit(), [form]);
+    const submit = useCallback(() => form.handleSubmit().catch((error) => {
+        toast.error(formatMessage({
+            id: 'docs.createSpace.error.submit',
+            defaultMessage: 'Could not create the space. Please try again.',
+        }));
+        // eslint-disable-next-line no-console
+        console.error('Docs: failed to create space', error);
+    }), [form, formatMessage, toast]);
 
     return {form, changeName, submit};
 }

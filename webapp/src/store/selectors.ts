@@ -9,7 +9,8 @@ import type {GlobalState} from '@mattermost/types/store';
 import {getCurrentTeamId} from 'mattermost-redux/selectors/entities/teams';
 
 import type {Page, Space} from 'types/docs';
-import type {Draft} from 'types/drafts';
+import {isFullDraft} from 'types/drafts';
+import type {Draft, StoredDraft} from 'types/drafts';
 
 import {collectSubtreeIds} from './entities';
 import type {DocsEntitiesState, DocsPluginState} from './types';
@@ -28,7 +29,7 @@ const EMPTY_PLUGIN_STATE: DocsPluginState = {
 
 const EMPTY_SPACES: Space[] = [];
 const EMPTY_PAGES: Page[] = [];
-const EMPTY_DRAFTS: Draft[] = [];
+const EMPTY_DRAFTS: StoredDraft[] = [];
 
 // Assert known typing, mirroring the Playbooks pluginState selector — the host
 // store types plugin subtrees as `unknown`. Falls back to an empty slice so a
@@ -62,7 +63,7 @@ const resolvePages = (ids: Set<string> | undefined, byId: Record<string, Page>):
 
 // Drafts have no sort_order to order by, so recency stands in — matching the
 // server's UpdateAt DESC collection order.
-const resolveDrafts = (ids: Set<string> | undefined, byId: Record<string, Draft>): Draft[] => {
+const resolveDrafts = (ids: Set<string> | undefined, byId: Record<string, StoredDraft>): StoredDraft[] => {
     if (!ids || ids.size === 0) {
         return EMPTY_DRAFTS;
     }
@@ -147,14 +148,16 @@ export const areMembersLoadedForSpace = (state: GlobalState, spaceId: string): b
 export const arePagesLoadedForSpace = (state: GlobalState, spaceId: string): boolean =>
     spaceId in getPagesInSpaceIndex(state);
 
-export const getDraftsById = (state: GlobalState): Record<string, Draft> => entities(state).drafts;
+export const getDraftsById = (state: GlobalState): Record<string, StoredDraft> => entities(state).drafts;
 
 const getDraftsInSpaceIndex = (state: GlobalState): Record<string, Set<string>> => entities(state).draftsInSpace;
 
 // The caller's unpublished work on a page, if any. Keyed by page id, so this is
 // also how an orphan draft is reached — its page id is reserved, not published.
-export const getDraftForPage = (state: GlobalState, pageId: string): Draft | undefined =>
-    getDraftsById(state)[pageId];
+export const getDraftForPage = (state: GlobalState, pageId: string): Draft | undefined => {
+    const draft = getDraftsById(state)[pageId];
+    return draft && isFullDraft(draft) ? draft : undefined;
+};
 
 // Whether the caller has unpublished edits to an existing page. Distinct from
 // having a draft at all: an orphan draft is an unpublished *page*, not an edit.

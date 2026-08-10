@@ -72,12 +72,17 @@ export function fetchSpace(spaceId: string): DocsThunkAction<Promise<Space | und
 export function fetchAllSpaces(): DocsThunkAction<Promise<void>> {
     return async (dispatch, getState) => {
         const teams = getMyTeams(getState());
-        try {
-            const perTeam = await Promise.all(teams.map((team) => docsDataSource.listSpaces(team.id)));
-            dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: perTeam.flat()});
-        } catch (error) {
+        const settled = await Promise.allSettled(teams.map((team) => docsDataSource.listSpaces(team.id)));
+        const spaces = settled.flatMap((result, index) => {
+            if (result.status === 'fulfilled') {
+                return result.value;
+            }
             // eslint-disable-next-line no-console
-            console.error('Docs: failed to load spaces across teams', error);
+            console.error('Docs: failed to load spaces for team', teams[index].id, result.reason);
+            return [];
+        });
+        if (spaces.length > 0) {
+            dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces});
         }
     };
 }
@@ -344,6 +349,9 @@ export function addSpaceMembers(spaceId: string, userIds: string[]): DocsThunkAc
 export function createSpace(input: CreateSpaceInput): DocsThunkAction<Promise<Space>> {
     return async (dispatch, getState) => {
         const teamId = getCurrentTeamId(getState());
+        if (!teamId) {
+            throw new Error('Docs: cannot create a space without a current team');
+        }
         const space = await docsDataSource.createSpace(teamId, input);
         dispatch({type: SpaceTypes.CREATED_SPACE, space});
         return space;

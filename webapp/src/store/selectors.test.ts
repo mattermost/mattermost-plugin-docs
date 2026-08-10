@@ -90,6 +90,16 @@ describe('draft selectors', () => {
         expect(getDraftForPage(state, 'nothing')).toBeUndefined();
     });
 
+    it('getDraftForPage does not expose a metadata-only summary as a full draft', () => {
+        const summary = {...orphan};
+        delete (summary as Partial<typeof summary>).body;
+        delete (summary as Partial<typeof summary>).props;
+        delete (summary as Partial<typeof summary>).base_edit_at;
+        const summaryState = stateWith({drafts: {new1: summary}});
+
+        expect(getDraftForPage(summaryState, 'new1')).toBeUndefined();
+    });
+
     // A draft alone doesn't mean "unpublished changes" — an orphan draft is an
     // unpublished page, which reads differently and gets its own row.
     it('hasUnpublishedEdits is true only for a draft whose page exists', () => {

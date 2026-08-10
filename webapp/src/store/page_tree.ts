@@ -2,7 +2,7 @@
 // See LICENSE.txt for license information.
 
 import type {Page} from 'types/docs';
-import type {Draft} from 'types/drafts';
+import type {DraftSummary} from 'types/drafts';
 
 /**
  * A row in the page tree: a published page, or one of the caller's own unpublished
@@ -20,7 +20,7 @@ export type PageNode = {
     id: string;
     title: string;
     page?: Page;
-    draft?: Draft;
+    draft?: DraftSummary;
     children: PageNode[];
     depth: number;
 };
@@ -31,7 +31,7 @@ const bySortOrder = (a: Page, b: Page): number =>
 // Drafts have no stored order, so creation order stands in. Deliberately not
 // update_at: that advances as the author types — and the server bumps it for
 // maintenance writes too — which would move a row while it was being edited.
-const byCreateAt = (a: Draft, b: Draft): number =>
+const byCreateAt = (a: DraftSummary, b: DraftSummary): number =>
     a.create_at - b.create_at || a.page_id.localeCompare(b.page_id);
 
 const group = <T>(map: Map<string, T[]>, key: string, value: T) => {
@@ -64,7 +64,7 @@ const group = <T>(map: Map<string, T[]>, key: string, value: T) => {
  *    validateParentExists). A draft whose own parent is another draft therefore
  *    falls back to the root group rather than nesting or vanishing.
  */
-export function buildPageTree(pages: Page[], drafts: Draft[] = []): PageNode[] {
+export function buildPageTree(pages: Page[], drafts: DraftSummary[] = []): PageNode[] {
     const pageIds = new Set(pages.map((page) => page.id));
 
     const pagesByParent = new Map<string, Page[]>();
@@ -72,7 +72,7 @@ export function buildPageTree(pages: Page[], drafts: Draft[] = []): PageNode[] {
         group(pagesByParent, pageIds.has(page.parent_id) ? page.parent_id : '', page);
     }
 
-    const draftsByParent = new Map<string, Draft[]>();
+    const draftsByParent = new Map<string, DraftSummary[]>();
     for (const draft of drafts) {
         if (pageIds.has(draft.page_id)) {
             continue;

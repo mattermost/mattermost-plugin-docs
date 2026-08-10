@@ -49,6 +49,15 @@ describe('spaces', () => {
         expect(afterCreate.spacesInTeam.t1).toEqual(new Set(['a', 'b']));
     });
 
+    it('CREATED_SPACE does not mark an unloaded team list as loaded', () => {
+        const space = makeSpace('a', 'Space A', 't1');
+
+        const next = reducer(initialState, {type: SpaceTypes.CREATED_SPACE, space});
+
+        expect(next.spaces).toEqual({a: space});
+        expect(next.spacesInTeam.t1).toBeUndefined();
+    });
+
     it('DELETED_SPACE prunes byId and the team set', () => {
         const spaceA = makeSpace('a', 'Space A', 't1');
         const spaceB = makeSpace('b', 'Space B', 't1');
@@ -77,6 +86,19 @@ describe('pages', () => {
         expect(afterSecond.pages).toEqual({p1: page1, p2: page2, p3: page3});
         expect(afterSecond.pagesInSpace['space-a']).toEqual(new Set(['p1', 'p2']));
         expect(afterSecond.pagesInSpace['space-b']).toEqual(new Set(['p3']));
+    });
+
+    it('a full RECEIVED_PAGES list replaces and prunes only that space', () => {
+        const stale = makePage('stale', 'space-a', 'Stale');
+        const current = makePage('current', 'space-a', 'Current');
+        const other = makePage('other', 'space-b', 'Other');
+        const loaded = reducer(initialState, {type: PageTypes.RECEIVED_PAGES, pages: [stale, other]});
+
+        const next = reducer(loaded, {type: PageTypes.RECEIVED_PAGES, pages: [current], spaceId: 'space-a'});
+
+        expect(next.pages).toEqual({current, other});
+        expect(next.pagesInSpace['space-a']).toEqual(new Set(['current']));
+        expect(next.pagesInSpace['space-b']).toEqual(new Set(['other']));
     });
 
     it('DELETED_SPACE removes that space\'s pages from byId and its space index', () => {
@@ -188,10 +210,23 @@ describe('drafts', () => {
 
         const summary = {...makeDraft('p1', 'space-a', 'One', 5)};
         delete (summary as Partial<typeof summary>).body;
+        delete (summary as Partial<typeof summary>).props;
+        delete (summary as Partial<typeof summary>).base_edit_at;
         const next = reducer(loaded, {type: DraftTypes.RECEIVED_DRAFTS, drafts: [summary], spaceId: 'space-a'});
 
-        expect(next.drafts.p1.body).toBe('written');
-        expect(next.drafts.p1.update_at).toBe(5);
+        expect(next.drafts.p1).toMatchObject({body: 'written', props: {}, base_edit_at: 0, update_at: 5});
+    });
+
+    it('stores an unknown draft summary without inventing full-draft fields', () => {
+        const summary = {...makeDraft('p1', 'space-a', 'One')};
+        delete (summary as Partial<typeof summary>).body;
+        delete (summary as Partial<typeof summary>).props;
+        delete (summary as Partial<typeof summary>).base_edit_at;
+
+        const next = reducer(initialState, {type: DraftTypes.RECEIVED_DRAFTS, drafts: [summary], spaceId: 'space-a'});
+
+        expect(next.drafts.p1).toEqual(summary);
+        expect(next.drafts.p1).not.toHaveProperty('body');
     });
 
     it('DELETED_DRAFT removes it from byId and the space index', () => {
@@ -207,7 +242,8 @@ describe('drafts', () => {
     // One action, so no render sees the draft and its page at once.
     it('PUBLISHED_DRAFT removes the draft and adds the page together', () => {
         const draft = makeDraft('p1', 'space-a', 'One');
-        const loaded = reducer(initialState, {type: DraftTypes.RECEIVED_DRAFTS, drafts: [draft], spaceId: 'space-a'});
+        const withDraft = reducer(initialState, {type: DraftTypes.RECEIVED_DRAFTS, drafts: [draft], spaceId: 'space-a'});
+        const loaded = reducer(withDraft, {type: PageTypes.RECEIVED_PAGES, pages: [], spaceId: 'space-a'});
         const page = makePage('p1', 'space-a', 'One');
 
         const next = reducer(loaded, {type: DraftTypes.PUBLISHED_DRAFT, spaceId: 'space-a', pageId: 'p1', page});
@@ -216,6 +252,17 @@ describe('drafts', () => {
         expect(next.draftsInSpace['space-a']).toEqual(new Set());
         expect(next.pages).toEqual({p1: page});
         expect(next.pagesInSpace['space-a']).toEqual(new Set(['p1']));
+    });
+
+    it('PUBLISHED_DRAFT does not mark an unloaded page list as loaded', () => {
+        const draft = makeDraft('p1', 'space-a', 'One');
+        const loaded = reducer(initialState, {type: DraftTypes.RECEIVED_DRAFTS, drafts: [draft], spaceId: 'space-a'});
+        const page = makePage('p1', 'space-a', 'One');
+
+        const next = reducer(loaded, {type: DraftTypes.PUBLISHED_DRAFT, spaceId: 'space-a', pageId: 'p1', page});
+
+        expect(next.pages).toEqual({p1: page});
+        expect(next.pagesInSpace['space-a']).toBeUndefined();
     });
 
     // Unpublished edits to a page that no longer exists can never be published.

@@ -48,6 +48,10 @@ export type Draft = {
 // content. Fetch the draft by page id when the body is needed.
 export type DraftSummary = Omit<Draft, 'body' | 'props' | 'base_edit_at'>;
 
+export type StoredDraft = Draft | DraftSummary;
+
+export const isFullDraft = (draft: StoredDraft): draft is Draft => 'body' in draft;
+
 // A nil field means "leave unchanged".
 export type DraftPatch = {
     title?: string;

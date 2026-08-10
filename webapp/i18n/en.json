@@ -17,6 +17,7 @@
   "docs.createSpace.error.description.tooLong": "Description must be {max} characters or fewer",
   "docs.createSpace.error.name.required": "Please enter a name for the space",
   "docs.createSpace.error.name.tooLong": "Name must be {max} characters or fewer",
+  "docs.createSpace.error.submit": "Could not create the space. Please try again.",
   "docs.createSpace.nameLabel": "Space name",
   "docs.createSpace.permissionsNote": "Specific edit and sharing permissions can be defined once the space is created.",
   "docs.createSpace.private.description": "Only invited members",

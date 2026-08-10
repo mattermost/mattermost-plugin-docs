@@ -115,6 +115,18 @@ type Paginated<T> = {
 const PER_PAGE = 100;
 const MAX_PAGES = 1000;
 
+type PaginationLimitCause<T> = {
+    code: 'pagination_limit';
+    items: T[];
+};
+
+export type PaginationLimitError<T> = Error & {
+    cause: PaginationLimitCause<T>;
+};
+
+export const isPaginationLimitError = (error: unknown): error is PaginationLimitError<unknown> =>
+    error instanceof Error && (error.cause as PaginationLimitCause<unknown>)?.code === 'pagination_limit';
+
 // Follows the server's {items, page, per_page, has_more} envelope across pages
 // and returns the flattened list. The page cap is a runaway-loop backstop, not
 // an expected limit.
@@ -125,10 +137,15 @@ export async function listAll<T>(path: (query: string) => string, signal?: Abort
         const res = await restGet<Paginated<T>>(path(`page=${page}&per_page=${PER_PAGE}`), signal);
         out.push(...res.items);
         if (!res.has_more) {
-            break;
+            return out;
         }
     }
-    return out;
+    throw new Error(`Docs: pagination exceeded the ${MAX_PAGES}-page safety limit`, {
+        cause: {
+            code: 'pagination_limit',
+            items: out,
+        } satisfies PaginationLimitCause<T>,
+    });
 }
 
 export {apiUrl};
