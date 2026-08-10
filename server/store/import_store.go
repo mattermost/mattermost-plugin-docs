@@ -436,7 +436,7 @@ func (s *Store) CreateImportJobStreaming(
 
 	// Cheap pre-checks first: reject an over-subscribed actor or target before parsing a large bundle
 	// into the transaction.
-	if err = s.checkImportJobCounts(tx, job, limits); err != nil {
+	if err = s.checkImportJobCounts(tx, job, limits, ""); err != nil {
 		return nil, nil, err
 	}
 	if err = s.insertImportJob(tx, job); err != nil {
@@ -550,13 +550,22 @@ func (s *Store) insertImportJob(tx sqlx.ExtContext, job *model.ImportJob) error 
 
 // checkImportJobCounts rejects an upload when the actor or target already holds too many nonterminal
 // staged jobs. Must be called inside tx.
-func (s *Store) checkImportJobCounts(tx sqlx.ExtContext, job *model.ImportJob, limits ImportAdmissionLimits) error {
+// excludeJobID is passed once the job's own row has been inserted, so it is not counted against its own limit.
+func (s *Store) checkImportJobCounts(
+	tx sqlx.ExtContext,
+	job *model.ImportJob,
+	limits ImportAdmissionLimits,
+	excludeJobID string,
+) error {
 	count := func(column, value string) (int, error) {
 		var n int
 		builder := s.getQueryBuilder().
 			Select("COUNT(*)").
 			From("DOCS_ImportJob").
 			Where(sq.Eq{column: value, "State": nonterminalImportStates})
+		if excludeJobID != "" {
+			builder = builder.Where(sq.NotEq{"Id": excludeJobID})
+		}
 		if err := s.getBuilder(tx, &n, builder); err != nil {
 			return 0, errors.Wrap(err, "unable_to_count_import_jobs")
 		}
@@ -592,6 +601,15 @@ func (s *Store) admitImportCapacity(tx sqlx.ExtContext, job *model.ImportJob, li
 		Suffix("FOR UPDATE")
 	if err := s.getBuilder(tx, &capacity, lockBuilder); err != nil {
 		return errors.Wrap(err, "unable_to_lock_import_capacity")
+	}
+
+	// Recheck the job counts now that the shared lock is held. The check before streaming is a courtesy — it
+	// rejects an over-subscribed actor before a large bundle is parsed — but on its own it is a read outside any
+	// mutual exclusion: two uploads seeing the same last free slot would both pass it and both commit. This is
+	// the only point at which the answer is authoritative, so it is also asked here. The job's own row is already
+	// inserted by now, hence excluding it.
+	if err := s.checkImportJobCounts(tx, job, limits, job.Id); err != nil {
+		return err
 	}
 
 	if job.StagedBytes > limits.MaxStagedBytesPerJob {
@@ -1151,6 +1169,19 @@ func (s *Store) DeleteExpiredImportJobs(now int64) (int, int, error) {
 	return deleted, skipped, nil
 }
 
+// ImportUncompensatedAttemptStates are the attempt states that, on a terminal job, mean a channel this import
+// created has neither been attached to a Space nor cleaned up.
+//
+// provisioned belongs here as much as pending_compensation does. It is the transient state of a *successful*
+// provisioning too, but a job that reached a terminal state while an attempt was still provisioned never got as
+// far as attaching it — and that is exactly what a compensation pass whose own bookkeeping write failed leaves
+// behind. Recognizing only pending_compensation made that case invisible twice over: never retried, and
+// eventually deleted along with the job, taking the only pointer to a live channel with it.
+var ImportUncompensatedAttemptStates = []string{
+	string(model.ImportChannelProvisioned),
+	string(model.ImportChannelPendingCompensation),
+}
+
 // hasPendingCompensation reports whether a job still owns a channel attempt awaiting compensation. Must
 // be called inside tx, with the job row already locked, so the answer cannot change under the delete.
 func (s *Store) hasPendingCompensation(tx sqlx.ExtContext, jobID string) (bool, error) {
@@ -1158,7 +1189,8 @@ func (s *Store) hasPendingCompensation(tx sqlx.ExtContext, jobID string) (bool, 
 	builder := s.getQueryBuilder().
 		Select("COUNT(*)").
 		From("DOCS_ImportChannelAttempt").
-		Where(sq.Eq{"JobId": jobID, "State": string(model.ImportChannelPendingCompensation)})
+		Where(sq.Eq{"JobId": jobID, "State": ImportUncompensatedAttemptStates}).
+		Where(sq.NotEq{"ChannelId": ""})
 	if err := s.getBuilder(tx, &pending, builder); err != nil {
 		return false, errors.Wrap(err, "unable_to_count_import_channel_attempts")
 	}

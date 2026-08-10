@@ -55,6 +55,17 @@ func (s *Service) RunImportPreflight(jobID string) error {
 
 	publication, err := s.computeImportPreflight(job, mappingRevision)
 	if err != nil {
+		if isRetryableImportError(err) {
+			// The computation could not establish something it needs, rather than establishing that the job cannot
+			// proceed. Nothing was published, so returning the job to the queue loses no work and the next pass
+			// recomputes; failing it here would end an import over a transient backend error.
+			s.log.Warn("Import preflight could not complete; returning the job to the queue",
+				"job_id", job.Id, "err", err)
+			if requeueErr := s.requeueImportPreflight(job.Id); requeueErr != nil {
+				return requeueErr
+			}
+			return err
+		}
 		code := ImportErrorPreflightFailed
 		if store.IsErrImportSourceMissing(err) {
 			code = ImportErrorSourceMissing
@@ -335,7 +346,10 @@ func (s *Service) classifyOneStagedPage(st *preflightState, page *model.ImportSt
 		return errors.Wrap(err, "hash source content")
 	}
 
-	author := s.resolveImportAuthor(st, page)
+	author, err := s.resolveImportAuthor(st, page)
+	if err != nil {
+		return err
+	}
 	mapping := st.mappings[page.ExternalId]
 	if mapping != nil {
 		st.seen[page.ExternalId] = struct{}{}
@@ -854,17 +868,20 @@ func (s *Service) applyProjectionBlocks(st *preflightState, blocks map[int]strin
 // Authorship never grants access: the resolved user does not need membership of the target team or Space,
 // because attributing an imported page to someone is a statement about who wrote it in Confluence, not a
 // permission grant.
-func (s *Service) resolveImportAuthor(st *preflightState, page *model.ImportStagedPage) resolvedAuthor {
+func (s *Service) resolveImportAuthor(st *preflightState, page *model.ImportStagedPage) (resolvedAuthor, error) {
 	cacheKey := page.SourceAuthorAccountId + "\x1f" + page.SourceUserProposal
 	if cached, ok := st.authorCache[cacheKey]; ok {
 		st.countAuthor(cached)
-		return cached
+		return cached, nil
 	}
 
-	resolved := s.resolveImportAuthorUncached(st, page)
+	resolved, err := s.resolveImportAuthorUncached(st, page)
+	if err != nil {
+		return resolvedAuthor{}, err
+	}
 	st.authorCache[cacheKey] = resolved
 	st.countAuthor(resolved)
-	return resolved
+	return resolved, nil
 }
 
 // countAuthor tallies one resolution into the summary.
@@ -877,9 +894,15 @@ func (st *preflightState) countAuthor(author resolvedAuthor) {
 }
 
 // resolveImportAuthorUncached performs one author resolution.
-func (s *Service) resolveImportAuthorUncached(st *preflightState, page *model.ImportStagedPage) resolvedAuthor {
-	fallback := func(reason string) resolvedAuthor {
-		return resolvedAuthor{userID: st.job.ActorId, reason: reason}
+//
+// Only a definitive not-found justifies falling back to the importing actor. The decision is persisted on the
+// staged row and execution deliberately does not re-resolve it, so a lookup that merely failed would
+// permanently misattribute someone else's pages because a request happened to time out. An inconclusive lookup
+// fails the whole preflight instead, which costs nothing: preflight publishes all-or-nothing and the next pass
+// recomputes from scratch.
+func (s *Service) resolveImportAuthorUncached(st *preflightState, page *model.ImportStagedPage) (resolvedAuthor, error) {
+	fallback := func(reason string) (resolvedAuthor, error) {
+		return resolvedAuthor{userID: st.job.ActorId, reason: reason}, nil
 	}
 	if page.SourceAuthorAccountId == "" && page.SourceUserProposal == "" {
 		return fallback(model.ImportFallbackSourceAuthorMissing)
@@ -906,14 +929,21 @@ func (s *Service) resolveImportAuthorUncached(st *preflightState, page *model.Im
 		}
 	}
 
-	user, err := s.client.User.GetByUsername(proposal)
-	if err != nil || user == nil {
-		return fallback(model.ImportFallbackUserNotFound)
+	if s.client == nil {
+		return resolvedAuthor{}, errors.New("plugin client unavailable for import author resolution")
 	}
-	if user.DeleteAt != 0 {
+	user, err := s.client.User.GetByUsername(proposal)
+	switch {
+	case importActorMissing(err), err == nil && user == nil:
+		return fallback(model.ImportFallbackUserNotFound)
+	case err != nil:
+		// Retryable, not fatal: preflight publishes all-or-nothing and costs nothing to redo, so the job goes
+		// back to the queue rather than being failed over a lookup that may work a moment later.
+		return resolvedAuthor{}, retryableImportError(errors.Wrapf(err, "resolve import author %q", proposal))
+	case user.DeleteAt != 0:
 		return fallback(model.ImportFallbackUserInactive)
 	}
-	return resolvedAuthor{userID: user.Id}
+	return resolvedAuthor{userID: user.Id}, nil
 }
 
 // importPreflightRevision is the canonical digest of everything a user reviews.

@@ -4,9 +4,11 @@
 package app
 
 import (
+	stderrors "errors"
 	"net/http"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/pluginapi"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
@@ -123,7 +125,14 @@ func (s *Service) requireImportTargetStillAuthorized(job *model.ImportJob, actor
 		return appErr
 	}
 	user, err := s.client.User.Get(actorID)
-	if err != nil || user == nil {
+	if importActorMissing(err) || (err == nil && user == nil) {
+		// An actor who definitively does not exist is a denial, not an inconclusive lookup. Reporting it as a
+		// 500 would make it retryable, and since a retryable failure leaves the job in importing — the
+		// highest-priority state — the worker would re-select that same job on every pass and starve the queue
+		// behind it. A deleted actor's job has to reach a terminal state.
+		return mmmodel.NewAppError("requireImportTargetStillAuthorized", "app.import.target.actor_inactive.app_error", nil, "", http.StatusForbidden)
+	}
+	if err != nil {
 		return mmmodel.NewAppError("requireImportTargetStillAuthorized", "app.import.entitlement.lookup_failed.app_error", nil, "", http.StatusInternalServerError)
 	}
 	if user.DeleteAt != 0 {
@@ -151,6 +160,13 @@ func (s *Service) requireImportTargetStillAuthorized(job *model.ImportJob, actor
 		return mmmodel.NewAppError("requireImportTargetStillAuthorized", "app.import.target.cannot_create_space.app_error", nil, "", http.StatusForbidden)
 	}
 	return nil
+}
+
+// importActorMissing reports whether a user lookup definitively established that the actor is gone, as opposed
+// to failing to establish anything. pluginapi returns its not-found sentinel only for a 404, so this is the one
+// error that carries an answer.
+func importActorMissing(err error) bool {
+	return stderrors.Is(err, pluginapi.ErrNotFound)
 }
 
 // importTargetSpaceExists reports whether the job's target Space exists yet, which is what decides *which*

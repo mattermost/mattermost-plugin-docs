@@ -108,13 +108,6 @@ func (s *Service) PrepareImportReport(jobID, actorID, stage string) (*ImportRepo
 		stream.generatedAt = job.FinishedAt
 	}
 
-	severities, err := s.store.CountImportIssuesBySeverity(job.Id, stream.issueStages)
-	if err != nil {
-		return nil, storeAppError("PrepareImportReport", err)
-	}
-	if len(severities) > 0 {
-		stream.counts.IssuesBySeverity = severities
-	}
 	return stream, nil
 }
 
@@ -140,19 +133,84 @@ func (r *ImportReportStream) stageLabel() string {
 // ever resident.
 func (r *ImportReportStream) Stream(w io.Writer) error {
 	out := bufio.NewWriter(w)
+	tally := &importReportTally{}
 	if err := r.writeHeader(out); err != nil {
 		return err
 	}
-	if err := r.writeResults(out); err != nil {
+	if err := r.writeResults(out, tally); err != nil {
 		return err
 	}
-	if err := r.writeIssues(out); err != nil {
+	if err := r.writeIssues(out, tally); err != nil {
+		return err
+	}
+	// The summary is written last, and counted from the rows that were actually emitted. Taking it from the job
+	// snapshot instead would let a report state totals its own contents contradict — the rows are read across
+	// several queries, so a preflight republished mid-stream, or a job deleted at its retention boundary, yields
+	// a document whose header describes a set it does not contain. A reader checks a report against itself, so
+	// that is the consistency that has to hold.
+	if err := writeJSONField(out, "counts", r.derivedCounts(tally)); err != nil {
 		return err
 	}
 	if _, err := out.WriteString("}\n"); err != nil {
 		return errors.Wrap(err, "write import report")
 	}
 	return out.Flush()
+}
+
+// importReportTally accumulates the summary figures as rows stream past, so the report can describe itself
+// without a second pass or a buffered copy.
+type importReportTally struct {
+	actions          map[string]int
+	outcomes         map[string]int
+	issuesBySeverity map[string]int
+}
+
+// countResult tallies one emitted result row.
+func (t *importReportTally) countResult(result model.ImportResult) {
+	action := result.ActualAction
+	if action == "" {
+		// A preflight row has no actual action; what it has is a plan, and that is what its totals describe.
+		action = result.PlannedAction
+	}
+	if action != "" {
+		t.actions = incrementCount(t.actions, action)
+	}
+	if result.Outcome != "" {
+		t.outcomes = incrementCount(t.outcomes, result.Outcome)
+	}
+}
+
+// countIssue tallies one emitted issue row.
+func (t *importReportTally) countIssue(issue *model.ImportIssue) {
+	if issue.Severity != "" {
+		t.issuesBySeverity = incrementCount(t.issuesBySeverity, issue.Severity)
+	}
+}
+
+// incrementCount adds one to a lazily created counter map.
+func incrementCount(counts map[string]int, key string) map[string]int {
+	if counts == nil {
+		counts = map[string]int{}
+	}
+	counts[key]++
+	return counts
+}
+
+// derivedCounts combines the figures that cannot change after upload with the tallies taken from the emitted
+// rows.
+//
+// The manifest and author figures come from the job's own persisted summary: the manifest counts are fixed when
+// the bundle is staged, and the author counts when the plan or the outcome is published. Everything describing
+// entities is counted from the rows themselves.
+func (r *ImportReportStream) derivedCounts(tally *importReportTally) model.ImportReportCounts {
+	counts := r.counts
+	counts.Actions = tally.actions
+	if counts.Actions == nil {
+		counts.Actions = map[string]int{}
+	}
+	counts.Outcomes = tally.outcomes
+	counts.IssuesBySeverity = tally.issuesBySeverity
+	return counts
 }
 
 // writeHeader writes the report's fixed metadata block.
@@ -185,9 +243,8 @@ func (r *ImportReportStream) writeHeader(out *bufio.Writer) error {
 		{"source", source},
 		{"target", target},
 		// The fidelity block is fixed and states the importer's policy, never an assertion about this job's
-		// actual outcomes. Those are the result counts below.
+		// actual outcomes. Those are the result counts, written last from the rows themselves.
 		{"fidelity", model.NewImportFidelity()},
-		{"counts", r.counts},
 	} {
 		if err := writeJSONField(out, field.key, field.value); err != nil {
 			return err
@@ -200,7 +257,7 @@ func (r *ImportReportStream) writeHeader(out *bufio.Writer) error {
 }
 
 // writeResults streams the report's entity outcomes.
-func (r *ImportReportStream) writeResults(out *bufio.Writer) error {
+func (r *ImportReportStream) writeResults(out *bufio.Writer, tally *importReportTally) error {
 	if _, err := out.WriteString(`"results":[`); err != nil {
 		return errors.Wrap(err, "write import report")
 	}
@@ -215,9 +272,11 @@ func (r *ImportReportStream) writeResults(out *bufio.Writer) error {
 			break
 		}
 		for _, record := range records {
-			if err = writeJSONElement(out, written, importReportResultOf(record)); err != nil {
+			result := importReportResultOf(record)
+			if err = writeJSONElement(out, written, result); err != nil {
 				return err
 			}
+			tally.countResult(result)
 			written++
 			after = record.Ordinal
 		}
@@ -232,7 +291,7 @@ func (r *ImportReportStream) writeResults(out *bufio.Writer) error {
 }
 
 // writeIssues streams the report's findings, one stage after another so the order is deterministic.
-func (r *ImportReportStream) writeIssues(out *bufio.Writer) error {
+func (r *ImportReportStream) writeIssues(out *bufio.Writer, tally *importReportTally) error {
 	if _, err := out.WriteString(`"issues":[`); err != nil {
 		return errors.Wrap(err, "write import report")
 	}
@@ -248,9 +307,11 @@ func (r *ImportReportStream) writeIssues(out *bufio.Writer) error {
 				break
 			}
 			for _, record := range records {
-				if err = writeJSONElement(out, written, importIssueViewOf(record)); err != nil {
+				issue := importIssueViewOf(record)
+				if err = writeJSONElement(out, written, issue); err != nil {
 					return err
 				}
+				tally.countIssue(issue)
 				written++
 				after = record.Ordinal
 			}
@@ -259,7 +320,7 @@ func (r *ImportReportStream) writeIssues(out *bufio.Writer) error {
 			}
 		}
 	}
-	if _, err := out.WriteString(`]`); err != nil {
+	if _, err := out.WriteString(`],`); err != nil {
 		return errors.Wrap(err, "write import report")
 	}
 	return nil
