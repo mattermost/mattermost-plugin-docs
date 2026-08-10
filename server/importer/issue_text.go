@@ -36,7 +36,8 @@ func IssueSeverity(code string) model.ImportIssueSeverity {
 		IssueConflictChangedAfterConfirmation,
 		IssueChannelCompensationFailed,
 		IssueMissingPageOutcome,
-		IssueSkippedByReviewedPlan:
+		IssueSkippedByReviewedPlan,
+		IssuePagePropsTooLarge:
 		return model.ImportSeverityError
 	case IssueSourceAndLocalConflict,
 		IssueLocalChangesPreserved,
@@ -106,6 +107,8 @@ func IssueMessage(code string) string {
 		return "This import reported completion while a page had no recorded outcome, so it is reported as failed instead."
 	case IssueSkippedByReviewedPlan:
 		return "The plan you reviewed said this page would be skipped, so it was left alone even though it could now be imported."
+	case IssuePagePropsTooLarge:
+		return "This page already carries so much stored data that the import's own record of where it came from would not fit, so the page was left unchanged."
 	default:
 		return "The importer recorded a finding for this page."
 	}
@@ -163,6 +166,8 @@ func IssueRemediation(code string) string {
 		return "Import the same bundle again; pages that were already imported are recognized and not duplicated."
 	case IssueSkippedByReviewedPlan:
 		return "Import the same bundle again to have this page reviewed against the current state of the Space."
+	case IssuePagePropsTooLarge:
+		return "Remove unused stored data from the page in Mattermost, then import again."
 	default:
 		return "No action needed."
 	}

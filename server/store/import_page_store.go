@@ -974,6 +974,22 @@ func (s *Store) updateImportedPage(
 	props := mmmodel.StringInterface(importer.MergeDocsImportProps(mappedPage.Props, docsImport))
 	title := staged.Title
 
+	// The merged props are validated, not just the importer's own contribution. A page already close to the
+	// props limit can leave no room for the docs_import namespace, and the direct update below would write an
+	// over-limit value that no DB constraint rejects — leaving a page that model validation refuses, which makes
+	// it uneditable through the normal API. Refusing to write it and reporting why is the honest outcome.
+	if model.ValidatePropsSize("ImportedPage", "id="+mappedPage.Id, props, model.PagePropsMaxBytes) != nil {
+		blockImportPage(write, importer.IssuePagePropsTooLarge)
+		write.localID = mappedPage.Id
+		return nil
+	}
+
+	// EditAt is an optimistic-lock token, so it must never move backwards. in.Now is captured before this
+	// transaction takes its locks, so a concurrent edit that committed in between can already hold a later
+	// timestamp; writing in.Now over it would let a client holding the older token pass a compare-and-swap it
+	// should fail.
+	writeAt := max(in.Now, mappedPage.UpdateAt+1, mappedPage.EditAt+1)
+
 	updateBuilder := s.getQueryBuilder().
 		Update("DOCS_Page").
 		Set("Title", title).
@@ -983,8 +999,8 @@ func (s *Store) updateImportedPage(
 		// The importing actor is the editor of record; Page.UserId keeps the original author, because a
 		// reimport is not a change of authorship.
 		Set("LastModifiedBy", job.ActorId).
-		Set("UpdateAt", in.Now).
-		Set("EditAt", in.Now).
+		Set("UpdateAt", writeAt).
+		Set("EditAt", writeAt).
 		Where(sq.Eq{"Id": mappedPage.Id}).
 		Where(liveNonSnapshotFilter(""))
 	result, err := s.execBuilder(tx, updateBuilder)

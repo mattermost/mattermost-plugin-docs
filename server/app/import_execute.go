@@ -4,7 +4,11 @@
 package app
 
 import (
+	stderrors "errors"
+	"net/http"
+
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/pluginapi"
 	"github.com/pkg/errors"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/importer"
@@ -34,6 +38,39 @@ const (
 	// ImportErrorExecutionFailed marks a job that failed while writing pages.
 	ImportErrorExecutionFailed = "execution_failed"
 )
+
+// errImportRetryable marks a failure that says nothing about whether the import *should* proceed — a lookup
+// that timed out, a backend that was briefly unavailable — as opposed to one that decides it must not.
+//
+// The distinction matters because the two need opposite handling. A definitive answer means the job is over and
+// must be reported. An inconclusive one means try again: failing the job would destroy an import, possibly
+// half-written, over a blip, and would label it with a reason that is not true. A retryable failure leaves the
+// job in importing, which the worker re-enters on its next pass.
+type errImportRetryable struct{ cause error }
+
+func (e *errImportRetryable) Error() string { return "retryable import failure: " + e.cause.Error() }
+func (e *errImportRetryable) Unwrap() error { return e.cause }
+
+// retryableImportError wraps cause as retryable.
+func retryableImportError(cause error) error {
+	return &errImportRetryable{cause: cause}
+}
+
+// isRetryableImportError reports whether err is an inconclusive failure the worker should retry.
+func isRetryableImportError(err error) bool {
+	var e *errImportRetryable
+	return stderrors.As(err, &e)
+}
+
+// importAuthorizationDenied reports whether an authorization failure is a genuine denial rather than an
+// inconclusive lookup.
+//
+// requireImportTargetStillAuthorized returns 403 and 404 for real answers — the actor is inactive, not a
+// member, lacks the permission — and 500 when it could not find out. Treating the second as revocation would
+// let a transient outage terminate imports and tell their owners they had lost access they still have.
+func importAuthorizationDenied(appErr *mmmodel.AppError) bool {
+	return appErr.StatusCode == http.StatusForbidden || appErr.StatusCode == http.StatusNotFound
+}
 
 // RunImportExecution applies one confirmed job's pages, or resumes one that was interrupted.
 //
@@ -66,6 +103,11 @@ func (s *Service) RunImportExecution(jobID string) error {
 	// Authorization is rechecked before anything is written, not merely at confirmation: minutes or a restart
 	// may have passed, and an import must never write into a Space its actor can no longer reach.
 	if appErr := s.requireImportTargetStillAuthorized(job, job.ActorId); appErr != nil {
+		if !importAuthorizationDenied(appErr) {
+			s.log.Warn("Could not confirm import authorization; leaving the job for a later pass",
+				"job_id", job.Id, "err", appErr)
+			return retryableImportError(appErr)
+		}
 		return s.failImportJob(job.Id, ImportErrorAuthorizationRevoked, appErr)
 	}
 
@@ -81,12 +123,18 @@ func (s *Service) RunImportExecution(jobID string) error {
 			s.log.Debug("Import provisioning skipped: the job left the importing state", "job_id", job.Id, "err", err)
 			return nil
 		}
+		if isRetryableImportError(err) {
+			return err
+		}
 		return s.failImportJob(job.Id, ImportErrorProvisioningFailed, err)
 	}
 	job = provisioned
 
 	stopped, err := s.writeImportedPages(job)
 	if err != nil {
+		if isRetryableImportError(err) {
+			return err
+		}
 		return s.failImportJob(job.Id, ImportErrorExecutionFailed, err)
 	}
 	if stopped {
@@ -113,14 +161,17 @@ func (s *Service) RunImportExecution(jobID string) error {
 // It reports stopped=true when the job left the importing state, which is how cancellation takes effect: the
 // page transaction's own state guard refuses, and the loop returns without inventing an outcome.
 func (s *Service) writeImportedPages(job *model.ImportJob) (bool, error) {
-	authors := newImportAuthorRevalidator(s, job)
+	authors, err := newImportAuthorRevalidator(s, job)
+	if err != nil {
+		return false, err
+	}
 	sinceRecheck, sinceProgress := 0, 0
 	afterOrdinal := -1
 
 	for {
-		ordinals, err := s.store.GetImportStagedOrdinals(job.Id, afterOrdinal, importExecutionBatch)
-		if err != nil {
-			return false, errors.Wrap(err, "list staged ordinals")
+		ordinals, ordErr := s.store.GetImportStagedOrdinals(job.Id, afterOrdinal, importExecutionBatch)
+		if ordErr != nil {
+			return false, errors.Wrap(ordErr, "list staged ordinals")
 		}
 		if len(ordinals) == 0 {
 			s.flushImportProgress(job)
@@ -130,6 +181,11 @@ func (s *Service) writeImportedPages(job *model.ImportJob) (bool, error) {
 		for _, ordinal := range ordinals {
 			if sinceRecheck >= importReauthorizeEvery {
 				if appErr := s.requireImportTargetStillAuthorized(job, job.ActorId); appErr != nil {
+					if !importAuthorizationDenied(appErr) {
+						// Inconclusive: stop writing, but leave the job importing so a later pass resumes from its
+						// checkpoints. Failing here would abandon a half-written import over a transient lookup.
+						return false, retryableImportError(appErr)
+					}
 					// Committed pages stay: they are real content the actor was entitled to create at the time.
 					// The job fails so the rest is reported as not attempted rather than silently abandoned.
 					return true, s.failImportJob(job.Id, ImportErrorAuthorizationRevoked, appErr)
@@ -137,16 +193,16 @@ func (s *Service) writeImportedPages(job *model.ImportJob) (bool, error) {
 				sinceRecheck = 0
 			}
 
-			outcome, err := s.applyOneImportedPage(job, ordinal, authors)
-			if err != nil {
-				if store.IsErrConflict(err) {
+			outcome, applyErr := s.applyOneImportedPage(job, ordinal, authors)
+			if applyErr != nil {
+				if store.IsErrConflict(applyErr) {
 					// The job is no longer importing. Cancellation and failure both arrive this way, and both
 					// mean the terminalizer owns the rest.
 					s.log.Info("Import execution stopped: the job left the importing state",
 						"job_id", job.Id, "ordinal", ordinal)
 					return true, nil
 				}
-				return false, err
+				return false, applyErr
 			}
 			afterOrdinal = ordinal
 			if !outcome.Replayed {
@@ -171,7 +227,10 @@ func (s *Service) applyOneImportedPage(
 	if err != nil {
 		return nil, errors.Wrap(err, "read staged page summary")
 	}
-	author := authors.revalidate(staged.ResolvedUserId, staged.AuthorFallbackReason)
+	author, err := authors.revalidate(staged.ResolvedUserId, staged.AuthorFallbackReason)
+	if err != nil {
+		return nil, err
+	}
 
 	outcome, err := s.store.ApplyImportedPage(store.ImportPageExecution{
 		JobID:                job.Id,
@@ -226,7 +285,12 @@ type importAuthorRevalidator struct {
 }
 
 // newImportAuthorRevalidator loads the durable inputs author revalidation and overwrite approval need.
-func newImportAuthorRevalidator(svc *Service, job *model.ImportJob) *importAuthorRevalidator {
+//
+// A manifest that cannot be read is a retryable failure rather than something to proceed without. Proceeding
+// would silently attribute every page to its own user field instead of the manifest's mapping, writing an
+// author into the page's props that differs from the one the reviewed plan hashed — a quiet, permanent
+// divergence from what the user approved, produced by a transient read.
+func newImportAuthorRevalidator(svc *Service, job *model.ImportJob) (*importAuthorRevalidator, error) {
 	r := &importAuthorRevalidator{
 		svc:       svc,
 		job:       job,
@@ -236,10 +300,7 @@ func newImportAuthorRevalidator(svc *Service, job *model.ImportJob) *importAutho
 	}
 	users, err := svc.store.GetImportManifestUsers(job.Id)
 	if err != nil {
-		// Without the manifest every page falls back to its own user field, which is the same behaviour as a
-		// bundle that carried no manifest at all. Failing the import over it would be worse than degrading.
-		svc.log.Warn("Could not load manifest users for import execution; falling back to page author fields",
-			"job_id", job.Id, "err", err)
+		return nil, retryableImportError(errors.Wrap(err, "load manifest users for import execution"))
 	}
 	for _, u := range users {
 		r.proposals[u.AccountId] = u.MattermostUsername
@@ -247,7 +308,7 @@ func newImportAuthorRevalidator(svc *Service, job *model.ImportJob) *importAutho
 	for _, externalID := range job.Confirmation.OverwriteConflicts {
 		r.approved[externalID] = struct{}{}
 	}
-	return r
+	return r, nil
 }
 
 // manifestProposal returns the manifest's username proposal for a Confluence account, or "".
@@ -262,26 +323,36 @@ func (r *importAuthorRevalidator) approvedOverwrite(externalID string) bool {
 }
 
 // revalidate confirms a preflight-resolved author is still usable, falling back to the actor if not.
-func (r *importAuthorRevalidator) revalidate(resolvedUserID, fallbackReason string) resolvedAuthor {
+//
+// Only a definitive answer justifies a fallback. Attribution is written once and kept, so treating a failed
+// lookup as "this user does not exist" would permanently credit someone else's page to the importing actor
+// because a request happened to time out. An inconclusive lookup is retryable instead, and the page is not
+// applied until the question can be answered.
+func (r *importAuthorRevalidator) revalidate(resolvedUserID, fallbackReason string) (resolvedAuthor, error) {
 	if fallbackReason != "" || resolvedUserID == "" {
 		// Preflight already fell back, and nothing about execution can improve on that: re-resolving here would
 		// make attribution depend on when the worker happened to run.
-		return resolvedAuthor{userID: r.job.ActorId, reason: orFallbackReason(fallbackReason)}
+		return resolvedAuthor{userID: r.job.ActorId, reason: orFallbackReason(fallbackReason)}, nil
 	}
 	if cached, ok := r.checked[resolvedUserID]; ok {
-		return cached
+		return cached, nil
+	}
+	if r.svc.client == nil {
+		return resolvedAuthor{}, retryableImportError(errors.New("plugin client unavailable for author revalidation"))
 	}
 
 	result := resolvedAuthor{userID: resolvedUserID}
-	if r.svc.client == nil {
+	user, err := r.svc.client.User.Get(resolvedUserID)
+	switch {
+	case stderrors.Is(err, pluginapi.ErrNotFound), err == nil && user == nil:
 		result = resolvedAuthor{userID: r.job.ActorId, reason: model.ImportFallbackUserNotFound}
-	} else if user, err := r.svc.client.User.Get(resolvedUserID); err != nil || user == nil {
-		result = resolvedAuthor{userID: r.job.ActorId, reason: model.ImportFallbackUserNotFound}
-	} else if user.DeleteAt != 0 {
+	case err != nil:
+		return resolvedAuthor{}, retryableImportError(errors.Wrapf(err, "revalidate import author %s", resolvedUserID))
+	case user.DeleteAt != 0:
 		result = resolvedAuthor{userID: r.job.ActorId, reason: model.ImportFallbackUserInactive}
 	}
 	r.checked[resolvedUserID] = result
-	return result
+	return result, nil
 }
 
 // orFallbackReason keeps a recorded fallback reason, or names the generic one when preflight left it empty.
