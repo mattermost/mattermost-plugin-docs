@@ -44,10 +44,9 @@ async function openMenu() {
 describe('SpaceItemMenu', () => {
     it('copies the team-scoped space link', async () => {
         const previousUrl = Client4.getUrl();
-        Client4.setUrl('http://localhost:8065/mattermost');
-        renderMenu();
-
         try {
+            Client4.setUrl('http://localhost:8065/mattermost');
+            renderMenu();
             await openMenu();
             fireEvent.click(screen.getByText('Copy link'));
 

@@ -41,6 +41,7 @@ export function useUserSearch(term: string, excludeIds: string[]): UserSearchRes
             return undefined;
         }
 
+        setProfiles([]);
         setLoading(true);
         let cancelled = false;
 

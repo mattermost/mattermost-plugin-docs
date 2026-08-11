@@ -55,7 +55,6 @@ func TestParseTipTapDocument(t *testing.T) {
 		_, err := model.ParseTipTapDocument(`{not json`)
 		require.Error(t, err)
 	})
-
 }
 
 func TestParseTipTapDocumentSanitizesURLs(t *testing.T) {
