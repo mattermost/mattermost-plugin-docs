@@ -92,92 +92,94 @@ const ImportWizard = ({target, onClose}: Props) => {
             className={styles.wizard}
             aria-label={formatMessage({id: 'docs.import.title', defaultMessage: 'Import from Confluence'})}
         >
-            <ol className={styles.stepper}>
-                {steps.map((name) => (
-                    <li
-                        key={name}
-                        className={name === step ? styles.stepperCurrent : styles.stepperItem}
-                        aria-current={name === step ? 'step' : undefined}
+            <div className={styles.content}>
+                <ol className={styles.stepper}>
+                    {steps.map((name) => (
+                        <li
+                            key={name}
+                            className={name === step ? styles.stepperCurrent : styles.stepperItem}
+                            aria-current={name === step ? 'step' : undefined}
+                        >
+                            {stepLabel(name, formatMessage)}
+                        </li>
+                    ))}
+                </ol>
+
+                {/* A job that has vanished, or that this user may no longer see, is terminal for the wizard: there
+                    is nothing to poll and nothing to retry. Actor-only visibility means "gone" and "not yours" are
+                    deliberately indistinguishable, so the message claims neither. */}
+                {error ? (
+                    <p
+                        role='alert'
+                        className={styles.error}
                     >
-                        {stepLabel(name, formatMessage)}
-                    </li>
-                ))}
-            </ol>
-
-            {/* A job that has vanished, or that this user may no longer see, is terminal for the wizard: there
-                is nothing to poll and nothing to retry. Actor-only visibility means "gone" and "not yours" are
-                deliberately indistinguishable, so the message claims neither. */}
-            {error ? (
-                <p
-                    role='alert'
-                    className={styles.error}
-                >
-                    {error.status === 404 ? formatMessage({
-                        id: 'docs.import.missing',
-                        defaultMessage: 'This import is no longer available.',
-                    }) : formatMessage({
-                        id: 'docs.import.unavailable',
-                        defaultMessage: 'The import could not be read. It may still be running.',
-                    })}
-                </p>
-            ) : null}
-
-            {(resolving || loading) && !job ? (
-                <p className={styles.hint}>
-                    {formatMessage({id: 'docs.import.loading', defaultMessage: 'Loading…'})}
-                </p>
-            ) : null}
-
-            {/* A lookup that could not answer is reported rather than assumed — "nothing is running" and "I could
-                not find out" are different answers. It does not block the upload, though: the server enforces the
-                per-target job limit, so this check saves a wasted upload rather than preventing a bad one, and
-                letting an unrelated read decide whether the feature works at all is the worse failure. */}
-            {lookupFailed ? (
-                <div
-                    role='alert'
-                    className={styles.error}
-                >
-                    <p className={styles.errorLine}>{lookupFailureMessage(failureStatus, formatMessage)}</p>
-                    <p className={styles.errorLine}>
-                        {formatMessage({
-                            id: 'docs.import.lookupFailedProceed',
-                            defaultMessage: 'You can still upload a bundle. If an import is already running here, the server will refuse it.',
+                        {error.status === 404 ? formatMessage({
+                            id: 'docs.import.missing',
+                            defaultMessage: 'This import is no longer available.',
+                        }) : formatMessage({
+                            id: 'docs.import.unavailable',
+                            defaultMessage: 'The import could not be read. It may still be running.',
                         })}
                     </p>
-                    <button
-                        type='button'
-                        className={styles.secondary}
-                        onClick={retry}
+                ) : null}
+
+                {(resolving || loading) && !job ? (
+                    <p className={styles.hint}>
+                        {formatMessage({id: 'docs.import.loading', defaultMessage: 'Loading…'})}
+                    </p>
+                ) : null}
+
+                {/* A lookup that could not answer is reported rather than assumed — "nothing is running" and "I could
+                    not find out" are different answers. It does not block the upload, though: the server enforces the
+                    per-target job limit, so this check saves a wasted upload rather than preventing a bad one, and
+                    letting an unrelated read decide whether the feature works at all is the worse failure. */}
+                {lookupFailed ? (
+                    <div
+                        role='alert'
+                        className={styles.error}
                     >
-                        {formatMessage({id: 'docs.import.lookupRetry', defaultMessage: 'Check again'})}
-                    </button>
-                </div>
-            ) : null}
+                        <p className={styles.errorLine}>{lookupFailureMessage(failureStatus, formatMessage)}</p>
+                        <p className={styles.errorLine}>
+                            {formatMessage({
+                                id: 'docs.import.lookupFailedProceed',
+                                defaultMessage: 'You can still upload a bundle. If an import is already running here, the server will refuse it.',
+                            })}
+                        </p>
+                        <button
+                            type='button'
+                            className={styles.secondary}
+                            onClick={retry}
+                        >
+                            {formatMessage({id: 'docs.import.lookupRetry', defaultMessage: 'Check again'})}
+                        </button>
+                    </div>
+                ) : null}
 
-            {renderStep()}
+                {renderStep()}
 
-            <div className={styles.footer}>
-                {isCancellable(job) ? (
+                <div className={styles.footer}>
+                    {isCancellable(job) ? (
+                        <button
+                            type='button'
+                            className={styles.tertiary}
+                            disabled={cancelling}
+                            onClick={cancel}
+                        >
+                            {formatMessage({id: 'docs.import.cancel', defaultMessage: 'Cancel import'})}
+                        </button>
+                    ) : null}
                     <button
                         type='button'
                         className={styles.tertiary}
-                        disabled={cancelling}
-                        onClick={cancel}
-                    >
-                        {formatMessage({id: 'docs.import.cancel', defaultMessage: 'Cancel import'})}
-                    </button>
-                ) : null}
-                <button
-                    type='button'
-                    className={styles.tertiary}
 
-                    // Called with no argument on purpose: leaving mid-import goes back where the user was, not to
-                    // a Space the import has not finished filling. Passing the handler directly would hand it a
-                    // MouseEvent as the destination.
-                    onClick={() => onClose()}
-                >
-                    {formatMessage({id: 'docs.import.close', defaultMessage: 'Close'})}
-                </button>
+                        // Called with no argument on purpose: leaving mid-import goes back where the user was, not to
+                        // a Space the import has not finished filling. Passing the handler directly would hand it a
+                        // MouseEvent as the destination.
+                        onClick={() => onClose()}
+                    >
+                        {formatMessage({id: 'docs.import.close', defaultMessage: 'Close'})}
+                    </button>
+                </div>
             </div>
         </section>
     );

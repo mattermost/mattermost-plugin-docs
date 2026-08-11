@@ -60,17 +60,32 @@ const ImportUploadStep = ({target, onUploaded}: Props) => {
                 })}
             </p>
 
-            <input
-                type='file'
-                accept='.zip,application/zip'
-                className={styles.fileInput}
-                aria-label={formatMessage({id: 'docs.import.upload.field', defaultMessage: 'Confluence export bundle'})}
-                disabled={uploading}
-                onChange={(event) => {
-                    setBundle(event.target.files?.[0]);
-                    setFailure(undefined);
-                }}
-            />
+            {/* The native file input is visually hidden rather than styled: its own "No file chosen" text takes a
+                colour the page cannot set, which on a dark theme is all but invisible, and it offers nothing that
+                reads as a control. The input itself still does the work, so the label, keyboard and screen
+                readers behave exactly as before. */}
+            <label className={styles.fileField}>
+                <span className={styles.fileButton}>
+                    {formatMessage({id: 'docs.import.upload.choose', defaultMessage: 'Choose a file'})}
+                </span>
+                <span className={bundle ? styles.fileName : styles.fileNameEmpty}>
+                    {bundle ? bundle.name : formatMessage({
+                        id: 'docs.import.upload.noFile',
+                        defaultMessage: 'No bundle chosen yet',
+                    })}
+                </span>
+                <input
+                    type='file'
+                    accept='.zip,application/zip'
+                    className={styles.srOnly}
+                    aria-label={formatMessage({id: 'docs.import.upload.field', defaultMessage: 'Confluence export bundle'})}
+                    disabled={uploading}
+                    onChange={(event) => {
+                        setBundle(event.target.files?.[0]);
+                        setFailure(undefined);
+                    }}
+                />
+            </label>
 
             {failure ? (
                 <div

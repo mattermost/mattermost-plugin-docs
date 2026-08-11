@@ -136,6 +136,27 @@ describe('ImportWizard upload step', () => {
         expect(await screen.findByRole('button', {name: 'Upload and inspect'})).toBeDisabled();
     });
 
+    // The chosen filename is rendered by us, not by the browser's file input, whose own text takes a colour the
+    // page cannot set and is unreadable on a dark theme. So it has to actually appear.
+    it('shows which bundle has been chosen', async () => {
+        renderWithContext(
+            <ImportWizard
+                target={TARGET}
+                onClose={jest.fn()}
+            />,
+        );
+
+        expect(await screen.findByText('No bundle chosen yet')).toBeInTheDocument();
+
+        const input = await screen.findByLabelText('Confluence export bundle');
+        await act(async () => {
+            fireEvent.change(input, {target: {files: [bundleFile()]}});
+        });
+
+        expect(screen.getByText('bundle.zip')).toBeInTheDocument();
+        expect(screen.queryByText('No bundle chosen yet')).not.toBeInTheDocument();
+    });
+
     // Reopening the wizard while an import is running must land on that import, not on the upload step. Offering
     // the upload would ask for a second bundle for work already in flight — which admission then refuses — and
     // would leave the running import unreachable, since the only handle on it was this component's state.

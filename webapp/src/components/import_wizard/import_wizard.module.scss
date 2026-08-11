@@ -1,9 +1,27 @@
+// The wizard is a content surface, so it brings its own background and text colour rather than inheriting
+// them. The host's main area deliberately sets neither (see docs_root.module.scss) — every content component
+// establishes its own, as docs_home does — and inheriting instead left every unstyled element taking whatever
+// colour happened to be in scope, which on a dark theme was dark text on a dark panel.
 .wizard {
     display: flex;
+    width: 100%;
+    height: 100%;
+    justify-content: center;
+    overflow-y: auto;
+    border-radius: 12px;
+    background: var(--center-channel-bg);
+    color: var(--center-channel-color);
+}
+
+// The reading column. Capped because the review step is prose and a table, and full-width lines of either are
+// hard to scan.
+.content {
+    display: flex;
+    width: 100%;
+    max-width: 720px;
     flex-direction: column;
     gap: 20px;
     padding: 24px;
-    max-width: 720px;
 }
 
 .stepper {
@@ -22,7 +40,7 @@
 }
 
 .stepperItem {
-    color: rgba(var(--center-channel-color-rgb), 0.56);
+    color: rgba(var(--center-channel-color-rgb), 0.64);
 }
 
 .stepperCurrent {
@@ -38,13 +56,14 @@
 
 .stepTitle {
     margin: 0;
+    color: var(--center-channel-color);
     font-size: 18px;
     font-weight: 600;
 }
 
 .hint {
     margin: 0;
-    color: rgba(var(--center-channel-color-rgb), 0.72);
+    color: rgba(var(--center-channel-color-rgb), 0.75);
     font-size: 13px;
 }
 
@@ -57,8 +76,39 @@
     margin: 0;
 }
 
-.fileInput {
-    padding: 8px 0;
+// A styled control rather than a bare file input. The native one renders its own "No file chosen" in a colour
+// the page cannot set, which on a dark theme is close to invisible — and it gives no affordance that reads as a
+// button. The real input is still there, visually hidden, so the label, keyboard and screen readers behave.
+.fileField {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    align-self: flex-start;
+    cursor: pointer;
+}
+
+.fileButton {
+    padding: 8px 14px;
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.24);
+    border-radius: 4px;
+    color: var(--center-channel-color);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.fileField:hover .fileButton {
+    background: rgba(var(--center-channel-color-rgb), 0.08);
+}
+
+.fileName {
+    color: rgba(var(--center-channel-color-rgb), 0.75);
+    font-size: 13px;
+}
+
+.fileNameEmpty {
+    color: rgba(var(--center-channel-color-rgb), 0.56);
+    font-size: 13px;
+    font-style: italic;
 }
 
 .field {
@@ -68,15 +118,23 @@
 }
 
 .fieldLabel {
+    color: var(--center-channel-color);
     font-size: 13px;
     font-weight: 600;
 }
 
 .textInput {
     padding: 10px 12px;
-    border: 1px solid rgba(var(--center-channel-color-rgb), 0.16);
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.24);
     border-radius: 4px;
+    background: var(--center-channel-bg);
+    color: var(--center-channel-color);
     font-size: 14px;
+
+    &:focus {
+        border-color: var(--button-bg);
+        outline: none;
+    }
 }
 
 .choices {
@@ -102,6 +160,7 @@
 }
 
 .choiceTitle {
+    color: var(--center-channel-color);
     font-size: 14px;
 }
 
@@ -125,6 +184,7 @@
 }
 
 .countValue {
+    color: var(--center-channel-color);
     font-size: 22px;
     font-weight: 600;
 }
@@ -196,10 +256,14 @@
     border: 1px solid rgba(var(--center-channel-color-rgb), 0.16);
     border-radius: 4px;
     background: transparent;
-    color: var(--button-bg);
+    color: var(--link-color);
     font-size: 13px;
     font-weight: 600;
     cursor: pointer;
+
+    &:hover:not(:disabled) {
+        background: rgba(var(--center-channel-color-rgb), 0.08);
+    }
 
     &:disabled {
         opacity: 0.4;
@@ -212,10 +276,14 @@
     border: none;
     border-radius: 4px;
     background: transparent;
-    color: var(--button-bg);
+    color: var(--link-color);
     font-size: 13px;
     font-weight: 600;
     cursor: pointer;
+
+    &:hover:not(:disabled) {
+        background: rgba(var(--center-channel-color-rgb), 0.08);
+    }
 
     &:disabled {
         opacity: 0.4;
