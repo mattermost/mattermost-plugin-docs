@@ -59,6 +59,24 @@ describe('GenericModal', () => {
         expect(screen.queryByRole('button', {name: 'Close'})).not.toBeInTheDocument();
     });
 
+    it('stays open when closing is disabled', () => {
+        const onClose = jest.fn();
+        renderWithContext(
+            <GenericModal
+                {...baseProps}
+                onClose={onClose}
+                closeDisabled={true}
+            >
+                <p>{'Body'}</p>
+            </GenericModal>,
+        );
+
+        fireEvent.click(screen.getByRole('button', {name: 'Close'}));
+
+        expect(onClose).not.toHaveBeenCalled();
+        expect(screen.getByRole('heading', {name: 'My modal'})).toBeInTheDocument();
+    });
+
     it('provides modal close behavior to title actions', () => {
         renderWithContext(
             <GenericModal

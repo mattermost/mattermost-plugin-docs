@@ -38,7 +38,11 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
     // modal goes too (mirrors ShareSpaceModal's onLeave).
     const actions: MemberListActions = {
         onRemove: removeMember,
-        onLeave: () => leave().then(onClose),
+        onLeave: async () => {
+            if (await leave()) {
+                onClose();
+            }
+        },
         disabled: busy,
     };
 

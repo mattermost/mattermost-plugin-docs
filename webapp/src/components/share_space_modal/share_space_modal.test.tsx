@@ -72,6 +72,7 @@ describe('ShareSpaceModal', () => {
     beforeEach(() => {
         jest.clearAllMocks();
         mockCanManageMembers = true;
+        mockLeave.mockResolvedValue(true);
     });
 
     afterEach(() => act(() => {
@@ -113,7 +114,6 @@ describe('ShareSpaceModal', () => {
     // Leaving destroys your access to what is behind the modal, so the modal goes too.
     it('leaves and closes the modal from your own row once confirmed', async () => {
         mockCanManageMembers = false;
-        mockLeave.mockResolvedValue(undefined);
         const onClose = jest.fn();
 
         renderModal(onClose);
@@ -129,5 +129,19 @@ describe('ShareSpaceModal', () => {
 
         await waitFor(() => expect(mockLeave).toHaveBeenCalled());
         await waitFor(() => expect(onClose).toHaveBeenCalled());
+    });
+
+    it('keeps the modal open when leaving fails', async () => {
+        mockCanManageMembers = false;
+        mockLeave.mockResolvedValue(false);
+        const onClose = jest.fn();
+        renderModal(onClose);
+
+        fireEvent.click(screen.getByRole('button', {name: /Caleb/}));
+        fireEvent.click(await screen.findByRole('menuitem', {name: 'Leave space'}));
+        await confirm(/Yes, leave space/);
+
+        await waitFor(() => expect(mockLeave).toHaveBeenCalled());
+        expect(onClose).not.toHaveBeenCalled();
     });
 });

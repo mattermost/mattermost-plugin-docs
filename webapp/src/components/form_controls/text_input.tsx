@@ -40,7 +40,8 @@ const TextInput = ({id, label, value, onChange, leading, error, maxLength, autoF
                     aria-describedby={errorId}
                     onChange={(e) => onChange(e.target.value)}
                     onKeyDown={(e) => {
-                        if (e.key === 'Enter' && onEnter) {
+                        const composing = e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229;
+                        if (e.key === 'Enter' && onEnter && !composing) {
                             e.preventDefault();
                             onEnter();
                         }

@@ -52,6 +52,22 @@ describe('TextInput', () => {
         expect(onEnter).toHaveBeenCalledTimes(1);
     });
 
+    it.each([
+        {isComposing: true},
+        {keyCode: 229},
+    ])('ignores Enter while IME composition is active', (nativeEvent) => {
+        const onEnter = jest.fn();
+        render(
+            <TextInput
+                {...baseProps}
+                onEnter={onEnter}
+            />,
+        );
+
+        fireEvent.keyDown(screen.getByLabelText('Name'), {key: 'Enter', ...nativeEvent});
+        expect(onEnter).not.toHaveBeenCalled();
+    });
+
     it('exposes the error and wires aria attributes when invalid', () => {
         render(
             <TextInput

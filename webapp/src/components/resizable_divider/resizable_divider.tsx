@@ -149,7 +149,11 @@ const ResizableDivider = ({ariaLabel, side, width, minWidth, maxWidth, defaultWi
             aria-valuemax={maxWidth}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
-            onPointerUp={(event) => endDrag(event, widthFor(event.clientX))}
+            onPointerUp={(event) => {
+                const finalWidth = widthFor(event.clientX);
+                onResize(finalWidth);
+                endDrag(event, finalWidth);
+            }}
             onPointerCancel={(event) => endDrag(event, lastWidth.current)}
             onDoubleClick={onDoubleClick}
             onKeyDown={onKeyDown}

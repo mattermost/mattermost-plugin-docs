@@ -120,11 +120,13 @@ describe('DeletePageModal', () => {
     it('surfaces a failure and leaves the viewer on the page', async () => {
         mockDeleteResult = Promise.reject(new Error('nope'));
 
-        const {history} = renderModal('childOfParent');
+        const {history, onClose} = renderModal('childOfParent');
 
         confirmDelete();
 
         await waitFor(() => expect(toast.error).toHaveBeenCalled());
         expect(history.location.pathname).toBe(PAGE_PATH);
+        expect(onClose).not.toHaveBeenCalled();
+        expect(screen.getByRole('heading', {name: 'Delete page'})).toBeInTheDocument();
     });
 });

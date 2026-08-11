@@ -61,7 +61,7 @@ describe('useLeaveSpace', () => {
     it('leaves the space and stays put when viewing something else', async () => {
         const {current} = render();
 
-        await current();
+        await expect(current()).resolves.toBe(true);
 
         expect(mockLeaveSpace).toHaveBeenCalledWith(SPACE.id);
         expect(mockGoHome).not.toHaveBeenCalled();
@@ -72,7 +72,7 @@ describe('useLeaveSpace', () => {
         mockRoutedSpaceId = SPACE.id;
         const {current} = render();
 
-        await current();
+        await expect(current()).resolves.toBe(true);
 
         expect(mockGoHome).toHaveBeenCalled();
     });
@@ -83,7 +83,7 @@ describe('useLeaveSpace', () => {
         mockLeaveSpace.mockRejectedValue(clientError(409));
         const {current} = render();
 
-        await current();
+        await expect(current()).resolves.toBe(false);
 
         expect(mockGoHome).not.toHaveBeenCalled();
         expect(toast.error).toHaveBeenCalledWith(
@@ -96,7 +96,7 @@ describe('useLeaveSpace', () => {
         mockLeaveSpace.mockRejectedValue(clientError(500));
         const {current} = render();
 
-        await current();
+        await expect(current()).resolves.toBe(false);
 
         expect(toast.error).toHaveBeenCalledWith(
             'Unable to leave Engineering',

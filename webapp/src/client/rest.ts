@@ -7,15 +7,16 @@ import {ClientError} from '@mattermost/client';
 
 import {Client4} from 'mattermost-redux/client';
 
-// Base URL for the Docs plugin REST API. Client4.url is the host-configured
-// site URL (including any subpath), so this resolves correctly on subpath-hosted
-// instances without extra wiring. Deferred to call time because the host sets
-// Client4.url after our bundle loads.
-const apiUrl = (): string => `${Client4.url}/plugins/${manifest.id}/api/v1`;
+// The host site URL, including any configured subpath. Deferred to call time
+// because the host configures the client after plugin bundles load. The browser
+// basename fallback also keeps links absolute if this bundled client has not yet
+// received that configuration.
+export const siteRoot = (): string => {
+    const basename = (window as unknown as {basename?: string}).basename || '/';
+    return new URL(Client4.getUrl() || basename, `${window.location.origin}/`).href.replace(/\/$/, '');
+};
 
-// The host site URL, for the platform's own endpoints (avatars, files) that are
-// not under our plugin's API root.
-export const siteRoot = (): string => Client4.url;
+const apiUrl = (): string => `${siteRoot()}/plugins/${manifest.id}/api/v1`;
 
 type FetchOptions = {
     method: string;
@@ -36,7 +37,7 @@ export class RestError extends ClientError {
     body: unknown;
 
     constructor(url: string, status: number, message: string, body: unknown, serverErrorId?: string) {
-        super(Client4.url, {message, status_code: status, url, server_error_id: serverErrorId});
+        super(siteRoot(), {message, status_code: status, url, server_error_id: serverErrorId});
         this.name = 'RestError';
         this.status = status;
         this.body = body;

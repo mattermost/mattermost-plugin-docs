@@ -63,6 +63,27 @@ describe('ConfirmModal', () => {
         await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
     });
 
+    it('stays open when confirmation must succeed before closing', async () => {
+        const onConfirm = jest.fn().mockRejectedValue(new Error('nope'));
+        const onCancel = jest.fn();
+        renderWithContext(
+            <ConfirmModal
+                {...baseProps}
+                closeAfterConfirm={true}
+                onConfirm={onConfirm}
+                onCancel={onCancel}
+            >
+                <p>{'Body'}</p>
+            </ConfirmModal>,
+        );
+
+        fireEvent.click(screen.getByRole('button', {name: 'Confirm'}));
+
+        await waitFor(() => expect(screen.getByRole('button', {name: 'Confirm'})).toBeEnabled());
+        expect(onCancel).not.toHaveBeenCalled();
+        expect(screen.getByRole('heading', {name: 'Leave space?'})).toBeInTheDocument();
+    });
+
     it('renders custom button labels', () => {
         renderWithContext(
             <ConfirmModal

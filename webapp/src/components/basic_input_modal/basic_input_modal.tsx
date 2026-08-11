@@ -69,6 +69,7 @@ const BasicInputModal = ({title, label, initialValue = '', confirmButtonText, ma
         <>
             <TertiaryButton
                 type='button'
+                disabled={saving}
                 onClick={onClose}
             >
                 <FormattedMessage
@@ -97,6 +98,8 @@ const BasicInputModal = ({title, label, initialValue = '', confirmButtonText, ma
             title={title}
             ariaLabel={typeof title === 'string' ? title : undefined}
             onClose={onClose}
+            showCloseButton={!saving}
+            closeDisabled={saving}
             footer={footer}
             headerDivider={false}
         >

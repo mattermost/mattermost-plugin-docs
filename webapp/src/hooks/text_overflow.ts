@@ -9,7 +9,7 @@ import {useCallback, useEffect, useState} from 'react';
  * element's `ref` prop. Uses a callback ref so the observer re-binds when the
  * element identity changes (React refs don't trigger effect re-runs).
  *
- * Uses ResizeObserver to re-check on size changes.
+ * Re-checks when the element's size or text changes.
  *
  * Ported from core's channel_bookmarks/hooks/use_text_overflow.
  */
@@ -33,10 +33,13 @@ export function useTextOverflow(): [boolean, (node: HTMLElement | null) => void]
 
         const resizeObserver = new ResizeObserver(checkOverflow);
         resizeObserver.observe(node);
+        const mutationObserver = new MutationObserver(checkOverflow);
+        mutationObserver.observe(node, {childList: true, characterData: true, subtree: true});
 
         return () => {
             resizeObserver.unobserve(node);
             resizeObserver.disconnect();
+            mutationObserver.disconnect();
         };
     }, [node]);
 

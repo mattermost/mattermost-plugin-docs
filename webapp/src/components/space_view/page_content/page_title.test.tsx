@@ -51,10 +51,13 @@ describe('PageTitle edit mode', () => {
         expect(screen.getByRole('textbox', {name: 'Page title'})).toHaveFocus();
     });
 
-    it('caps the field at the server title limit', () => {
-        renderTitle({editing: true});
+    it('caps the field at 255 Unicode code points', () => {
+        const onChange = jest.fn();
+        renderTitle({editing: true, onChange});
 
-        expect(screen.getByRole('textbox', {name: 'Page title'})).toHaveAttribute('maxlength', '255');
+        fireEvent.change(screen.getByRole('textbox', {name: 'Page title'}), {target: {value: '😀'.repeat(256)}});
+
+        expect(onChange).toHaveBeenCalledWith('😀'.repeat(255));
     });
 
     it('reports each keystroke without committing', () => {

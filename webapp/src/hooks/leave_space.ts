@@ -21,7 +21,7 @@ import {useAppDispatch} from './redux';
  * the same answer — in particular the server's "a space must keep one member"
  * rejection, which is otherwise indistinguishable from a generic failure.
  */
-export function useLeaveSpace(space: Space): () => Promise<void> {
+export function useLeaveSpace(space: Space): () => Promise<boolean> {
     const dispatch = useAppDispatch();
     const {formatMessage} = useIntl();
     const {spaceId, goHome} = useDocsNavigation();
@@ -32,6 +32,7 @@ export function useLeaveSpace(space: Space): () => Promise<void> {
             if (spaceId === space.id) {
                 goHome();
             }
+            return true;
         } catch (error) {
             const description = isLastSpaceMemberError(error) ? formatMessage({
                 id: 'docs.leaveSpace.error.lastMember',
@@ -48,6 +49,7 @@ export function useLeaveSpace(space: Space): () => Promise<void> {
                 }, {name: space.title}),
                 {description},
             );
+            return false;
         }
     }, [dispatch, space.id, space.title, spaceId, goHome, formatMessage]);
 }

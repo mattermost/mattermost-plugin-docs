@@ -19,7 +19,7 @@ export type ManageSpaceMembers = {
     /** Resolves to the users that FAILED, so a caller can restore exactly those chips. */
     addMembers: (users: MemberProfile[]) => Promise<MemberProfile[]>;
     removeMember: (userId: string) => Promise<void>;
-    leave: () => Promise<void>;
+    leave: () => Promise<boolean>;
 
     /** A mutation is in flight; write affordances should be disabled. */
     busy: boolean;
@@ -98,7 +98,7 @@ export function useManageSpaceMembers(space: Space): ManageSpaceMembers {
     const leave = useCallback(async () => {
         setBusy(true);
         try {
-            await leaveSpace();
+            return await leaveSpace();
         } finally {
             setBusy(false);
         }

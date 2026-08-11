@@ -48,6 +48,9 @@ describe('sidebar order', () => {
     it('falls back to empty for missing or corrupt values', () => {
         expect(parseSidebarOrder(undefined)).toEqual(EMPTY_SIDEBAR_ORDER);
         expect(parseSidebarOrder('not json')).toEqual(EMPTY_SIDEBAR_ORDER);
+        expect(parseSidebarOrder('null')).toEqual(EMPTY_SIDEBAR_ORDER);
+        expect(parseSidebarOrder('[]')).toEqual(EMPTY_SIDEBAR_ORDER);
+        expect(parseSidebarOrder('5')).toEqual(EMPTY_SIDEBAR_ORDER);
     });
 
     // A rejected preference would lose the whole order, so an oversized list is

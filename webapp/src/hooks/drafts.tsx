@@ -39,13 +39,18 @@ export function usePageDraft(spaceId?: string, pageId?: string): LoadedDraft {
     const [loadedId, setLoadedId] = useState<string>();
 
     useEffect(() => {
+        setLoadedId(undefined);
         if (!spaceId || !pageId) {
             return undefined;
         }
         const controller = new AbortController();
 
         dispatch(fetchPageDraft(spaceId, pageId, controller.signal)).
-            then(() => setLoadedId(pageId)).
+            then(() => {
+                if (!controller.signal.aborted) {
+                    setLoadedId(pageId);
+                }
+            }).
             catch((error) => {
                 if (controller.signal.aborted) {
                     return;

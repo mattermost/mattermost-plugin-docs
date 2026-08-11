@@ -59,7 +59,10 @@ const confirm = async (name: RegExp) => {
 };
 
 describe('PermissionsTab', () => {
-    beforeEach(() => jest.clearAllMocks());
+    beforeEach(() => {
+        jest.clearAllMocks();
+        mockLeave.mockResolvedValue(true);
+    });
 
     afterEach(() => act(() => {
         closeAllDocsModals();
@@ -106,7 +109,6 @@ describe('PermissionsTab', () => {
     // Leaving destroys your access to what is behind this tab, so the settings
     // modal must close too rather than sit open on a space you just left.
     it('leaves and closes the modal from your own row once confirmed', async () => {
-        mockLeave.mockResolvedValue(undefined);
         const onClose = jest.fn();
 
         renderTab(onClose, {currentUser: {id: 'me', username: 'caleb'}});

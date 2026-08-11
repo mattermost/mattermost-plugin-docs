@@ -17,6 +17,7 @@ type Props = {
     selected: MemberProfile[];
     excludeIds: string[];
     onChange: (users: MemberProfile[]) => void;
+    disabled?: boolean;
 };
 
 const itemToLabel = (user: MemberProfile) => user.displayName;
@@ -30,7 +31,7 @@ const sameUser = (a: MemberProfile, b: MemberProfile) => a.id === b.id;
 // disables client-side filtering because `useUserSearch` already queries the
 // server, and `itemToStringLabel` keeps Base UI from serialising a profile object
 // when it needs a string for an item.
-const PeoplePicker = ({selected, excludeIds, onChange}: Props) => {
+const PeoplePicker = ({selected, excludeIds, onChange, disabled = false}: Props) => {
     const {formatMessage} = useIntl();
     const [query, setQuery] = useState('');
     const {results, loading} = useUserSearch(query, excludeIds);
@@ -47,6 +48,7 @@ const PeoplePicker = ({selected, excludeIds, onChange}: Props) => {
             filter={null}
             value={selected}
             onValueChange={onChange}
+            disabled={disabled}
             inputValue={query}
             onInputValueChange={setQuery}
             itemToStringLabel={itemToLabel}

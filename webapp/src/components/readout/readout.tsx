@@ -23,7 +23,7 @@ const Readout = () => {
         if (!message) {
             return undefined;
         }
-        const timeout = setTimeout(clearReadout, CLEAR_DELAY);
+        const timeout = setTimeout(() => clearReadout(nonce), CLEAR_DELAY);
         return () => clearTimeout(timeout);
     }, [message, nonce]);
 

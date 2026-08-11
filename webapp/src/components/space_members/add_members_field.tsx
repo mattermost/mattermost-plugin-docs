@@ -28,6 +28,8 @@ type Props = {
  */
 const AddMembersField = ({excludeIds, onAdd, disabled}: Props) => {
     const [pending, setPending] = useState<MemberProfile[]>([]);
+    const [adding, setAdding] = useState(false);
+    const busy = disabled || adding;
 
     const exclude = useMemo(
         () => [...excludeIds, ...pending.map((user) => user.id)],
@@ -35,7 +37,12 @@ const AddMembersField = ({excludeIds, onAdd, disabled}: Props) => {
     );
 
     const add = useCallback(async () => {
-        setPending(await onAdd(pending));
+        setAdding(true);
+        try {
+            setPending(await onAdd(pending));
+        } finally {
+            setAdding(false);
+        }
     }, [onAdd, pending]);
 
     return (
@@ -44,11 +51,12 @@ const AddMembersField = ({excludeIds, onAdd, disabled}: Props) => {
                 selected={pending}
                 excludeIds={exclude}
                 onChange={setPending}
+                disabled={busy}
             />
             <PrimaryButton
                 type='button'
                 size='sm'
-                disabled={pending.length === 0 || disabled}
+                disabled={pending.length === 0 || busy}
                 onClick={add}
             >
                 <FormattedMessage

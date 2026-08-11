@@ -4,14 +4,11 @@
 import {fireEvent, screen} from '@testing-library/react';
 import React from 'react';
 
+import {Client4} from 'mattermost-redux/client';
+
 import {useDocsNavigation, useTogglePageEditMode} from './navigation';
 
 import {renderWithContext} from '../../tests/react_testing_utils';
-
-jest.mock('client/rest', () => ({
-    ...jest.requireActual('client/rest'),
-    siteRoot: () => 'https://mattermost.test/mattermost',
-}));
 
 function Probe() {
     const {teamName, spaceId, pageId, isDraft, isEditing, goToEditDraft, goToEditPage} = useDocsNavigation();
@@ -113,7 +110,13 @@ describe('useDocsNavigation paths', () => {
     });
 
     it('includes the Mattermost site URL when requested', () => {
-        expect(pathsAt(true)).toEqual(relativePaths.map((path) => `https://mattermost.test/mattermost${path}`));
+        const previousUrl = Client4.getUrl();
+        Client4.setUrl('https://mattermost.test/mattermost');
+        try {
+            expect(pathsAt(true)).toEqual(relativePaths.map((path) => `https://mattermost.test/mattermost${path}`));
+        } finally {
+            Client4.setUrl(previousUrl);
+        }
     });
 });
 
@@ -168,6 +171,18 @@ describe('useDocsNavigation goToEditDraft', () => {
         fireEvent.click(screen.getByTestId('go-edit-draft'));
 
         expect(history.location.pathname + history.location.search).toBe('/myteam/spaces/space1/drafts/pageX?edit=1');
+    });
+
+    it('preserves other view state while entering draft edit mode', () => {
+        const {history} = renderWithContext(<Probe/>, {
+            route: '/myteam/spaces/space1?rhs=comments&rhsView=thread&fs=1',
+            state: {currentTeam: {id: 't1', name: 'myteam'}},
+        });
+
+        fireEvent.click(screen.getByTestId('go-edit-draft'));
+
+        expect(history.location.pathname + history.location.search).
+            toBe('/myteam/spaces/space1/drafts/pageX?rhs=comments&rhsView=thread&fs=1&edit=1');
     });
 });
 

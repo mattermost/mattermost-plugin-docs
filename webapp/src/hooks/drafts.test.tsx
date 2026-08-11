@@ -72,7 +72,14 @@ afterEach(() => act(() => {
 describe('usePageDraft', () => {
     const renderDraft = (spaceId?: string, pageId?: string, drafts = {}) => {
         const store = makeTestStore({docs: {drafts}});
-        return renderHook(() => usePageDraft(spaceId, pageId), {wrapper: wrapperWith(store)});
+        return renderHook(
+            ({currentSpaceId, currentPageId}: {currentSpaceId?: string; currentPageId?: string}) =>
+                usePageDraft(currentSpaceId, currentPageId),
+            {
+                initialProps: {currentSpaceId: spaceId, currentPageId: pageId},
+                wrapper: wrapperWith(store),
+            },
+        );
     };
 
     it('reads the draft for the routed page out of the store', async () => {
@@ -107,6 +114,25 @@ describe('usePageDraft', () => {
         const {result} = renderDraft('eng', 'new');
 
         await waitFor(() => expect(result.current.loaded).toBe(true));
+    });
+
+    it('invalidates loaded state when leaving and returning to a page', async () => {
+        const draft = makeDraft('new', 'eng', 'Unpublished');
+        const hook = renderDraft('eng', 'new', {new: draft});
+        await waitFor(() => expect(hook.result.current.loaded).toBe(true));
+
+        hook.rerender({currentSpaceId: undefined, currentPageId: undefined});
+        await waitFor(() => expect(hook.result.current.loaded).toBe(false));
+
+        let resolve: () => void = () => {};
+        mockFetchResult = new Promise<void>((done) => {
+            resolve = done;
+        });
+        hook.rerender({currentSpaceId: 'eng', currentPageId: 'new'});
+
+        expect(hook.result.current.loaded).toBe(false);
+        await act(async () => resolve());
+        await waitFor(() => expect(hook.result.current.loaded).toBe(true));
     });
 });
 

@@ -18,9 +18,17 @@ const mockOnChange = {current: (() => {}) as (users: MemberProfile[]) => void};
 
 jest.mock('./people_picker', () => ({
     __esModule: true,
-    default: ({selected, onChange}: {selected: MemberProfile[]; onChange: (u: MemberProfile[]) => void}) => {
-        mockOnChange.current = onChange;
-        return <div data-testid='picker'>{selected.map((user) => user.displayName).join(',')}</div>;
+    default: ({selected, onChange, disabled}: {selected: MemberProfile[]; onChange: (u: MemberProfile[]) => void; disabled?: boolean}) => {
+        mockOnChange.current = disabled ? () => {} : onChange;
+        return (
+            <button
+                type='button'
+                data-testid='picker'
+                disabled={disabled}
+            >
+                {selected.map((user) => user.displayName).join(',')}
+            </button>
+        );
     },
 }));
 
@@ -47,11 +55,10 @@ describe('AddMembersField', () => {
         await waitFor(() => expect(screen.getByRole('button', {name: 'Add'})).toBeEnabled());
     });
 
-    it('stays disabled while a mutation is in flight', async () => {
+    it('disables the picker and Add while a mutation is in flight', () => {
         renderField(jest.fn(), true);
-        await pick([ada]);
 
-        await waitFor(() => expect(screen.getByTestId('picker')).toHaveTextContent('Ada'));
+        expect(screen.getByTestId('picker')).toBeDisabled();
         expect(screen.getByRole('button', {name: 'Add'})).toBeDisabled();
     });
 
@@ -81,5 +88,23 @@ describe('AddMembersField', () => {
             expect(screen.getByTestId('picker')).toHaveTextContent('Grace');
             expect(screen.getByTestId('picker')).not.toHaveTextContent('Ada');
         });
+    });
+
+    it('blocks picker changes while adding', async () => {
+        let resolve: (failed: MemberProfile[]) => void = () => {};
+        const onAdd = jest.fn(() => new Promise<MemberProfile[]>((done) => {
+            resolve = done;
+        }));
+        renderField(onAdd);
+        await pick([ada]);
+
+        fireEvent.click(await screen.findByRole('button', {name: 'Add'}));
+        await waitFor(() => expect(screen.getByTestId('picker')).toBeDisabled());
+        await pick([ada, grace]);
+        expect(screen.getByTestId('picker')).toHaveTextContent('Ada');
+        expect(screen.getByTestId('picker')).not.toHaveTextContent('Grace');
+
+        resolve([]);
+        await waitFor(() => expect(screen.getByTestId('picker')).toHaveTextContent(''));
     });
 });

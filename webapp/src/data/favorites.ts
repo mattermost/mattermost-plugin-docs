@@ -69,10 +69,14 @@ export function parseSidebarOrder(value?: string): SidebarOrder {
         return EMPTY_SIDEBAR_ORDER;
     }
     try {
-        const parsed = JSON.parse(value) as Partial<SidebarOrder>;
+        const parsed: unknown = JSON.parse(value);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            return EMPTY_SIDEBAR_ORDER;
+        }
+        const order = parsed as Partial<SidebarOrder>;
         return {
-            favorites: asStringArray(parsed.favorites),
-            spaces: asStringArray(parsed.spaces),
+            favorites: asStringArray(order.favorites),
+            spaces: asStringArray(order.spaces),
         };
     } catch {
         return EMPTY_SIDEBAR_ORDER;

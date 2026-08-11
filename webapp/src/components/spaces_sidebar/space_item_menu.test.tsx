@@ -5,6 +5,8 @@ import {fireEvent, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 import {copyToClipboard} from 'utils/clipboard';
 
+import {Client4} from 'mattermost-redux/client';
+
 import {makeSpace, makeTeam} from 'store/test_fixtures';
 
 import SpaceItemMenu from './space_item_menu';
@@ -13,11 +15,6 @@ import {renderWithContext} from '../../../tests/react_testing_utils';
 
 jest.mock('utils/clipboard', () => ({
     copyToClipboard: jest.fn(),
-}));
-
-jest.mock('client/rest', () => ({
-    ...jest.requireActual('client/rest'),
-    siteRoot: () => 'http://localhost:8065/mattermost',
 }));
 
 // Stubbed at the hook boundary: mattermost-redux's preferences actions are
@@ -46,12 +43,18 @@ async function openMenu() {
 
 describe('SpaceItemMenu', () => {
     it('copies the team-scoped space link', async () => {
+        const previousUrl = Client4.getUrl();
+        Client4.setUrl('http://localhost:8065/mattermost');
         renderMenu();
 
-        await openMenu();
-        fireEvent.click(screen.getByText('Copy link'));
+        try {
+            await openMenu();
+            fireEvent.click(screen.getByText('Copy link'));
 
-        await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('http://localhost:8065/mattermost/myteam/spaces/docs'));
+            await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('http://localhost:8065/mattermost/myteam/spaces/docs'));
+        } finally {
+            Client4.setUrl(previousUrl);
+        }
     });
 
     it('opens the leave confirmation from the menu', async () => {

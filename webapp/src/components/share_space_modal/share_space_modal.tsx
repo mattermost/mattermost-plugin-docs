@@ -40,7 +40,11 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
 
     const actions: MemberListActions = {
         ...(canManageMembers && {onRemove: removeMember}),
-        onLeave: () => leave().then(onClose),
+        onLeave: async () => {
+            if (await leave()) {
+                onClose();
+            }
+        },
         disabled: busy,
     };
 

@@ -41,6 +41,7 @@ type Props = {
     headerClassName?: string;
     initialFocus?: React.RefObject<HTMLElement | null>;
     showCloseButton?: boolean;
+    closeDisabled?: boolean;
 
     /**
      * Content aligned to the right of the title, before the close button — for
@@ -58,7 +59,7 @@ type Props = {
     children: React.ReactNode;
 };
 
-const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, initialFocus, showCloseButton = true, titleActions, headerContent, footer, headerDivider = true, footerDivider = false, children}: Props) => {
+const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, initialFocus, showCloseButton = true, closeDisabled = false, titleActions, headerContent, footer, headerDivider = true, footerDivider = false, children}: Props) => {
     const {formatMessage} = useIntl();
     const closeLabel = formatMessage({id: 'docs.genericModal.close', defaultMessage: 'Close'});
 
@@ -93,9 +94,12 @@ const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, in
     }, []);
 
     const closeWith = useCallback<CloseWith>((after) => {
+        if (closeDisabled) {
+            return;
+        }
         afterCloseRef.current = after;
         setOpen(false);
-    }, []);
+    }, [closeDisabled]);
 
     return (
         <Dialog.Root

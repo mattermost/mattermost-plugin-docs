@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {fireEvent, screen, waitFor} from '@testing-library/react';
+import {act, fireEvent, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 
 import BasicInputModal from './basic_input_modal';
@@ -61,5 +61,26 @@ describe('BasicInputModal', () => {
 
         await waitFor(() => expect(screen.getByText('Someone else edited this page')).toBeInTheDocument());
         expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it('blocks dismissal while confirmation is pending', async () => {
+        let resolve: () => void = () => {};
+        const onConfirm = jest.fn(() => new Promise<void>((done) => {
+            resolve = done;
+        }));
+        const onClose = jest.fn();
+        renderModal({initialValue: 'Old', onConfirm, onClose});
+
+        fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+        await waitFor(() => expect(screen.getByRole('button', {name: 'Save'})).toBeDisabled());
+
+        expect(screen.getByRole('button', {name: 'Cancel'})).toBeDisabled();
+        expect(screen.queryByRole('button', {name: 'Close'})).not.toBeInTheDocument();
+        fireEvent.keyDown(document, {key: 'Escape'});
+        expect(onClose).not.toHaveBeenCalled();
+        expect(screen.getByRole('heading', {name: 'Rename page'})).toBeInTheDocument();
+
+        await act(async () => resolve());
+        expect(onClose).toHaveBeenCalledTimes(1);
     });
 });

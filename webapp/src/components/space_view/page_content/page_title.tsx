@@ -46,7 +46,6 @@ const PageTitle = ({value, editing, onChange, onCommit, onCancel}: Props) => {
         <BaseInput
             className={classNames(styles.title, styles.field)}
             value={value}
-            maxLength={TITLE_MAX_LENGTH}
             placeholder={untitled}
             aria-label={formatMessage({id: 'docs.page.titleLabel', defaultMessage: 'Page title'})}
 
@@ -58,7 +57,7 @@ const PageTitle = ({value, editing, onChange, onCommit, onCancel}: Props) => {
 
             // Not `onValueChange={onChange}`: Base UI also passes event details,
             // and onChange's contract is the value alone.
-            onValueChange={(newValue) => onChange(newValue)}
+            onValueChange={(newValue) => onChange([...newValue].slice(0, TITLE_MAX_LENGTH).join(''))}
             onBlur={onCommit}
             onKeyDown={(e) => {
                 if (e.key === 'Enter') {

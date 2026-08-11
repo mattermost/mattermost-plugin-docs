@@ -48,8 +48,8 @@ const DiscardDraftModal = ({spaceId, pageId, pageTitle, onClose}: Props) => {
                 />,
                 {description: error instanceof Error ? error.message : String(error)},
             );
+            throw error;
         }
-        onClose();
     };
 
     return (
@@ -67,6 +67,7 @@ const DiscardDraftModal = ({spaceId, pageId, pageTitle, onClose}: Props) => {
                 />
             )}
             isConfirmDestructive={true}
+            closeAfterConfirm={true}
             onConfirm={confirm}
             onCancel={onClose}
         >

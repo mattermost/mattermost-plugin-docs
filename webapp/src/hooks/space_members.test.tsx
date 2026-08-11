@@ -59,7 +59,10 @@ const render = () => {
 const clientError = (status: number) => new ClientError('', {message: 'nope', status_code: status, url: '/x'});
 
 describe('useManageSpaceMembers', () => {
-    beforeEach(() => jest.clearAllMocks());
+    beforeEach(() => {
+        jest.clearAllMocks();
+        mockLeaveSpace.mockResolvedValue(true);
+    });
 
     it('adds every user and reports no failures', async () => {
         mockAddSpaceMembers.mockResolvedValue([]);
@@ -154,14 +157,15 @@ describe('useManageSpaceMembers', () => {
 
     // Leaving is one behaviour across the header menu, the sidebar row and here.
     it('delegates leaving to useLeaveSpace', async () => {
-        mockLeaveSpace.mockResolvedValue(undefined);
         const hook = render();
 
+        let left = false;
         await act(async () => {
-            await hook.current.leave();
+            left = await hook.current.leave();
         });
 
         expect(mockLeaveSpace).toHaveBeenCalled();
+        expect(left).toBe(true);
         expect(toast.error).not.toHaveBeenCalled();
     });
 });

@@ -40,8 +40,8 @@ export const getReadoutState = (): ReadoutState => state;
 /** The text currently in the live region. Exported for tests. */
 export const getReadoutMessage = (): string => state.message;
 
-export const clearReadout = () => {
-    if (state.message !== '') {
+export const clearReadout = (expectedNonce?: number) => {
+    if (state.message !== '' && (expectedNonce === undefined || state.nonce === expectedNonce)) {
         setState({message: '', nonce: state.nonce + 1});
     }
 };
