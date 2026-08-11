@@ -9,16 +9,6 @@
     background: var(--center-channel-bg);
 }
 
-.header {
-    display: flex;
-    flex-shrink: 0;
-    align-items: center;
-    justify-content: flex-end;
-    height: 52px;
-    padding: 0 20px;
-    gap: 12px;
-}
-
 .scroll {
     flex: 1 1 auto;
     min-height: 320px;
@@ -51,12 +41,18 @@
 }
 
 .pinnedToolbar {
-    position: sticky;
-    top: 0;
-    z-index: 2;
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    padding: 0 8px;
     border-bottom: 1px solid rgba(var(--center-channel-color-rgb), 0.08);
-    margin-bottom: 8px;
     background: var(--center-channel-bg);
+
+    > * {
+        width: 100%;
+        max-width: 700px;
+        padding-inline: 17px 24px;
+    }
 }
 
 .column :global {
@@ -124,12 +120,6 @@
             content: '⊗';
         }
     }
-}
-
-.presence {
-    color: rgba(var(--center-channel-color-rgb), 0.64);
-    font-size: 12px;
-    white-space: nowrap;
 }
 
 .notice {

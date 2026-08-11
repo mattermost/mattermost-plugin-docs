@@ -94,6 +94,7 @@ const PageContent = ({page, draft, editing}: Props) => {
                             spaceId={subject.spaceId}
                             pageId={subject.id}
                             isDraft={!page}
+                            editing={editing}
                         />
                     </>
                 ) : (

@@ -1,11 +1,15 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {updatePageDraft} from 'client/drafts';
+import {useAppDispatch} from 'hooks/redux';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+
+import {saveDraft} from 'store/actions';
 
 import type {Draft, DraftPatch} from 'types/drafts';
 
+import {publishAutosaveStatus} from './autosave_status';
+import {registerPendingSave} from './pending_saves';
 import {useLatest} from './utils';
 
 export const AUTOSAVE_DEBOUNCE_MS = 1000;
@@ -43,6 +47,7 @@ type Pending = {
 };
 
 export function useDraftAutosave({spaceId, pageId, enabled, baseEditAt, onSaved, onError}: Options): DraftAutosave {
+    const dispatch = useAppDispatch();
     const [status, setStatus] = useState<AutosaveStatus>('saved');
 
     const pendingRef = useRef<Pending | null>(null);
@@ -77,7 +82,7 @@ export function useDraftAutosave({spaceId, pageId, enabled, baseEditAt, onSaved,
 
         try {
             const body: DraftPatch = baseline ? {...entry.patch, base_edit_at: baseline} : entry.patch;
-            const draft = await updatePageDraft(entry.spaceId, entry.pageId, body, controller.signal);
+            const draft = await dispatch(saveDraft(entry.spaceId, entry.pageId, body, controller.signal));
             if (generation !== generationRef.current) {
                 return false;
             }
@@ -108,7 +113,7 @@ export function useDraftAutosave({spaceId, pageId, enabled, baseEditAt, onSaved,
                 abortRef.current = null;
             }
         }
-    }, [latest]);
+    }, [latest, dispatch]);
 
     const write = useCallback((force = false): Promise<boolean> => {
         const run = () => doWrite(force);
@@ -144,6 +149,14 @@ export function useDraftAutosave({spaceId, pageId, enabled, baseEditAt, onSaved,
         abortRef.current = null;
         setStatus('saved');
     }, [clearTimer]);
+
+    useEffect(() => registerPendingSave(flush), [flush]);
+
+    useEffect(() => {
+        publishAutosaveStatus(enabled ? status : null);
+    }, [enabled, status]);
+
+    useEffect(() => () => publishAutosaveStatus(null), []);
 
     useEffect(() => () => {
         clearTimer();

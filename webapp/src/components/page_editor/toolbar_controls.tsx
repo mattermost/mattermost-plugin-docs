@@ -1,6 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {autoUpdate, flip, FloatingPortal, offset, shift, useFloating} from '@floating-ui/react';
 import type {Editor} from '@tiptap/core';
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {useIntl} from 'react-intl';
@@ -10,6 +11,7 @@ import {
     AlertOutlineIcon,
     CheckCircleOutlineIcon,
     CloseCircleOutlineIcon,
+    DotsHorizontalIcon,
     InformationOutlineIcon,
     PinOutlineIcon,
 } from '@mattermost/compass-icons/components';
@@ -26,45 +28,47 @@ const CALLOUT_ICONS: Record<CalloutType, typeof InformationOutlineIcon> = {
     error: CloseCircleOutlineIcon,
 };
 
-type PinProps = {
-    pinned: boolean;
-    onToggle: () => void;
+type MenuControlProps = {
+    label: string;
+    icon: React.ReactNode;
+    children: (close: () => void) => React.ReactNode;
 };
 
-export const PinToolbarControl = ({pinned, onToggle}: PinProps) => {
-    const {formatMessage} = useIntl();
-    const label = pinned ? formatMessage({id: 'docs.editor.unpinToolbar', defaultMessage: 'Unpin toolbar'}) : formatMessage({id: 'docs.editor.pinToolbar', defaultMessage: 'Pin toolbar to top'});
-
-    return (
-        <button
-            type='button'
-            className={pinned ? `${styles.control} ${styles.active}` : styles.control}
-            onClick={onToggle}
-            aria-label={label}
-            title={label}
-            aria-pressed={pinned}
-        >
-            <PinOutlineIcon size={18}/>
-        </button>
-    );
-};
-
-type CalloutProps = {
-    getEditor: () => unknown;
-};
-
-export const CalloutControl = ({getEditor}: CalloutProps) => {
-    const {formatMessage} = useIntl();
+// The menu is portalled out of the bar: the host formatting bar clips its own
+// track, so a menu rendered inside it is cut off at the bar's edge.
+const MenuControl = ({label, icon, children}: MenuControlProps) => {
     const [open, setOpen] = useState(false);
-    const wrapperRef = useRef<HTMLDivElement>(null);
-    const triggerRef = useRef<HTMLButtonElement>(null);
+    const triggerRef = useRef<HTMLButtonElement | null>(null);
+    const menuRef = useRef<HTMLDivElement | null>(null);
+
+    const {refs, floatingStyles} = useFloating({
+        open,
+        placement: 'bottom-start',
+        middleware: [offset(4), flip(), shift({padding: 8})],
+        whileElementsMounted: autoUpdate,
+    });
+
+    const {setReference, setFloating} = refs;
+
+    const setTrigger = useCallback((node: HTMLButtonElement | null) => {
+        triggerRef.current = node;
+        setReference(node);
+    }, [setReference]);
+
+    const setMenu = useCallback((node: HTMLDivElement | null) => {
+        menuRef.current = node;
+        setFloating(node);
+    }, [setFloating]);
+
+    const close = useCallback(() => setOpen(false), []);
 
     useEffect(() => {
         if (!open) {
             return undefined;
         }
         const onDocumentClick = (e: MouseEvent) => {
-            if (!wrapperRef.current?.contains(e.target as globalThis.Node)) {
+            const target = e.target as globalThis.Node;
+            if (!menuRef.current?.contains(target) && !triggerRef.current?.contains(target)) {
                 setOpen(false);
             }
         };
@@ -80,30 +84,10 @@ export const CalloutControl = ({getEditor}: CalloutProps) => {
         }
     }, []);
 
-    const insert = useCallback((type: CalloutType) => {
-        const editor = getEditor() as Editor | null;
-        const chain = editor?.chain().focus();
-
-        let applied = false;
-        if (chain && typeof chain.toggleCallout === 'function') {
-            applied = chain.toggleCallout(type).run();
-        }
-        setOpen(false);
-        if (!applied) {
-            triggerRef.current?.focus();
-        }
-    }, [getEditor]);
-
-    const label = formatMessage({id: 'docs.editor.callout', defaultMessage: 'Insert callout'});
-
     return (
-        <div
-            ref={wrapperRef}
-            className={styles.menuWrapper}
-            onKeyDown={onKeyDown}
-        >
+        <>
             <button
-                ref={triggerRef}
+                ref={setTrigger}
                 type='button'
                 className={styles.control}
                 onClick={() => setOpen((prev) => !prev)}
@@ -112,32 +96,123 @@ export const CalloutControl = ({getEditor}: CalloutProps) => {
                 aria-expanded={open}
                 aria-haspopup='menu'
             >
-                <InformationOutlineIcon size={18}/>
+                {icon}
             </button>
 
             {open && (
-                <div
-                    className={styles.menu}
-                    role='menu'
-                >
-                    {CALLOUT_TYPES.map((type) => {
-                        const Icon = CALLOUT_ICONS[type];
-                        return (
-                            <button
-                                key={type}
-                                type='button'
-                                role='menuitem'
-                                className={styles.menuItem}
-                                onClick={() => insert(type)}
-                            >
-                                <Icon size={16}/>
-                                {CALLOUT_LABELS[type](formatMessage)}
-                            </button>
-                        );
-                    })}
-                </div>
+                <FloatingPortal>
+                    <div
+                        ref={setMenu}
+                        className={styles.menu}
+                        style={floatingStyles}
+                        role='menu'
+                        onKeyDown={onKeyDown}
+
+                        // Keeps the caret where it is: a command run from here acts on
+                        // the selection the menu was opened for.
+                        onMouseDown={(e) => e.preventDefault()}
+                    >
+                        {children(close)}
+                    </div>
+                </FloatingPortal>
             )}
-        </div>
+        </>
+    );
+};
+
+type PinProps = {
+    pinned: boolean;
+    onToggle: () => void;
+};
+
+export const PinToolbarControl = ({pinned, onToggle}: PinProps) => {
+    const {formatMessage} = useIntl();
+    const label = pinned ? formatMessage({id: 'docs.editor.unpinToolbar', defaultMessage: 'Unpin toolbar'}) : formatMessage({id: 'docs.editor.pinToolbar', defaultMessage: 'Pin toolbar to top'});
+
+    return (
+        <button
+            type='button'
+            className={`${styles.control} docs-pin-control`}
+            onClick={onToggle}
+            aria-label={label}
+            title={label}
+            aria-pressed={pinned}
+        >
+            <PinOutlineIcon size={18}/>
+        </button>
+    );
+};
+
+type OverflowProps = {
+    onPin: () => void;
+};
+
+export const OverflowControl = ({onPin}: OverflowProps) => {
+    const {formatMessage} = useIntl();
+
+    return (
+        <MenuControl
+            label={formatMessage({id: 'docs.editor.moreOptions', defaultMessage: 'More options'})}
+            icon={<DotsHorizontalIcon size={18}/>}
+        >
+            {(close) => (
+                <button
+                    type='button'
+                    role='menuitem'
+                    className={styles.menuItem}
+                    onClick={() => {
+                        onPin();
+                        close();
+                    }}
+                >
+                    <PinOutlineIcon size={16}/>
+                    {formatMessage({id: 'docs.editor.pinToolbar', defaultMessage: 'Pin toolbar to top'})}
+                </button>
+            )}
+        </MenuControl>
+    );
+};
+
+type CalloutProps = {
+    getEditor: () => unknown;
+};
+
+export const CalloutControl = ({getEditor}: CalloutProps) => {
+    const {formatMessage} = useIntl();
+
+    const insert = useCallback((type: CalloutType) => {
+        const editor = getEditor() as Editor | null;
+        const chain = editor?.chain().focus();
+
+        if (chain && typeof chain.toggleCallout === 'function') {
+            chain.toggleCallout(type).run();
+        }
+    }, [getEditor]);
+
+    return (
+        <MenuControl
+            label={formatMessage({id: 'docs.editor.callout', defaultMessage: 'Insert callout'})}
+            icon={<InformationOutlineIcon size={18}/>}
+        >
+            {(close) => CALLOUT_TYPES.map((type) => {
+                const Icon = CALLOUT_ICONS[type];
+                return (
+                    <button
+                        key={type}
+                        type='button'
+                        role='menuitem'
+                        className={styles.menuItem}
+                        onClick={() => {
+                            insert(type);
+                            close();
+                        }}
+                    >
+                        <Icon size={16}/>
+                        {CALLOUT_LABELS[type](formatMessage)}
+                    </button>
+                );
+            })}
+        </MenuControl>
     );
 };
 

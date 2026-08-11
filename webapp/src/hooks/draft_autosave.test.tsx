@@ -2,21 +2,29 @@
 // See LICENSE.txt for license information.
 
 import {act, renderHook} from '@testing-library/react';
-import {updatePageDraft} from 'client/drafts';
+import React from 'react';
+import {Provider} from 'react-redux';
 
 import type {Draft, DraftPatch} from 'types/drafts';
 
 import {AUTOSAVE_DEBOUNCE_MS, useDraftAutosave} from './draft_autosave';
 
-jest.mock('client/drafts', () => ({
-    updatePageDraft: jest.fn(),
-}));
+import {makeTestStore} from '../../tests/react_testing_utils';
 
-const mockUpdate = updatePageDraft as jest.MockedFunction<typeof updatePageDraft>;
+const mockUpdate = jest.fn();
+
+jest.mock('store/actions', () => ({
+    ...jest.requireActual('store/actions'),
+    saveDraft: (...args: unknown[]) => () => mockUpdate(...args as []),
+}));
 
 const savedDraft = {page_id: 'page1'} as Draft;
 
 const patchesSent = (): DraftPatch[] => mockUpdate.mock.calls.map((call) => call[2]);
+
+const wrapper = ({children}: {children: React.ReactNode}) => (
+    <Provider store={makeTestStore()}>{children}</Provider>
+);
 
 const setup = (overrides: Partial<Parameters<typeof useDraftAutosave>[0]> = {}) =>
     renderHook((props: Parameters<typeof useDraftAutosave>[0]) => useDraftAutosave(props), {
@@ -26,6 +34,7 @@ const setup = (overrides: Partial<Parameters<typeof useDraftAutosave>[0]> = {}) 
             enabled: true,
             ...overrides,
         },
+        wrapper,
     });
 
 const runDebounce = async () => {

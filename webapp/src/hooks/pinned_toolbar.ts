@@ -1,40 +1,30 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {useCallback, useEffect, useRef, useState} from 'react';
+import {useAppDispatch, useAppSelector} from 'hooks/redux';
+import {useCallback} from 'react';
 
-const STORAGE_KEY = 'docs_toolbar_pinned';
+import {savePreferences} from 'mattermost-redux/actions/preferences';
+import {get as getPreference} from 'mattermost-redux/selectors/entities/preferences';
+import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
-const readStored = (): boolean => {
-    try {
-        return window.localStorage.getItem(STORAGE_KEY) !== 'false';
-    } catch {
-        return true;
-    }
-};
-
-const writeStored = (pinned: boolean): boolean => {
-    try {
-        window.localStorage.setItem(STORAGE_KEY, String(pinned));
-        return true;
-    } catch {
-        return false;
-    }
-};
+const CATEGORY = 'docs_editor';
+const NAME = 'toolbar_pinned';
 
 export const usePinnedToolbar = (): [boolean, () => void] => {
-    const [pinned, setPinned] = useState(readStored);
+    const dispatch = useAppDispatch();
+    const userId = useAppSelector(getCurrentUserId);
+    const stored = useAppSelector((state) => getPreference(state, CATEGORY, NAME, 'true'));
+    const pinned = stored !== 'false';
 
-    const toggle = useCallback(() => setPinned((prev) => !prev), []);
-
-    const firstRender = useRef(true);
-    useEffect(() => {
-        if (firstRender.current) {
-            firstRender.current = false;
-            return;
-        }
-        writeStored(pinned);
-    }, [pinned]);
+    const toggle = useCallback(() => {
+        dispatch(savePreferences(userId, [{
+            user_id: userId,
+            category: CATEGORY,
+            name: NAME,
+            value: String(!pinned),
+        }]));
+    }, [dispatch, userId, pinned]);
 
     return [pinned, toggle];
 };

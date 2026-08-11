@@ -2,9 +2,12 @@
 // See LICENSE.txt for license information.
 
 import classNames from 'classnames';
+import {useAutosaveStatus} from 'hooks/autosave_status';
 import {useFullscreen} from 'hooks/fullscreen';
+import {usePagePresence} from 'hooks/page_presence';
 import {useCreateRootPage} from 'hooks/pages';
 import {useSidebarWidth} from 'hooks/sidebar_width';
+import {useCurrentUserId} from 'hooks/user';
 import React, {useState} from 'react';
 import {FormattedMessage, defineMessage, useIntl} from 'react-intl';
 import {Timestamp} from 'webapp_globals';
@@ -20,6 +23,7 @@ import PencilOutlineIcon from '@mattermost/compass-icons/components/pencil-outli
 import PlusIcon from '@mattermost/compass-icons/components/plus';
 
 import {Button} from 'components/form_controls/button';
+import AutosaveIndicator from 'components/page_editor/autosave_indicator';
 import PageMenu from 'components/page_menu/page_menu';
 import Spacer from 'components/spacer/spacer';
 
@@ -86,6 +90,7 @@ type Props = {
 const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogglePages, onToggleComments, onToggleEdit, onPublish}: Props) => {
     const {formatMessage} = useIntl();
     const createRootPage = useCreateRootPage(space.id);
+    const autosaveStatus = useAutosaveStatus();
 
     // Read here rather than passed in: the sidebar it hides belongs to the product
     // root, which shares no state with this header — see useFullscreen.
@@ -130,6 +135,9 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
     // The open page's last-updated time, the draft's own while it is unpublished,
     // otherwise the space's.
     const updatedAt = page?.update_at ?? draft?.update_at ?? space.update_at;
+
+    const currentUserId = useCurrentUserId();
+    const activeEditors = usePagePresence(space.id, subject?.id ?? '', currentUserId);
 
     // Timestamp's `style` is a narrow/short/long format variant, not a DOM style object.
     /* eslint-disable react/style-prop-object */
@@ -182,13 +190,26 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
             <Spacer/>
 
             <div className={styles.right}>
-                <span className={styles.updated}>
-                    <FormattedMessage
-                        id='docs.space.updated'
-                        defaultMessage='Updated {relative}'
-                        values={{relative: updatedRelative}}
-                    />
-                </span>
+                {activeEditors.length > 0 && (
+                    <span className={styles.updated}>
+                        <FormattedMessage
+                            id='docs.space.otherEditors'
+                            defaultMessage='{count, plural, one {# other editor} other {# other editors}}'
+                            values={{count: activeEditors.length}}
+                        />
+                    </span>
+                )}
+                {autosaveStatus ? (
+                    <AutosaveIndicator status={autosaveStatus}/>
+                ) : (
+                    <span className={styles.updated}>
+                        <FormattedMessage
+                            id='docs.space.updated'
+                            defaultMessage='Updated {relative}'
+                            values={{relative: updatedRelative}}
+                        />
+                    </span>
+                )}
                 {page && (
                     <Button
                         emphasis='quaternary'

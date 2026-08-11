@@ -122,7 +122,7 @@
       "jest-junit"
     ],
     "transformIgnorePatterns": [
-      "node_modules/(?!react-native|react-router|mattermost-webapp|@tiptap|prosemirror-)"
+      "node_modules/(?!react-native|react-router|mattermost-webapp|@tiptap|prosemirror-|serialize-error)"
     ],
     "setupFiles": [
       "jest-canvas-mock"

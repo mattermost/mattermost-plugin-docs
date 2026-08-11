@@ -1,14 +1,12 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {getPageActiveEditors} from 'client/drafts';
+import {getPageActiveEditors} from 'client/presence';
 import {subscribeToPagePresence} from 'client/presence_events';
 import {useEffect, useMemo, useState} from 'react';
 
 import type {PageActiveEditors} from 'types/drafts';
 
-// A page with no editors serializes as null on some server builds, so never trust
-// the field to be an array.
 const editorsOf = (snapshot: PageActiveEditors): string[] =>
     (Array.isArray(snapshot.active_editors) ? snapshot.active_editors : []);
 
@@ -20,6 +18,10 @@ export function usePagePresence(spaceId: string, pageId: string, currentUserId: 
     useEffect(() => {
         const controller = new AbortController();
         setSnapshot(null);
+
+        if (!spaceId || !pageId) {
+            return undefined;
+        }
 
         getPageActiveEditors(spaceId, pageId, controller.signal).
             then((next) => {

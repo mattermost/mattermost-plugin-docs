@@ -2,13 +2,13 @@
 // See LICENSE.txt for license information.
 
 import {renderHook, waitFor} from '@testing-library/react';
-import {getPageActiveEditors} from 'client/drafts';
+import {getPageActiveEditors} from 'client/presence';
 
 import type {PageActiveEditors} from 'types/drafts';
 
 import {usePagePresence} from './page_presence';
 
-jest.mock('client/drafts', () => ({
+jest.mock('client/presence', () => ({
     getPageActiveEditors: jest.fn(),
 }));
 

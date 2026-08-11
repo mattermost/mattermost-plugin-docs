@@ -1,14 +1,14 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {getPageDraft} from 'client/drafts';
-import {getPage} from 'client/pages';
-import {RestError} from 'client/rest';
+import {useAppDispatch} from 'hooks/redux';
 import {useEffect, useState} from 'react';
+
+import {fetchPage, fetchPageDraft} from 'store/actions';
 
 import type {Page} from 'types/docs';
 
-export type PageDraftLoad = {
+export type EditorContent = {
     loading: boolean;
     error: unknown;
 
@@ -24,7 +24,7 @@ export type PageDraftLoad = {
     baseEditAt?: number;
 };
 
-const initial: PageDraftLoad = {
+const initial: EditorContent = {
     loading: true,
     error: null,
     title: '',
@@ -34,13 +34,12 @@ const initial: PageDraftLoad = {
     notFound: false,
 };
 
-const isNotFound = (error: unknown): boolean => error instanceof RestError && error.status === 404;
-
-type Resolved = PageDraftLoad & {key: string};
+type Resolved = EditorContent & {key: string};
 
 const keyOf = (spaceId: string, pageId: string): string => `${spaceId}/${pageId}`;
 
-export function usePageDraft(spaceId: string, pageId: string): PageDraftLoad {
+export function useEditorContent(spaceId: string, pageId: string): EditorContent {
+    const dispatch = useAppDispatch();
     const [state, setState] = useState<Resolved>(() => ({...initial, key: keyOf(spaceId, pageId)}));
 
     useEffect(() => {
@@ -49,25 +48,21 @@ export function usePageDraft(spaceId: string, pageId: string): PageDraftLoad {
         setState({...initial, key});
 
         const load = async () => {
-            const [draftResult, pageResult] = await Promise.allSettled([
-                getPageDraft(spaceId, pageId, controller.signal),
-                getPage(spaceId, pageId, controller.signal),
-            ]);
-
-            if (controller.signal.aborted) {
+            let draft;
+            let page;
+            try {
+                [draft, page] = await Promise.all([
+                    dispatch(fetchPageDraft(spaceId, pageId, controller.signal)),
+                    dispatch(fetchPage(spaceId, pageId)),
+                ]);
+            } catch (error) {
+                if (!controller.signal.aborted) {
+                    setState({...initial, key, loading: false, error});
+                }
                 return;
             }
 
-            const draft = draftResult.status === 'fulfilled' ? draftResult.value : null;
-            const page = pageResult.status === 'fulfilled' ? pageResult.value : null;
-
-            const fatal = [draftResult, pageResult].
-                filter((result): result is PromiseRejectedResult => result.status === 'rejected').
-                map((result) => result.reason).
-                find((reason) => !isNotFound(reason));
-
-            if (fatal) {
-                setState({...initial, key, loading: false, error: fatal});
+            if (controller.signal.aborted) {
                 return;
             }
 
@@ -78,7 +73,7 @@ export function usePageDraft(spaceId: string, pageId: string): PageDraftLoad {
 
                 title: draft?.title || page?.title || '',
                 body: draft?.body || page?.body || '',
-                page,
+                page: page ?? null,
                 fromDraft: Boolean(draft),
                 notFound: !draft && !page,
                 baseEditAt: draft?.base_edit_at ?? page?.edit_at,
@@ -88,7 +83,7 @@ export function usePageDraft(spaceId: string, pageId: string): PageDraftLoad {
         load();
 
         return () => controller.abort();
-    }, [spaceId, pageId]);
+    }, [dispatch, spaceId, pageId]);
 
     return state.key === keyOf(spaceId, pageId) ? state : initial;
 }
