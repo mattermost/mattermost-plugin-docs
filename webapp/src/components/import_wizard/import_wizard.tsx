@@ -3,8 +3,11 @@
 
 import {cancelImportJob} from 'client/imports';
 import {useImportJob, useResumableImportJob} from 'hooks/imports';
-import React, {useCallback, useState} from 'react';
+import {useAppDispatch} from 'hooks/redux';
+import React, {useCallback, useEffect, useState} from 'react';
 import {useIntl} from 'react-intl';
+
+import {fetchPages, fetchSpaces} from 'store/actions';
 
 import type {ImportJobView, ImportTargetRequest} from 'types/imports';
 
@@ -48,6 +51,24 @@ const ImportWizard = ({target, onClose}: Props) => {
 
     const step = stepForJob(job);
     const steps = stepsForTarget(job);
+
+    // An import writes Spaces and pages straight to the database, so the store holding this product's view of
+    // them is stale the moment it finishes — the sidebar would not list a new Space, and following the link to it
+    // would land on an empty product home. Reloading while the user is still reading the report means the Space
+    // is there by the time they leave it.
+    //
+    // This is currently a no-op in practice: the store is still fed from the mock data source, which knows
+    // nothing the server wrote. It becomes real with the API-backed data source (PR #12), and is written now so
+    // that landing on a freshly imported Space is not a step someone has to remember later.
+    const dispatch = useAppDispatch();
+    const importedSpace = job ? importedSpaceId(job) : undefined;
+    useEffect(() => {
+        if (!importedSpace) {
+            return;
+        }
+        dispatch(fetchSpaces());
+        dispatch(fetchPages(importedSpace));
+    }, [dispatch, importedSpace]);
 
     const cancel = useCallback(async () => {
         if (!jobId || cancelling) {

@@ -6,6 +6,8 @@ import * as importsClient from 'client/imports';
 import {RestError} from 'client/rest';
 import React from 'react';
 
+import * as actions from 'store/actions';
+
 import type {ImportJobState, ImportJobView, ImportPreflightResultView} from 'types/imports';
 
 import ImportReviewStep from './import_review_step';
@@ -489,6 +491,35 @@ describe('ImportWizard review step', () => {
 });
 
 describe('ImportWizard running and result steps', () => {
+    // An import writes Spaces and pages behind the store's back, so a finished one leaves this product's view of
+    // them stale: the sidebar would not list the new Space, and the link to it would land on an empty home.
+    it('reloads the store once an import has written its Space', async () => {
+        const spaces = jest.spyOn(actions, 'fetchSpaces');
+        const pages = jest.spyOn(actions, 'fetchPages');
+
+        await uploadAndReach(makeJob('completed_with_issues', {
+            target: {kind: 'new', team_id: 'team1', space_id: 'newspace', existed: false},
+            final: undefined,
+        }));
+
+        await waitFor(() => expect(spaces).toHaveBeenCalled());
+        expect(pages).toHaveBeenCalledWith('newspace');
+    });
+
+    // A job that stopped short may have had its half-built Space cleaned up, so there is nothing to reload and
+    // nowhere to point at.
+    it('does not reload the store for an import that did not finish', async () => {
+        const spaces = jest.spyOn(actions, 'fetchSpaces');
+
+        await uploadAndReach(makeJob('failed', {
+            target: {kind: 'new', team_id: 'team1', space_id: 'newspace', existed: false},
+            error: {code: 'execution_failed'},
+        }));
+
+        await screen.findByText('Import stopped');
+        expect(spaces).not.toHaveBeenCalled();
+    });
+
     afterEach(() => {
         jest.restoreAllMocks();
     });
