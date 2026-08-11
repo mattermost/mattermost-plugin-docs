@@ -14,10 +14,11 @@ import (
 	"github.com/pkg/errors"
 )
 
-const (
-	TipTapDocType   = "doc"
-	EmptyTipTapJSON = `{"type":"doc","content":[]}`
-)
+const TipTapDocType = "doc"
+
+// EmptyTipTapJSON is a rendered-empty document. TipTap's root schema requires at least one block
+// (`block+`); the paragraph gives the editor a valid text block for its initial selection and caret.
+const EmptyTipTapJSON = `{"type":"doc","content":[{"type":"paragraph"}]}`
 
 // TipTapDocument is the parsed form of a TipTap editor document. Content is left as an untyped node
 // tree because node attributes and nesting vary per editor extension; the permitted node and mark
