@@ -77,11 +77,13 @@ export function useRoutedPage(spaceId: string, pageId?: string, {fetchMissing = 
             return undefined;
         }
         let active = true;
-        dispatch(fetchPage(spaceId, pageId)).then(() => {
-            if (active) {
-                setCheckedId(pageId);
-            }
-        });
+        dispatch(fetchPage(spaceId, pageId)).
+            catch(() => undefined).
+            finally(() => {
+                if (active) {
+                    setCheckedId(pageId);
+                }
+            });
         return () => {
             active = false;
         };
