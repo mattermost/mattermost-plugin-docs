@@ -1,0 +1,80 @@
+.frame {
+    display: flex;
+    flex: 1 1 auto;
+    justify-content: center;
+    padding: 0 56px;
+}
+
+.article {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 32px;
+    min-width: 280px;
+    max-width: 700px;
+    padding-bottom: 80px;
+}
+
+.titleArea {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 32px 0 24px;
+    border-bottom: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
+
+    &:hover .topActions,
+    &:focus-within .topActions {
+        opacity: 1;
+    }
+}
+
+// Sits in the title's top padding; hidden until the title area is hovered.
+.topActions {
+    position: absolute;
+    top: 4px;
+    left: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 150ms ease;
+}
+
+// Scoped under `.btn.btn-xs` to beat core's quaternary button color/padding.
+.topAction:global(.btn.btn-xs) {
+    height: auto;
+    gap: 4px;
+    padding: 4px 8px;
+    color: rgba(var(--center-channel-color-rgb), 0.75);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 16px;
+}
+
+.metadata {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+}
+
+// The design's "Input Chip": a compact, borderless pill of page metadata.
+.chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px 4px 8px;
+    border-radius: 4px;
+    color: var(--center-channel-color);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 16px;
+    white-space: nowrap;
+}
+
+.chipAvatar {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+}

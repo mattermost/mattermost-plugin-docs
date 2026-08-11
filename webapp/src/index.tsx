@@ -7,7 +7,7 @@ import {DOCS_BASE_URL, DOCS_SWITCHER_LINK_URL} from 'routing/paths';
 
 import reducer from 'store/reducer';
 
-import DocsRoot from 'components/docs_root/docs_root';
+import DocsRootLazy from 'components/docs_root/docs_root_lazy';
 import DocsSettingsButton from 'components/docs_settings_button/docs_settings_button';
 
 import type {PluginRegistry} from 'types/mattermost-webapp';
@@ -44,7 +44,7 @@ export default class Plugin {
             switcherIcon: SWITCHER_ICON,
             switcherText: 'Docs',
             switcherLinkURL: DOCS_SWITCHER_LINK_URL,
-            mainComponent: DocsRoot,
+            mainComponent: DocsRootLazy,
             headerCentreComponent: DocsHeaderCentre,
             headerRightComponent: DocsSettingsButton,
             showTeamSidebar: true,

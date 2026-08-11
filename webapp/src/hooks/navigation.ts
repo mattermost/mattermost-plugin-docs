@@ -1,10 +1,12 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {siteRoot} from 'client/rest';
 import {useTeamContext} from 'hooks/team';
 import {useCallback} from 'react';
-import {useHistory, useRouteMatch} from 'react-router-dom';
-import {DOCS_DRAFT_ROUTE, DOCS_ROUTE, docsHomePath, docsPath, draftPath, pagePath, spacePath} from 'routing/paths';
+import {useHistory, useLocation, useRouteMatch} from 'react-router-dom';
+import {DOCS_DRAFT_ROUTE, DOCS_ROUTE, DOCS_SPACE_OVERVIEW_ROUTE, EDIT_QUERY, docsHomePath, docsPath, draftPath, editPagePath, overviewPath, pagePath, spacePath} from 'routing/paths';
+import {withQuery} from 'routing/query';
 
 type DocsRouteParams = {
     team?: string;
@@ -12,28 +14,67 @@ type DocsRouteParams = {
     pageId?: string;
 };
 
+type DocsNavigationOptions = {
+    absolute?: boolean;
+};
+
 // Reads the current Docs selection from the URL and provides imperative
 // navigation. Path construction lives in routing/paths so the same logic backs
 // React Router <Link>s; this hook binds the current team (so callers stay
 // team-agnostic) and composes those builders with history for programmatic
 // navigation (clicks, keyboard handlers).
-export function useDocsNavigation() {
+export function useDocsNavigation({absolute = false}: DocsNavigationOptions = {}) {
     const history = useHistory();
 
-    // Draft route first: it's the more specific pattern. DOCS_ROUTE treats the
-    // segment after :spaceId as :pageId, so a draft URL (…/:spaceId/drafts/:pageId)
-    // would otherwise parse pageId='drafts' and drop the real page id.
-    const match = useRouteMatch<DocsRouteParams>([DOCS_DRAFT_ROUTE, DOCS_ROUTE]);
+    // Specific patterns first: DOCS_ROUTE treats the segment after :spaceId as
+    // :pageId, so a draft URL (…/:spaceId/drafts/:pageId) would parse
+    // pageId='drafts', and an overview URL would parse pageId='overview'.
+    const match = useRouteMatch<DocsRouteParams>([DOCS_DRAFT_ROUTE, DOCS_SPACE_OVERVIEW_ROUTE, DOCS_ROUTE]);
     const {name: currentTeamName} = useTeamContext();
 
     const teamName = match?.params.team || currentTeamName;
     const spaceId = match?.params.spaceId;
     const pageId = match?.params.pageId;
     const isDraft = match?.path === DOCS_DRAFT_ROUTE;
+    const isOverview = match?.path === DOCS_SPACE_OVERVIEW_ROUTE;
 
-    const goToSpace = useCallback((id: string) => history.push(spacePath(teamName, id)), [history, teamName]);
-    const goToPage = useCallback((space: string, page: string) => history.push(pagePath(teamName, space, page)), [history, teamName]);
+    const {search} = useLocation();
+
+    // Only a routed page can be edited, so the query alone doesn't mean edit mode:
+    // ?edit=1 on a space or overview URL names nothing to edit and is ignored.
+    // Drafts read the same query as published pages — an unpublished page still has
+    // a rendered form worth reading before deciding to publish it.
+    const isEditing = Boolean(pageId) && !isOverview && new URLSearchParams(search).get(EDIT_QUERY) === '1';
+
+    // `replace` for arrivals that follow the routed page ceasing to exist: the URL
+    // being left is dead, so it shouldn't be somewhere Back can return to.
+    const goToSpace = useCallback((id: string, {replace = false} = {}) => {
+        const path = spacePath(teamName, id);
+        if (replace) {
+            history.replace(path);
+        } else {
+            history.push(path);
+        }
+    }, [history, teamName]);
+
+    // `replace` for arrivals where the URL being left no longer names anything —
+    // publishing a draft, whose draft URL ceases to exist with it.
+    const goToPage = useCallback((space: string, page: string, {replace = false} = {}) => {
+        const path = pagePath(teamName, space, page);
+        if (replace) {
+            history.replace(path);
+        } else {
+            history.push(path);
+        }
+    }, [history, teamName]);
     const goToDraft = useCallback((space: string, page: string) => history.push(draftPath(teamName, space, page)), [history, teamName]);
+    const goToEditDraft = useCallback((space: string, page: string) => history.push(withQuery(
+        draftPath(teamName, space, page),
+        search,
+        (params) => params.set(EDIT_QUERY, '1'),
+    )), [history, search, teamName]);
+    const goToEditPage = useCallback((space: string, page: string) => history.push(editPagePath(teamName, space, page)), [history, teamName]);
+    const goToOverview = useCallback((space: string) => history.push(overviewPath(teamName, space)), [history, teamName]);
     const goHome = useCallback(() => history.push(docsHomePath(teamName)), [history, teamName]);
     const navigate = useCallback((space: string, page?: string) => history.push(docsPath(teamName, space, page)), [history, teamName]);
 
@@ -41,14 +82,21 @@ export function useDocsNavigation() {
     // its own team). Core re-initializes team context from the URL on arrival.
     const navigateInTeam = useCallback((team: string, space: string, page?: string) => history.push(docsPath(team, space, page)), [history]);
 
+    const withBase = (path: string) => (absolute ? siteRoot() + path : path);
+
     return {
         teamName,
         spaceId,
         pageId,
         isDraft,
+        isEditing,
+        isOverview,
         goToSpace,
         goToPage,
         goToDraft,
+        goToEditDraft,
+        goToEditPage,
+        goToOverview,
         goHome,
         navigate,
         navigateInTeam,
@@ -56,11 +104,43 @@ export function useDocsNavigation() {
         // Re-exported for declarative use, e.g. <Link to={paths.space(id)}>.
         // Team is pre-bound so call sites match the imperative helpers.
         paths: {
-            home: () => docsHomePath(teamName),
-            space: (id: string) => spacePath(teamName, id),
-            page: (space: string, page: string) => pagePath(teamName, space, page),
-            draft: (space: string, page: string) => draftPath(teamName, space, page),
-            to: (space?: string, page?: string) => docsPath(teamName, space, page),
+            home: () => withBase(docsHomePath(teamName)),
+            space: (id: string) => withBase(spacePath(teamName, id)),
+            page: (space: string, page: string) => withBase(pagePath(teamName, space, page)),
+            overview: (space: string) => withBase(overviewPath(teamName, space)),
+            draft: (space: string, page: string) => withBase(draftPath(teamName, space, page)),
+            to: (space?: string, page?: string) => withBase(docsPath(teamName, space, page)),
         },
     };
+}
+
+/**
+ * Returns a handler that moves the routed page in and out of edit mode: into
+ * `?edit=1` while reading, back to the bare path while editing. Both are pushes, so
+ * Back is an exit. A no-op when no page is routed, since there is nothing to edit.
+ *
+ * Works for a draft as well as a published page — the query rides on whichever
+ * address is current, so toggling never moves between the two.
+ */
+export function useTogglePageEditMode(spaceId: string) {
+    const history = useHistory();
+    const {search} = useLocation();
+    const {pageId, isDraft, isEditing, paths} = useDocsNavigation();
+
+    return useCallback(() => {
+        if (!pageId) {
+            return;
+        }
+        const base = isDraft ? paths.draft(spaceId, pageId) : paths.page(spaceId, pageId);
+
+        // Other queries ride along: an open right-hand panel is one of them, and
+        // entering or leaving the editor shouldn't close it.
+        history.push(withQuery(base, search, (params) => {
+            if (isEditing) {
+                params.delete(EDIT_QUERY);
+            } else {
+                params.set(EDIT_QUERY, '1');
+            }
+        }));
+    }, [history, search, isDraft, isEditing, pageId, spaceId, paths]);
 }

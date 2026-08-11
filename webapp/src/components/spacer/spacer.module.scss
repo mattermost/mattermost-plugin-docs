@@ -1,0 +1,6 @@
+// Grows to fill the free space; contributes no size of its own.
+.spacer {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+}

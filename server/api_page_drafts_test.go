@@ -34,6 +34,7 @@ func TestHandler_DraftLifecycle(t *testing.T) {
 	require.Equal(t, http.StatusCreated, rec.Code)
 	var draft model.Draft
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &draft))
+	require.JSONEq(t, `{"type":"doc","content":[{"type":"paragraph"}]}`, draft.Body)
 	pageID := draft.PageId
 	require.True(t, mmmodel.IsValidId(pageID))
 

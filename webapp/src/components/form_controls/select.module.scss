@@ -1,0 +1,112 @@
+// Same chrome as TextInput: bordered field with the label floated over its top
+// border, a leading icon, the value, and a trailing chevron.
+.trigger {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 16px;
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.16);
+    border-radius: 4px;
+    background: var(--center-channel-bg);
+    cursor: pointer;
+    text-align: left;
+
+    &:hover {
+        border-color: rgba(var(--center-channel-color-rgb), 0.24);
+    }
+
+    &[data-popup-open],
+    &:focus-visible {
+        border-color: var(--button-bg);
+        box-shadow: inset 0 0 0 1px var(--button-bg);
+        outline: none;
+    }
+
+    &[data-disabled] {
+        background: rgba(var(--center-channel-color-rgb), 0.04);
+        cursor: not-allowed;
+    }
+}
+
+.label {
+    position: absolute;
+    top: 0;
+    left: 12px;
+    padding: 0 4px;
+    background: var(--center-channel-bg);
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+    font-size: 10px;
+    line-height: 12px;
+    transform: translateY(-50%);
+}
+
+.leadingIcon {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+}
+
+.value {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--center-channel-color);
+    font-size: 14px;
+    line-height: 20px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.chevron {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+}
+
+.positioner {
+    z-index: var(--z-index-menu);
+}
+
+.popup {
+    min-width: var(--anchor-width);
+    max-height: 320px;
+    padding: 8px 0;
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.16);
+    border-radius: 4px;
+    background: var(--center-channel-bg);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    overflow-y: auto;
+
+    &:focus {
+        outline: none;
+    }
+}
+
+.item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    cursor: pointer;
+
+    // Base UI highlights the focused item (keyboard or pointer) via this attr.
+    &[data-highlighted] {
+        background: rgba(var(--center-channel-color-rgb), 0.08);
+        outline: none;
+    }
+}
+
+.itemText {
+    flex: 1 1 auto;
+}
+
+.indicator {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    color: var(--button-bg);
+}

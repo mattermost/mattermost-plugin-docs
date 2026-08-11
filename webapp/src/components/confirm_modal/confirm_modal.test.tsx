@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {fireEvent, screen} from '@testing-library/react';
+import {fireEvent, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 
 import ConfirmModal from './confirm_modal';
@@ -28,12 +28,48 @@ describe('ConfirmModal', () => {
         expect(screen.getByRole('button', {name: 'Cancel'})).toBeInTheDocument();
     });
 
-    it('fires onConfirm and onCancel from the respective buttons', () => {
+    // Both handlers run after the modal has animated out, not on the click: the
+    // button dismisses the modal through its own close so the exit transition can
+    // play, and the handler — which typically unmounts the modal — runs once it has.
+    it('fires onConfirm from the confirm button, after the modal closes', async () => {
         const onConfirm = jest.fn();
+        renderWithContext(
+            <ConfirmModal
+                {...baseProps}
+                onConfirm={onConfirm}
+            >
+                <p>{'Body'}</p>
+            </ConfirmModal>,
+        );
+
+        fireEvent.click(screen.getByRole('button', {name: 'Confirm'}));
+
+        await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    });
+
+    it('fires onCancel from the cancel button, after the modal closes', async () => {
         const onCancel = jest.fn();
         renderWithContext(
             <ConfirmModal
                 {...baseProps}
+                onCancel={onCancel}
+            >
+                <p>{'Body'}</p>
+            </ConfirmModal>,
+        );
+
+        fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
+
+        await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
+    });
+
+    it('stays open when confirmation must succeed before closing', async () => {
+        const onConfirm = jest.fn().mockRejectedValue(new Error('nope'));
+        const onCancel = jest.fn();
+        renderWithContext(
+            <ConfirmModal
+                {...baseProps}
+                closeAfterConfirm={true}
                 onConfirm={onConfirm}
                 onCancel={onCancel}
             >
@@ -42,10 +78,10 @@ describe('ConfirmModal', () => {
         );
 
         fireEvent.click(screen.getByRole('button', {name: 'Confirm'}));
-        expect(onConfirm).toHaveBeenCalledTimes(1);
 
-        fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
-        expect(onCancel).toHaveBeenCalledTimes(1);
+        await waitFor(() => expect(screen.getByRole('button', {name: 'Confirm'})).toBeEnabled());
+        expect(onCancel).not.toHaveBeenCalled();
+        expect(screen.getByRole('heading', {name: 'Leave space?'})).toBeInTheDocument();
     });
 
     it('renders custom button labels', () => {
