@@ -115,6 +115,16 @@ describe('useRoutedPage', () => {
         expect(mockGetPage).toHaveBeenCalledWith('eng', 'intro');
     });
 
+    it('resolves with no page when the server cannot produce one', async () => {
+        jest.spyOn(console, 'error').mockImplementation(() => {});
+        mockGetPage.mockRejectedValue(new Error('403'));
+
+        const {result} = renderHook(() => useRoutedPage('eng', 'gone'), {wrapper: wrapperFor()});
+
+        await waitFor(() => expect(result.current.resolved).toBe(true));
+        expect(result.current.page).toBeUndefined();
+    });
+
     // On the draft route the page legitimately does not exist yet — the draft
     // reserved its id — so asking for it would 404 on every draft opened.
     it('skips the fetch when fetchMissing is off', () => {

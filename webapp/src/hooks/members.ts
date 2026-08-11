@@ -3,11 +3,12 @@
 
 import {useAppDispatch, useAppSelector} from 'hooks/redux';
 import {useEffect, useMemo} from 'react';
+import {shallowEqual} from 'react-redux';
 
 import {getMissingProfilesByIds} from 'mattermost-redux/actions/users';
 import {Client4} from 'mattermost-redux/client';
 import {getTeammateNameDisplaySetting} from 'mattermost-redux/selectors/entities/preferences';
-import {getUsers} from 'mattermost-redux/selectors/entities/users';
+import {getUser, makeGetUsersByIds} from 'mattermost-redux/selectors/entities/users';
 import {displayUsername} from 'mattermost-redux/utils/user_utils';
 
 import {getSpaceMemberIds} from 'store/selectors';
@@ -23,7 +24,7 @@ export type MemberProfile = {
 // doesn't have it yet (e.g. a page's author who isn't a loaded space member).
 export function useUserProfile(userId?: string): MemberProfile | undefined {
     const dispatch = useAppDispatch();
-    const usersById = useAppSelector(getUsers);
+    const user = useAppSelector((state) => (userId ? getUser(state, userId) : undefined));
     const nameDisplay = useAppSelector(getTeammateNameDisplaySetting) || '';
 
     useEffect(() => {
@@ -36,14 +37,13 @@ export function useUserProfile(userId?: string): MemberProfile | undefined {
         if (!userId) {
             return undefined;
         }
-        const user = usersById[userId];
         return {
             id: userId,
             displayName: displayUsername(user, nameDisplay),
             username: user?.username ?? '',
-            avatarUrl: Client4.getProfilePictureUrl(userId, user?.last_picture_update),
+            avatarUrl: Client4.getProfilePictureUrl(userId, user?.last_picture_update ?? 0),
         };
-    }, [userId, usersById, nameDisplay]);
+    }, [userId, user, nameDisplay]);
 }
 
 // Resolves a space's member ids (from the Docs store) to display profiles,
@@ -52,7 +52,8 @@ export function useUserProfile(userId?: string): MemberProfile | undefined {
 export function useSpaceMemberProfiles(spaceId: string): MemberProfile[] {
     const dispatch = useAppDispatch();
     const memberIds = useAppSelector((state) => getSpaceMemberIds(state, spaceId));
-    const usersById = useAppSelector(getUsers);
+    const getUsersByIds = useMemo(() => makeGetUsersByIds(), []);
+    const users = useAppSelector((state) => getUsersByIds(state, memberIds), shallowEqual);
     const nameDisplay = useAppSelector(getTeammateNameDisplaySetting) || '';
 
     useEffect(() => {
@@ -61,13 +62,13 @@ export function useSpaceMemberProfiles(spaceId: string): MemberProfile[] {
         }
     }, [dispatch, memberIds]);
 
-    return useMemo(() => memberIds.map((id) => {
-        const user = usersById[id];
+    return useMemo(() => memberIds.map((id, index) => {
+        const user = users[index];
         return {
             id,
             displayName: displayUsername(user, nameDisplay),
             username: user?.username ?? '',
-            avatarUrl: Client4.getProfilePictureUrl(id, user?.last_picture_update),
+            avatarUrl: Client4.getProfilePictureUrl(id, user?.last_picture_update ?? 0),
         };
-    }), [memberIds, usersById, nameDisplay]);
+    }), [memberIds, users, nameDisplay]);
 }
