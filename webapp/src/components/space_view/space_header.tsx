@@ -210,7 +210,7 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}
             <Button
                 emphasis='quaternary'
                 size='sm'
-                className={classNames('btn-icon', {active: favoriteState !== 'off'})}
+                className={classNames('btn-icon', 'docs-btn-neutral', {active: favoriteState !== 'off'})}
                 tooltip={favoriteLabel}
                 aria-pressed={favoriteState === 'partial' ? 'mixed' : favorited}
                 onClick={() => toggleFavorite('space', space.id)}
@@ -323,7 +323,7 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}
             <Button
                 emphasis='quaternary'
                 size='sm'
-                className={classNames('btn-icon', {active: infoOpen})}
+                className={classNames('btn-icon', 'docs-btn-neutral', {active: infoOpen})}
                 tooltip={infoLabel}
                 aria-pressed={infoOpen}
                 onClick={onToggleInfo}

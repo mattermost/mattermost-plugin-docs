@@ -1,14 +1,12 @@
 /*
  * PORT-TO-CORE: the shared Button is accent-only (every emphasis colors with
  * --button-bg). These :global rules restore core's neutral header-icon-button
- * behaviour for ghost buttons that should read as toolbar controls:
- *   - `.btn-icon` quaternary icon buttons (core's .btn-icon grey is otherwise
- *     overridden by the later emphasis color, so raise its specificity)
- *   - quaternary buttons marked `docs-btn-neutral` that carry a label
+ * behaviour for quaternary ghost buttons explicitly marked
+ * `docs-btn-neutral`. This includes icon-only toolbar controls and buttons
+ * carrying a label.
  * States mirror core's .btn-icon / channel-header icon: grey base, light-grey
  * hover, light-blue press (:active), persistent blue when toggled on (.active).
- * Fold the icon rules into core's .btn-icon; the label rules are a stopgap
- * until a neutral emphasis exists upstream.
+ * Fold these rules into a neutral emphasis upstream when one exists.
  */
 
 // Badge overlay (see the `badge` prop on the Button wrappers). Local classes —
@@ -48,14 +46,11 @@
 }
 
 // Base — neutral grey.
-:global(.btn.btn-icon.btn-quaternary),
 :global(.btn.btn-quaternary.docs-btn-neutral) {
     color: rgba(var(--center-channel-color-rgb), 0.64);
 }
 
 // Hover — light-grey wash (replaces btn-quaternary's accent-blue hover).
-:global(.btn.btn-icon.btn-quaternary:hover),
-:global(.btn.btn-icon.btn-quaternary.btn-force-hover),
 :global(.btn.btn-quaternary.docs-btn-neutral:hover),
 :global(.btn.btn-quaternary.docs-btn-neutral.btn-force-hover) {
     background: rgba(var(--center-channel-color-rgb), 0.08);
@@ -64,8 +59,6 @@
 
 // Pressed — light-blue wash + accent color. Declared after :hover so a hovered
 // press reads blue, not grey.
-:global(.btn.btn-icon.btn-quaternary:active),
-:global(.btn.btn-icon.btn-quaternary.btn-force-active),
 :global(.btn.btn-quaternary.docs-btn-neutral:active),
 :global(.btn.btn-quaternary.docs-btn-neutral.btn-force-active) {
     background: rgba(var(--button-bg-rgb), 0.08);
@@ -73,8 +66,6 @@
 }
 
 // Toggled on (favorited / panel open) — persistent blue, overriding hover.
-:global(.btn.btn-icon.btn-quaternary.active),
-:global(.btn.btn-icon.btn-quaternary.active:hover),
 :global(.btn.btn-quaternary.docs-btn-neutral.active),
 :global(.btn.btn-quaternary.docs-btn-neutral.active:hover) {
     background: rgba(var(--button-bg-rgb), 0.08);

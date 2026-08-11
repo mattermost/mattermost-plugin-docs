@@ -82,7 +82,7 @@ const RhsPanel = ({name, title, widthKey, onBack, onClose, children}: Props) => 
                             <Button
                                 emphasis='quaternary'
                                 size='sm'
-                                className='btn-icon'
+                                className='btn-icon docs-btn-neutral'
                                 aria-label={formatMessage({id: 'docs.rhs.back', defaultMessage: 'Back to {name}'}, {name})}
                                 onClick={onBack}
                             >
@@ -96,7 +96,7 @@ const RhsPanel = ({name, title, widthKey, onBack, onClose, children}: Props) => 
                     <Button
                         emphasis='quaternary'
                         size='sm'
-                        className='btn-icon'
+                        className='btn-icon docs-btn-neutral'
                         aria-label={formatMessage({id: 'docs.rhs.close', defaultMessage: 'Close'})}
                         onClick={onClose}
                     >

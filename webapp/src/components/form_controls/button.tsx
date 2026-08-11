@@ -8,9 +8,8 @@ import {Button as SharedButton} from '@mattermost/shared/components/button';
 import type {ButtonProps as SharedButtonProps} from '@mattermost/shared/components/button';
 import {WithTooltip} from '@mattermost/shared/components/tooltip';
 
-// Neutral-grey treatment for `btn-icon` and `docs-btn-neutral` ghost buttons
-// (the shared Button is accent-only), plus the badge overlay; the :global rules
-// apply wherever these buttons render.
+// Neutral-grey treatment for ghost buttons explicitly marked
+// `docs-btn-neutral` (the shared Button is accent-only), plus the badge overlay.
 import styles from './button_neutral.module.scss';
 
 // The Docs plugin avoids styled-components (its browser ESM references `process`

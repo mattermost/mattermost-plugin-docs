@@ -171,7 +171,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                     <Button
                         emphasis='quaternary'
                         size='sm'
-                        className='btn-icon'
+                        className='btn-icon docs-btn-neutral'
                         tooltip={addPageLabel}
                         leadingIcon={<PlusIcon size={18}/>}
                         onClick={createRootPage}
@@ -193,7 +193,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                     <Button
                         emphasis='quaternary'
                         size='sm'
-                        className={classNames('btn-icon', {active: commentsOpen})}
+                        className={classNames('btn-icon', 'docs-btn-neutral', {active: commentsOpen})}
                         badge={true}
                         tooltip={commentsLabel}
                         aria-pressed={commentsOpen}
@@ -285,7 +285,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                                 <Button
                                     emphasis='quaternary'
                                     size='sm'
-                                    className='btn-icon'
+                                    className='btn-icon docs-btn-neutral'
                                     aria-label={moreLabel}
                                     leadingIcon={<DotsHorizontalIcon size={18}/>}
                                 />
@@ -294,7 +294,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                         <Button
                             emphasis='quaternary'
                             size='sm'
-                            className={classNames('btn-icon', {active: fullscreen})}
+                            className={classNames('btn-icon', 'docs-btn-neutral', {active: fullscreen})}
                             tooltip={expandLabel}
                             aria-pressed={fullscreen}
                             leadingIcon={fullscreen ? <ArrowCollapseIcon size={18}/> : <ArrowExpandIcon size={18}/>}
