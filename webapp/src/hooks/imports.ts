@@ -241,15 +241,29 @@ export type ImportResumeState = {
     // has an import running.
     resolving: boolean;
 
-    // failed is true when the lookup could not answer. The caller must not offer an upload in that case: it
-    // cannot tell "no import running" from "could not find out", and guessing the first duplicates an import.
+    // failed is true when the lookup could not answer — which is not the same as "nothing is running", and is
+    // reported rather than assumed. It does not stop an upload: the server enforces the per-target job limit, so
+    // this check saves a wasted upload rather than preventing a bad one.
     failed: boolean;
+
+    // failureStatus is the HTTP status behind that failure, when there was one. Absent for a transport failure.
+    // Carried because the likely causes are indistinguishable to a user otherwise: 501 is Docs switched off,
+    // 404 is a server whose plugin predates the import API.
+    failureStatus?: number;
 
     // adopt records a newly created job as the one to follow.
     adopt: (jobId: string) => void;
 
     // retry runs the lookup again, for use after a failure.
     retry: () => void;
+};
+
+type ImportResumeInternalState = {
+    identity: string;
+    jobId?: string;
+    resolving: boolean;
+    failed: boolean;
+    failureStatus?: number;
 };
 
 // targetIdentity reduces a target to the string that decides which import belongs to it.
@@ -270,9 +284,7 @@ export function useResumableImportJob(target: ImportTargetRequest): ImportResume
     // screen. Two pieces of state updated by an effect would show the old job until the new lookup returned —
     // and a lookup that then failed would leave it there for good, with the previous import's cancel button
     // live under a heading about a different Space.
-    const [state, setState] = useState<{identity: string; jobId?: string; resolving: boolean; failed: boolean}>(
-        {identity, resolving: true, failed: false},
-    );
+    const [state, setState] = useState<ImportResumeInternalState>({identity, resolving: true, failed: false});
     const [attempt, setAttempt] = useState(0);
 
     // Resetting during render rather than in an effect is deliberate: an effect runs after the render that
@@ -297,11 +309,15 @@ export function useResumableImportJob(target: ImportTargetRequest): ImportResume
             if (!cancelled) {
                 setState({identity, jobId: found?.id, resolving: false, failed: false});
             }
-        }).catch(() => {
+        }).catch((err: unknown) => {
             if (!cancelled) {
-                // Reported rather than treated as "nothing running". Offering an upload here would invite a
-                // second bundle for an import that may well be in flight, which is how one import becomes two.
-                setState({identity, resolving: false, failed: true});
+                // Reported rather than treated as "nothing running", and reported with enough detail to act on.
+                setState({
+                    identity,
+                    resolving: false,
+                    failed: true,
+                    failureStatus: err instanceof RestError ? err.status : undefined,
+                });
             }
         });
 
@@ -314,10 +330,12 @@ export function useResumableImportJob(target: ImportTargetRequest): ImportResume
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [identity, attempt]);
 
+    const current = state.identity === identity;
     return {
-        jobId: state.identity === identity ? state.jobId : undefined,
-        resolving: state.identity !== identity || state.resolving,
-        failed: state.identity === identity && state.failed,
+        jobId: current ? state.jobId : undefined,
+        resolving: !current || state.resolving,
+        failed: current && state.failed,
+        failureStatus: current ? state.failureStatus : undefined,
         adopt,
         retry,
     };

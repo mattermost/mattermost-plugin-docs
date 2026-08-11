@@ -378,6 +378,21 @@ describe('useResumableImportJob', () => {
         await waitFor(() => expect(result.current.resolving).toBe(false));
         expect(result.current.failed).toBe(true);
         expect(result.current.jobId).toBeUndefined();
+
+        // No status for a transport failure, which is itself the distinction the caller renders.
+        expect(result.current.failureStatus).toBeUndefined();
+    });
+
+    // The cause has to survive the hook, because 501 (Docs switched off) and 404 (a plugin without the import
+    // API) need different actions and look identical from the UI otherwise.
+    it('carries the status behind a failed lookup', async () => {
+        jest.spyOn(importsClient, 'listImportJobs').mockRejectedValue(
+            new RestError('/imports', 501, 'Docs is not enabled.', {id: 'api.docs_not_enabled.app_error'}),
+        );
+
+        const {result} = await renderResume({kind: 'new', team_id: 'team1'});
+        await waitFor(() => expect(result.current.failed).toBe(true));
+        expect(result.current.failureStatus).toBe(501);
     });
 
     it('finds the job again when a failed lookup is retried', async () => {

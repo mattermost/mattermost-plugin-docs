@@ -161,6 +161,42 @@ describe('ImportWizard upload step', () => {
         expect(get).toHaveBeenCalledWith('job1');
     });
 
+    // The check for an import already in flight is a courtesy — the server enforces the per-target limit — so a
+    // failed check must not disable the feature. Blocking on it meant one broken read left the wizard with
+    // nothing but an error and a retry button, which is exactly what shipping it did.
+    it('still offers the upload when the check for a running import fails', async () => {
+        jest.spyOn(importsClient, 'listImportJobs').mockRejectedValue(
+            new RestError('/imports', 501, 'Docs is not enabled.', {id: 'api.docs_not_enabled.app_error'}),
+        );
+
+        renderWithContext(
+            <ImportWizard
+                target={TARGET}
+                onClose={jest.fn()}
+            />,
+        );
+
+        // The cause is named rather than left as "something went wrong": 501 and 404 need different actions.
+        expect(await screen.findByRole('alert')).toHaveTextContent('Docs is not enabled on this server');
+        expect(await screen.findByLabelText('Confluence export bundle')).toBeInTheDocument();
+        expect(screen.getByRole('button', {name: 'Upload and inspect'})).toBeInTheDocument();
+    });
+
+    it('names a server whose plugin has no import API', async () => {
+        jest.spyOn(importsClient, 'listImportJobs').mockRejectedValue(
+            new RestError('/imports', 404, 'Not found.', {}),
+        );
+
+        renderWithContext(
+            <ImportWizard
+                target={TARGET}
+                onClose={jest.fn()}
+            />,
+        );
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('does not offer the import API');
+    });
+
     // An admission rejection must say when to try again; without the wait, the only advice available is
     // "retry now", which fails identically.
     it('reports an admission rejection with the wait the server asked for', async () => {

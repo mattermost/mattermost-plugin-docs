@@ -45,7 +45,7 @@ const ImportWizard = ({target, onClose}: Props) => {
 
     // The job is recovered from the server rather than held only here, so the wizard can be closed, reopened,
     // reloaded or opened elsewhere while an import runs. See useResumableImportJob.
-    const {jobId, resolving, failed: lookupFailed, adopt, retry} = useResumableImportJob(target);
+    const {jobId, resolving, failed: lookupFailed, failureStatus, adopt, retry} = useResumableImportJob(target);
     const {job, loading, error, refresh} = useImportJob(jobId);
     const [cancelling, setCancelling] = useState(false);
 
@@ -128,18 +128,20 @@ const ImportWizard = ({target, onClose}: Props) => {
                 </p>
             ) : null}
 
-            {/* A lookup that could not answer is reported rather than assumed. "No import running" and "I could
-                not find out" look the same from here, and acting on the first would invite a second bundle for
-                an import that may well be in flight. */}
+            {/* A lookup that could not answer is reported rather than assumed — "nothing is running" and "I could
+                not find out" are different answers. It does not block the upload, though: the server enforces the
+                per-target job limit, so this check saves a wasted upload rather than preventing a bad one, and
+                letting an unrelated read decide whether the feature works at all is the worse failure. */}
             {lookupFailed ? (
                 <div
                     role='alert'
                     className={styles.error}
                 >
+                    <p className={styles.errorLine}>{lookupFailureMessage(failureStatus, formatMessage)}</p>
                     <p className={styles.errorLine}>
                         {formatMessage({
-                            id: 'docs.import.lookupFailed',
-                            defaultMessage: 'Could not check whether an import is already running here.',
+                            id: 'docs.import.lookupFailedProceed',
+                            defaultMessage: 'You can still upload a bundle. If an import is already running here, the server will refuse it.',
                         })}
                     </p>
                     <button
@@ -147,7 +149,7 @@ const ImportWizard = ({target, onClose}: Props) => {
                         className={styles.secondary}
                         onClick={retry}
                     >
-                        {formatMessage({id: 'docs.import.lookupRetry', defaultMessage: 'Try again'})}
+                        {formatMessage({id: 'docs.import.lookupRetry', defaultMessage: 'Check again'})}
                     </button>
                 </div>
             ) : null}
@@ -182,10 +184,9 @@ const ImportWizard = ({target, onClose}: Props) => {
 
     function renderStep() {
         if (!job) {
-            // Nothing is offered until the lookup for an unfinished import settles, or while it is unanswered:
-            // showing the upload would invite a second bundle for an import that is already running, which
-            // admission then refuses — or worse, that it accepts as a duplicate.
-            if (resolving || lookupFailed) {
+            // The upload waits for the lookup to settle, but not for it to succeed. A failed check is shown above
+            // and the upload offered anyway; refusing to proceed would let one broken read disable the feature.
+            if (resolving) {
                 return null;
             }
             return (
@@ -222,6 +223,40 @@ const ImportWizard = ({target, onClose}: Props) => {
         }
     }
 };
+
+// lookupFailureMessage names the cause when it can, because the likely ones need different actions and are
+// otherwise indistinguishable: Docs switched off server-side, a plugin build without the import API, a session
+// that has expired, or a network that did not answer.
+function lookupFailureMessage(status: number | undefined, formatMessage: ReturnType<typeof useIntl>['formatMessage']): string {
+    switch (status) {
+    case 501:
+        return formatMessage({
+            id: 'docs.import.lookup.notEnabled',
+            defaultMessage: 'Docs is not enabled on this server, so imports cannot run.',
+        });
+    case 404:
+        return formatMessage({
+            id: 'docs.import.lookup.notFound',
+            defaultMessage: 'This server does not offer the import API. Its Docs plugin may be older than this page.',
+        });
+    case 401:
+    case 403:
+        return formatMessage({
+            id: 'docs.import.lookup.forbidden',
+            defaultMessage: 'You are not allowed to list imports here. Your session may have expired.',
+        });
+    case undefined:
+        return formatMessage({
+            id: 'docs.import.lookup.unreachable',
+            defaultMessage: 'The server could not be reached to check for a running import.',
+        });
+    default:
+        return formatMessage(
+            {id: 'docs.import.lookup.failed', defaultMessage: 'Could not check for a running import (error {status}).'},
+            {status},
+        );
+    }
+}
 
 // importedSpaceId returns the Space a finished import wrote into, if it is somewhere the user can now go.
 //
