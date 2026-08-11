@@ -6,7 +6,7 @@ import {useImportJob, useResumableImportJob} from 'hooks/imports';
 import React, {useCallback, useState} from 'react';
 import {useIntl} from 'react-intl';
 
-import type {ImportTargetRequest} from 'types/imports';
+import type {ImportJobView, ImportTargetRequest} from 'types/imports';
 
 import ImportProgressStep from './import_progress_step';
 import ImportResultStep from './import_result_step';
@@ -24,7 +24,11 @@ type Props = {
 
     // onClose is called when the user leaves. It is not "cancel": leaving does not stop an import, because a
     // running import is server-side work that outlives the page.
-    onClose: () => void;
+    //
+    // importedSpaceId is the Space the finished import filled, when there is one to go and look at. An import
+    // into a new Space otherwise ends by putting the user back where they started, with no sign of the thing
+    // they just spent minutes creating.
+    onClose: (importedSpaceId?: string) => void;
 };
 
 // ImportWizard drives a Confluence import from upload to report.
@@ -119,7 +123,11 @@ const ImportWizard = ({target, onClose}: Props) => {
                 <button
                     type='button'
                     className={styles.tertiary}
-                    onClick={onClose}
+
+                    // Called with no argument on purpose: leaving mid-import goes back where the user was, not to
+                    // a Space the import has not finished filling. Passing the handler directly would hand it a
+                    // MouseEvent as the destination.
+                    onClick={() => onClose()}
                 >
                     {formatMessage({id: 'docs.import.close', defaultMessage: 'Close'})}
                 </button>
@@ -160,7 +168,7 @@ const ImportWizard = ({target, onClose}: Props) => {
             return (
                 <ImportResultStep
                     job={job}
-                    onDone={onClose}
+                    onDone={() => onClose(importedSpaceId(job))}
                 />
             );
         default:
@@ -168,6 +176,17 @@ const ImportWizard = ({target, onClose}: Props) => {
         }
     }
 };
+
+// importedSpaceId returns the Space a finished import wrote into, if it is somewhere the user can now go.
+//
+// Only a completed import qualifies. A failed or canceled one may have created a Space, or may have had its
+// half-built one cleaned up, and sending someone to a Space that no longer exists is worse than not offering.
+// The id can also be absent entirely: a job whose actor has lost access to the target comes back as a minimal
+// projection with no target detail at all.
+function importedSpaceId(job: ImportJobView): string | undefined {
+    const completed = job.state === 'completed' || job.state === 'completed_with_issues';
+    return completed ? job.target?.space_id || undefined : undefined;
+}
 
 // stepLabel names a step for the indicator.
 function stepLabel(step: string, formatMessage: ReturnType<typeof useIntl>['formatMessage']): string {

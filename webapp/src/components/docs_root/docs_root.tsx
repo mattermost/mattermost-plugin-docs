@@ -12,13 +12,15 @@ import DocsSwitcher from 'components/docs_switcher/docs_switcher';
 import ImportWizard from 'components/import_wizard/import_wizard';
 import SpacesSidebar from 'components/spaces_sidebar/spaces_sidebar';
 
+import type {ImportTargetRequest} from 'types/imports';
+
 import DocsMainContent from './docs_main_content';
 import styles from './docs_root.module.scss';
 
 const DocsRoot = () => {
     useBootstrapDocs();
 
-    const {spaceId, pageId, isDraft} = useDocsNavigation();
+    const {spaceId, pageId, isDraft, isImport, goToImport, goToSpace, goHome} = useDocsNavigation();
     const {id: teamId} = useTeamContext();
 
     const [switcherOpen, setSwitcherOpen] = useState(false);
@@ -29,12 +31,24 @@ const DocsRoot = () => {
     const openCreateSpace = useCallback(() => setCreateSpaceOpen(true), []);
     const closeCreateSpace = useCallback(() => setCreateSpaceOpen(false), []);
 
-    // The import wizard is a panel rather than a modal: an import runs for minutes, and its owner should be able
-    // to read the plan it asks them to approve without a dialog holding the rest of the product hostage. Closing
-    // it stops nothing — the job is server-side work, and reopening finds it again.
-    const [importOpen, setImportOpen] = useState(false);
-    const openImport = useCallback(() => setImportOpen(true), []);
-    const closeImport = useCallback(() => setImportOpen(false), []);
+    // The import wizard is a routed panel rather than a modal, for two reasons that are really one. An import
+    // runs for minutes and its owner has to read a plan before approving it, which a dialog holding the product
+    // hostage makes worse; and because the job outlives any view of it, where you are in an import belongs in the
+    // URL — so a reload, a link, or coming back tomorrow all arrive at the same place. Leaving stops nothing.
+    const openImport = useCallback(() => goToImport(), [goToImport]);
+    const closeImport = useCallback((importedSpaceId?: string) => {
+        // Back to whatever the import was about: the Space it just filled if it finished, the Space it was
+        // importing into, or the product home when there is no Space to show yet.
+        const destination = importedSpaceId ?? spaceId;
+        if (destination) {
+            goToSpace(destination);
+            return;
+        }
+        goHome();
+    }, [spaceId, goToSpace, goHome]);
+
+    // A Space in the URL means an import into that Space; without one, the import creates a Space.
+    const importTarget: ImportTargetRequest = spaceId ? {kind: 'existing', space_id: spaceId} : {kind: 'new', team_id: teamId};
 
     // stopPropagation so the Docs switcher wins the shortcut over the host's.
     useHotkeys('mod+k', (e) => {
@@ -52,9 +66,9 @@ const DocsRoot = () => {
                 />
             </div>
             <main className={styles.main}>
-                {importOpen ? (
+                {isImport ? (
                     <ImportWizard
-                        target={{kind: 'new', team_id: teamId}}
+                        target={importTarget}
                         onClose={closeImport}
                     />
                 ) : (

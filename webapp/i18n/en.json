@@ -153,6 +153,7 @@
   "docs.sidebar.nav.home": "Home",
   "docs.sidebar.search.placeholder": "Find docs",
   "docs.sidebar.space.copyLink": "Copy link",
+  "docs.sidebar.space.import": "Import from Confluence",
   "docs.sidebar.space.leave": "Leave space",
   "docs.sidebar.space.menu": "Space options for {name}",
   "docs.sidebar.team.createTeam": "Create a team",
