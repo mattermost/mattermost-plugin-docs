@@ -48,7 +48,7 @@ describe('useDocsNavigation URL parsing', () => {
     });
 
     it('parses a draft without dropping the page id', () => {
-        expect(renderAt('/myteam/spaces/space1/drafts/pageX')).toEqual({team: 'myteam', space: 'space1', page: 'pageX', draft: 'true', import: 'false'});
+        expect(renderAt('/myteam/spaces/space1/_drafts/pageX')).toEqual({team: 'myteam', space: 'space1', page: 'pageX', draft: 'true', import: 'false'});
     });
 
     it('does not treat a page literally reached via a non-draft segment as a draft', () => {

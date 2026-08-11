@@ -33,10 +33,11 @@ export function useDocsNavigation() {
     const history = useHistory();
 
     // Most specific patterns first. DOCS_ROUTE treats the segment after :spaceId as
-    // :pageId, so a draft URL (…/:spaceId/drafts/:pageId) would otherwise parse
-    // pageId='drafts' and drop the real page id — and an import URL would parse its
-    // keyword as a space or page id, which is why both import routes are matched
-    // ahead of it and why those words are effectively reserved.
+    // :pageId, so every reserved segment has to be matched ahead of it or it would
+    // be read as content: a draft URL would parse pageId='_drafts' and drop the real
+    // page id, and an import URL would parse its segment as a space or page id.
+    // Order is what keeps them apart; the leading underscore is what keeps them from
+    // colliding with anything a user names (see RESERVED_SEGMENTS).
     const match = useRouteMatch<DocsRouteParams>([
         DOCS_DRAFT_ROUTE,
         DOCS_SPACE_IMPORT_ROUTE,

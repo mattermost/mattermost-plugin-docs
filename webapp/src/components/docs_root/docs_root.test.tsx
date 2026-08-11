@@ -133,9 +133,9 @@ describe('DocsRoot import route', () => {
         expect(history.location.pathname).toBe('/myteam/spaces/newspace');
     });
 
-    // A Space whose custom slug is the reserved word would be shadowed by the import route. That is the same
-    // trade `drafts` already makes, and it is recorded here so the behaviour is a decision rather than a
-    // surprise: nothing validates slugs against these words yet.
+    // The reserved segment reaches the wizard, and — because no space id or page id can start with an
+    // underscore — it does so without taking a name away from anyone. See routing/paths.test for the rule
+    // itself; this is the half of it that shows the route actually resolves.
     it('treats the reserved segment as the import route, not as a Space of that name', async () => {
         renderAt('/myteam/spaces/_import');
 
