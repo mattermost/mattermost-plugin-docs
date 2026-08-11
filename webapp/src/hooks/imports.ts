@@ -1,8 +1,8 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {getImportJob} from 'client/imports_client';
-import {DocsApiError} from 'client/rest_client';
+import {getImportJob} from 'client/imports';
+import {RestError} from 'client/rest';
 import {useCallback, useEffect, useRef, useState} from 'react';
 
 import type {ImportJobView} from 'types/imports';
@@ -34,7 +34,7 @@ export type ImportJobPollState = {
     // loading is true only for the first read. A poll that refreshes an already-loaded job must not put the
     // UI back into a loading state, or the whole wizard would flicker every couple of seconds.
     loading: boolean;
-    error?: DocsApiError;
+    error?: RestError;
 
     // refresh reads the job immediately, for use after an action that changes it. Polling continues
     // afterwards on the cadence the new state implies.
@@ -50,7 +50,7 @@ export type ImportJobPollState = {
 export function useImportJob(jobId: string | undefined): ImportJobPollState {
     const [job, setJob] = useState<ImportJobView | undefined>();
     const [loading, setLoading] = useState<boolean>(Boolean(jobId));
-    const [error, setError] = useState<DocsApiError | undefined>();
+    const [error, setError] = useState<RestError | undefined>();
 
     // Guards against writing state after unmount, and against a scheduled poll firing once the id changes.
     const activeJobId = useRef(jobId);
@@ -80,10 +80,10 @@ export function useImportJob(jobId: string | undefined): ImportJobPollState {
                 return undefined;
             }
 
-            // A DocsApiError is a real answer about this job — gone, or no longer visible — and is shown.
+            // A RestError is a real answer about this job — gone, or no longer visible — and is shown.
             // Anything else is a transport failure, which the next poll may well recover from, so the last
             // known job is kept rather than replaced with an error.
-            if (err instanceof DocsApiError) {
+            if (err instanceof RestError) {
                 setError(err);
             }
             return undefined;

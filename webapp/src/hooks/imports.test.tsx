@@ -2,8 +2,8 @@
 // See LICENSE.txt for license information.
 
 import {act, renderHook, waitFor} from '@testing-library/react';
-import * as importsClient from 'client/imports_client';
-import {DocsApiError} from 'client/rest_client';
+import * as importsClient from 'client/imports';
+import {RestError} from 'client/rest';
 
 import type {ImportJobState, ImportJobView} from 'types/imports';
 
@@ -179,11 +179,11 @@ describe('useImportJob', () => {
     // A job that is gone, or no longer visible, is a real answer about it and is surfaced.
     it('surfaces an API error', async () => {
         jest.spyOn(importsClient, 'getImportJob').mockRejectedValue(
-            new DocsApiError({status: 404, id: 'app.store.not_found.app_error', message: 'Not found.'}),
+            new RestError('/imports/job1', 404, 'Not found.', {id: 'app.store.not_found.app_error'}, 'app.store.not_found.app_error'),
         );
 
         const {result} = await renderImportJob('job1');
-        await waitFor(() => expect(result.current.error?.isNotFound).toBe(true));
+        await waitFor(() => expect(result.current.error?.status).toBe(404));
         expect(result.current.job).toBeUndefined();
         expect(result.current.loading).toBe(false);
     });
