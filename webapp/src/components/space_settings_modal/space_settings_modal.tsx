@@ -56,7 +56,7 @@ type TabDef = {
 
 const SpaceSettingsModal = ({space, onClose, initialTab = 'info'}: Props) => {
     const {formatMessage} = useIntl();
-    const {paths} = useDocsNavigation();
+    const {paths: absolutePaths} = useDocsNavigation({absolute: true});
     const [activeTab, setActiveTab] = useState<SpaceSettingsTab>(initialTab);
 
     const tabs: TabDef[] = [
@@ -128,7 +128,7 @@ const SpaceSettingsModal = ({space, onClose, initialTab = 'info'}: Props) => {
                         <InfoTab
                             space={space}
                             info={info}
-                            url={`${window.location.origin}${paths.space(space.id)}`}
+                            url={absolutePaths.space(space.id)}
                         />
                     </TabPanel>
                     <TabPanel

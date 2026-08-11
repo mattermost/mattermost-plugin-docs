@@ -22,11 +22,22 @@ func marshal(t *testing.T, doc model.TipTapDocument) string {
 }
 
 func TestParseTipTapDocument(t *testing.T) {
-	t.Run("empty string yields a schema-valid empty doc", func(t *testing.T) {
-		doc, err := model.ParseTipTapDocument("")
-		require.NoError(t, err)
-		require.JSONEq(t, `{"type":"doc","content":[{"type":"paragraph"}]}`, marshal(t, doc))
-	})
+	emptyDocuments := []struct {
+		name    string
+		content string
+	}{
+		{"empty string", ""},
+		{"missing content", `{"type":"doc"}`},
+		{"null content", `{"type":"doc","content":null}`},
+		{"empty content", `{"type":"doc","content":[]}`},
+	}
+	for _, tc := range emptyDocuments {
+		t.Run(tc.name+" yields a schema-valid empty doc", func(t *testing.T) {
+			doc, err := model.ParseTipTapDocument(tc.content)
+			require.NoError(t, err)
+			require.JSONEq(t, model.EmptyTipTapJSON, marshal(t, doc))
+		})
+	}
 
 	t.Run("valid doc round-trips", func(t *testing.T) {
 		doc, err := model.ParseTipTapDocument(`{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"hello"}]}]}`)
@@ -45,11 +56,6 @@ func TestParseTipTapDocument(t *testing.T) {
 		require.Error(t, err)
 	})
 
-	t.Run("minimal doc without content does not panic", func(t *testing.T) {
-		doc, err := model.ParseTipTapDocument(`{"type":"doc"}`)
-		require.NoError(t, err)
-		require.Empty(t, doc.Content)
-	})
 }
 
 func TestParseTipTapDocumentSanitizesURLs(t *testing.T) {

@@ -59,12 +59,12 @@ type Props = {
  */
 const PageMenu = ({spaceId, pageId, pageTitle, isDraft = false, trigger, align = 'left', tooltip, open, onOpenChange}: Props) => {
     const {formatMessage} = useIntl();
-    const {paths} = useDocsNavigation();
+    const {paths: absolutePaths} = useDocsNavigation({absolute: true});
     const dispatch = useAppDispatch();
     const favorited = useIsFavorite('page', pageId);
     const toggleFavorite = useToggleFavorite();
 
-    const pageUrl = `${window.location.origin}${isDraft ? paths.draft(spaceId, pageId) : paths.page(spaceId, pageId)}`;
+    const pageUrl = isDraft ? absolutePaths.draft(spaceId, pageId) : absolutePaths.page(spaceId, pageId);
 
     const copyLink = useCallback(() => copyToClipboard(pageUrl), [pageUrl]);
     const openInNewWindow = useCallback(() => window.open(pageUrl, '_blank', 'noopener,noreferrer'), [pageUrl]);

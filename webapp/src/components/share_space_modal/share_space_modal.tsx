@@ -31,7 +31,7 @@ type Props = {
 // scaffolding for PR #10's view_access and capabilities.
 const ShareSpaceModal = ({space, onClose}: Props) => {
     const {formatMessage} = useIntl();
-    const {paths} = useDocsNavigation();
+    const {paths: absolutePaths} = useDocsNavigation({absolute: true});
     const members = useSpaceMemberProfiles(space.id);
     const canManageMembers = useCanManageSpaceMembers(space.id);
     const {addMembers, removeMember, leave, busy} = useManageSpaceMembers(space);
@@ -44,7 +44,7 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
         disabled: busy,
     };
 
-    const copyLink = () => copyToClipboard(`${window.location.origin}${paths.space(space.id)}`);
+    const copyLink = () => copyToClipboard(absolutePaths.space(space.id));
 
     const title = (
         <FormattedMessage

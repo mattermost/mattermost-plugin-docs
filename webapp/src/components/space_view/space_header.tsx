@@ -53,7 +53,7 @@ type Props = {
 const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}: Props) => {
     const {formatMessage} = useIntl();
     const dispatch = useAppDispatch();
-    const {paths, spaceId, goHome} = useDocsNavigation();
+    const {paths: absolutePaths, spaceId, goHome} = useDocsNavigation({absolute: true});
     const canManageMembers = useCanManageSpaceMembers(space.id);
     const {fullscreen} = useFullscreen();
     const leaveThisSpace = useLeaveSpace(space);
@@ -73,8 +73,8 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}
     const membersLabel = formatMessage({id: 'docs.space.membersButton', defaultMessage: 'Members'});
 
     const copyLink = useCallback(() => {
-        copyToClipboard(`${window.location.origin}${paths.space(space.id)}`);
-    }, [paths, space.id]);
+        copyToClipboard(absolutePaths.space(space.id));
+    }, [absolutePaths, space.id]);
 
     const openShare = useCallback(() => {
         openDocsModal((modal) => (

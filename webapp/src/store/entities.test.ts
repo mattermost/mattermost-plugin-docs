@@ -38,6 +38,21 @@ describe('spaces', () => {
         expect('t2' in reducer(initialState, {type: SpaceTypes.RECEIVED_SPACES, spaces: []}).spacesInTeam).toBe(false);
     });
 
+    it('a scoped RECEIVED_SPACES list replaces only that team index', () => {
+        const stale = makeSpace('stale', 'Stale', 't1');
+        const current = makeSpace('current', 'Current', 't1');
+        const other = makeSpace('other', 'Other', 't2');
+        const loaded = reducer(initialState, {type: SpaceTypes.RECEIVED_SPACES, spaces: [stale, other]});
+
+        const refreshed = reducer(loaded, {type: SpaceTypes.RECEIVED_SPACES, spaces: [current], teamId: 't1'});
+        expect(refreshed.spacesInTeam.t1).toEqual(new Set(['current']));
+        expect(refreshed.spacesInTeam.t2).toEqual(new Set(['other']));
+
+        const emptied = reducer(refreshed, {type: SpaceTypes.RECEIVED_SPACES, spaces: [], teamId: 't1'});
+        expect(emptied.spacesInTeam.t1).toEqual(new Set());
+        expect(emptied.spacesInTeam.t2).toEqual(new Set(['other']));
+    });
+
     it('CREATED_SPACE adds to byId and its team set', () => {
         const spaceA = makeSpace('a', 'Space A', 't1');
         const spaceB = makeSpace('b', 'Space B', 't1');
@@ -200,6 +215,21 @@ describe('drafts', () => {
         const next = reducer(initialState, {type: DraftTypes.RECEIVED_DRAFTS, drafts: [], spaceId: 'space-a'});
 
         expect(next.draftsInSpace['space-a']).toEqual(new Set());
+    });
+
+    it('a scoped RECEIVED_DRAFTS list replaces only that space index', () => {
+        const stale = makeDraft('stale', 'space-a', 'Stale');
+        const current = makeDraft('current', 'space-a', 'Current');
+        const other = makeDraft('other', 'space-b', 'Other');
+        const loaded = reducer(initialState, {type: DraftTypes.RECEIVED_DRAFTS, drafts: [stale, other]});
+
+        const refreshed = reducer(loaded, {type: DraftTypes.RECEIVED_DRAFTS, drafts: [current], spaceId: 'space-a'});
+        expect(refreshed.draftsInSpace['space-a']).toEqual(new Set(['current']));
+        expect(refreshed.draftsInSpace['space-b']).toEqual(new Set(['other']));
+
+        const emptied = reducer(refreshed, {type: DraftTypes.RECEIVED_DRAFTS, drafts: [], spaceId: 'space-a'});
+        expect(emptied.draftsInSpace['space-a']).toEqual(new Set());
+        expect(emptied.draftsInSpace['space-b']).toEqual(new Set(['other']));
     });
 
     // The space list is a metadata projection with no body, so a refresh must not

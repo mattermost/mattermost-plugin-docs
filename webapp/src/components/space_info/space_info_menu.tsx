@@ -72,7 +72,7 @@ type Props = {
  */
 const SpaceInfoMenu = ({space, memberCount, onShowMembers}: Props) => {
     const {formatMessage} = useIntl();
-    const {paths} = useDocsNavigation();
+    const {paths: absolutePaths} = useDocsNavigation({absolute: true});
     const canManageMembers = useCanManageSpaceMembers(space.id);
 
     const openSettings = useCallback(() => {
@@ -85,8 +85,8 @@ const SpaceInfoMenu = ({space, memberCount, onShowMembers}: Props) => {
     }, [space]);
 
     const copyLink = useCallback(() => {
-        copyToClipboard(`${window.location.origin}${paths.space(space.id)}`);
-    }, [paths, space.id]);
+        copyToClipboard(absolutePaths.space(space.id));
+    }, [absolutePaths, space.id]);
 
     return (
         <nav

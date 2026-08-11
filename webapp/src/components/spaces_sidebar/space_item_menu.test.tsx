@@ -15,6 +15,11 @@ jest.mock('utils/clipboard', () => ({
     copyToClipboard: jest.fn(),
 }));
 
+jest.mock('client/rest', () => ({
+    ...jest.requireActual('client/rest'),
+    siteRoot: () => 'http://localhost:8065/mattermost',
+}));
+
 // Stubbed at the hook boundary: mattermost-redux's preferences actions are
 // published as ESM that jest doesn't transform.
 jest.mock('hooks/favorites', () => ({
@@ -46,7 +51,7 @@ describe('SpaceItemMenu', () => {
         await openMenu();
         fireEvent.click(screen.getByText('Copy link'));
 
-        await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('http://localhost:8065/myteam/spaces/docs'));
+        await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('http://localhost:8065/mattermost/myteam/spaces/docs'));
     });
 
     it('opens the leave confirmation from the menu', async () => {

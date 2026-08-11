@@ -27,7 +27,7 @@ type Props = {
 
 const SpaceItemMenu = ({space}: Props) => {
     const {formatMessage} = useIntl();
-    const {paths} = useDocsNavigation();
+    const {paths: absolutePaths} = useDocsNavigation({absolute: true});
     const leaveThisSpace = useLeaveSpace(space);
     const favoriteState = useSpaceFavoriteState(space.id);
     const toggleFavorite = useToggleFavorite();
@@ -35,7 +35,7 @@ const SpaceItemMenu = ({space}: Props) => {
 
     const [confirmLeaveOpen, setConfirmLeaveOpen] = useState(false);
 
-    const copyLink = () => copyToClipboard(`${window.location.origin}${paths.space(space.id)}`);
+    const copyLink = () => copyToClipboard(absolutePaths.space(space.id));
 
     const confirmLeave = useCallback(async () => {
         await leaveThisSpace();

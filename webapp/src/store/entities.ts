@@ -153,16 +153,16 @@ function spacesInTeam(state: Record<string, Set<string>> = {}, action: UnknownAc
     switch (action.type) {
     case SpaceTypes.RECEIVED_SPACES: {
         const {spaces: received, teamId} = action as unknown as ReceivedSpacesAction;
-        if (received.length === 0 && (teamId === undefined || teamId in state)) {
+        if (teamId !== undefined) {
+            return {
+                ...state,
+                [teamId]: new Set(received.filter((space) => space.team_id === teamId).map((space) => space.id)),
+            };
+        }
+        if (received.length === 0) {
             return state;
         }
         const next = {...state};
-
-        // A listed team always gets an entry, so its presence means "this team's
-        // spaces are loaded" even when the team has none.
-        if (teamId !== undefined && !(teamId in next)) {
-            next[teamId] = new Set();
-        }
         for (const space of received) {
             const set = new Set(next[space.team_id]);
             set.add(space.id);
@@ -407,13 +407,16 @@ function draftsInSpace(state: Record<string, Set<string>> = {}, action: UnknownA
     switch (action.type) {
     case DraftTypes.RECEIVED_DRAFTS: {
         const {drafts: received, spaceId} = action as unknown as ReceivedDraftsAction;
-        if (received.length === 0 && (spaceId === undefined || spaceId in state)) {
+        if (spaceId !== undefined) {
+            return {
+                ...state,
+                [spaceId]: new Set(received.filter((draft) => draft.space_id === spaceId).map((draft) => draft.page_id)),
+            };
+        }
+        if (received.length === 0) {
             return state;
         }
         let next = {...state};
-        if (spaceId !== undefined && !(spaceId in next)) {
-            next[spaceId] = new Set();
-        }
         for (const draft of received) {
             next = withDraft(next, draft);
         }

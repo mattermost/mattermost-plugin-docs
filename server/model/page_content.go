@@ -66,11 +66,10 @@ func ParseTipTapDocument(contentJSON string) (TipTapDocument, error) {
 		return TipTapDocument{}, errors.New("content must be valid TipTap JSON with type: doc")
 	}
 
-	// A document with no "content" key (or an explicit null) decodes to a nil slice, which would
-	// re-marshal to "content":null. Empty content is [] everywhere else, and a client walking the
-	// array would fault on null, so normalize to the one empty representation.
-	if doc.Content == nil {
-		doc.Content = []map[string]any{}
+	// TipTap's root schema is `block+`, so omitted, null, and empty content are all normalized to a
+	// single empty paragraph before the document reaches the editor.
+	if len(doc.Content) == 0 {
+		doc.Content = []map[string]any{{"type": "paragraph"}}
 	}
 
 	if err := sanitizeTipTapDocument(&doc); err != nil {

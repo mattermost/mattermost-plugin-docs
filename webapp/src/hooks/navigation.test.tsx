@@ -8,6 +8,11 @@ import {useDocsNavigation, useTogglePageEditMode} from './navigation';
 
 import {renderWithContext} from '../../tests/react_testing_utils';
 
+jest.mock('client/rest', () => ({
+    ...jest.requireActual('client/rest'),
+    siteRoot: () => 'https://mattermost.test/mattermost',
+}));
+
 function Probe() {
     const {teamName, spaceId, pageId, isDraft, isEditing, goToEditDraft, goToEditPage} = useDocsNavigation();
     return (
@@ -66,6 +71,49 @@ describe('useDocsNavigation URL parsing', () => {
 
     it('falls back to the current team when the URL is outside Docs', () => {
         expect(renderAt('/')).toEqual({team: 'myteam', space: '', page: '', draft: 'false'});
+    });
+});
+
+function PathsProbe({absolute = false}: {absolute?: boolean}) {
+    const {paths} = useDocsNavigation({absolute});
+    return (
+        <div data-testid='paths'>
+            {[
+                paths.home(),
+                paths.space('space1'),
+                paths.page('space1', 'pageX'),
+                paths.overview('space1'),
+                paths.draft('space1', 'pageX'),
+                paths.to('space1', 'pageX'),
+            ].join('|')}
+        </div>
+    );
+}
+
+const pathsAt = (absolute = false) => {
+    renderWithContext(<PathsProbe absolute={absolute}/>, {
+        route: '/myteam/spaces',
+        state: {currentTeam: {id: 't1', name: 'myteam'}},
+    });
+    return screen.getByTestId('paths').textContent?.split('|');
+};
+
+describe('useDocsNavigation paths', () => {
+    const relativePaths = [
+        '/myteam/spaces',
+        '/myteam/spaces/space1',
+        '/myteam/spaces/space1/pageX',
+        '/myteam/spaces/space1/overview',
+        '/myteam/spaces/space1/drafts/pageX',
+        '/myteam/spaces/space1/pageX',
+    ];
+
+    it('returns relative paths by default', () => {
+        expect(pathsAt()).toEqual(relativePaths);
+    });
+
+    it('includes the Mattermost site URL when requested', () => {
+        expect(pathsAt(true)).toEqual(relativePaths.map((path) => `https://mattermost.test/mattermost${path}`));
     });
 });
 

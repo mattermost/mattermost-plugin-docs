@@ -1,6 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {siteRoot} from 'client/rest';
 import {useTeamContext} from 'hooks/team';
 import {useCallback} from 'react';
 import {useHistory, useLocation, useRouteMatch} from 'react-router-dom';
@@ -13,12 +14,16 @@ type DocsRouteParams = {
     pageId?: string;
 };
 
+type DocsNavigationOptions = {
+    absolute?: boolean;
+};
+
 // Reads the current Docs selection from the URL and provides imperative
 // navigation. Path construction lives in routing/paths so the same logic backs
 // React Router <Link>s; this hook binds the current team (so callers stay
 // team-agnostic) and composes those builders with history for programmatic
 // navigation (clicks, keyboard handlers).
-export function useDocsNavigation() {
+export function useDocsNavigation({absolute = false}: DocsNavigationOptions = {}) {
     const history = useHistory();
 
     // Specific patterns first: DOCS_ROUTE treats the segment after :spaceId as
@@ -73,6 +78,8 @@ export function useDocsNavigation() {
     // its own team). Core re-initializes team context from the URL on arrival.
     const navigateInTeam = useCallback((team: string, space: string, page?: string) => history.push(docsPath(team, space, page)), [history]);
 
+    const withBase = (path: string) => (absolute ? siteRoot() + path : path);
+
     return {
         teamName,
         spaceId,
@@ -93,12 +100,12 @@ export function useDocsNavigation() {
         // Re-exported for declarative use, e.g. <Link to={paths.space(id)}>.
         // Team is pre-bound so call sites match the imperative helpers.
         paths: {
-            home: () => docsHomePath(teamName),
-            space: (id: string) => spacePath(teamName, id),
-            page: (space: string, page: string) => pagePath(teamName, space, page),
-            overview: (space: string) => overviewPath(teamName, space),
-            draft: (space: string, page: string) => draftPath(teamName, space, page),
-            to: (space?: string, page?: string) => docsPath(teamName, space, page),
+            home: () => withBase(docsHomePath(teamName)),
+            space: (id: string) => withBase(spacePath(teamName, id)),
+            page: (space: string, page: string) => withBase(pagePath(teamName, space, page)),
+            overview: (space: string) => withBase(overviewPath(teamName, space)),
+            draft: (space: string, page: string) => withBase(draftPath(teamName, space, page)),
+            to: (space?: string, page?: string) => withBase(docsPath(teamName, space, page)),
         },
     };
 }

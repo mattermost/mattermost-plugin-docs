@@ -190,6 +190,10 @@ const PageTreePanel = ({space}: {space: Space}) => {
     // One handler for the whole tree: the panel is what knows the visible order,
     // so a row would only have to hand these decisions back anyway.
     const onRowKeyDown = useCallback((event: React.KeyboardEvent, rowId: string) => {
+        if (event.currentTarget !== event.target) {
+            return;
+        }
+
         const index = visibleRows.findIndex((row) => row.node.id === rowId);
         if (index === -1) {
             return;
