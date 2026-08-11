@@ -168,6 +168,10 @@
     "translation": "That report is not available yet. It becomes downloadable once this stage of the import has finished."
   },
   {
+    "id": "app.import.results.invalid_action.app_error",
+    "translation": "The planned_action filter is not a valid import action."
+  },
+  {
     "id": "app.import.source.missing.app_error",
     "translation": "The import source this import was pointed at no longer exists."
   },
@@ -1002,6 +1006,10 @@
   {
     "id": "model.import_source_selection.is_valid.display_name_too_long.app_error",
     "translation": "The import source display name must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_source_selection.is_valid.display_name_unstorable.app_error",
+    "translation": "The import source display name contains characters that cannot be stored."
   },
   {
     "id": "model.import_source_selection.is_valid.import_source_id.app_error",

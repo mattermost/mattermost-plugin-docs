@@ -92,6 +92,45 @@ func TestImportReport_PreflightAndFinal(t *testing.T) {
 	require.Equal(t, "preflight", stillThere.Stage)
 }
 
+// TestImportReport_DeclaresWhetherItDescribesOnePlan covers the report's own consistency claim.
+//
+// The rows are read by several queries in succession rather than under one snapshot, so a plan recomputed
+// while a report is being written yields a document that parses, whose counts match its contents, and whose
+// rows come from two different plans. Nothing about it looks wrong, which is exactly why it has to say so.
+func TestImportReport_DeclaresWhetherItDescribesOnePlan(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true, channelMember: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+
+	jobID, view := h.uploadAndPreflight(t, actorID, newTargetRequest(mmmodel.NewId()),
+		importfixture.Options{Pages: 2}, "")
+
+	// The ordinary case: nothing moved, and the report names the plan its rows came from.
+	settled, _ := decodeReport(t, h, jobID, actorID, "preflight")
+	require.True(t, settled.Integrity.Complete)
+	require.Equal(t, view.Preflight.Revision, settled.Integrity.PlanRevision)
+	require.Empty(t, settled.Integrity.Reason)
+
+	// Now the race, made deterministic: the stream is authorized against one revision and the plan is
+	// republished before its rows are written. Doing it between the two steps is what a concurrent
+	// republication does to a download already in flight.
+	stream, appErr := h.plugin.service.PrepareImportReport(jobID, actorID, "preflight")
+	require.Nil(t, appErr)
+	_, err := h.db.Exec(`UPDATE DOCS_ImportJob SET PreflightRevision=$1 WHERE Id=$2`, strings.Repeat("a", 64), jobID)
+	require.NoError(t, err)
+
+	var body strings.Builder
+	require.NoError(t, stream.Stream(&body))
+
+	var mixed model.ImportReport
+	require.NoError(t, json.Unmarshal([]byte(body.String()), &mixed), "a report must stay valid JSON either way")
+	require.False(t, mixed.Integrity.Complete,
+		"a report whose plan was recomputed under it must not claim to describe one plan")
+	require.Equal(t, model.ImportReportIncompletePlanRecomputed, mixed.Integrity.Reason)
+	require.Equal(t, view.Preflight.Revision, mixed.Integrity.PlanRevision,
+		"the revision named must be the one the rows were read against")
+}
+
 // reportIssueCodes collects the codes a report carries.
 func reportIssueCodes(report *model.ImportReport) []string {
 	codes := make([]string, 0, len(report.Issues))

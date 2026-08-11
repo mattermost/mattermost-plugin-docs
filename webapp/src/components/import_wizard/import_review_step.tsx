@@ -15,8 +15,9 @@ type Props = {
     onConfirmed: () => void;
 };
 
-// How many review rows to load. The server pages these; the wizard shows the first page and the counts, because
-// a five-thousand-row table is not how anyone reviews an import — the per-action totals are.
+// How many review rows to load per request. The server pages these; the wizard shows the first page of the plan
+// and the counts, because a five-thousand-row table is not how anyone reviews an import — the per-action totals
+// are. Conflicts are the exception and are fetched separately: see loadConflicts.
 const REVIEW_PAGE_SIZE = 100;
 
 // ImportReviewStep is the last point at which nothing has been written.
@@ -28,6 +29,13 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
     const {formatMessage} = useIntl();
     const [results, setResults] = useState<ImportPreflightResultView[]>([]);
     const [hasMore, setHasMore] = useState(false);
+    const [conflicts, setConflicts] = useState<ImportPreflightResultView[]>([]);
+    const [moreConflicts, setMoreConflicts] = useState(false);
+    const [loadingConflicts, setLoadingConflicts] = useState(false);
+
+    // conflictPage is the last page of conflicts fetched, counted rather than derived from how many rows are
+    // held: a page that came back short would otherwise be re-requested as the next one and duplicate itself.
+    const [conflictPage, setConflictPage] = useState(0);
     const [acknowledged, setAcknowledged] = useState<Record<string, boolean>>({});
     const [approved, setApproved] = useState<Record<string, boolean>>({});
     const [newSpaceTitle, setNewSpaceTitle] = useState(job.bundle?.space_defaults?.title ?? '');
@@ -35,20 +43,46 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
     const [submitting, setSubmitting] = useState(false);
     const [failure, setFailure] = useState<string | undefined>();
 
+    // loadedRevision is the plan the rows and the consent below belong to. Until it matches the job's current
+    // revision, what is on screen describes a plan that is no longer the one being confirmed.
+    const [loadedRevision, setLoadedRevision] = useState<string | undefined>();
+
     const needsNewSpace = job.target.kind === 'new';
     const revision = job.preflight?.revision ?? '';
     const counts = job.preflight?.counts;
 
     useEffect(() => {
         let cancelled = false;
-        getImportPreflightResults(job.id, {perPage: REVIEW_PAGE_SIZE}).then((page) => {
-            if (!cancelled) {
-                setResults(page.items ?? []);
-                setHasMore(Boolean(page.has_more));
+
+        // A new revision is a different plan, so every approval and acknowledgement given for the old one is
+        // withdrawn. Keeping them would let consent cross plans: a user who agreed to discard one page's local
+        // edits would have that approval submitted against a recomputed plan they never saw, where the same page
+        // may now conflict with different edits by a different person. Consent has to name what it consented to.
+        setAcknowledged({});
+        setApproved({});
+        setResults([]);
+        setConflicts([]);
+        setMoreConflicts(false);
+        setConflictPage(0);
+        setLoadedRevision(undefined);
+
+        // The plan's first page, for the table, and its conflicts, which are the only rows needing a decision.
+        Promise.all([
+            getImportPreflightResults(job.id, {perPage: REVIEW_PAGE_SIZE}),
+            getImportPreflightResults(job.id, {plannedAction: 'conflict', perPage: REVIEW_PAGE_SIZE}),
+        ]).then(([plan, conflicting]) => {
+            if (cancelled) {
+                return;
             }
+            setResults(plan.items ?? []);
+            setHasMore(Boolean(plan.has_more));
+            setConflicts(conflicting.items ?? []);
+            setMoreConflicts(Boolean(conflicting.has_more));
+            setLoadedRevision(revision);
         }).catch(() => {
-            // The summary counts below come from the job itself, so a failed row read degrades the table
-            // rather than the step: the user can still see what the import will do in aggregate.
+            // Confirmation stays blocked: with the conflict rows unread, there is no way to know what approving
+            // would discard, and the summary counts come from the job itself so the user can still see the shape
+            // of the import while retrying.
             if (!cancelled) {
                 setResults([]);
             }
@@ -58,11 +92,41 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
         };
     }, [job.id, revision]);
 
-    const conflicts = useMemo(() => results.filter((row) => row.overwrite_eligible), [results]);
+    // loadConflicts appends the next page of conflicts.
+    //
+    // Conflicts are paged separately from the plan because they are the only rows carrying an action, and they
+    // can sit anywhere among thousands of pages. Showing only the plan's first page would leave a conflict at
+    // row 3 000 permanently unapprovable — silently deciding, on the user's behalf, to keep the local version.
+    const loadConflicts = useCallback(async () => {
+        if (loadingConflicts) {
+            return;
+        }
+        setLoadingConflicts(true);
+        try {
+            const page = conflictPage + 1;
+            const next = await getImportPreflightResults(job.id, {
+                plannedAction: 'conflict',
+                page,
+                perPage: REVIEW_PAGE_SIZE,
+            });
+            setConflicts((current) => [...current, ...(next.items ?? [])]);
+            setMoreConflicts(Boolean(next.has_more));
+            setConflictPage(page);
+        } catch {
+            // Leave the button in place; the rows already loaded stay approvable.
+        } finally {
+            setLoadingConflicts(false);
+        }
+    }, [job.id, conflictPage, loadingConflicts]);
+
+    const approvable = useMemo(() => conflicts.filter((row) => row.overwrite_eligible), [conflicts]);
 
     const acksSatisfied = requiredAcknowledgementsSatisfied(job, acknowledged);
     const newSpaceReady = !needsNewSpace || newSpaceTitle.trim() !== '';
-    const canConfirm = revision !== '' && acksSatisfied && newSpaceReady && !submitting;
+
+    // Confirmation waits for the rows of *this* revision. Enabling it while they load would let a confirmation
+    // be sent for a plan whose conflicts are still unknown to the person sending it.
+    const canConfirm = revision !== '' && loadedRevision === revision && acksSatisfied && newSpaceReady && !submitting;
 
     const toggle = useCallback((setter: React.Dispatch<React.SetStateAction<Record<string, boolean>>>, key: string) => {
         setter((current) => ({...current, [key]: !current[key]}));
@@ -165,7 +229,7 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
                 </>
             ) : null}
 
-            {conflicts.length > 0 ? (
+            {approvable.length > 0 ? (
                 <fieldset className={styles.choices}>
                     <legend className={styles.fieldLabel}>
                         {formatMessage({id: 'docs.import.review.conflictsTitle', defaultMessage: 'Pages edited in both places'})}
@@ -176,7 +240,7 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
                             defaultMessage: 'These changed in Confluence and in Mattermost. They are left alone unless you approve replacing the Mattermost version.',
                         })}
                     </p>
-                    {conflicts.map((row) => (
+                    {approvable.map((row) => (
                         <label
                             key={row.external_id}
                             className={styles.choice}
@@ -198,6 +262,22 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
                             </span>
                         </label>
                     ))}
+                    {moreConflicts ? (
+                        <button
+                            type='button'
+                            className={styles.secondary}
+                            disabled={loadingConflicts || submitting}
+                            onClick={loadConflicts}
+                        >
+                            {loadingConflicts ? formatMessage({
+                                id: 'docs.import.review.loadingConflicts',
+                                defaultMessage: 'Loading…',
+                            }) : formatMessage({
+                                id: 'docs.import.review.moreConflicts',
+                                defaultMessage: 'Show more conflicts',
+                            })}
+                        </button>
+                    ) : null}
                 </fieldset>
             ) : null}
 

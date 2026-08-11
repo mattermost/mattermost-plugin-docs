@@ -893,6 +893,12 @@ func (r *ImportSourceSelectionRequest) IsValid() *mmmodel.AppError {
 		if strings.TrimSpace(r.DisplayName) == "" {
 			return mmmodel.NewAppError(where, "model.import_source_selection.is_valid.display_name.app_error", nil, "", http.StatusBadRequest)
 		}
+		// The name is persisted as it arrives, so it has to be storable here. A name carrying an escaped
+		// NUL is a perfectly valid string to a JSON decoder and an error to PostgreSQL, and without this
+		// check that difference surfaces as a 500 from the store rather than the bad request it is.
+		if !IsStorableText(r.DisplayName) {
+			return mmmodel.NewAppError(where, "model.import_source_selection.is_valid.display_name_unstorable.app_error", nil, "", http.StatusBadRequest)
+		}
 		if utf8.RuneCountInString(r.DisplayName) > ImportDisplayNameMaxRunes {
 			return mmmodel.NewAppError(where, "model.import_source_selection.is_valid.display_name_too_long.app_error",
 				map[string]any{"MaxLength": ImportDisplayNameMaxRunes}, "", http.StatusBadRequest)

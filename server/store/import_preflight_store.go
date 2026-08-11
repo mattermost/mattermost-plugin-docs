@@ -196,11 +196,18 @@ var importActiveStates = []model.ImportJobState{
 // V1 deliberately has no leases, claim tokens, heartbeats, or FOR UPDATE SKIP LOCKED: there is exactly
 // one worker on one node, so selection is an ordered read and every transition is a compare-and-set
 // against the state this read observed. A stale read therefore loses its CAS rather than duplicating work.
-func (s *Store) GetNextImportWork() (*model.ImportJob, error) {
+//
+// deferring names jobs to skip over — those whose last pass failed and are serving out a cooldown. Ordering
+// is otherwise unchanged, so skipping is strictly about *when* a job is offered, never about the priority
+// between states: a job on cooldown is still the next one taken once its cooldown expires.
+func (s *Store) GetNextImportWork(deferring []string) (*model.ImportJob, error) {
 	for _, state := range importWorkPriority {
 		builder := s.importJobSelectQuery().
 			Where(sq.Eq{"State": string(state)}).
 			OrderBy("CreateAt ASC", "Id ASC")
+		if len(deferring) > 0 {
+			builder = builder.Where(sq.NotEq{"Id": deferring})
+		}
 		builder = applyLimitOffset(builder, 0, 1)
 
 		jobs := []*model.ImportJob{}
@@ -777,7 +784,10 @@ func (s *Store) applyImportStagedPlans(tx sqlx.ExtContext, jobID string, plans [
 
 // GetImportPreflightResults returns one page of a job's preflight results in ordinal order, for the
 // review projection. limit is expected to be perPage+1 so the caller derives has-more from a probe row.
-func (s *Store) GetImportPreflightResults(jobID string, offset, limit int) ([]*model.ImportResultRecord, error) {
+//
+// plannedAction narrows the page to rows carrying that action; empty returns every row. Filtering in SQL is
+// what makes a single class of row — conflicts, in practice — reachable without paging the whole plan.
+func (s *Store) GetImportPreflightResults(jobID, plannedAction string, offset, limit int) ([]*model.ImportResultRecord, error) {
 	if jobID == "" {
 		return nil, &ErrInvalidInput{Entity: "ImportResult", Field: "jobID", Value: jobID}
 	}
@@ -789,6 +799,9 @@ func (s *Store) GetImportPreflightResults(jobID string, offset, limit int) ([]*m
 		From("DOCS_ImportResult").
 		Where(sq.Eq{"JobId": jobID, "Stage": string(model.ImportStagePreflight)}).
 		OrderBy("Ordinal ASC")
+	if plannedAction != "" {
+		builder = builder.Where(sq.Eq{"PlannedAction": plannedAction})
+	}
 	builder = applyLimitOffset(builder, offset, limit)
 
 	results := []*model.ImportResultRecord{}
@@ -908,6 +921,13 @@ func (s *Store) ConfirmImportJob(jobID, actorID string, confirmation model.Impor
 		Set("Phase", string(model.ImportPhaseQueuedImport)).
 		Set("Confirmation", confirmation).
 		Set("ConfirmedAt", now).
+		// The expiry clock restarts here, in the same transaction as the state change. queued_import is still
+		// an expirable state, and the deadline a job carried until now measures how long a *person* has left
+		// it alone — which stopped being the question the moment they confirmed it. Without this, confirming
+		// near the end of that window lets the maintenance sweep cancel a job the user has approved and is
+		// waiting on. It is restarted rather than cleared so a job whose worker never runs still releases its
+		// capacity eventually.
+		Set("RetainUntil", now+importConfirmedRetentionMillis).
 		Set("UpdateAt", monotonicBump("UpdateAt", now)).
 		Where(sq.Eq{"Id": jobID, "State": string(model.ImportStateAwaitingConfirmation)})
 	if confirmation.NewSpace != nil {
@@ -930,6 +950,7 @@ func (s *Store) ConfirmImportJob(jobID, actorID string, confirmation model.Impor
 	job.Phase = model.ImportPhaseQueuedImport
 	job.Confirmation = confirmation
 	job.ConfirmedAt = now
+	job.RetainUntil = now + importConfirmedRetentionMillis
 	job.UpdateAt = max(job.UpdateAt+1, now)
 	if confirmation.NewSpace != nil {
 		job.ConfirmedSpaceTitle = confirmation.NewSpace.Title

@@ -97,7 +97,11 @@ func (s *Service) CancelImportJob(jobID, actorID string) (*model.ImportJobView, 
 // a single worker, losing a compare-and-set is the only contention that can occur, and it resolves by
 // re-reading rather than by fencing.
 func (s *Service) RunImportWork() (bool, error) {
-	job, err := s.store.GetNextImportWork()
+	now := mmmodel.GetMillis()
+
+	// Jobs whose last pass failed are passed over for a while. Without that, a job failing on something
+	// specific to itself is re-selected every pass forever and every unrelated import waits behind it.
+	job, err := s.store.GetNextImportWork(s.importRetries.deferred(now))
 	if err != nil {
 		return false, err
 	}
@@ -105,6 +109,21 @@ func (s *Service) RunImportWork() (bool, error) {
 		return false, nil
 	}
 
+	worked, err := s.advanceImportJob(job)
+	if err == nil {
+		s.importRetries.forget(job.Id)
+		return worked, nil
+	}
+
+	attempts, exhausted := s.importRetries.failed(job.Id, now)
+	if !exhausted {
+		return worked, err
+	}
+	return worked, s.giveUpOnImportJob(job, attempts, err)
+}
+
+// advanceImportJob performs the one transition the job's state calls for.
+func (s *Service) advanceImportJob(job *model.ImportJob) (bool, error) {
 	switch job.State {
 	case model.ImportStateTerminalizing:
 		return true, s.RunImportTerminalization(job.Id)
@@ -206,6 +225,19 @@ func (s *Service) compensateImportChannels(job *model.ImportJob) []store.ImportC
 		if attempt.ChannelId == "" {
 			// No id was ever recorded, so there is nothing this pass can resolve. The attempt row remains as the
 			// only trace of a call whose result was lost.
+			continue
+		}
+		if attempt.State == model.ImportChannelCompensated {
+			// Already archived by an earlier pass whose terminalization did not commit. The finding is rebuilt
+			// from the attempt row rather than skipped: marking the attempt compensated and writing the report
+			// are two separate durable steps, so a failure between them would otherwise drop the cleanup from
+			// the report permanently — this pass would see nothing to do and say nothing about it. Rebuilding
+			// also keeps the issue ordinals stable, since those are derived from this list's order.
+			compensations = append(compensations, store.ImportCompensation{
+				AttemptID: attempt.AttemptId,
+				ChannelID: attempt.ChannelId,
+				Resolved:  true,
+			})
 			continue
 		}
 		if attempt.State != model.ImportChannelProvisioned && attempt.State != model.ImportChannelPendingCompensation {

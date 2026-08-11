@@ -61,6 +61,11 @@ type Service struct {
 	// lastPresenceSweepAt is the timestamp (ms) of the most recent presenceBroadcastTimes sweep, used
 	// to rate-limit the sweep itself to once per presenceBroadcastSweepIntervalMs.
 	lastPresenceSweepAt atomic.Int64
+
+	// importRetries paces retries of import jobs whose worker pass failed, so one job failing repeatedly
+	// steps aside instead of monopolizing every pass. Its zero value is ready to use; see import_retry.go
+	// for why it is deliberately per-process rather than durable.
+	importRetries importRetryTracker
 }
 
 // New creates a Service wired to the given store, logger, and optional pluginapi client.

@@ -2,7 +2,7 @@
 // See LICENSE.txt for license information.
 
 import {cancelImportJob} from 'client/imports';
-import {useImportJob} from 'hooks/imports';
+import {useImportJob, useResumableImportJob} from 'hooks/imports';
 import React, {useCallback, useState} from 'react';
 import {useIntl} from 'react-intl';
 
@@ -35,7 +35,10 @@ type Props = {
 // would be worst exactly when it matters.
 const ImportWizard = ({target, onClose}: Props) => {
     const {formatMessage} = useIntl();
-    const [jobId, setJobId] = useState<string | undefined>();
+
+    // The job is recovered from the server rather than held only here, so the wizard can be closed, reopened,
+    // reloaded or opened elsewhere while an import runs. See useResumableImportJob.
+    const {jobId, resolving, adopt} = useResumableImportJob(target);
     const {job, loading, error, refresh} = useImportJob(jobId);
     const [cancelling, setCancelling] = useState(false);
 
@@ -94,7 +97,7 @@ const ImportWizard = ({target, onClose}: Props) => {
                 </p>
             ) : null}
 
-            {loading && !job ? (
+            {(resolving || loading) && !job ? (
                 <p className={styles.hint}>
                     {formatMessage({id: 'docs.import.loading', defaultMessage: 'Loading…'})}
                 </p>
@@ -126,10 +129,15 @@ const ImportWizard = ({target, onClose}: Props) => {
 
     function renderStep() {
         if (!job) {
+            // Nothing is offered until the lookup for an unfinished import settles: showing the upload first
+            // would invite a second bundle for an import that is already running, which admission then refuses.
+            if (resolving) {
+                return null;
+            }
             return (
                 <ImportUploadStep
                     target={target}
-                    onUploaded={(created) => setJobId(created.id)}
+                    onUploaded={(created) => adopt(created.id)}
                 />
             );
         }

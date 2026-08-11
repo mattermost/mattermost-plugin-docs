@@ -283,12 +283,17 @@ func (p *Plugin) handleGetImportIssues(w http.ResponseWriter, r *http.Request) {
 	writePaginatedJSON(w, issues, page, perPage, hasMore)
 }
 
-// handleGetImportPreflightResults handles GET /api/v1/imports/{job_id}/preflight-results.
+// handleGetImportPreflightResults handles GET /api/v1/imports/{job_id}/preflight-results?planned_action=.
+//
+// The action filter exists for the review step's sake. Conflicts are the only rows a user has to act on, and
+// they can sit anywhere among thousands of pages, so paging the whole plan to find them would leave the ones
+// past the first page unapprovable in practice.
 func (p *Plugin) handleGetImportPreflightResults(w http.ResponseWriter, r *http.Request) {
 	actorID := userIDFromRequest(r)
 	jobID := mux.Vars(r)["job_id"]
+	action := r.URL.Query().Get("planned_action")
 	page, perPage := pageParam(r), perPageParam(r)
-	results, hasMore, appErr := p.service.GetImportPreflightResults(jobID, actorID, page, perPage)
+	results, hasMore, appErr := p.service.GetImportPreflightResults(jobID, actorID, action, page, perPage)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return

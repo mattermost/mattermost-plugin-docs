@@ -8,6 +8,7 @@ import {useIntl} from 'react-intl';
 
 import CreateSpaceButton from './create_space_button';
 import type {DndCategory} from './dnd/types';
+import ImportSpaceButton from './import_space_button';
 import SpaceItem from './space_item';
 import SpacesCategory from './spaces_category';
 import styles from './spaces_sidebar.module.scss';
@@ -26,9 +27,10 @@ const DND_ENABLED = false;
 type Props = {
     onOpenSwitcher: () => void;
     onCreateSpace: () => void;
+    onImportSpace: () => void;
 };
 
-const SpacesSidebar = ({onOpenSwitcher, onCreateSpace}: Props) => {
+const SpacesSidebar = ({onOpenSwitcher, onCreateSpace, onImportSpace}: Props) => {
     const {formatMessage} = useIntl();
     const {displayName: teamName, description: teamDescription} = useTeamContext();
     const {spaceId: selectedSpaceId, goToSpace, goHome} = useDocsNavigation();
@@ -97,6 +99,7 @@ const SpacesSidebar = ({onOpenSwitcher, onCreateSpace}: Props) => {
                 >
                     {spacesOrder.map((id) => renderSpace(id, 'spaces'))}
                     <CreateSpaceButton onClick={onCreateSpace}/>
+                    <ImportSpaceButton onClick={onImportSpace}/>
                 </SpacesCategory>
             </div>
         </nav>

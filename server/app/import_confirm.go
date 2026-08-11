@@ -249,7 +249,14 @@ func (s *Service) checkImportOverwriteApprovals(job *model.ImportJob, req model.
 //
 // Visibility matches the rest of the import read surface: the job's own actor only, and nothing at all
 // once they have lost access to the target — these rows name pages, titles, and local ids inside it.
-func (s *Service) GetImportPreflightResults(jobID, actorID string, page, perPage int) ([]*model.ImportPreflightResultView, bool, *mmmodel.AppError) {
+// plannedAction narrows the page to one planned action; empty returns every row. An unrecognized action is
+// refused rather than ignored, because silently returning the whole plan to a caller that asked for conflicts
+// would have them present unrelated pages as ones needing approval.
+func (s *Service) GetImportPreflightResults(jobID, actorID, plannedAction string, page, perPage int) ([]*model.ImportPreflightResultView, bool, *mmmodel.AppError) {
+	if plannedAction != "" && !model.ImportAction(plannedAction).IsValid() {
+		return nil, false, mmmodel.NewAppError("GetImportPreflightResults", "app.import.results.invalid_action.app_error", nil, "", http.StatusBadRequest)
+	}
+
 	job, appErr := s.getOwnImportJob(jobID, actorID)
 	if appErr != nil {
 		return nil, false, appErr
@@ -263,7 +270,7 @@ func (s *Service) GetImportPreflightResults(jobID, actorID string, page, perPage
 	}
 
 	offset, limit := paginationOffsetLimit(page, perPage)
-	records, err := s.store.GetImportPreflightResults(jobID, offset, limit)
+	records, err := s.store.GetImportPreflightResults(jobID, plannedAction, offset, limit)
 	if err != nil {
 		return nil, false, storeAppError("GetImportPreflightResults", err)
 	}

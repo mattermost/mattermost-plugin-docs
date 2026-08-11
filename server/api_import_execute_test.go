@@ -592,6 +592,100 @@ func TestImportExecution_CompensatesAnUnattachedChannel(t *testing.T) {
 	require.Equal(t, channelID, attempts[0].ChannelId)
 }
 
+// TestImportTerminalization_ReportsAChannelAnEarlierPassAlreadyArchived covers the gap between archiving a
+// channel and reporting it.
+//
+// The two are separate durable steps: the attempt is marked compensated before terminalization writes the
+// finding, because archiving is an external call that must not happen inside a transaction. A terminalization
+// that then fails leaves the attempt looking done, so the next pass finds nothing to compensate and the report
+// never mentions the cleanup — the one record that a channel was created and disposed of is gone.
+func TestImportTerminalization_ReportsAChannelAnEarlierPassAlreadyArchived(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+
+	jobID, view := h.uploadAndPreflight(t, actorID, newTargetRequest(mmmodel.NewId()),
+		importfixture.Options{Pages: 2}, "")
+	job := h.confirmAndExecute(t, actorID, jobID, view, true)
+	channelID := mustProvisionedChannelID(t, h, jobID)
+
+	// Rewind to a job whose Space never existed, whose channel a previous pass already archived, and whose
+	// terminalization did not commit — so the attempt says compensated while the report says nothing.
+	_, err := h.db.Exec(`DELETE FROM DOCS_ImportResult WHERE JobId=$1 AND Stage='execution'`, jobID)
+	require.NoError(t, err)
+	_, err = h.db.Exec(`DELETE FROM DOCS_Page WHERE SpaceId=$1`, job.TargetSpaceId)
+	require.NoError(t, err)
+	_, err = h.db.Exec(`DELETE FROM DOCS_ImportEntity WHERE ImportSourceId=$1`, job.SelectedImportSourceId)
+	require.NoError(t, err)
+	_, err = h.db.Exec(`DELETE FROM DOCS_Space WHERE Id=$1`, job.TargetSpaceId)
+	require.NoError(t, err)
+	_, err = h.db.Exec(`UPDATE DOCS_ImportChannelAttempt SET State='compensated' WHERE JobId=$1`, jobID)
+	require.NoError(t, err)
+	_, err = h.db.Exec(
+		`UPDATE DOCS_ImportJob SET State='terminalizing', TerminalIntent='failed', ErrorCode='execution_failed',
+		   FinishedAt=0, InvalidationPending=FALSE, FinalSummary='{}'::jsonb WHERE Id=$1`, jobID)
+	require.NoError(t, err)
+	_, err = h.db.Exec(`DELETE FROM DOCS_ImportIssue WHERE JobId=$1 AND Stage='execution'`, jobID)
+	require.NoError(t, err)
+
+	h.drainImportWorker(t)
+
+	failed, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateFailed, failed.State)
+	require.Contains(t, h.executionIssueCodes(t, jobID), importer.IssueChannelCompensated,
+		"a cleanup an earlier pass performed still belongs in the report")
+
+	attempts, err := h.store.GetImportChannelAttempts(jobID)
+	require.NoError(t, err)
+	require.Len(t, attempts, 1)
+	require.Equal(t, model.ImportChannelCompensated, attempts[0].State)
+	require.Equal(t, channelID, attempts[0].ChannelId)
+}
+
+// TestImportConfirm_RestartsTheExpiryClock covers the deadline a confirmed job carries.
+//
+// queued_import is expirable, and the deadline a job is created with measures how long a *person* has left it
+// alone — a question confirmation answers. Leaving it untouched means confirming near the end of the review
+// window hands the job to the maintenance sweep, which cancels an import its owner has just approved.
+func TestImportConfirm_RestartsTheExpiryClock(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true, channelMember: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+
+	jobID, view := h.uploadAndPreflight(t, actorID, newTargetRequest(mmmodel.NewId()),
+		importfixture.Options{Pages: 2}, "")
+
+	// The user reviewed right up against the deadline: by the time they press the button, it has passed.
+	_, err := h.db.Exec(`UPDATE DOCS_ImportJob SET RetainUntil=$1 WHERE Id=$2`, mmmodel.GetMillis()-1000, jobID)
+	require.NoError(t, err)
+
+	confirm := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/confirm", actorID, confirmBody(t, view, true))
+	require.Equal(t, http.StatusAccepted, confirm.Code, confirm.Body.String())
+
+	confirmed, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Greater(t, confirmed.RetainUntil, mmmodel.GetMillis(),
+		"a confirmed job must not still be carrying an expired review deadline")
+
+	// The sweep runs before the worker gets to it, which is the whole risk: it must find nothing to expire.
+	_, err = h.plugin.service.RunImportMaintenance()
+	require.NoError(t, err)
+
+	survived, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateQueuedImport, survived.State,
+		"maintenance must not cancel an import the user has already confirmed")
+	require.Empty(t, survived.ErrorCode)
+
+	// And it still runs to completion afterwards.
+	h.drainImportWorker(t)
+	finished, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.True(t, finished.State.IsTerminal())
+	require.Equal(t, 2, finished.FinalSummary.Actions.Create)
+}
+
 // mustProvisionedChannelID reads the channel a job provisioned for its new Space.
 func mustProvisionedChannelID(t *testing.T, h *apiTestHarness, jobID string) string {
 	t.Helper()
@@ -862,14 +956,134 @@ func TestImportExecution_TransientAuthorizationFailureIsRetried(t *testing.T) {
 		"the job must stay executable rather than being failed as authorization_revoked")
 	require.Empty(t, stalled.ErrorCode)
 
-	// Once the lookup recovers, the same job completes on a later pass.
+	// Once the lookup recovers, the same job completes on a later pass. The failed pass put the job on a
+	// wall-clock cooldown so it cannot monopolize the worker; clearing it here is standing in for that minute
+	// passing, since what the test is about is the retry succeeding rather than when it is allowed to.
 	lookupFails = false
+	h.plugin.service.ClearImportRetryCooldowns()
 	h.drainImportWorker(t)
 	completed, err := h.store.GetImportJob(jobID)
 	require.NoError(t, err)
 	require.True(t, completed.State.IsTerminal())
 	require.Equal(t, 2, completed.FinalSummary.Actions.Create)
 	require.NotEqual(t, app.ImportErrorAuthorizationRevoked, completed.ErrorCode)
+}
+
+// TestImportWorker_OneFailingJobDoesNotStarveTheQueue covers what a retry costs everyone else.
+//
+// A failed pass leaves its job in the state it was selected from, and selection is ordered by state, so a job
+// stuck in importing wins every pass ahead of anything merely queued. Retrying it forever is then not a retry
+// policy but a stopped queue: a fault particular to one target — one Space whose authorization cannot be
+// resolved — holds up every unrelated import indefinitely, and none of those states expire.
+func TestImportWorker_OneFailingJobDoesNotStarveTheQueue(t *testing.T) {
+	api := newEnabledMockAPI()
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	api.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
+	api.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
+	api.On("HasPermissionToTeam", mock.Anything, mock.Anything, mock.Anything).Return(true).Maybe()
+	api.On("GetTeam", mock.Anything).Return(&mmmodel.Team{Id: mmmodel.NewId(), Name: "myteam"}, nil).Maybe()
+	api.On("GetUserByUsername", mock.Anything).
+		Return(nil, mmmodel.NewAppError("GetUserByUsername", "not_found", nil, "", http.StatusNotFound)).Maybe()
+	stubImportChannelAPI(api, importMockOptions{})
+
+	// One actor's lookups start failing inconclusively; the other's never do. Only the first job should be
+	// affected, and the fault is permanent so far as the worker can tell.
+	stuckActor, healthyActor := mmmodel.NewId(), mmmodel.NewId()
+	failing := false
+	api.On("GetUser", mock.Anything).
+		Return(func(id string) (*mmmodel.User, *mmmodel.AppError) {
+			if failing && id == stuckActor {
+				return nil, mmmodel.NewAppError("GetUser", "boom", nil, "", http.StatusInternalServerError)
+			}
+			return &mmmodel.User{Id: id}, nil
+		}).Maybe()
+
+	h := openTestPlugin(t, api)
+	stuckJob, view := h.uploadAndPreflight(t, stuckActor, newTargetRequest(mmmodel.NewId()),
+		importfixture.Options{Pages: 2}, "")
+	confirm := h.do(t, http.MethodPost, "/api/v1/imports/"+stuckJob+"/confirm", stuckActor, confirmBody(t, view, true))
+	require.Equal(t, http.StatusAccepted, confirm.Code, confirm.Body.String())
+
+	// The confirmed job takes itself to importing and then fails its authorization recheck.
+	failing = true
+	worked, err := h.plugin.service.RunImportWork()
+	require.True(t, worked)
+	require.Error(t, err)
+	stalled, err := h.store.GetImportJob(stuckJob)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateImporting, stalled.State)
+
+	// A second import arrives behind it, in a lower-priority state than the stuck job holds.
+	rec := h.uploadFixture(t, healthyActor, newTargetRequest(mmmodel.NewId()), importfixture.Options{Pages: 2})
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	healthyJob := decodeJobView(t, rec).Id
+
+	// It must get its turn. Without the cooldown the worker re-selects the stuck job on every pass, and this
+	// drain fails on the very first one.
+	h.drainImportWorker(t)
+
+	planned, err := h.store.GetImportJob(healthyJob)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateAwaitingConfirmation, planned.State,
+		"an unrelated import must not wait on a job that keeps failing")
+	require.NotEmpty(t, planned.PreflightRevision)
+
+	// The stuck job is still exactly where it was: stepping aside is not giving up.
+	stalled, err = h.store.GetImportJob(stuckJob)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateImporting, stalled.State)
+	require.Empty(t, stalled.ErrorCode)
+}
+
+// TestImportWorker_GivesUpOnAJobThatNeverStopsFailing covers the other half of the policy. A cooldown alone
+// leaves a job retrying for as long as the fault lasts, which for its owner is an import that never finishes
+// and never says why; a bounded number of attempts turns that into a stated failure with a report.
+func TestImportWorker_GivesUpOnAJobThatNeverStopsFailing(t *testing.T) {
+	api := newEnabledMockAPI()
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	api.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
+	api.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
+	api.On("HasPermissionToTeam", mock.Anything, mock.Anything, mock.Anything).Return(true).Maybe()
+	api.On("GetTeam", mock.Anything).Return(&mmmodel.Team{Id: mmmodel.NewId(), Name: "myteam"}, nil).Maybe()
+	api.On("GetUserByUsername", mock.Anything).
+		Return(nil, mmmodel.NewAppError("GetUserByUsername", "not_found", nil, "", http.StatusNotFound)).Maybe()
+	stubImportChannelAPI(api, importMockOptions{})
+
+	actorID := mmmodel.NewId()
+	failing := false
+	api.On("GetUser", mock.Anything).
+		Return(func(id string) (*mmmodel.User, *mmmodel.AppError) {
+			if failing {
+				return nil, mmmodel.NewAppError("GetUser", "boom", nil, "", http.StatusInternalServerError)
+			}
+			return &mmmodel.User{Id: id}, nil
+		}).Maybe()
+
+	h := openTestPlugin(t, api)
+	jobID, view := h.uploadAndPreflight(t, actorID, newTargetRequest(mmmodel.NewId()),
+		importfixture.Options{Pages: 2}, "")
+	confirm := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/confirm", actorID, confirmBody(t, view, true))
+	require.Equal(t, http.StatusAccepted, confirm.Code, confirm.Body.String())
+
+	// Each pass fails and each cooldown is stood down, so this is the same job failing over and over with no
+	// waiting in between — the shape of a fault that outlasts the worker's patience.
+	failing = true
+	for range 20 {
+		if _, err := h.plugin.service.RunImportWork(); err == nil {
+			break
+		}
+		h.plugin.service.ClearImportRetryCooldowns()
+	}
+
+	// It has been failed rather than left importing. Terminalization is the worker's own next step.
+	h.plugin.service.ClearImportRetryCooldowns()
+	h.drainImportWorker(t)
+	finished, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.True(t, finished.State.IsTerminal(), "a job that never stops failing must not stay executable forever")
+	require.Equal(t, app.ImportErrorRetriesExhausted, finished.ErrorCode)
 }
 
 // TestImportPreflight_SiblingCapacityBlocksOnlyTheOverflow covers the projection's arithmetic. Comparing a
@@ -1003,8 +1217,10 @@ func TestImportPreflight_TransientAuthorLookupDoesNotMisattribute(t *testing.T) 
 	require.NoError(t, err)
 	require.Empty(t, stalled.PreflightRevision, "no plan may be published from an unresolved author")
 
-	// Once the lookup recovers, the pages are attributed to the real author.
+	// Once the lookup recovers, the pages are attributed to the real author. The cooldown from the failed pass
+	// is cleared rather than waited out; see the note in TestImportExecution_TransientAuthorizationFailureIsRetried.
 	lookupFails = false
+	h.plugin.service.ClearImportRetryCooldowns()
 	h.drainImportWorker(t)
 	view := decodeJobView(t, h.do(t, http.MethodGet, "/api/v1/imports/"+jobID, actorID, nil))
 	require.Equal(t, model.ImportStateAwaitingConfirmation, view.State)

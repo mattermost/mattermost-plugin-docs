@@ -322,51 +322,94 @@ func directoryStartCandidates(r io.ReaderAt, n int64) ([]int64, error) {
 	dirSize := uint64(binary.LittleEndian.Uint32(tail[eocd+12:]))
 	dirOffset := uint64(binary.LittleEndian.Uint32(tail[eocd+16:]))
 
-	// Any saturated 32/16-bit field means the real values live in the ZIP64 record.
-	if entries == zip16BitEntrySignal || dirSize == zip32SizeSignal || dirOffset == zip32SizeSignal {
-		zip64Size, zip64Offset, ok, err := readZip64Directory(r, n, tail, eocd)
+	// The directory ends where the end-of-directory record begins, and archive/zip derives the directory
+	// start by subtracting the declared size from there. Every candidate below is that subtraction, or the
+	// raw declared offset the reader falls back to.
+	candidates := directoryStarts(eocdOffset, dirSize, dirOffset)
+
+	// Any saturated 32/16-bit field means the real values live in the ZIP64 record. The 0xFFFF form of the
+	// directory *size* is included because archive/zip tests for it too ("d.directorySize == 0xffff"),
+	// which is almost certainly a typo for the 32-bit signal — but a precheck has to consult the record
+	// whenever the parser might, or the two disagree about where the directory is.
+	if entries == zip16BitEntrySignal || dirSize == zip16BitEntrySignal ||
+		dirSize == zip32SizeSignal || dirOffset == zip32SizeSignal {
+		zip64, err := readZip64Directory(r, n, tail, eocd)
 		if err != nil {
 			return nil, err
 		}
-		if ok {
-			dirSize, dirOffset = zip64Size, zip64Offset
+		if zip64 != nil {
+			// Which record counts as "the end" is the whole subtlety: having consulted the ZIP64 record,
+			// the reader measures the directory's end from *that* record ("directoryEndOffset = p"), 76
+			// bytes before the ordinary EOCD it was found through. Reading the size from ZIP64 while still
+			// measuring from the ordinary EOCD lands 76 bytes past the directory's first record, which in a
+			// prefixed archive — where the raw declared offset is wrong too — leaves nothing counted at all.
+			candidates = append(candidates, directoryStarts(zip64.recordOffset, zip64.dirSize, zip64.dirOffset)...)
+
+			// The 32-bit candidates stay. The 0xFFFF size condition above can send us to the ZIP64 record in
+			// a case the reader resolves from the 32-bit fields, and the reader also ignores a record whose
+			// disk numbers it dislikes, so dropping them would move this blind spot rather than close it.
+			// Over-counting a malformed archive costs a rejection; under-counting reopens the allocation
+			// hole the precheck exists to close.
+			candidates = append(candidates, directoryStarts(eocdOffset, zip64.dirSize, zip64.dirOffset)...)
 		}
 	}
-	// Reject values that cannot be in-file before converting. The archive is already bounded to
-	// MaxBundleUploadBytes, so anything at or above MaxInt64 is nonsense rather than a large archive.
-	if dirSize > math.MaxInt64 || dirOffset > math.MaxInt64 {
-		return nil, archiveErr(ArchiveErrUnreadable, "archive central-directory offset is out of range")
-	}
-
-	// The directory ends where the end-of-directory record begins, which is what makes this the
-	// primary candidate regardless of any prepended data.
-	return []int64{eocdOffset - int64(dirSize), int64(dirOffset)}, nil
+	return candidates, nil
 }
 
-// readZip64Directory reads the ZIP64 end-of-central-directory record through its locator, returning the
-// directory size and offset. ok is false when no usable locator is present, in which case the caller
-// keeps the 32-bit values.
-func readZip64Directory(r io.ReaderAt, n int64, tail []byte, eocd int) (dirSize, dirOffset uint64, ok bool, err error) {
+// directoryStarts returns the offsets at which a directory of dirSize, declared at dirOffset, may begin
+// when its end-of-directory record starts at end.
+//
+// Values too large to be a file offset are dropped rather than rejected: the archive is bounded to
+// MaxBundleUploadBytes, so a saturated field is a signal to look elsewhere, not a fatal shape. Whether
+// anything is left to walk is settled by walking it.
+func directoryStarts(end int64, dirSize, dirOffset uint64) []int64 {
+	starts := make([]int64, 0, 2)
+	if dirSize <= math.MaxInt64 {
+		starts = append(starts, end-int64(dirSize))
+	}
+	if dirOffset <= math.MaxInt64 {
+		starts = append(starts, int64(dirOffset))
+	}
+	return starts
+}
+
+// zip64Directory is the central-directory location read from a ZIP64 end-of-central-directory record,
+// together with where that record itself begins — which is the offset archive/zip measures the directory's
+// end from once it has consulted the record.
+type zip64Directory struct {
+	dirSize      uint64
+	dirOffset    uint64
+	recordOffset int64
+}
+
+// readZip64Directory reads the ZIP64 end-of-central-directory record through its locator, returning where
+// the directory is and where the record itself begins. A nil result means no usable locator is present, in
+// which case the caller keeps the 32-bit values.
+func readZip64Directory(r io.ReaderAt, n int64, tail []byte, eocd int) (*zip64Directory, error) {
 	locator := eocd - zip64LocatorLen
 	if locator < 0 || binary.LittleEndian.Uint32(tail[locator:]) != zip64LocatorSig {
-		return 0, 0, false, nil
+		return nil, nil
 	}
 	recordAt := binary.LittleEndian.Uint64(tail[locator+8:])
 	if recordAt > math.MaxInt64 {
-		return 0, 0, false, archiveErr(ArchiveErrUnreadable, "archive zip64 directory offset is out of range")
+		return nil, archiveErr(ArchiveErrUnreadable, "archive zip64 directory offset is out of range")
 	}
 	recordOffset := int64(recordAt)
 	if n < zip64EOCDMinLen || recordOffset > n-zip64EOCDMinLen {
-		return 0, 0, false, archiveErr(ArchiveErrUnreadable, "archive zip64 directory offset is out of range")
+		return nil, archiveErr(ArchiveErrUnreadable, "archive zip64 directory offset is out of range")
 	}
 	record := make([]byte, zip64EOCDMinLen)
 	if _, readErr := r.ReadAt(record, recordOffset); readErr != nil {
-		return 0, 0, false, archiveErr(ArchiveErrUnreadable, "failed to read zip64 directory: %v", readErr)
+		return nil, archiveErr(ArchiveErrUnreadable, "failed to read zip64 directory: %v", readErr)
 	}
 	if binary.LittleEndian.Uint32(record) != zip64EOCDSig {
-		return 0, 0, false, archiveErr(ArchiveErrUnreadable, "archive zip64 directory record is malformed")
+		return nil, archiveErr(ArchiveErrUnreadable, "archive zip64 directory record is malformed")
 	}
-	return binary.LittleEndian.Uint64(record[40:]), binary.LittleEndian.Uint64(record[48:]), true, nil
+	return &zip64Directory{
+		dirSize:      binary.LittleEndian.Uint64(record[40:]),
+		dirOffset:    binary.LittleEndian.Uint64(record[48:]),
+		recordOffset: recordOffset,
+	}, nil
 }
 
 // ReadManifest returns the decompressed manifest, enforcing MaxManifestBytes while reading. The

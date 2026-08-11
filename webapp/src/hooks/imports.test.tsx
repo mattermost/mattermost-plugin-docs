@@ -10,9 +10,11 @@ import type {ImportJobState, ImportJobView} from 'types/imports';
 import {
     IMPORT_POLL_ACTIVE_MS,
     IMPORT_POLL_IDLE_MS,
+    IMPORT_POLL_RETRY_MS,
     pollIntervalFor,
     requiredAcknowledgementsSatisfied,
     useImportJob,
+    useResumableImportJob,
 } from './imports';
 
 const makeJob = (state: ImportJobState, overrides: Partial<ImportJobView> = {}): ImportJobView => ({
@@ -207,6 +209,47 @@ describe('useImportJob', () => {
         expect(get.mock.calls.length).toBeGreaterThan(1);
     });
 
+    // The failure above must not be the end of the polling. A 500 or a dropped connection says nothing about
+    // the job, so treating it as "nothing more will happen" freezes the view for the rest of an import that is
+    // still running — and the only way out is a reload the user has no reason to think they need.
+    it('keeps polling after a read fails inconclusively', async () => {
+        const get = jest.spyOn(importsClient, 'getImportJob').
+            mockResolvedValueOnce(makeJob('importing')).
+            mockRejectedValueOnce(new TypeError('network down')).
+            mockResolvedValue(makeJob('completed'));
+
+        const {result} = await renderImportJob('job1');
+        await waitFor(() => expect(result.current.job?.state).toBe('importing'));
+
+        await act(async () => {
+            jest.advanceTimersByTime(IMPORT_POLL_ACTIVE_MS);
+        });
+        expect(get).toHaveBeenCalledTimes(2);
+
+        // The failed read backs the cadence off rather than ending it, so the recovery arrives on its own.
+        await act(async () => {
+            jest.advanceTimersByTime(IMPORT_POLL_RETRY_MS);
+        });
+        await waitFor(() => expect(result.current.job?.state).toBe('completed'));
+        expect(get).toHaveBeenCalledTimes(3);
+    });
+
+    // The one failure that *is* final: a job that is gone, or is no longer this user's to see, will not come
+    // back, so retrying would be a request per interval forever with a known answer.
+    it('stops polling a job that is gone', async () => {
+        const get = jest.spyOn(importsClient, 'getImportJob').mockRejectedValue(
+            new RestError('/imports/job1', 404, 'Not found.', {id: 'app.store.not_found.app_error'}, 'app.store.not_found.app_error'),
+        );
+
+        const {result} = await renderImportJob('job1');
+        await waitFor(() => expect(result.current.error?.status).toBe(404));
+
+        await act(async () => {
+            jest.advanceTimersByTime(IMPORT_POLL_RETRY_MS * 5);
+        });
+        expect(get).toHaveBeenCalledTimes(1);
+    });
+
     it('does not read anything without a job id', async () => {
         const get = jest.spyOn(importsClient, 'getImportJob').mockResolvedValue(makeJob('importing'));
         const {result} = await renderImportJob(undefined);
@@ -230,6 +273,109 @@ describe('useImportJob', () => {
         });
         expect(result.current.job?.state).toBe('queued_import');
         expect(get.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    // refresh has to bring the *loop* forward, not replace it with a single read. Every normal path through the
+    // wizard goes through it — selecting a source, confirming a plan, cancelling — so a refresh that ended the
+    // polling would leave the progress step frozen at the moment the import actually started.
+    it('keeps polling after a refresh', async () => {
+        const get = jest.spyOn(importsClient, 'getImportJob').
+            mockResolvedValueOnce(makeJob('awaiting_confirmation')).
+            mockResolvedValueOnce(makeJob('queued_import')).
+            mockResolvedValueOnce(makeJob('importing')).
+            mockResolvedValue(makeJob('completed'));
+
+        const {result} = await renderImportJob('job1');
+        await waitFor(() => expect(result.current.job?.state).toBe('awaiting_confirmation'));
+
+        await act(async () => {
+            await result.current.refresh();
+        });
+        expect(result.current.job?.state).toBe('queued_import');
+
+        // From here nothing else touches the hook: the job must reach its terminal state on the poll alone.
+        await act(async () => {
+            jest.advanceTimersByTime(IMPORT_POLL_ACTIVE_MS);
+        });
+        await waitFor(() => expect(result.current.job?.state).toBe('importing'));
+
+        await act(async () => {
+            jest.advanceTimersByTime(IMPORT_POLL_ACTIVE_MS);
+        });
+        await waitFor(() => expect(result.current.job?.state).toBe('completed'));
+        expect(get).toHaveBeenCalledTimes(4);
+    });
+});
+
+describe('useResumableImportJob', () => {
+    const renderResume = async (target: Parameters<typeof useResumableImportJob>[0]) => {
+        const rendered = renderHook(() => useResumableImportJob(target));
+        await act(async () => {
+            await Promise.resolve();
+        });
+        return rendered;
+    };
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    const page = (items: ImportJobView[]) => ({items, page: 0, per_page: 20, has_more: false});
+
+    // An import outlives the page that started it. If the only record of which job it is were component state,
+    // closing the wizard or reloading would strand a running import out of reach — while admission refused the
+    // new upload the user would then reasonably try.
+    it('adopts an unfinished import for the same target', async () => {
+        jest.spyOn(importsClient, 'listImportJobs').mockResolvedValue(page([makeJob('importing')]));
+
+        const {result} = await renderResume({kind: 'new', team_id: 'team1'});
+        await waitFor(() => expect(result.current.resolving).toBe(false));
+        expect(result.current.jobId).toBe('job1');
+    });
+
+    // A finished import is history, not something to resume: the user asking to import again means a new one.
+    it('ignores jobs that have already finished', async () => {
+        jest.spyOn(importsClient, 'listImportJobs').mockResolvedValue(page([
+            makeJob('completed'),
+            makeJob('canceled', {id: 'job2'}),
+        ]));
+
+        const {result} = await renderResume({kind: 'new', team_id: 'team1'});
+        await waitFor(() => expect(result.current.resolving).toBe(false));
+        expect(result.current.jobId).toBeUndefined();
+    });
+
+    // Adopting any unfinished import would show someone a plan for a different Space and invite them to
+    // confirm it.
+    it('ignores an unfinished import into somewhere else', async () => {
+        jest.spyOn(importsClient, 'listImportJobs').mockResolvedValue(page([
+            makeJob('importing', {target: {kind: 'new', team_id: 'other-team', existed: false}}),
+            makeJob('importing', {id: 'job2', target: {kind: 'existing', team_id: 'team1', space_id: 'space9', existed: true}}),
+        ]));
+
+        const {result} = await renderResume({kind: 'new', team_id: 'team1'});
+        await waitFor(() => expect(result.current.resolving).toBe(false));
+        expect(result.current.jobId).toBeUndefined();
+    });
+
+    it('matches an existing-Space target by its Space', async () => {
+        jest.spyOn(importsClient, 'listImportJobs').mockResolvedValue(page([
+            makeJob('awaiting_confirmation', {target: {kind: 'existing', team_id: 'team1', space_id: 'space9', existed: true}}),
+        ]));
+
+        const {result} = await renderResume({kind: 'existing', space_id: 'space9'});
+        await waitFor(() => expect(result.current.resolving).toBe(false));
+        expect(result.current.jobId).toBe('job1');
+    });
+
+    // A lookup that fails must not lock the user out of importing at all. The worst case of proceeding is an
+    // upload the server refuses on admission, which says so plainly.
+    it('lets an import start when the lookup fails', async () => {
+        jest.spyOn(importsClient, 'listImportJobs').mockRejectedValue(new TypeError('network down'));
+
+        const {result} = await renderResume({kind: 'new', team_id: 'team1'});
+        await waitFor(() => expect(result.current.resolving).toBe(false));
+        expect(result.current.jobId).toBeUndefined();
     });
 });
 

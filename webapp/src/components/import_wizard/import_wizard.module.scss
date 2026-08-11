@@ -187,6 +187,26 @@
     }
 }
 
+// A within-step action — loading more of a list — rather than a step's own decision, so it reads as lighter
+// than .primary without disappearing into the surrounding text the way .tertiary does.
+.secondary {
+    align-self: flex-start;
+    margin-top: 4px;
+    padding: 8px 14px;
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.16);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--button-bg);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+
+    &:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+    }
+}
+
 .tertiary {
     padding: 8px 14px;
     border: none;

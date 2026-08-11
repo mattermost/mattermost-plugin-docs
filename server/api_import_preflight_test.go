@@ -156,6 +156,12 @@ func TestImportSourceSelection_ExistingSpace(t *testing.T) {
 	missing := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/source", actorID,
 		json.RawMessage(fmt.Sprintf(`{"mode":"existing","import_source_id":%q}`, mmmodel.NewId())))
 	require.Equal(t, http.StatusNotFound, missing.Code, missing.Body.String())
+	// A name PostgreSQL cannot store is the client's problem, not a server fault: an escaped NUL decodes to a
+	// perfectly good Go string and fails on insert, so it has to be refused at the boundary where the reason
+	// is still known. Unstorable text is rejected rather than stripped, here as everywhere else.
+	unstorable := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/source", actorID,
+		json.RawMessage(`{"mode":"new","display_name":"Acme\u0000Confluence"}`))
+	require.Equal(t, http.StatusBadRequest, unstorable.Code, unstorable.Body.String())
 
 	selected := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/source", actorID,
 		json.RawMessage(`{"mode":"new","display_name":"Acme Confluence / DOCS"}`))

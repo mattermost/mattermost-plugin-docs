@@ -129,13 +129,18 @@ export const selectImportSource = (
     });
 
 // getImportPreflightResults returns one page of the review table.
+//
+// plannedAction narrows the page to rows carrying one action. The review step uses it for conflicts: those are
+// the only rows a user must decide about, they can sit anywhere among thousands of pages, and paging the whole
+// plan to find them would leave the ones past the first page unreachable in practice.
 export const getImportPreflightResults = (
     jobId: string,
-    options: {page?: number; perPage?: number} = {},
+    options: {plannedAction?: string; page?: number; perPage?: number} = {},
     signal?: AbortSignal,
 ): Promise<Paginated<ImportPreflightResultView>> =>
     doFetch<Paginated<ImportPreflightResultView>>(
         `/imports/${encodeURIComponent(jobId)}/preflight-results${importQuery({
+            planned_action: options.plannedAction,
             page: options.page,
             per_page: options.perPage,
         })}`,

@@ -13,6 +13,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
+	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
 // importReportBatch is how many result or issue rows one report read fetches. It bounds resident rows rather
@@ -143,6 +144,14 @@ func (r *ImportReportStream) Stream(w io.Writer) error {
 	if err := r.writeIssues(out, tally); err != nil {
 		return err
 	}
+	// Whether the rows describe one version of the data is settled after reading them, because that is the
+	// only point at which it can be: a plan recomputed mid-stream is detected by looking again afterwards.
+	if err := writeJSONField(out, "integrity", r.integrity()); err != nil {
+		return err
+	}
+	if _, err := out.WriteString(","); err != nil {
+		return errors.Wrap(err, "write import report")
+	}
 	// The summary is written last, and counted from the rows that were actually emitted. Taking it from the job
 	// snapshot instead would let a report state totals its own contents contradict — the rows are read across
 	// several queries, so a preflight republished mid-stream, or a job deleted at its retention boundary, yields
@@ -155,6 +164,40 @@ func (r *ImportReportStream) Stream(w io.Writer) error {
 		return errors.Wrap(err, "write import report")
 	}
 	return out.Flush()
+}
+
+// integrity reports whether anything moved underneath the rows while they were being written.
+//
+// The rows are read by several queries in succession, so they are not a snapshot: a plan republished halfway
+// through is emitted partly from each revision, and a job deleted at its retention boundary is emitted partly
+// and then truncated. Both produce a document that parses and whose counts match its own contents, which is
+// exactly why the check has to be explicit — nothing about such a report looks wrong to a reader.
+//
+// Only the writer can tell, and only afterwards, so the answer is stated in the report rather than protected
+// against. Pinning the rows instead would mean holding a read transaction open for the length of a download
+// no server controls the pace of.
+func (r *ImportReportStream) integrity() model.ImportReportIntegrity {
+	integrity := model.ImportReportIntegrity{Complete: true}
+	if r.stage == model.ImportStagePreflight {
+		integrity.PlanRevision = r.job.PreflightRevision
+	}
+
+	current, err := r.svc.store.GetImportJob(r.job.Id)
+	switch {
+	case store.IsErrNotFound(err):
+		integrity.Complete = false
+		integrity.Reason = model.ImportReportIncompleteJobDeleted
+	case err != nil:
+		// Not knowing is reported as not knowing. Claiming completeness on a failed check would make the field
+		// worthless precisely when something is wrong.
+		integrity.Complete = false
+		integrity.Reason = model.ImportReportIncompleteUnverified
+		r.svc.log.Warn("Could not verify import report integrity", "job_id", r.job.Id, "err", err)
+	case r.stage == model.ImportStagePreflight && current.PreflightRevision != r.job.PreflightRevision:
+		integrity.Complete = false
+		integrity.Reason = model.ImportReportIncompletePlanRecomputed
+	}
+	return integrity
 }
 
 // importReportTally accumulates the summary figures as rows stream past, so the report can describe itself

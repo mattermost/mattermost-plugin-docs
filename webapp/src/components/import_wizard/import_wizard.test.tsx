@@ -6,8 +6,9 @@ import * as importsClient from 'client/imports';
 import {RestError} from 'client/rest';
 import React from 'react';
 
-import type {ImportJobState, ImportJobView} from 'types/imports';
+import type {ImportJobState, ImportJobView, ImportPreflightResultView} from 'types/imports';
 
+import ImportReviewStep from './import_review_step';
 import {isCancellable, stepForJob, stepsForTarget} from './import_steps';
 import ImportWizard from './import_wizard';
 
@@ -44,6 +45,16 @@ const makeJob = (state: ImportJobState, overrides: Partial<ImportJobView> = {}):
 
 const bundleFile = () => new File([new Uint8Array([1, 2, 3])], 'bundle.zip', {type: 'application/zip'});
 
+// An empty page of jobs: this target has no unfinished import, so the wizard starts at the upload step.
+const noJobs = () => ({items: [], page: 0, per_page: 20, has_more: false});
+
+// Every render begins by asking the server whether this target already has an import in flight, because an
+// import outlives the page that started it. Stubbing "no" by default keeps each test to the flow it is about;
+// the resume tests below answer otherwise.
+beforeEach(() => {
+    jest.spyOn(importsClient, 'listImportJobs').mockResolvedValue(noJobs());
+});
+
 // uploadAndReach uploads a bundle and settles on whatever step the returned job implies, which is how the
 // wizard is always entered: there is no way to reach a later step without a job.
 const uploadAndReach = async (job: ImportJobView) => {
@@ -57,7 +68,7 @@ const uploadAndReach = async (job: ImportJobView) => {
         />,
     );
 
-    const input = screen.getByLabelText('Confluence export bundle');
+    const input = await screen.findByLabelText('Confluence export bundle');
     await act(async () => {
         fireEvent.change(input, {target: {files: [bundleFile()]}});
     });
@@ -113,14 +124,39 @@ describe('ImportWizard upload step', () => {
         jest.restoreAllMocks();
     });
 
-    it('will not upload until a bundle is chosen', () => {
+    it('will not upload until a bundle is chosen', async () => {
         renderWithContext(
             <ImportWizard
                 target={TARGET}
                 onClose={jest.fn()}
             />,
         );
-        expect(screen.getByRole('button', {name: 'Upload and inspect'})).toBeDisabled();
+        expect(await screen.findByRole('button', {name: 'Upload and inspect'})).toBeDisabled();
+    });
+
+    // Reopening the wizard while an import is running must land on that import, not on the upload step. Offering
+    // the upload would ask for a second bundle for work already in flight — which admission then refuses — and
+    // would leave the running import unreachable, since the only handle on it was this component's state.
+    it('resumes a running import instead of asking for another bundle', async () => {
+        const running = makeJob('importing', {
+            phase: 'writing_pages',
+            progress: {phase: 'writing_pages', current: 2, total: 4},
+        });
+        jest.spyOn(importsClient, 'listImportJobs').mockResolvedValue({
+            items: [running], page: 0, per_page: 20, has_more: false,
+        });
+        const get = jest.spyOn(importsClient, 'getImportJob').mockResolvedValue(running);
+
+        renderWithContext(
+            <ImportWizard
+                target={TARGET}
+                onClose={jest.fn()}
+            />,
+        );
+
+        expect(await screen.findByText('2 of 4 pages')).toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Upload and inspect'})).not.toBeInTheDocument();
+        expect(get).toHaveBeenCalledWith('job1');
     });
 
     // An admission rejection must say when to try again; without the wait, the only advice available is
@@ -136,8 +172,9 @@ describe('ImportWizard upload step', () => {
                 onClose={jest.fn()}
             />,
         );
+        const input = await screen.findByLabelText('Confluence export bundle');
         await act(async () => {
-            fireEvent.change(screen.getByLabelText('Confluence export bundle'), {target: {files: [bundleFile()]}});
+            fireEvent.change(input, {target: {files: [bundleFile()]}});
         });
         await act(async () => {
             fireEvent.click(screen.getByRole('button', {name: 'Upload and inspect'}));
@@ -164,8 +201,9 @@ describe('ImportWizard upload step', () => {
                 onClose={jest.fn()}
             />,
         );
+        const input = await screen.findByLabelText('Confluence export bundle');
         await act(async () => {
-            fireEvent.change(screen.getByLabelText('Confluence export bundle'), {target: {files: [bundleFile()]}});
+            fireEvent.change(input, {target: {files: [bundleFile()]}});
         });
         await act(async () => {
             fireEvent.click(screen.getByRole('button', {name: 'Upload and inspect'}));
@@ -264,6 +302,92 @@ describe('ImportWizard review step', () => {
         expect(request.preflight_revision).toBe('a'.repeat(64));
         expect(request.overwrite_conflicts).toEqual(['101']);
         expect(request.new_space).toEqual({title: 'Imported Docs', description: 'From Confluence'});
+    });
+
+    // Conflicts are fetched by action rather than taken from the plan's first page: they can sit anywhere among
+    // thousands of pages, and one at row 3 000 that cannot be reached is one silently decided for the user.
+    it('reaches conflicts beyond the first page of the plan', async () => {
+        const conflictRow = (id: string): ImportPreflightResultView => ({
+            external_id: id,
+            title: 'Both edited ' + id,
+            planned_action: 'conflict',
+            outcome: 'conflict_skipped',
+            overwrite_eligible: true,
+        });
+        const results = jest.spyOn(importsClient, 'getImportPreflightResults').mockImplementation((_jobId, options) => {
+            if (options?.plannedAction !== 'conflict') {
+                // The plan's own first page happens to contain no conflicts at all.
+                return Promise.resolve({items: [], page: 0, per_page: 100, has_more: true});
+            }
+            return Promise.resolve(options?.page ?
+                {items: [conflictRow('900')], page: 1, per_page: 100, has_more: false} :
+                {items: [conflictRow('101')], page: 0, per_page: 100, has_more: true});
+        });
+        const confirmSpy = jest.spyOn(importsClient, 'confirmImportJob').mockResolvedValue(makeJob('queued_import'));
+
+        await uploadAndReach(reviewJob({required_acknowledgements: []}));
+
+        // A conflict is offered even though the plan page it would appear on was never loaded.
+        expect(await screen.findByRole('checkbox', {name: /Both edited 101/})).toBeInTheDocument();
+        expect(results).toHaveBeenCalledWith('job1', expect.objectContaining({plannedAction: 'conflict'}));
+
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', {name: 'Show more conflicts'}));
+        });
+
+        const later = await screen.findByRole('checkbox', {name: /Both edited 900/});
+        fireEvent.click(later);
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', {name: 'Start import'}));
+        });
+
+        expect(confirmSpy.mock.calls[0][1].overwrite_conflicts).toEqual(['900']);
+    });
+
+    // Consent names a plan. When the server recomputes one — which it does on its own, whenever the source
+    // changes under a review — approvals given for the old plan must not carry into the new one: the same page
+    // may now conflict with different edits by a different person, and the user has not seen that. The step is
+    // driven directly here because the change under test is the job prop being replaced, which is exactly what
+    // the wizard does when a poll returns a new revision.
+    it('withdraws consent when the plan is recomputed, and waits for the new rows', async () => {
+        const conflict: ImportPreflightResultView = {
+            external_id: '101',
+            title: 'Both edited',
+            planned_action: 'conflict',
+            outcome: 'conflict_skipped',
+            overwrite_eligible: true,
+        };
+        jest.spyOn(importsClient, 'getImportPreflightResults').mockResolvedValue({
+            items: [conflict], page: 0, per_page: 100, has_more: false,
+        });
+
+        const reviewing = (job: ImportJobView) => (
+            <ImportReviewStep
+                job={job}
+                onConfirmed={jest.fn()}
+            />
+        );
+        const first = reviewJob({required_acknowledgements: ['page_only_partial_import']});
+        const {rerender} = renderWithContext(reviewing(first));
+
+        fireEvent.click(await screen.findByRole('checkbox', {name: /Comments and attachments/}));
+        fireEvent.click(await screen.findByRole('checkbox', {name: /Both edited/}));
+        expect(screen.getByRole('button', {name: 'Start import'})).toBeEnabled();
+
+        // A recomputed plan arrives: same job, different revision.
+        const republished = reviewJob({required_acknowledgements: ['page_only_partial_import']});
+        republished.preflight = {...republished.preflight!, revision: 'b'.repeat(64)};
+        await act(async () => {
+            rerender(reviewing(republished));
+        });
+
+        await waitFor(() => {
+            expect(screen.getByRole('checkbox', {name: /Comments and attachments/})).not.toBeChecked();
+        });
+        expect(screen.getByRole('checkbox', {name: /Both edited/})).not.toBeChecked();
+
+        // And it stays unconfirmable until the acknowledgements are given again for this plan.
+        expect(screen.getByRole('button', {name: 'Start import'})).toBeDisabled();
     });
 
     // The server has already requeued the job, so there is nothing to retry: the message has to say that
@@ -407,8 +531,9 @@ describe('ImportWizard running and result steps', () => {
                 onClose={jest.fn()}
             />,
         );
+        const input = await screen.findByLabelText('Confluence export bundle');
         await act(async () => {
-            fireEvent.change(screen.getByLabelText('Confluence export bundle'), {target: {files: [bundleFile()]}});
+            fireEvent.change(input, {target: {files: [bundleFile()]}});
         });
         await act(async () => {
             fireEvent.click(screen.getByRole('button', {name: 'Upload and inspect'}));

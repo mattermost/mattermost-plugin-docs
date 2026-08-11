@@ -86,6 +86,36 @@ func NewImportFidelity() ImportFidelity {
 	}
 }
 
+// Reasons a report states that its contents may not describe a single version of the data.
+const (
+	// ImportReportIncompletePlanRecomputed means the plan was recomputed while the report was being written,
+	// so its rows may come partly from the old plan and partly from the new one.
+	ImportReportIncompletePlanRecomputed = "plan_recomputed"
+	// ImportReportIncompleteJobDeleted means the job reached its retention boundary mid-write, so rows may
+	// be missing from the end.
+	ImportReportIncompleteJobDeleted = "job_deleted"
+	// ImportReportIncompleteUnverified means the check itself could not be made, which is reported rather
+	// than assumed either way.
+	ImportReportIncompleteUnverified = "verification_failed"
+)
+
+// ImportReportIntegrity states whether everything in this report describes one version of the data.
+//
+// A report is streamed from several queries rather than held in memory, so its rows are not read under a
+// single snapshot. That is a deliberate trade: pinning them would mean holding a database transaction open
+// for as long as the download takes, which is a routine hazard traded for a rare one. What the report owes a
+// reader instead is the truth about which it got — a plan recomputed halfway through produces a document that
+// is valid JSON and internally consistent while describing two different plans, and only the writer is in a
+// position to notice.
+type ImportReportIntegrity struct {
+	// Complete is true when nothing changed underneath the report while it was written.
+	Complete bool `json:"complete"`
+	// PlanRevision is the preflight revision the rows were read against, for a plan report.
+	PlanRevision string `json:"plan_revision,omitempty"`
+	// Reason names what happened, when Complete is false.
+	Reason string `json:"reason,omitempty"`
+}
+
 // ImportReportCounts aggregates the manifest, restriction, action, author, link, and issue counts a
 // report carries. The restriction counts sit alongside the manifest counts because the fixed fidelity
 // block describes policy only and can never stand in for actual restricted-page outcomes.
@@ -156,4 +186,7 @@ type ImportReport struct {
 	Counts        ImportReportCounts `json:"counts"`
 	Results       []ImportResult     `json:"results"`
 	Issues        []ImportIssue      `json:"issues"`
+	// Integrity states whether everything above describes one version of the data. It is written after the
+	// rows, because until they have all been read there is nothing to conclude.
+	Integrity ImportReportIntegrity `json:"integrity"`
 }

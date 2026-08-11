@@ -971,6 +971,12 @@ func (s *Store) finalizeRetainedReservation(tx sqlx.ExtContext, job *model.Impor
 // so its report stays downloadable. Distinct from the seven-day review window an unconfirmed job gets.
 const importTerminalRetentionMillis = int64(90 * 24 * 60 * 60 * 1000)
 
+// importConfirmedRetentionMillis is how long a confirmed job waits for execution before the maintenance
+// sweep reclaims it. It matches the review window a job is created with (unconfirmedJobRetentionMillis in
+// the app layer), because the deadline answers the same question either way — has anything moved this job
+// along? — and confirmation is exactly the kind of movement that should restart the count.
+const importConfirmedRetentionMillis = int64(7 * 24 * 60 * 60 * 1000)
+
 // releaseStagedBytes deletes a job's body-bearing staged rows and decrements the matching global
 // reservation, leaving durable results, issues, and manifest users intact so the report survives.
 // Deleting the rows and releasing the reservation in one transaction is what keeps the accounting
