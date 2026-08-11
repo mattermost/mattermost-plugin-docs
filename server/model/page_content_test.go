@@ -22,11 +22,10 @@ func marshal(t *testing.T, doc model.TipTapDocument) string {
 }
 
 func TestParseTipTapDocument(t *testing.T) {
-	t.Run("empty string yields an empty doc", func(t *testing.T) {
+	t.Run("empty string yields a schema-valid empty doc", func(t *testing.T) {
 		doc, err := model.ParseTipTapDocument("")
 		require.NoError(t, err)
-		require.Equal(t, model.TipTapDocType, doc.Type)
-		require.Empty(t, doc.Content)
+		require.JSONEq(t, `{"type":"doc","content":[{"type":"paragraph"}]}`, marshal(t, doc))
 	})
 
 	t.Run("valid doc round-trips", func(t *testing.T) {

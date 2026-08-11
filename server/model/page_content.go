@@ -47,10 +47,7 @@ func BuildSearchText(doc TipTapDocument) string {
 // parse-level, not per-field, so there is no single i18n key to attach per reason.
 func ParseTipTapDocument(contentJSON string) (TipTapDocument, error) {
 	if contentJSON == "" {
-		return TipTapDocument{
-			Type:    TipTapDocType,
-			Content: []map[string]any{},
-		}, nil
+		contentJSON = EmptyTipTapJSON
 	}
 
 	// Reject over-limit content before parsing: json.Unmarshal materializes every node as a
