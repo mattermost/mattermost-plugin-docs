@@ -55,25 +55,40 @@ describe('useDocsNavigation URL parsing', () => {
         expect(renderAt('/myteam/spaces/space1/pageX').draft).toBe('false');
     });
 
-    // The import keyword sits where a space or page id would, and both id patterns match it, so the only thing
-    // keeping these apart is match order. Without it an import URL parses as a Space called "import" and the
-    // wizard never renders.
+    // The import segment sits where a space or page id would, so the only thing keeping these apart is match
+    // order. Without it an import URL parses as a Space whose id happens to be the keyword, and the wizard never
+    // renders.
     it('parses an import into a new Space without mistaking the keyword for a Space', () => {
-        expect(renderAt('/myteam/spaces/import')).toEqual({
+        expect(renderAt('/myteam/spaces/_import')).toEqual({
             team: 'myteam', space: '', page: '', draft: 'false', import: 'true',
         });
     });
 
     it('parses an import into an existing Space without mistaking the keyword for a page', () => {
-        expect(renderAt('/myteam/spaces/space1/import')).toEqual({
+        expect(renderAt('/myteam/spaces/space1/_import')).toEqual({
             team: 'myteam', space: 'space1', page: '', draft: 'false', import: 'true',
+        });
+    });
+
+    // The leading underscore is why the keyword costs nothing: no slug can start with one, so content named
+    // "import" is still content. A bare keyword would have hidden this Space, and a page of that name in every
+    // Space, with nothing validating either against it.
+    it('leaves a Space named like the keyword reachable', () => {
+        expect(renderAt('/myteam/spaces/import')).toEqual({
+            team: 'myteam', space: 'import', page: '', draft: 'false', import: 'false',
+        });
+    });
+
+    it('leaves a page named like the keyword reachable', () => {
+        expect(renderAt('/myteam/spaces/space1/import')).toEqual({
+            team: 'myteam', space: 'space1', page: 'import', draft: 'false', import: 'false',
         });
     });
 
     it('builds both import paths', () => {
         renderWithContext(<Probe/>, {route: '/myteam/spaces', state: {currentTeam: {id: 't1', name: 'myteam'}}});
-        expect(screen.getByTestId('import-path')).toHaveTextContent('/myteam/spaces/import');
-        expect(screen.getByTestId('space-import-path')).toHaveTextContent('/myteam/spaces/space1/import');
+        expect(screen.getByTestId('import-path')).toHaveTextContent('/myteam/spaces/_import');
+        expect(screen.getByTestId('space-import-path')).toHaveTextContent('/myteam/spaces/space1/_import');
     });
 
     it('falls back to the current team when the URL is outside Docs', () => {

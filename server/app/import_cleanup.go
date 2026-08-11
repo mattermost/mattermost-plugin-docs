@@ -115,6 +115,13 @@ func (s *Service) RunImportWork() (bool, error) {
 		return worked, nil
 	}
 
+	if importMadeProgress(err) {
+		// The pass committed pages and then hit something inconclusive. It steps aside like any other failure,
+		// but it has not stopped making progress, so it keeps its attempts.
+		s.importRetries.progressed(job.Id, now)
+		return worked, err
+	}
+
 	attempts, exhausted := s.importRetries.failed(job.Id, now)
 	if !exhausted {
 		return worked, err

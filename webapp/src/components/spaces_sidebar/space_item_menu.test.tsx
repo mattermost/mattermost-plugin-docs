@@ -51,7 +51,7 @@ describe('SpaceItemMenu', () => {
         await openMenu();
         fireEvent.click(screen.getByText('Import from Confluence'));
 
-        await waitFor(() => expect(history.location.pathname).toBe('/myteam/spaces/docs/import'));
+        await waitFor(() => expect(history.location.pathname).toBe('/myteam/spaces/docs/_import'));
     });
 
     it('opens the leave confirmation from the menu', async () => {

@@ -390,6 +390,80 @@ describe('ImportWizard review step', () => {
         expect(screen.getByRole('button', {name: 'Start import'})).toBeDisabled();
     });
 
+    // A page of conflicts requested against one plan must not be appended to another. The stale rows would sit
+    // in the approvable list looking exactly as current as the rest — and the loaded-revision gate cannot help,
+    // because by then it matches the *new* plan.
+    it('drops a page of conflicts that arrives after the plan changed', async () => {
+        const conflictRow = (id: string): ImportPreflightResultView => ({
+            external_id: id,
+            title: 'Both edited ' + id,
+            planned_action: 'conflict',
+            outcome: 'conflict_skipped',
+            overwrite_eligible: true,
+        });
+
+        let releaseSecondPage: (value: {items: ImportPreflightResultView[]; page: number; per_page: number; has_more: boolean}) => void = () => {};
+        jest.spyOn(importsClient, 'getImportPreflightResults').mockImplementation((_jobId, options) => {
+            if (options?.plannedAction !== 'conflict') {
+                return Promise.resolve({items: [], page: 0, per_page: 100, has_more: false});
+            }
+            if (options?.page) {
+                // Held open so the plan can change while this request is in flight.
+                return new Promise((resolve) => {
+                    releaseSecondPage = resolve;
+                });
+            }
+            return Promise.resolve({items: [conflictRow('101')], page: 0, per_page: 100, has_more: true});
+        });
+
+        const first = reviewJob({required_acknowledgements: []});
+        const reviewing = (job: ImportJobView) => (
+            <ImportReviewStep
+                job={job}
+                onConfirmed={jest.fn()}
+            />
+        );
+        const {rerender} = renderWithContext(reviewing(first));
+
+        const showMore = await screen.findByRole('button', {name: 'Show more conflicts'});
+        await act(async () => {
+            fireEvent.click(showMore);
+        });
+
+        // The plan is republished while the second page is still outstanding, and then the page lands.
+        const republished = reviewJob({required_acknowledgements: []});
+        republished.preflight = {...republished.preflight!, revision: 'b'.repeat(64)};
+        await act(async () => {
+            rerender(reviewing(republished));
+        });
+        await act(async () => {
+            releaseSecondPage({items: [conflictRow('900')], page: 1, per_page: 100, has_more: false});
+        });
+
+        expect(screen.queryByRole('checkbox', {name: /Both edited 900/})).not.toBeInTheDocument();
+    });
+
+    // A read that fails must not disable confirmation for good. The load only re-runs when the revision changes,
+    // and polling returns the same revision, so without a retry there is nothing to wait for and nothing to press.
+    it('offers a retry when the review rows cannot be read', async () => {
+        const results = jest.spyOn(importsClient, 'getImportPreflightResults').
+            mockRejectedValueOnce(new TypeError('network down')).
+            mockRejectedValueOnce(new TypeError('network down')).
+            mockResolvedValue({items: [], page: 0, per_page: 100, has_more: false});
+
+        await uploadAndReach(reviewJob({required_acknowledgements: []}));
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('could not be read');
+        expect(screen.getByRole('button', {name: 'Start import'})).toBeDisabled();
+
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', {name: 'Try again'}));
+        });
+
+        await waitFor(() => expect(screen.getByRole('button', {name: 'Start import'})).toBeEnabled());
+        expect(results.mock.calls.length).toBeGreaterThan(2);
+    });
+
     // The server has already requeued the job, so there is nothing to retry: the message has to say that
     // rather than invite a click that cannot work.
     it('explains a stale plan instead of offering a retry', async () => {

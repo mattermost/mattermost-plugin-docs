@@ -3,7 +3,7 @@
 
 import {confirmImportJob, getImportPreflightResults, isPreflightStale} from 'client/imports';
 import {requiredAcknowledgementsSatisfied} from 'hooks/imports';
-import React, {useCallback, useEffect, useMemo, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useIntl} from 'react-intl';
 
 import type {ImportJobView, ImportPreflightResultView} from 'types/imports';
@@ -47,9 +47,20 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
     // revision, what is on screen describes a plan that is no longer the one being confirmed.
     const [loadedRevision, setLoadedRevision] = useState<string | undefined>();
 
+    // loadFailed and attempt drive the retry. Without them a single failed read left confirmation disabled for
+    // good: the load only re-runs when the revision changes, and ordinary polling returns the same revision, so
+    // there was nothing to wait for and nothing to press.
+    const [loadFailed, setLoadFailed] = useState(false);
+    const [attempt, setAttempt] = useState(0);
+
     const needsNewSpace = job.target.kind === 'new';
     const revision = job.preflight?.revision ?? '';
     const counts = job.preflight?.counts;
+
+    // The revision as of the latest render, for comparing against by an in-flight request. A request cannot check
+    // the `revision` in its own closure: that is the value it was started with, so it would always match itself.
+    const currentRevision = useRef(revision);
+    currentRevision.current = revision;
 
     useEffect(() => {
         let cancelled = false;
@@ -65,6 +76,7 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
         setMoreConflicts(false);
         setConflictPage(0);
         setLoadedRevision(undefined);
+        setLoadFailed(false);
 
         // The plan's first page, for the table, and its conflicts, which are the only rows needing a decision.
         Promise.all([
@@ -80,17 +92,17 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
             setMoreConflicts(Boolean(conflicting.has_more));
             setLoadedRevision(revision);
         }).catch(() => {
-            // Confirmation stays blocked: with the conflict rows unread, there is no way to know what approving
-            // would discard, and the summary counts come from the job itself so the user can still see the shape
-            // of the import while retrying.
+            // Confirmation stays blocked — with the conflict rows unread there is no way to know what approving
+            // would discard — but the block has to be recoverable, so the failure is stated and offered a retry.
             if (!cancelled) {
                 setResults([]);
+                setLoadFailed(true);
             }
         });
         return () => {
             cancelled = true;
         };
-    }, [job.id, revision]);
+    }, [job.id, revision, attempt]);
 
     // loadConflicts appends the next page of conflicts.
     //
@@ -104,11 +116,19 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
         setLoadingConflicts(true);
         try {
             const page = conflictPage + 1;
+            const requested = revision;
             const next = await getImportPreflightResults(job.id, {
                 plannedAction: 'conflict',
                 page,
                 perPage: REVIEW_PAGE_SIZE,
             });
+
+            // The plan may have been republished while this page was in flight. Appending it then would mix rows
+            // from two plans into one approvable list — and because the newer plan's own rows have loaded by
+            // then, the stale ones would look every bit as approvable as the rest.
+            if (requested !== currentRevision.current) {
+                return;
+            }
             setConflicts((current) => [...current, ...(next.items ?? [])]);
             setMoreConflicts(Boolean(next.has_more));
             setConflictPage(page);
@@ -117,7 +137,7 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
         } finally {
             setLoadingConflicts(false);
         }
-    }, [job.id, conflictPage, loadingConflicts]);
+    }, [job.id, revision, conflictPage, loadingConflicts]);
 
     const approvable = useMemo(() => conflicts.filter((row) => row.overwrite_eligible), [conflicts]);
 
@@ -314,6 +334,27 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
                         defaultMessage: 'Showing the first {shown} pages. The counts above cover every page.',
                     }, {shown: results.length})}
                 </p>
+            ) : null}
+
+            {loadFailed ? (
+                <div
+                    role='alert'
+                    className={styles.error}
+                >
+                    <p className={styles.errorLine}>
+                        {formatMessage({
+                            id: 'docs.import.review.loadFailed',
+                            defaultMessage: 'The pages this import would change could not be read, so it cannot be confirmed yet.',
+                        })}
+                    </p>
+                    <button
+                        type='button'
+                        className={styles.secondary}
+                        onClick={() => setAttempt((n) => n + 1)}
+                    >
+                        {formatMessage({id: 'docs.import.review.loadRetry', defaultMessage: 'Try again'})}
+                    </button>
+                </div>
             ) : null}
 
             {failure ? (

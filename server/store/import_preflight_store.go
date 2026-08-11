@@ -5,6 +5,7 @@ package store
 
 import (
 	"database/sql"
+	"slices"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
@@ -180,6 +181,21 @@ var importWorkPriority = []model.ImportJobState{
 	model.ImportStateQueuedPreflight,
 }
 
+// importWritingStates are the states in which a job may already have written pages, or be about to write the
+// report that publishes them. A job in one of these holds its source and its Space until it terminalizes.
+var importWritingStates = []string{
+	string(model.ImportStateImporting),
+	string(model.ImportStateTerminalizing),
+}
+
+// importStartableStates are the states from which selecting a job *begins* work on a source, as opposed to
+// continuing work already begun. Only these are fenced: a job already writing, or already computing a plan,
+// must always be selectable, or a half-finished job could never be finished or reset.
+var importStartableStates = []string{
+	string(model.ImportStateQueuedImport),
+	string(model.ImportStateQueuedPreflight),
+}
+
 // importActiveStates are every worker-owned state, including those importWorkPriority deliberately omits.
 // The invariant check counts these rather than the selectable ones, so a job parked in an unimplemented
 // state is still visible as active work.
@@ -208,6 +224,9 @@ func (s *Store) GetNextImportWork(deferring []string) (*model.ImportJob, error) 
 		if len(deferring) > 0 {
 			builder = builder.Where(sq.NotEq{"Id": deferring})
 		}
+		if slices.Contains(importStartableStates, string(state)) {
+			builder = builder.Where(importUnfencedBySource())
+		}
 		builder = applyLimitOffset(builder, 0, 1)
 
 		jobs := []*model.ImportJob{}
@@ -219,6 +238,36 @@ func (s *Store) GetNextImportWork(deferring []string) (*model.ImportJob, error) 
 		}
 	}
 	return nil, nil
+}
+
+// importUnfencedBySource is the condition that a job's source and target Space are not already held by another
+// job that may have written pages.
+//
+// This is what serializes imports of the same source, and it has to be a property of *selection* rather than of
+// ordering. Ordering alone used to imply it — an importing job outranks a queued one, so nothing else could
+// start while it existed — but that only holds while the worker always picks the highest-ranked job. It stopped
+// holding the moment a failing job could be passed over: the job behind it starts, and the two are then writing
+// against the same mappings.
+//
+// What that costs is not theoretical. A job's plan is reviewed against the mappings as they were, and the
+// revision that invalidates other plans is bumped once, at terminalization — so a second job confirmed against
+// the same revision passes its staleness check, then rediscovers page by page that the creates it was approved
+// for are now updates. It would rewrite pages the user was never told it would touch, without the
+// acknowledgement that reimporting existing pages requires.
+//
+// The fence is deliberately wider than the mappings: two jobs importing different sources into one Space are
+// serialized too. With a single worker that costs nothing — only one job is ever being processed — and it
+// removes a whole class of reasoning about whose pages are whose.
+func importUnfencedBySource() sq.Sqlizer {
+	return sq.Expr(`NOT EXISTS (
+		SELECT 1 FROM DOCS_ImportJob blocker
+		WHERE blocker.Id <> DOCS_ImportJob.Id
+		  AND blocker.State IN (?, ?)
+		  AND (
+			(blocker.SelectedImportSourceId <> '' AND blocker.SelectedImportSourceId = DOCS_ImportJob.SelectedImportSourceId)
+			OR (blocker.TargetSpaceId <> '' AND blocker.TargetSpaceId = DOCS_ImportJob.TargetSpaceId)
+		  )
+	)`, importWritingStates[0], importWritingStates[1])
 }
 
 // CountActiveImportJobs returns how many jobs occupy a worker-owned state. The supported topology has at
@@ -984,11 +1033,17 @@ func (s *Store) resetImportToPreflight(tx sqlx.ExtContext, job *model.ImportJob,
 		Set("ConfirmedAt", 0).
 		Set("MappingInputsChanged", true).
 		Set("ProgressCurrent", 0).
+		// The retention clock restarts, for the same reason confirmation restarts it: the deadline measures how
+		// long a job has sat with nobody moving it along, and this is the server moving it. Without this, a plan
+		// invalidated near the end of the window comes back to be reviewed again already expired — so the sweep
+		// cancels it before its owner can see the new plan, for a staleness that was not their doing.
+		Set("RetainUntil", now+importConfirmedRetentionMillis).
 		Set("UpdateAt", monotonicBump("UpdateAt", now)).
 		Where(sq.Eq{"Id": job.Id})
 	if _, err := s.execBuilder(tx, builder); err != nil {
 		return errors.Wrap(err, "unable_to_reset_import_to_preflight")
 	}
+	job.RetainUntil = now + importConfirmedRetentionMillis
 	return nil
 }
 

@@ -224,9 +224,13 @@ export function requiredAcknowledgementsSatisfied(
     return job.required_acknowledgements.every((key) => checked[key] === true);
 }
 
-// How many of the actor's recent jobs to look through when resuming. An unfinished import is almost always
-// the newest one; this is a bound, not a search.
-const IMPORT_RESUME_SCAN = 20;
+// How many jobs one discovery request reads, and how many requests it will make.
+//
+// An unfinished import is almost always among the newest, but "almost always" is not a search: several targets
+// can each hold an import (admission allows several per target, and more per actor), so the match may be past
+// the first page. The page count bounds the walk without leaving the answer to luck.
+const IMPORT_RESUME_PER_PAGE = 50;
+const IMPORT_RESUME_MAX_PAGES = 10;
 
 export type ImportResumeState = {
 
@@ -237,9 +241,20 @@ export type ImportResumeState = {
     // has an import running.
     resolving: boolean;
 
+    // failed is true when the lookup could not answer. The caller must not offer an upload in that case: it
+    // cannot tell "no import running" from "could not find out", and guessing the first duplicates an import.
+    failed: boolean;
+
     // adopt records a newly created job as the one to follow.
     adopt: (jobId: string) => void;
+
+    // retry runs the lookup again, for use after a failure.
+    retry: () => void;
 };
+
+// targetIdentity reduces a target to the string that decides which import belongs to it.
+const targetIdentity = (target: ImportTargetRequest): string =>
+    (target.kind === 'new' ? `new:${target.team_id}` : `existing:${target.space_id}`);
 
 // useResumableImportJob finds the actor's unfinished import for a target, so the wizard can be re-entered.
 //
@@ -249,47 +264,89 @@ export type ImportResumeState = {
 // admission limits refused the new upload the user would then try. The job id is therefore recovered from the
 // server rather than remembered, which also works on a different device.
 export function useResumableImportJob(target: ImportTargetRequest): ImportResumeState {
-    const [jobId, setJobId] = useState<string | undefined>();
-    const [resolving, setResolving] = useState(true);
+    const identity = targetIdentity(target);
+
+    // The identity is held *with* the answer, so a target change cannot leave the previous target's answer on
+    // screen. Two pieces of state updated by an effect would show the old job until the new lookup returned —
+    // and a lookup that then failed would leave it there for good, with the previous import's cancel button
+    // live under a heading about a different Space.
+    const [state, setState] = useState<{identity: string; jobId?: string; resolving: boolean; failed: boolean}>(
+        {identity, resolving: true, failed: false},
+    );
+    const [attempt, setAttempt] = useState(0);
+
+    // Resetting during render rather than in an effect is deliberate: an effect runs after the render that
+    // already showed the wrong thing. React discards this render and redoes it with the new state.
+    if (state.identity !== identity) {
+        setState({identity, resolving: true, failed: false});
+    }
 
     const adopt = useCallback((id: string) => {
-        setJobId(id);
-        setResolving(false);
-    }, []);
+        setState({identity, jobId: id, resolving: false, failed: false});
+    }, [identity]);
 
-    // Only the identifying parts of the target are dependencies, so a caller passing a fresh object literal
-    // each render does not restart the lookup.
-    const targetKind = target.kind;
-    const targetTeamId = target.kind === 'new' ? target.team_id : '';
-    const targetSpaceId = target.kind === 'existing' ? target.space_id : '';
+    const retry = useCallback(() => {
+        setState({identity, resolving: true, failed: false});
+        setAttempt((n) => n + 1);
+    }, [identity]);
 
     useEffect(() => {
         let cancelled = false;
 
-        // The team is only known for a new-Space target; for an existing Space the filter is the Space itself,
-        // applied below, and narrowing by team as well would need a team id the caller did not give us.
-        listImportJobs({teamId: targetTeamId || undefined, perPage: IMPORT_RESUME_SCAN}).then((page) => {
-            if (cancelled) {
-                return;
-            }
-            const unfinished = (page.items ?? []).find((candidate) =>
-                !isTerminalImportState(candidate.state) && matchesImportTarget(candidate, targetKind, targetTeamId, targetSpaceId));
-            setJobId(unfinished?.id);
-            setResolving(false);
-        }).catch(() => {
-            // A failed lookup must not block starting an import. The worst case is an upload the server
-            // refuses on admission, which says so plainly — better than a wizard that will not open.
+        findUnfinishedImport(target).then((found) => {
             if (!cancelled) {
-                setResolving(false);
+                setState({identity, jobId: found?.id, resolving: false, failed: false});
+            }
+        }).catch(() => {
+            if (!cancelled) {
+                // Reported rather than treated as "nothing running". Offering an upload here would invite a
+                // second bundle for an import that may well be in flight, which is how one import becomes two.
+                setState({identity, resolving: false, failed: true});
             }
         });
 
         return () => {
             cancelled = true;
         };
-    }, [targetKind, targetTeamId, targetSpaceId]);
 
-    return {jobId, resolving, adopt};
+        // target is intentionally not a dependency: it is a fresh object every render, and `identity` is the
+        // part of it that decides the answer.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [identity, attempt]);
+
+    return {
+        jobId: state.identity === identity ? state.jobId : undefined,
+        resolving: state.identity !== identity || state.resolving,
+        failed: state.identity === identity && state.failed,
+        adopt,
+        retry,
+    };
+}
+
+// findUnfinishedImport walks the actor's jobs, newest first, for one still running against this target.
+async function findUnfinishedImport(target: ImportTargetRequest): Promise<ImportJobView | undefined> {
+    const teamId = target.kind === 'new' ? target.team_id : undefined;
+
+    for (let page = 0; page < IMPORT_RESUME_MAX_PAGES; page++) {
+        // The team filter only applies to a new-Space target; for an existing Space the filter is the Space
+        // itself, applied by the match below, and narrowing by team would need an id the caller did not give us.
+        //
+        // Sequential on purpose: each request's answer decides whether another is needed at all, and the usual
+        // case is one page. Firing them in parallel would trade a rare second request for ten guaranteed ones.
+        // eslint-disable-next-line no-await-in-loop
+        const answer = await listImportJobs({teamId, page, perPage: IMPORT_RESUME_PER_PAGE});
+        const items = answer.items ?? [];
+
+        const unfinished = items.find((candidate) =>
+            !isTerminalImportState(candidate.state) && matchesImportTarget(candidate, target));
+        if (unfinished) {
+            return unfinished;
+        }
+        if (!answer.has_more || items.length === 0) {
+            return undefined;
+        }
+    }
+    return undefined;
 }
 
 // matchesImportTarget reports whether a job is an import into the same place.
@@ -298,9 +355,9 @@ export function useResumableImportJob(target: ImportTargetRequest): ImportResume
 // unfinished import would show a user work belonging to a different Space and offer its plan for
 // confirmation — and a new-Space job's space_id is one the server minted for it, so identity there is the
 // team plus the fact that the Space did not exist.
-function matchesImportTarget(job: ImportJobView, kind: string, teamId: string, spaceId: string): boolean {
-    if (job.target.kind !== kind) {
+function matchesImportTarget(job: ImportJobView, target: ImportTargetRequest): boolean {
+    if (job.target.kind !== target.kind) {
         return false;
     }
-    return kind === 'new' ? job.target.team_id === teamId : job.target.space_id === spaceId;
+    return target.kind === 'new' ? job.target.team_id === target.team_id : job.target.space_id === target.space_id;
 }

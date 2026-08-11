@@ -877,7 +877,24 @@ var directlyCancelableImportStates = []string{
 // Routing inside the one job-row lock is what makes the choice race-free: reading the state and acting on it
 // are the same critical section, so a worker that starts executing a queued job the instant before this call
 // cannot leave the cancel taking the wrong path.
-func (s *Store) CancelImportJob(jobID, actorID, errorCode string) (_ *model.ImportJob, immediate bool, err error) {
+func (s *Store) CancelImportJob(jobID, actorID, errorCode string) (*model.ImportJob, bool, error) {
+	return s.cancelImportJob(jobID, actorID, errorCode, 0)
+}
+
+// ExpireImportJob cancels a job the retention sweep found past its deadline, but only if it still is.
+//
+// The deadline is rechecked inside the same lock that reads the state, because the sweep selects its candidates
+// without one. A job can be confirmed in between — which restarts its retention and moves it to queued_import,
+// a state that is still directly cancelable — so a cancel that only rechecked the state would take an import the
+// user had just approved and cancel it as expired. asOf is the sweep's own clock, not a fresh reading: what is
+// being confirmed is that the job the sweep chose is the job it is now cancelling.
+func (s *Store) ExpireImportJob(jobID, errorCode string, asOf int64) (*model.ImportJob, bool, error) {
+	return s.cancelImportJob(jobID, "", errorCode, asOf)
+}
+
+// cancelImportJob is the shared implementation. onlyIfExpiredAt, when non-zero, requires the job to still be
+// past its retention deadline as of that moment.
+func (s *Store) cancelImportJob(jobID, actorID, errorCode string, onlyIfExpiredAt int64) (_ *model.ImportJob, immediate bool, err error) {
 	if jobID == "" {
 		return nil, false, &ErrInvalidInput{Entity: "ImportJob", Field: "id", Value: jobID}
 	}
@@ -904,6 +921,11 @@ func (s *Store) CancelImportJob(jobID, actorID, errorCode string) (_ *model.Impo
 	}
 	if job.State.IsTerminal() || job.State == model.ImportStateTerminalizing {
 		return nil, false, &ErrConflict{Resource: "ImportJob state=" + string(job.State)}
+	}
+	if onlyIfExpiredAt != 0 && job.RetainUntil > onlyIfExpiredAt {
+		// Something moved this job along after the sweep chose it, and moving it along is exactly what its
+		// deadline measures. Losing this race is the intended outcome.
+		return nil, false, &ErrConflict{Resource: "ImportJob retain_until"}
 	}
 
 	now := mmmodel.GetMillis()
@@ -1063,7 +1085,7 @@ func (s *Store) ExpireStalledImportJobs(now int64, errorCode string) (int, int64
 		// An actorID of "" means "system", bypassing the ownership check.
 		// The scan is restricted to the directly cancelable states, so this always finishes the job here
 		// rather than handing it to terminalization; the sweep never waits on a worker pass.
-		canceled, _, err := s.CancelImportJob(job.Id, "", errorCode)
+		canceled, _, err := s.ExpireImportJob(job.Id, errorCode, now)
 		if err != nil {
 			if IsErrConflict(err) || IsErrNotFound(err) {
 				// The job advanced or vanished between the scan and the cancel; leave it to the next run.

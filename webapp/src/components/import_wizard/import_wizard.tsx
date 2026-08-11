@@ -42,7 +42,7 @@ const ImportWizard = ({target, onClose}: Props) => {
 
     // The job is recovered from the server rather than held only here, so the wizard can be closed, reopened,
     // reloaded or opened elsewhere while an import runs. See useResumableImportJob.
-    const {jobId, resolving, adopt} = useResumableImportJob(target);
+    const {jobId, resolving, failed: lookupFailed, adopt, retry} = useResumableImportJob(target);
     const {job, loading, error, refresh} = useImportJob(jobId);
     const [cancelling, setCancelling] = useState(false);
 
@@ -107,6 +107,30 @@ const ImportWizard = ({target, onClose}: Props) => {
                 </p>
             ) : null}
 
+            {/* A lookup that could not answer is reported rather than assumed. "No import running" and "I could
+                not find out" look the same from here, and acting on the first would invite a second bundle for
+                an import that may well be in flight. */}
+            {lookupFailed ? (
+                <div
+                    role='alert'
+                    className={styles.error}
+                >
+                    <p className={styles.errorLine}>
+                        {formatMessage({
+                            id: 'docs.import.lookupFailed',
+                            defaultMessage: 'Could not check whether an import is already running here.',
+                        })}
+                    </p>
+                    <button
+                        type='button'
+                        className={styles.secondary}
+                        onClick={retry}
+                    >
+                        {formatMessage({id: 'docs.import.lookupRetry', defaultMessage: 'Try again'})}
+                    </button>
+                </div>
+            ) : null}
+
             {renderStep()}
 
             <div className={styles.footer}>
@@ -137,9 +161,10 @@ const ImportWizard = ({target, onClose}: Props) => {
 
     function renderStep() {
         if (!job) {
-            // Nothing is offered until the lookup for an unfinished import settles: showing the upload first
-            // would invite a second bundle for an import that is already running, which admission then refuses.
-            if (resolving) {
+            // Nothing is offered until the lookup for an unfinished import settles, or while it is unanswered:
+            // showing the upload would invite a second bundle for an import that is already running, which
+            // admission then refuses — or worse, that it accepts as a duplicate.
+            if (resolving || lookupFailed) {
                 return null;
             }
             return (

@@ -135,6 +135,11 @@ func findEOCD(t *testing.T, raw []byte) int {
 // offset is real (so the reader finds the record) while the directory offset inside it is not (so the
 // reader has a prefix to compensate for).
 func makePrefixedZip64(t *testing.T, raw []byte, prefixLen int) []byte {
+	return makePrefixedZip64WithComment(t, raw, prefixLen, 0)
+}
+
+// makePrefixedZip64WithComment is makePrefixedZip64 with a trailing archive comment of commentLen bytes.
+func makePrefixedZip64WithComment(t *testing.T, raw []byte, prefixLen int, commentLen uint16) []byte {
 	t.Helper()
 	eocd := findEOCD(t, raw)
 	entries := binary.LittleEndian.Uint16(raw[eocd+10:])
@@ -171,7 +176,12 @@ func makePrefixedZip64(t *testing.T, raw []byte, prefixLen int) []byte {
 	binary.LittleEndian.PutUint16(end[10:], zip16BitEntrySignal)
 	binary.LittleEndian.PutUint32(end[12:], zip32SizeSignal)
 	binary.LittleEndian.PutUint32(end[16:], zip32SizeSignal)
-	return append(out, end...)
+	binary.LittleEndian.PutUint16(end[20:], commentLen)
+	out = append(out, end...)
+
+	// 'c' is arbitrary; what matters is the comment's length, which is what pushes the EOCD away from the end
+	// of the file and the locator out of any window measured from it.
+	return append(out, bytes.Repeat([]byte{'c'}, int(commentLen))...)
 }
 
 // TestArchiveEntryCount_PrefixedZip64 is the regression test for a ZIP64 blind spot: the directory of a
@@ -204,6 +214,35 @@ func TestArchiveEntryCount_PrefixedZip64(t *testing.T) {
 		if got != realEntries {
 			t.Errorf("prefix %d: count = %d, want the %d records the reader allocates", prefixLen, got, realEntries)
 		}
+	}
+}
+
+// TestArchiveEntryCount_Zip64BehindAMaximumLengthComment covers where the ZIP64 locator is *read from*.
+//
+// The trailer window is exactly large enough for an end-of-directory record carrying the longest legal comment,
+// so with that comment the record sits at the window's first byte — and the locator, which precedes it, is not
+// in the window at all. A precheck that looks for the locator inside the buffer concludes the archive is not
+// ZIP64 and counts nothing, while the reader, which reaches the locator through ReaderAt, resolves the
+// directory and allocates every record in it.
+func TestArchiveEntryCount_Zip64BehindAMaximumLengthComment(t *testing.T) {
+	const realEntries = 6
+	plain := buildZipWithEntries(t, realEntries)
+	raw := makePrefixedZip64WithComment(t, plain, 512, maxZipCommentLen)
+
+	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatalf("archive/zip rejected the archive, so the count proves nothing: %v", err)
+	}
+	if len(zr.File) != realEntries {
+		t.Fatalf("reader parsed %d entries, want %d", len(zr.File), realEntries)
+	}
+
+	got, err := archiveEntryCount(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != realEntries {
+		t.Errorf("count = %d, want the %d records the reader allocates", got, realEntries)
 	}
 }
 

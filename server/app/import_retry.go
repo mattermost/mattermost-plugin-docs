@@ -29,9 +29,9 @@ const (
 	// equal to it would expire exactly as the next selection ran, and the same job would win again.
 	importJobRetryCooldownMillis = int64(60 * 1000)
 
-	// importJobRetryLimit is how many consecutive failed passes a job gets before the worker gives up on it.
+	// ImportJobRetryLimit is how many consecutive failed passes a job gets before the worker gives up on it.
 	// With the cooldown above, reaching it takes about ten minutes of continuous failure.
-	importJobRetryLimit = 10
+	ImportJobRetryLimit = 10
 )
 
 // importRetryTracker records consecutive failed passes per job, and until when each should be passed over.
@@ -85,7 +85,23 @@ func (t *importRetryTracker) failed(jobID string, now int64) (attempts int, exha
 	entry.attempts++
 	entry.until = now + importJobRetryCooldownMillis
 	t.jobs[jobID] = entry
-	return entry.attempts, entry.attempts >= importJobRetryLimit
+	return entry.attempts, entry.attempts >= ImportJobRetryLimit
+}
+
+// progressed records a pass that failed *after* committing durable work.
+//
+// It takes the cooldown but not the attempt: the cooldown is about fairness to other imports, and stepping aside
+// is right either way, while the attempt count is about whether this job is getting anywhere. A large import
+// rechecks authorization every hundred pages, so a slow-answering lookup can end a pass that wrote a hundred
+// pages — and counting ten of those as ten failures would fail an import that was steadily finishing.
+func (t *importRetryTracker) progressed(jobID string, now int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.jobs == nil {
+		t.jobs = map[string]importRetryEntry{}
+	}
+	t.jobs[jobID] = importRetryEntry{attempts: 0, until: now + importJobRetryCooldownMillis}
 }
 
 // forget drops a job's record, so a later failure starts from a clean count. Only *consecutive* failures
@@ -130,7 +146,7 @@ func (s *Service) ClearImportRetryCooldowns() {
 	}
 }
 
-// giveUpOnImportJob stops retrying a job that has failed importJobRetryLimit passes in a row.
+// giveUpOnImportJob stops retrying a job that has failed ImportJobRetryLimit passes in a row.
 //
 // A job still on its way somewhere is failed, so its owner gets a report naming what went wrong rather than an
 // import that quietly never finishes. A job already terminalizing has no such option — it has decided its

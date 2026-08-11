@@ -46,20 +46,43 @@ const (
 // must be reported. An inconclusive one means try again: failing the job would destroy an import, possibly
 // half-written, over a blip, and would label it with a reason that is not true. A retryable failure leaves the
 // job in importing, which the worker re-enters on its next pass.
-type errImportRetryable struct{ cause error }
+// progressed records whether the pass committed anything durable before it failed, which decides whether it
+// counts against the job's retry budget: see importMadeProgress.
+type errImportRetryable struct {
+	cause      error
+	progressed bool
+}
 
 func (e *errImportRetryable) Error() string { return "retryable import failure: " + e.cause.Error() }
 func (e *errImportRetryable) Unwrap() error { return e.cause }
 
-// retryableImportError wraps cause as retryable.
+// retryableImportError wraps cause as retryable, having committed nothing.
 func retryableImportError(cause error) error {
 	return &errImportRetryable{cause: cause}
+}
+
+// retryableImportErrorAfterProgress wraps cause as retryable, having durably applied at least one page first.
+//
+// The distinction is what stops the retry budget from mistaking progress for failure. A five-thousand-page
+// import rechecks authorization every hundred pages, so a lookup that is merely slow to answer can end a pass
+// that wrote a hundred pages — and ten such passes, each committing another hundred, would spend the whole
+// budget and fail an import that was steadily finishing. Retries are bounded to stop a job that gets nowhere;
+// a job getting somewhere should be left alone to get there.
+func retryableImportErrorAfterProgress(cause error, progressed bool) error {
+	return &errImportRetryable{cause: cause, progressed: progressed}
 }
 
 // isRetryableImportError reports whether err is an inconclusive failure the worker should retry.
 func isRetryableImportError(err error) bool {
 	var e *errImportRetryable
 	return stderrors.As(err, &e)
+}
+
+// importMadeProgress reports whether a failed pass committed durable work before failing. Such a pass is
+// retried without spending an attempt.
+func importMadeProgress(err error) bool {
+	var e *errImportRetryable
+	return stderrors.As(err, &e) && e.progressed
 }
 
 // importAuthorizationDenied reports whether an authorization failure is a genuine denial rather than an
@@ -166,6 +189,11 @@ func (s *Service) writeImportedPages(job *model.ImportJob) (bool, error) {
 		return false, err
 	}
 	sinceRecheck, sinceProgress := 0, 0
+
+	// applied counts what *this* pass committed, which is what makes a failure after real work different from a
+	// failure that achieved nothing. Replayed pages do not count: finding a checkpoint already written is
+	// resuming, not progressing.
+	applied := 0
 	afterOrdinal := -1
 
 	for {
@@ -184,7 +212,7 @@ func (s *Service) writeImportedPages(job *model.ImportJob) (bool, error) {
 					if !importAuthorizationDenied(appErr) {
 						// Inconclusive: stop writing, but leave the job importing so a later pass resumes from its
 						// checkpoints. Failing here would abandon a half-written import over a transient lookup.
-						return false, retryableImportError(appErr)
+						return false, retryableImportErrorAfterProgress(appErr, applied > 0)
 					}
 					// Committed pages stay: they are real content the actor was entitled to create at the time.
 					// The job fails so the rest is reported as not attempted rather than silently abandoned.
@@ -202,10 +230,16 @@ func (s *Service) writeImportedPages(job *model.ImportJob) (bool, error) {
 						"job_id", job.Id, "ordinal", ordinal)
 					return true, nil
 				}
+				if isRetryableImportError(applyErr) {
+					// Same reasoning as the authorization recheck above: whatever this pass already committed is
+					// progress, and a transient author lookup must not spend the job's retry budget for it.
+					return false, retryableImportErrorAfterProgress(applyErr, applied > 0)
+				}
 				return false, applyErr
 			}
 			afterOrdinal = ordinal
 			if !outcome.Replayed {
+				applied++
 				sinceRecheck++
 				sinceProgress++
 			}

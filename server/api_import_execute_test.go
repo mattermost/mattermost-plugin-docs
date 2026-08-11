@@ -686,6 +686,88 @@ func TestImportConfirm_RestartsTheExpiryClock(t *testing.T) {
 	require.Equal(t, 2, finished.FinalSummary.Actions.Create)
 }
 
+// TestImportExpiry_WillNotCancelAJobThatMovedAfterTheSweepChoseIt covers the gap between choosing a job to
+// expire and expiring it.
+//
+// The sweep selects its candidates without a lock, so a job can be confirmed in between — which restarts its
+// retention and moves it to queued_import, a state that is still directly cancelable. A cancel that rechecked
+// only the state would take an import the user had just approved and cancel it as expired.
+func TestImportExpiry_WillNotCancelAJobThatMovedAfterTheSweepChoseIt(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true, channelMember: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+
+	jobID, view := h.uploadAndPreflight(t, actorID, newTargetRequest(mmmodel.NewId()),
+		importfixture.Options{Pages: 2}, "")
+
+	// The sweep's clock: at this moment the job is past its deadline and is a legitimate candidate.
+	sweptAt := mmmodel.GetMillis()
+	_, err := h.db.Exec(`UPDATE DOCS_ImportJob SET RetainUntil=$1 WHERE Id=$2`, sweptAt-1000, jobID)
+	require.NoError(t, err)
+
+	// Between the sweep's read and its cancel, the user confirms.
+	confirm := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/confirm", actorID, confirmBody(t, view, true))
+	require.Equal(t, http.StatusAccepted, confirm.Code, confirm.Body.String())
+
+	// The cancel now arrives, carrying the clock the sweep read. It must lose.
+	_, _, err = h.store.ExpireImportJob(jobID, app.ImportErrorJobExpired, sweptAt)
+	require.Error(t, err)
+	require.True(t, store.IsErrConflict(err), "err = %v, want a conflict", err)
+
+	survived, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateQueuedImport, survived.State)
+	require.Empty(t, survived.ErrorCode)
+
+	// A job that really is still expired is still expired.
+	_, err = h.db.Exec(`UPDATE DOCS_ImportJob SET RetainUntil=$1 WHERE Id=$2`, sweptAt-1000, jobID)
+	require.NoError(t, err)
+	expired, immediate, err := h.store.ExpireImportJob(jobID, app.ImportErrorJobExpired, sweptAt)
+	require.NoError(t, err)
+	require.True(t, immediate)
+	require.Equal(t, model.ImportStateCanceled, expired.State)
+}
+
+// TestImportConfirm_StalePlanResetRestartsTheExpiryClock covers the other end of the same deadline.
+//
+// A confirmation refused because the source changed sends the job back to be recomputed. That is the server
+// moving the job along, so the clock measuring how long nobody has moved it must restart — otherwise a plan
+// invalidated near the end of the window comes back already expired, and the sweep cancels it before its owner
+// can even see the new plan, for a staleness that was not their doing.
+func TestImportConfirm_StalePlanResetRestartsTheExpiryClock(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, channelMember: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+	space := seedSpace(t, h.store, mmmodel.NewId())
+	sourceID, _ := seedImportSourceWithMapping(t, h, space, importfixture.RootExternalID, "", "")
+
+	jobID, view := h.uploadAndPreflight(t, actorID, existingTargetRequest(space.Id),
+		importfixture.Options{Pages: 2}, fmt.Sprintf(`{"mode":"existing","import_source_id":%q}`, sourceID))
+
+	// The review ran right up against the deadline, and the source changed underneath it.
+	_, err := h.db.Exec(`UPDATE DOCS_ImportJob SET RetainUntil=$1 WHERE Id=$2`, mmmodel.GetMillis()-1000, jobID)
+	require.NoError(t, err)
+	_, err = h.db.Exec(`UPDATE DOCS_ImportSource SET MappingRevision = MappingRevision + 1 WHERE Id=$1`, sourceID)
+	require.NoError(t, err)
+
+	stale := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/confirm", actorID, confirmBody(t, view, false))
+	require.Equal(t, http.StatusConflict, stale.Code, stale.Body.String())
+
+	requeued, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateQueuedPreflight, requeued.State)
+	require.Greater(t, requeued.RetainUntil, mmmodel.GetMillis(),
+		"a plan the server invalidated must not come back already expired")
+
+	// And it survives a sweep long enough to be reviewed again.
+	_, err = h.plugin.service.RunImportMaintenance()
+	require.NoError(t, err)
+	h.drainImportWorker(t)
+	reviewable, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateAwaitingConfirmation, reviewable.State)
+}
+
 // mustProvisionedChannelID reads the channel a job provisioned for its new Space.
 func mustProvisionedChannelID(t *testing.T, h *apiTestHarness, jobID string) string {
 	t.Helper()
@@ -1036,6 +1118,99 @@ func TestImportWorker_OneFailingJobDoesNotStarveTheQueue(t *testing.T) {
 	require.Empty(t, stalled.ErrorCode)
 }
 
+// TestImportWorker_DeferredJobStillFencesTheSameSource covers what a deferred job must keep holding.
+//
+// Serialization used to be a side effect of ordering: an importing job outranks a queued one, so nothing else
+// could start while one existed. Passing a failing job over breaks that, and the job behind it then starts
+// against mappings the first job is halfway through rewriting. Its reviewed plan says "create" for pages that
+// now exist, so it would rewrite them — pages the user was never told it would touch, without the
+// acknowledgement that reimporting existing pages requires. A job that steps aside must still hold its source.
+func TestImportWorker_DeferredJobStillFencesTheSameSource(t *testing.T) {
+	api := newEnabledMockAPI()
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	api.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
+	api.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
+	api.On("HasPermissionToTeam", mock.Anything, mock.Anything, mock.Anything).Return(true).Maybe()
+	api.On("GetTeam", mock.Anything).Return(&mmmodel.Team{Id: mmmodel.NewId(), Name: "myteam"}, nil).Maybe()
+	api.On("GetUserByUsername", mock.Anything).
+		Return(nil, mmmodel.NewAppError("GetUserByUsername", "not_found", nil, "", http.StatusNotFound)).Maybe()
+	stubImportChannelAPI(api, importMockOptions{})
+
+	// Two actors so one can lose the ability to be looked up while the other keeps working.
+	first, second := mmmodel.NewId(), mmmodel.NewId()
+	failing := false
+	api.On("GetUser", mock.Anything).
+		Return(func(id string) (*mmmodel.User, *mmmodel.AppError) {
+			if failing && id == first {
+				return nil, mmmodel.NewAppError("GetUser", "boom", nil, "", http.StatusInternalServerError)
+			}
+			return &mmmodel.User{Id: id}, nil
+		}).Maybe()
+
+	h := openTestPlugin(t, api)
+	space := seedSpace(t, h.store, mmmodel.NewId())
+	sourceID, _ := seedImportSourceWithMapping(t, h, space, importfixture.RootExternalID, "", "")
+	sourceBody := fmt.Sprintf(`{"mode":"existing","import_source_id":%q}`, sourceID)
+
+	// Two imports of the same Confluence Space, reviewed and confirmed against the same mappings.
+	jobA, viewA := h.uploadAndPreflight(t, first, existingTargetRequest(space.Id), importfixture.Options{Pages: 2}, sourceBody)
+	jobB, viewB := h.uploadAndPreflight(t, second, existingTargetRequest(space.Id), importfixture.Options{Pages: 2}, sourceBody)
+	require.Equal(t, viewA.Preflight.Counts.Actions, viewB.Preflight.Counts.Actions,
+		"both plans were computed against the same mappings")
+
+	confirmA := h.do(t, http.MethodPost, "/api/v1/imports/"+jobA+"/confirm", first, confirmBody(t, viewA, false))
+	require.Equal(t, http.StatusAccepted, confirmA.Code, confirmA.Body.String())
+	confirmB := h.do(t, http.MethodPost, "/api/v1/imports/"+jobB+"/confirm", second, confirmBody(t, viewB, false))
+	require.Equal(t, http.StatusAccepted, confirmB.Code, confirmB.Body.String())
+
+	// A starts, writes into the Space, and then cannot confirm its own authorization, so it stays importing.
+	failing = true
+	worked, err := h.plugin.service.RunImportWork()
+	require.True(t, worked)
+	require.Error(t, err)
+	stalled, err := h.store.GetImportJob(jobA)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateImporting, stalled.State)
+
+	// The next pass must find nothing to do. B is confirmed and ready, but A is holding the source.
+	worked, err = h.plugin.service.RunImportWork()
+	require.NoError(t, err)
+	require.False(t, worked, "no job may start against a source another job is halfway through writing")
+
+	waiting, err := h.store.GetImportJob(jobB)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateQueuedImport, waiting.State,
+		"a confirmed job must wait behind an import that already holds its source")
+
+	// Counted directly rather than through CountActiveImportJobs, which counts every worker-owned state: what
+	// matters here is how many jobs may have *written*, and a queued job has not.
+	var writing int
+	require.NoError(t, h.db.QueryRow(
+		`SELECT COUNT(*) FROM DOCS_ImportJob WHERE State IN ('importing', 'terminalizing')`).Scan(&writing))
+	require.Equal(t, 1, writing, "exactly one import may be writing into a source at a time")
+
+	// Once A can finish, B gets its turn — deferral delays the queue, it does not drop it.
+	failing = false
+	h.plugin.service.ClearImportRetryCooldowns()
+	h.drainImportWorker(t)
+
+	finishedA, err := h.store.GetImportJob(jobA)
+	require.NoError(t, err)
+	require.True(t, finishedA.State.IsTerminal())
+
+	// And this is what the fence bought. B is not resumed against a source that changed under it: A's
+	// terminalization bumped the mapping revision, so B's approved plan is discarded and recomputed. The pages A
+	// created are now B's *updates*, which is a materially different import — and the new plan says so, by
+	// demanding the acknowledgement that reimporting existing pages requires. Had B been allowed to start while A
+	// was mid-flight, it would have made those same writes with the old plan's blessing and no such disclosure.
+	recheck := decodeJobView(t, h.do(t, http.MethodGet, "/api/v1/imports/"+jobB, second, nil))
+	require.Equal(t, model.ImportStateAwaitingConfirmation, recheck.State,
+		"the fenced job comes back for review rather than resuming against changed mappings")
+	require.NotEqual(t, viewB.Preflight.Revision, recheck.Preflight.Revision, "it is a different plan now")
+	require.Contains(t, recheck.RequiredAcknowledgements, model.ImportAckReimportExisting)
+}
+
 // TestImportWorker_GivesUpOnAJobThatNeverStopsFailing covers the other half of the policy. A cooldown alone
 // leaves a job retrying for as long as the fault lasts, which for its owner is an import that never finishes
 // and never says why; a bounded number of attempts turns that into a stated failure with a report.
@@ -1083,6 +1258,98 @@ func TestImportWorker_GivesUpOnAJobThatNeverStopsFailing(t *testing.T) {
 	finished, err := h.store.GetImportJob(jobID)
 	require.NoError(t, err)
 	require.True(t, finished.State.IsTerminal(), "a job that never stops failing must not stay executable forever")
+	require.Equal(t, app.ImportErrorRetriesExhausted, finished.ErrorCode)
+}
+
+// TestImportWorker_ProgressDoesNotSpendTheRetryBudget covers what "consecutive failures" has to mean.
+//
+// Authorization is rechecked every hundred pages, so a lookup that is merely slow to answer ends a pass that
+// has already written a hundred pages. Counting that as a failure spends the budget on an import that is
+// finishing — and after ten such passes it would be killed as retries_exhausted with thousands of pages
+// committed. Retries are bounded to stop a job that gets nowhere, not one that keeps getting somewhere.
+//
+// The budget is then deliberately spent the honest way, so the assertion is about *which* passes counted rather
+// than about the limit being unreachable: one progressing failure plus nine barren ones is nine, not ten.
+func TestImportWorker_ProgressDoesNotSpendTheRetryBudget(t *testing.T) {
+	api := newEnabledMockAPI()
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	api.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
+	api.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
+	api.On("HasPermissionToTeam", mock.Anything, mock.Anything, mock.Anything).Return(true).Maybe()
+	api.On("GetTeam", mock.Anything).Return(&mmmodel.Team{Id: mmmodel.NewId(), Name: "myteam"}, nil).Maybe()
+	api.On("GetUserByUsername", mock.Anything).
+		Return(nil, mmmodel.NewAppError("GetUserByUsername", "not_found", nil, "", http.StatusNotFound)).Maybe()
+	stubImportChannelAPI(api, importMockOptions{})
+
+	// Once armed, the actor resolves for a pass's opening authorization check and then stops resolving. That is
+	// what puts the failure *after* the pages the pass wrote in between, rather than before it wrote any. Until
+	// then every lookup succeeds, because uploading and confirming need them too.
+	armed, lookups := false, 0
+	api.On("GetUser", mock.Anything).
+		Return(func(id string) (*mmmodel.User, *mmmodel.AppError) {
+			if !armed {
+				return &mmmodel.User{Id: id}, nil
+			}
+			lookups++
+			if lookups > 1 {
+				return nil, mmmodel.NewAppError("GetUser", "boom", nil, "", http.StatusInternalServerError)
+			}
+			return &mmmodel.User{Id: id}, nil
+		}).Maybe()
+
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+
+	// An existing Space, so the pass goes straight to writing pages: standing up a new Space would spend the
+	// actor lookup this test needs to fail *after* pages are committed.
+	space := seedSpace(t, h.store, mmmodel.NewId())
+
+	// More than one recheck interval, so a pass reaches the recheck with pages already committed.
+	jobID, view := h.uploadAndPreflight(t, actorID, existingTargetRequest(space.Id),
+		importfixture.Options{Pages: 150}, `{"mode":"new","display_name":"Acme / DOCS"}`)
+	confirm := h.do(t, http.MethodPost, "/api/v1/imports/"+jobID+"/confirm", actorID, confirmBody(t, view, false))
+	require.Equal(t, http.StatusAccepted, confirm.Code, confirm.Body.String())
+
+	// One pass: it writes a hundred pages and then cannot confirm the actor.
+	armed = true
+	worked, err := h.plugin.service.RunImportWork()
+	require.True(t, worked)
+	require.Error(t, err)
+
+	progressed, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateImporting, progressed.State)
+	var applied int
+	require.NoError(t, h.db.QueryRow(
+		`SELECT COUNT(*) FROM DOCS_ImportResult WHERE JobId=$1 AND Stage='execution'`, jobID).Scan(&applied))
+	require.Greater(t, applied, 0, "the pass must have committed pages before failing, or this proves nothing")
+
+	// Now spend the budget honestly: the counter is left where it is, so every following pass fails at its
+	// opening check having written nothing. One short of the limit, so the job survives only if the progressing
+	// pass above was not counted.
+	for range app.ImportJobRetryLimit - 1 {
+		h.plugin.service.ClearImportRetryCooldowns()
+		_, passErr := h.plugin.service.RunImportWork()
+		require.Error(t, passErr)
+	}
+
+	stillGoing, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.Equal(t, model.ImportStateImporting, stillGoing.State,
+		"a pass that committed pages must not count against the retry budget")
+	require.Empty(t, stillGoing.ErrorCode)
+
+	// The barren passes do still count: one more ends it, and the report says why.
+	h.plugin.service.ClearImportRetryCooldowns()
+	_, err = h.plugin.service.RunImportWork()
+	require.NoError(t, err, "giving up is an outcome, not a failed pass")
+	h.plugin.service.ClearImportRetryCooldowns()
+	h.drainImportWorker(t)
+
+	finished, err := h.store.GetImportJob(jobID)
+	require.NoError(t, err)
+	require.True(t, finished.State.IsTerminal())
 	require.Equal(t, app.ImportErrorRetriesExhausted, finished.ErrorCode)
 }
 

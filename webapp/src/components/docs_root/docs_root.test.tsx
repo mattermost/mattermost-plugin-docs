@@ -42,7 +42,7 @@ describe('DocsRoot import route', () => {
     // of it has to survive a reload and be shareable. Held in component state, it could only ever be reached by
     // whoever clicked the button, in that tab, until they navigated away.
     it('renders the wizard for a new-Space import', async () => {
-        renderAt('/myteam/spaces/import');
+        renderAt('/myteam/spaces/_import');
 
         expect(await screen.findByRole('region', {name: 'Import from Confluence'})).toBeInTheDocument();
         expect(await screen.findByLabelText('Confluence export bundle')).toBeInTheDocument();
@@ -52,7 +52,7 @@ describe('DocsRoot import route', () => {
     // URL — so the target cannot drift from what the address bar says.
     it('targets the Space in the URL when importing into an existing one', async () => {
         const upload = jest.spyOn(importsClient, 'uploadImportBundle');
-        renderAt('/myteam/spaces/space1/import');
+        renderAt('/myteam/spaces/space1/_import');
 
         expect(await screen.findByRole('region', {name: 'Import from Confluence'})).toBeInTheDocument();
 
@@ -79,7 +79,7 @@ describe('DocsRoot import route', () => {
         expect(await screen.findByTestId('main-content')).toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', {name: 'Import from Confluence'}));
 
-        expect(history.location.pathname).toBe('/myteam/spaces/import');
+        expect(history.location.pathname).toBe('/myteam/spaces/_import');
         expect(await screen.findByRole('region', {name: 'Import from Confluence'})).toBeInTheDocument();
     });
 
@@ -119,7 +119,7 @@ describe('DocsRoot import route', () => {
         jest.spyOn(importsClient, 'uploadImportBundle').mockResolvedValue({...finished, state: 'queued_preflight'});
         jest.spyOn(importsClient, 'getImportJob').mockResolvedValue(finished);
 
-        const {history} = renderAt('/myteam/spaces/import');
+        const {history} = renderAt('/myteam/spaces/_import');
 
         const input = await screen.findByLabelText('Confluence export bundle');
         await act(async () => {
@@ -137,7 +137,7 @@ describe('DocsRoot import route', () => {
     // trade `drafts` already makes, and it is recorded here so the behaviour is a decision rather than a
     // surprise: nothing validates slugs against these words yet.
     it('treats the reserved segment as the import route, not as a Space of that name', async () => {
-        renderAt('/myteam/spaces/import');
+        renderAt('/myteam/spaces/_import');
 
         expect(await screen.findByRole('region', {name: 'Import from Confluence'})).toBeInTheDocument();
         expect(screen.queryByTestId('main-content')).not.toBeInTheDocument();

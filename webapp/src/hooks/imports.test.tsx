@@ -5,7 +5,7 @@ import {act, renderHook, waitFor} from '@testing-library/react';
 import * as importsClient from 'client/imports';
 import {RestError} from 'client/rest';
 
-import type {ImportJobState, ImportJobView} from 'types/imports';
+import type {ImportJobState, ImportJobView, ImportTargetRequest} from 'types/imports';
 
 import {
     IMPORT_POLL_ACTIVE_MS,
@@ -320,7 +320,7 @@ describe('useResumableImportJob', () => {
         jest.restoreAllMocks();
     });
 
-    const page = (items: ImportJobView[]) => ({items, page: 0, per_page: 20, has_more: false});
+    const page = (items: ImportJobView[], hasMore = false) => ({items, page: 0, per_page: 50, has_more: hasMore});
 
     // An import outlives the page that started it. If the only record of which job it is were component state,
     // closing the wizard or reloading would strand a running import out of reach — while admission refused the
@@ -368,14 +368,81 @@ describe('useResumableImportJob', () => {
         expect(result.current.jobId).toBe('job1');
     });
 
-    // A lookup that fails must not lock the user out of importing at all. The worst case of proceeding is an
-    // upload the server refuses on admission, which says so plainly.
-    it('lets an import start when the lookup fails', async () => {
+    // "No import running" and "I could not find out" are different answers, and only the first justifies
+    // offering an upload. Treating a failed lookup as the former is how one import quietly becomes two, since
+    // admission allows several per target.
+    it('reports a failed lookup instead of claiming nothing is running', async () => {
         jest.spyOn(importsClient, 'listImportJobs').mockRejectedValue(new TypeError('network down'));
 
         const {result} = await renderResume({kind: 'new', team_id: 'team1'});
         await waitFor(() => expect(result.current.resolving).toBe(false));
+        expect(result.current.failed).toBe(true);
         expect(result.current.jobId).toBeUndefined();
+    });
+
+    it('finds the job again when a failed lookup is retried', async () => {
+        const list = jest.spyOn(importsClient, 'listImportJobs').
+            mockRejectedValueOnce(new TypeError('network down')).
+            mockResolvedValue(page([makeJob('importing')]));
+
+        const {result} = await renderResume({kind: 'new', team_id: 'team1'});
+        await waitFor(() => expect(result.current.failed).toBe(true));
+
+        await act(async () => {
+            result.current.retry();
+        });
+        await waitFor(() => expect(result.current.jobId).toBe('job1'));
+        expect(result.current.failed).toBe(false);
+        expect(list).toHaveBeenCalledTimes(2);
+    });
+
+    // An unfinished import need not be among the newest jobs: several targets can each hold one, so stopping
+    // after the first page can miss it — and missing it offers an upload for an import already in flight.
+    it('keeps looking past the first page of jobs', async () => {
+        const elsewhere = makeJob('importing', {
+            id: 'other',
+            target: {kind: 'new', team_id: 'other-team', existed: false},
+        });
+        jest.spyOn(importsClient, 'listImportJobs').mockImplementation((options) =>
+            Promise.resolve(options?.page ?
+                page([makeJob('importing', {id: 'wanted'})]) :
+                page([elsewhere], true)),
+        );
+
+        const {result} = await renderResume({kind: 'new', team_id: 'team1'});
+        await waitFor(() => expect(result.current.jobId).toBe('wanted'));
+    });
+
+    it('stops looking when the pages run out', async () => {
+        const list = jest.spyOn(importsClient, 'listImportJobs').mockResolvedValue(page([]));
+
+        const {result} = await renderResume({kind: 'new', team_id: 'team1'});
+        await waitFor(() => expect(result.current.resolving).toBe(false));
+        expect(result.current.jobId).toBeUndefined();
+        expect(list).toHaveBeenCalledTimes(1);
+    });
+
+    // Switching targets must not leave the previous target's import on screen. It is not merely stale: the job
+    // it points at belongs to another Space, and the wizard would offer its plan for confirmation and its
+    // import for cancellation under a heading about this one.
+    it('drops the previous target\'s job the moment the target changes', async () => {
+        const list = jest.spyOn(importsClient, 'listImportJobs').
+            mockResolvedValueOnce(page([makeJob('awaiting_confirmation', {
+                target: {kind: 'existing', team_id: 'team1', space_id: 'spaceA', existed: true},
+            })]));
+
+        const {result, rerender} = renderHook(
+            ({target}) => useResumableImportJob(target),
+            {initialProps: {target: {kind: 'existing', space_id: 'spaceA'} as ImportTargetRequest}},
+        );
+        await waitFor(() => expect(result.current.jobId).toBe('job1'));
+
+        // The second target's lookup never settles, which is the window that matters.
+        list.mockImplementation(() => new Promise(() => {}));
+        rerender({target: {kind: 'existing', space_id: 'spaceB'} as ImportTargetRequest});
+
+        expect(result.current.jobId).toBeUndefined();
+        expect(result.current.resolving).toBe(true);
     });
 });
 

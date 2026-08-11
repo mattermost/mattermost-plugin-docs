@@ -333,7 +333,7 @@ func directoryStartCandidates(r io.ReaderAt, n int64) ([]int64, error) {
 	// whenever the parser might, or the two disagree about where the directory is.
 	if entries == zip16BitEntrySignal || dirSize == zip16BitEntrySignal ||
 		dirSize == zip32SizeSignal || dirOffset == zip32SizeSignal {
-		zip64, err := readZip64Directory(r, n, tail, eocd)
+		zip64, err := readZip64Directory(r, n, eocdOffset)
 		if err != nil {
 			return nil, err
 		}
@@ -385,12 +385,26 @@ type zip64Directory struct {
 // readZip64Directory reads the ZIP64 end-of-central-directory record through its locator, returning where
 // the directory is and where the record itself begins. A nil result means no usable locator is present, in
 // which case the caller keeps the 32-bit values.
-func readZip64Directory(r io.ReaderAt, n int64, tail []byte, eocd int) (*zip64Directory, error) {
-	locator := eocd - zip64LocatorLen
-	if locator < 0 || binary.LittleEndian.Uint32(tail[locator:]) != zip64LocatorSig {
+//
+// The locator is read from its absolute offset rather than from the trailer buffer the EOCD was found in. With
+// a maximum-length comment the EOCD sits at the very start of that buffer and the locator — which precedes it —
+// falls outside entirely, so a buffer-relative read finds nothing and concludes the archive is not ZIP64. The
+// reader reaches it through ReaderAt regardless, so it would find the record, resolve the directory, and
+// allocate every entry in it while the precheck had counted none.
+func readZip64Directory(r io.ReaderAt, n int64, eocdOffset int64) (*zip64Directory, error) {
+	locatorOffset := eocdOffset - zip64LocatorLen
+	if locatorOffset < 0 {
 		return nil, nil
 	}
-	recordAt := binary.LittleEndian.Uint64(tail[locator+8:])
+	locator := make([]byte, zip64LocatorLen)
+	if _, err := r.ReadAt(locator, locatorOffset); err != nil {
+		// Not readable is not malformed: there simply is no locator there.
+		return nil, nil
+	}
+	if binary.LittleEndian.Uint32(locator) != zip64LocatorSig {
+		return nil, nil
+	}
+	recordAt := binary.LittleEndian.Uint64(locator[8:])
 	if recordAt > math.MaxInt64 {
 		return nil, archiveErr(ArchiveErrUnreadable, "archive zip64 directory offset is out of range")
 	}

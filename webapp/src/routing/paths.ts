@@ -29,17 +29,24 @@ export const DOCS_SWITCHER_LINK_URL = `/${DOCS_KEYWORD}`;
 const SPACE_OR_PAGE_ID = '[a-z0-9][a-z0-9\\-_]*';
 
 // The segment that opens the Confluence import wizard, either for a new Space
-// (/{team}/spaces/import) or into an existing one (/{team}/spaces/{spaceId}/import).
+// (/{team}/spaces/_import) or into an existing one
+// (/{team}/spaces/{spaceId}/_import).
 //
 // An import lives in the URL rather than in component state because it outlives
 // any one view of it: a job runs for minutes on the server, so the page showing
 // it has to survive a reload and be linkable — "here is the import you asked
 // about" is a URL, not a button someone else has to find.
 //
-// Like `drafts`, this makes a word reserved: a Space or page whose custom slug is
-// literally `import` is shadowed by it, because both are matched ahead of the
-// id-bearing routes. Nothing validates slugs against these words yet.
-export const DOCS_IMPORT_KEYWORD = 'import';
+// The leading underscore is what keeps it from costing anything. Space slugs and
+// page ids must start with a letter or digit (SLUG_PATTERN, and SPACE_OR_PAGE_ID
+// below), so no user-chosen name can ever produce this segment — where a bare
+// `import` would have shadowed a Space called "import", and a page called
+// "import" inside every Space, with nothing validating either against it.
+//
+// `drafts` looks like a precedent for taking that risk but is not one: it only
+// claims a three-segment shape (/{spaceId}/drafts/{pageId}) that no content
+// route uses, so a page named `drafts` stays perfectly reachable.
+export const DOCS_IMPORT_KEYWORD = '_import';
 
 // Route patterns for <Route>/useRouteMatch, matched against the full
 // team-scoped pathname the product mounts under.
