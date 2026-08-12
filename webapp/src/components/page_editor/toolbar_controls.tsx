@@ -77,12 +77,12 @@ const MenuControl = ({label, icon, children}: MenuControlProps) => {
     }, [open]);
 
     const onKeyDown = useCallback((e: React.KeyboardEvent) => {
-        if (e.key === 'Escape') {
+        if (e.key === 'Escape' && open) {
             e.stopPropagation();
             setOpen(false);
             triggerRef.current?.focus();
         }
-    }, []);
+    }, [open]);
 
     return (
         <>
@@ -91,6 +91,7 @@ const MenuControl = ({label, icon, children}: MenuControlProps) => {
                 type='button'
                 className={styles.control}
                 onClick={() => setOpen((prev) => !prev)}
+                onKeyDown={onKeyDown}
                 aria-label={label}
                 title={label}
                 aria-expanded={open}

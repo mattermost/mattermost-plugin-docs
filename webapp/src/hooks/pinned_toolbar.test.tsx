@@ -60,4 +60,15 @@ describe('usePinnedToolbar', () => {
             value: 'false',
         }]);
     });
+
+    it('inverts the value it last asked for when toggled twice before the store catches up', () => {
+        const {result} = renderHook(() => usePinnedToolbar(), {wrapper: wrapperFor(storeWith({}))});
+
+        act(() => {
+            result.current[1]();
+            result.current[1]();
+        });
+
+        expect(mockSavePreferences.mock.calls.map((call) => call[1][0].value)).toEqual(['false', 'true']);
+    });
 });

@@ -71,7 +71,7 @@ export function usePagePresence(spaceId: string, pageId: string, currentUserId: 
         if (!snapshot) {
             return [];
         }
-        if (snapshot.active_timeout_ms > 0 && now - snapshot.snapshot_at > snapshot.active_timeout_ms) {
+        if (snapshot.active_timeout_ms > 0 && now - snapshot.snapshot_at >= snapshot.active_timeout_ms) {
             return [];
         }
 

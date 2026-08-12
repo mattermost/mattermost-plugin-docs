@@ -35,6 +35,19 @@ describe('usePagePresence', () => {
         await waitFor(() => expect(result.current).toEqual(['user2']));
     });
 
+    it('drops the editors once the snapshot reaches its timeout', async () => {
+        mockGetActiveEditors.mockResolvedValue({
+            active_editors: ['user1', 'user2'],
+            snapshot_at: Date.now() - 60000,
+            active_timeout_ms: 60000,
+        });
+
+        const {result} = renderHook(() => usePagePresence('space1', 'page1', 'user1'));
+
+        await waitFor(() => expect(mockGetActiveEditors).toHaveBeenCalled());
+        expect(result.current).toEqual([]);
+    });
+
     it('treats a null editor list as nobody rather than throwing', async () => {
         mockGetActiveEditors.mockResolvedValue({
             active_editors: null,

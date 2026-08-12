@@ -2,7 +2,7 @@
 // See LICENSE.txt for license information.
 
 import {useAppDispatch, useAppSelector} from 'hooks/redux';
-import {useCallback} from 'react';
+import {useCallback, useRef} from 'react';
 
 import {savePreferences} from 'mattermost-redux/actions/preferences';
 import {get as getPreference} from 'mattermost-redux/selectors/entities/preferences';
@@ -17,14 +17,24 @@ export const usePinnedToolbar = (): [boolean, () => void] => {
     const stored = useAppSelector((state) => getPreference(state, CATEGORY, NAME, 'true'));
     const pinned = stored !== 'false';
 
+    const seen = useRef(pinned);
+    const intended = useRef(pinned);
+    if (seen.current !== pinned) {
+        seen.current = pinned;
+        intended.current = pinned;
+    }
+
     const toggle = useCallback(() => {
+        const next = !intended.current;
+        intended.current = next;
+
         dispatch(savePreferences(userId, [{
             user_id: userId,
             category: CATEGORY,
             name: NAME,
-            value: String(!pinned),
+            value: String(next),
         }]));
-    }, [dispatch, userId, pinned]);
+    }, [dispatch, userId]);
 
     return [pinned, toggle];
 };
