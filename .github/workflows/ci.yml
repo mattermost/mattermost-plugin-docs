@@ -145,6 +145,11 @@ jobs:
   # <bucket>/mattermost-plugin-docs/mattermost-plugin-docs-<sha7>.tar.gz
   dist:
     if: ${{ github.repository_owner == 'mattermost' && github.event_name == 'pull_request' }}
+    # The called workflow requests id-token: write, which the workflow-level default of
+    # contents: read does not cover — without this the run fails to start at all.
+    permissions:
+      contents: read
+      id-token: write
     uses: mattermost/actions-workflows/.github/workflows/plugin-dist-pr.yml@main
     secrets: inherit
     with:
