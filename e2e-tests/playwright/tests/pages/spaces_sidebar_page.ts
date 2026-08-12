@@ -13,8 +13,7 @@ export class SpacesSidebarPage {
         this.page = page;
         this.sidebar = page.getByLabel('Spaces', {exact: true});
 
-        // Scoped to the sidebar: the product's empty state offers a second button
-        // with the same accessible name.
+        // Scoped: the empty state offers a second button with the same name.
         this.createSpaceButton = this.sidebar.getByRole('button', {name: 'Create a space'});
 
         this.findDocsButton = this.sidebar.getByRole('button', {name: 'Find docs'});
@@ -45,10 +44,8 @@ export class SpacesSidebarPage {
         await this.findDocsButton.click();
     }
 
-    // The shortcut the product advertises for the switcher, in the same notation
-    // Playwright's keyboard takes. Read rather than hard-coded because the app picks
-    // Meta or Control from the user agent, and Playwright's Desktop Chrome descriptor
-    // reports a Windows UA even on macOS — so assuming Meta+K on a Mac would fail.
+    // Read, not hard-coded: the app picks Meta or Control from the user agent, and
+    // Playwright's Desktop Chrome descriptor reports a Windows UA even on macOS.
     async advertisedSwitcherShortcut(): Promise<string> {
         const shortcut = await this.findDocsButton.getAttribute('aria-keyshortcuts');
 

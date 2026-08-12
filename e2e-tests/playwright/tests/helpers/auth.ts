@@ -5,10 +5,8 @@ import type {Page} from '@playwright/test';
 
 import {requestedWith} from './client';
 
-// Logs in via the API on the page's own browser context, so subsequent navigations
-// are authenticated without driving the Mattermost login UI. This must be called on
-// the page under test — a request context created elsewhere shares no cookie jar
-// with it, and navigation would land on the login screen.
+// Must be called on the page under test: a request context made elsewhere shares no
+// cookie jar with it, so navigation would land on the login screen.
 export async function loginAs(page: Page, loginId: string, password: string) {
     const response = await page.request.post('/api/v4/users/login', {
         ...requestedWith,

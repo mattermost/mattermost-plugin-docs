@@ -20,9 +20,8 @@ import {SpacePage} from '../pages/space_page';
 import {SpacesSidebarPage} from '../pages/spaces_sidebar_page';
 test.use({video: 'on'})
 
-// Serial: the second test opens the page the first one publishes. Under a plain
-// describe, a retry would re-run beforeAll, seed a fresh team and user, and then
-// look for a space that run never created.
+// Serial: the second test opens the page the first publishes, and a plain describe
+// would retry it alone against a freshly seeded team.
 test.describe.serial('docs authoring', () => {
     let spaceTitle: string;
     let pageTitle: string;
@@ -38,8 +37,7 @@ test.describe.serial('docs authoring', () => {
 
         await loginAs(page, server.adminUsername, server.adminPassword);
 
-        // Named here rather than at module scope so a retry — which re-runs this hook
-        // against a fresh team — cannot match leftovers from the failed attempt.
+        // Here, not module scope, so a retry cannot match the failed attempt's leftovers.
         spaceTitle = `PW Space ${uniqueSuffix()}`;
         pageTitle = `PW Page ${uniqueSuffix()}`;
         body = richText(uniqueSuffix());
@@ -53,11 +51,8 @@ test.describe.serial('docs authoring', () => {
     });
 
     /**
-     * @objective Write and publish a page in a new space, then share that space with a
-     * teammate.
-     *
-     * @precondition
-     * A team and a second team member are seeded via the API.
+     * @objective Write and publish a page in a new space, then share the space.
+     * @precondition A team and a second team member are seeded via the API.
      */
     test('creates a space, writes and publishes a page, and adds a member', {tag: '@docs'}, async ({page, server}) => {
         const sidebar = new SpacesSidebarPage(page);
@@ -100,10 +95,8 @@ test.describe.serial('docs authoring', () => {
         await expect(draftFormats.rule).toBeVisible();
         await expect(draftFormats.codeBlock).toHaveText(body.code);
 
-        // The body is autosaved on a debounce, and the visible indicator cannot be used
-        // to wait for it: it still reads "saved" from the title save that preceded this
-        // one, so it is already satisfied before the body is sent. Waiting on the stored
-        // draft is the only barrier that actually means "the body has landed".
+        // The visible indicator is not a barrier: it still reads "saved" from the title
+        // save, so it is satisfied before the body is even sent.
         const {spaceId, pageId} = spacePage.routedIds();
         await expect.poll(
             async () => (await getPageDraft(page, spaceId, pageId))?.body ?? '',
@@ -132,11 +125,8 @@ test.describe.serial('docs authoring', () => {
     });
 
     /**
-     * @objective Verify a space member can find the shared space through the product's
-     * navigation surfaces and read a page published by someone else.
-     *
-     * @precondition
-     * The previous test published a page with a body and added this user to the space.
+     * @objective Find the shared space through the product's navigation and read it.
+     * @precondition The previous test published the page and added this user.
      */
     test('lets the added member navigate to and read the published page', {tag: '@docs'}, async ({page}) => {
         const sidebar = new SpacesSidebarPage(page);
@@ -168,8 +158,7 @@ test.describe.serial('docs authoring', () => {
         // * The switcher navigated to the space
         await spacePage.expectOpen(spaceTitle);
 
-        // # Reach the page itself with the keyboard: the advertised shortcut, a query,
-        // # then arrow and Enter
+        // # Reach the page with the keyboard: shortcut, query, arrow, Enter
         await switcher.openWithShortcut(await sidebar.advertisedSwitcherShortcut());
         await switcher.search(pageTitle);
         await switcher.selectResultWithKeyboard(pageTitle);

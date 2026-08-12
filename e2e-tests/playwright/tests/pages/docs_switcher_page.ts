@@ -3,8 +3,7 @@
 
 import {expect, type Locator, type Page} from '@playwright/test';
 
-// The Find-docs switcher: a modal search over spaces and pages, opened either from
-// the sidebar button or with Cmd/Ctrl+K.
+// Modal search over spaces and pages, opened from the sidebar or with Cmd/Ctrl+K.
 export class DocsSwitcherPage {
     readonly page: Page;
     readonly searchInput: Locator;
@@ -13,17 +12,12 @@ export class DocsSwitcherPage {
     constructor(page: Page) {
         this.page = page;
 
-        // Located by the input rather than the dialog: the modal's accessible name
-        // changes from "Find docs" to "Find spaces or pages" as soon as a query is
-        // typed, so it is not a stable handle.
+        // By input, not dialog: the modal's accessible name changes once a query is typed.
         this.searchInput = page.getByRole('combobox', {name: 'Search all spaces and pages'});
         this.results = page.getByRole('listbox');
     }
 
-    // Takes the shortcut the product advertises rather than assuming one — see
-    // SpacesSidebarPage.advertisedSwitcherShortcut. The shortcut toggles rather than
-    // opens, so the switcher has to be known-closed first or this would dismiss an
-    // already-open one.
+    // Toggles rather than opens, so it must be known-closed first.
     async openWithShortcut(shortcut: string) {
         await this.expectClosed();
         await this.page.keyboard.press(shortcut);
@@ -50,8 +44,6 @@ export class DocsSwitcherPage {
         await this.result(title).click();
     }
 
-    // Keyboard selection: the switcher advertises arrow/Enter navigation, and it is the
-    // faster path for anyone who opened it with the shortcut.
     async selectResultWithKeyboard(title: string) {
         await expect(this.result(title)).toBeVisible();
         await this.searchInput.press('ArrowDown');

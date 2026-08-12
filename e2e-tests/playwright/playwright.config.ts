@@ -3,17 +3,12 @@
 
 import {defineConfig, devices} from '@playwright/test';
 
-// Recording is opt-in because videos are far heavier than traces, which already cover
-// most debugging. Accepts Playwright's own mode names, so PW_VIDEO=retain-on-failure
-// keeps only the interesting ones. A single spec can override this with
-// test.use({video: 'on'}).
+// Opt-in: videos are much heavier than traces. Takes Playwright's own mode names.
 type VideoMode = 'on' | 'off' | 'retain-on-failure' | 'on-first-retry';
 const video = (process.env.PW_VIDEO as VideoMode) || 'off';
 
-// No `use.baseURL` here on purpose. Under testcontainers the server's port is
-// mapped at runtime, and this module is evaluated before globalSetup runs, so a
-// value resolved during setup could never reach it. Specs import `test` from
-// tests/fixtures.ts, which overrides baseURL once the container is up.
+// No `use.baseURL`: the port is mapped at runtime and this module is evaluated before
+// globalSetup. tests/fixtures.ts supplies it instead.
 export default defineConfig({
     testDir: './tests',
     testMatch: '**/*.spec.ts',
@@ -22,8 +17,7 @@ export default defineConfig({
     fullyParallel: false,
     timeout: 60_000,
 
-    // Playwright applies no timeout to globalSetup, so a stalled image pull or an
-    // unresponsive container would otherwise hang until the CI job's own limit.
+    // Playwright applies no timeout to globalSetup.
     globalTimeout: 20 * 60_000,
     outputDir: 'test-results',
     reporter: [

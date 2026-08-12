@@ -11,14 +11,12 @@ export interface E2EState {
     teamName: string;
 }
 
-// Playwright transpiles these files to CommonJS, so __dirname is the portable
-// choice here; import.meta is not available at runtime.
+// Playwright transpiles to CommonJS, so import.meta is unavailable.
 const projectRoot = resolve(__dirname, '../..');
 const stateFile = resolve(projectRoot, '.e2e-state.json');
 
-// The bridge between globalSetup and the tests. Playwright evaluates
-// playwright.config.ts before globalSetup runs, so the container's mapped port
-// cannot be baked into the config — it is written here and read by the fixture.
+// Playwright evaluates the config before globalSetup, so the mapped port cannot live
+// there; it is written here and read by the baseURL fixture.
 export function writeState(state: E2EState) {
     writeFileSync(stateFile, JSON.stringify(state, null, 2));
 }

@@ -5,13 +5,8 @@ import type {Page} from '@playwright/test';
 
 import {readJsonOrThrow, requestedWith} from './client';
 
-// Seeding seam for specs whose subject is not the authoring flow itself: they can
-// create spaces and pages over the API and drive only the surface under test
-// through the UI. The baseline authoring spec deliberately does not use this — the
-// journey it covers IS the feature.
-//
-// Every route here 501s unless the server has the EnableDocs feature flag on; the
-// container helper asserts that during setup.
+// Seeding seam for specs whose subject is not authoring itself; the authoring spec
+// drives that journey through the UI instead.
 const apiRoot = '/plugins/com.mattermost.docs/api/v1';
 
 export interface Space {
@@ -37,8 +32,7 @@ export interface PageDraft {
     body: string;
 }
 
-// Returns null when no draft exists — the normal state for a published page with no
-// unpublished edits, so it is not treated as an error.
+// Null, not an error: a published page with no unpublished edits has no draft.
 export async function getPageDraft(page: Page, spaceId: string, pageId: string): Promise<PageDraft | null> {
     const response = await page.request.get(`${apiRoot}/spaces/${spaceId}/pages/${pageId}/draft`, requestedWith);
 
@@ -67,7 +61,7 @@ export async function createPage(page: Page, spaceId: string, title: string, bod
     return readJsonOrThrow<DocsPage>(response, `Unable to create page "${title}"`);
 }
 
-// force=true overrides the server's first-write-wins conflict check.
+// force=true overrides first-write-wins.
 export async function publishDraft(page: Page, spaceId: string, pageId: string, force = false): Promise<DocsPage> {
     const response = await page.request.post(`${apiRoot}/spaces/${spaceId}/pages/${pageId}/draft/publish`, {
         ...requestedWith,

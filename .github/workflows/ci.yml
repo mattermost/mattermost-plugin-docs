@@ -68,11 +68,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # test-ci rather than the shared plugin-ci/test action (which runs plain `make
-      # test`): it is the target that emits JUnit for the Go suite, without which there
-      # is no machine-readable unit test result to publish. Run as two steps so a failing
-      # server suite still lets the webapp suite write its own report — a single `make
-      # test-ci` would stop at the first failure and publish half the results.
+      # test-ci, not the shared plugin-ci/test action: only it emits JUnit for Go. Two
+      # steps so a failing server suite still lets the webapp write its report.
       - name: ci/test-server
         run: make test-ci-server
 
@@ -115,17 +112,17 @@ jobs:
     if: ${{ github.repository_owner == 'mattermost' || github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
     needs: [build]
-    # Generous because the suite's own budget is already large: a 20-minute
-    # globalTimeout plus container startup and 2 retries, after npm ci, a browser
-    # install and two image pulls.
+    # The suite's own budget is already 20 minutes plus startup, retries and pulls.
     timeout-minutes: 45
     permissions:
       contents: read
-    # No `services:` block on purpose: the suite provisions its own Mattermost and
-    # Postgres via testcontainers, so CI and local runs take the identical path.
+    # Declared here so the server under test shows up in a workflow diff; `vars` lets it
+    # be changed from repository settings.
+    env:
+      MM_IMAGE: ${{ vars.MM_IMAGE || 'mattermostdevelopment/mattermost-enterprise-edition:master' }}
+    # No `services:` block: testcontainers provisions the server, so CI and local runs
+    # take the same path.
     steps:
-      # Shallow: this job installs the e2e project and downloads the prebuilt bundle,
-      # so it never reads git history.
       - name: Checkout repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

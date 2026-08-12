@@ -21,28 +21,22 @@ export class SpacePage {
     constructor(page: Page) {
         this.page = page;
 
-        // "Add page" appears both in the page header and in the page tree panel, so
-        // it is scoped to the first match rather than left ambiguous.
+        // Appears in both the page header and the tree panel.
         this.addPageButton = page.getByRole('button', {name: 'Add page'}).first();
         this.pageTree = page.getByRole('tree', {name: 'Pages'});
         this.pageTitleInput = page.getByLabel('Page title');
 
-        // The host's editor tags its own contenteditable with these ids, naming the
-        // draft and published surfaces separately. Both also carry role=textbox, which
-        // the page title shares — hence the id rather than the role.
+        // By id, not role: the page title is also a textbox.
         this.draftEditor = page.getByTestId('docs-draft-editor');
         this.publishedEditor = page.getByTestId('docs-page-editor');
 
-        // The body surface in either mode, so format assertions read the same whether
-        // the page is still a draft or already published.
+        // Either mode, so format assertions read the same before and after publishing.
         this.bodySurface = page.locator('[data-testid="docs-draft-editor"], [data-testid="docs-page-editor"]');
 
-        // data-status belongs to the autosave indicator alone; three other elements on
-        // the page use role=status.
+        // data-status is unique to the autosave indicator; role=status is not.
         this.autosaveStatus = page.locator('[role="status"][data-status]');
 
-        // Exact, so a future "Publish changes"-style button cannot make this resolve
-        // to two nodes and fail on strict mode instead of on the real condition.
+        // Exact, so a future "Publish changes" button cannot make this ambiguous.
         this.publishButton = page.getByRole('button', {name: 'Publish', exact: true});
         this.editButton = page.getByRole('button', {name: 'Edit', exact: true});
         this.shareButton = page.getByRole('button', {name: 'Share', exact: true});
@@ -65,7 +59,7 @@ export class SpacePage {
         await this.pageTitleInput.waitFor();
         await this.pageTitleInput.fill(title);
 
-        // Commit the title so it is persisted to the draft before publishing.
+        // Commit the title before publishing.
         await this.pageTitleInput.blur();
     }
 
@@ -73,8 +67,7 @@ export class SpacePage {
         await expect(this.page).toHaveURL(/\/drafts\//);
     }
 
-    // Typed as keystrokes rather than set with fill(): the body is a ProseMirror
-    // surface, which builds its document from input events.
+    // Keystrokes, not fill(): ProseMirror builds its document from input events.
     async writeBody(text: string) {
         await this.draftEditor.click();
         await this.draftEditor.pressSequentially(text);
@@ -84,10 +77,8 @@ export class SpacePage {
         await expect(this.draftEditor).toContainText(text);
     }
 
-    // Types a body covering the editor's text formats. The block order is deliberate:
-    // structures that swallow Enter (lists, blockquote, code block) need an explicit
-    // exit, and the code block — which only exits on triple Enter or arrow-down — is
-    // written last so it needs none.
+    // Block order matters: lists and blockquote swallow Enter and need an explicit exit,
+    // and the code block goes last because it only exits on triple Enter or arrow-down.
     async writeRichBody(content: RichText) {
         const editor = this.draftEditor;
         await editor.click();
@@ -110,8 +101,7 @@ export class SpacePage {
         await editor.pressSequentially(`\`${content.inlineCode}\``);
         await editor.press('Enter');
 
-        // Enter inside a blockquote opens another paragraph within it; a second Enter
-        // on that empty paragraph lifts back out.
+        // Second Enter lifts out of the blockquote.
         await editor.pressSequentially(`> ${content.quote}`);
         await editor.press('Enter');
         await editor.press('Enter');
@@ -130,16 +120,14 @@ export class SpacePage {
 
         await editor.pressSequentially('---');
 
-        // The fence needs trailing whitespace to fire, and it reads whatever precedes
-        // that whitespace as the language — so the space is pressed on its own. Typing
-        // the code straight after the backticks would make its first word the language.
+        // The fence fires on trailing whitespace and reads what precedes it as the
+        // language, so typing the code directly would make its first word the language.
         await editor.pressSequentially('```');
         await editor.press('Space');
         await editor.pressSequentially(content.code);
     }
 
-    // Each format as its rendered element, so a spec asserts on structure rather than
-    // on the markdown that produced it.
+    // Rendered elements, so specs assert structure rather than the markdown behind it.
     bodyFormats() {
         return {
             heading1: this.bodySurface.locator('h1'),
@@ -160,8 +148,7 @@ export class SpacePage {
         await expect(this.autosaveStatus).toHaveAttribute('data-status', 'saved');
     }
 
-    // The routed space and page, read back from the URL so a caller can address the
-    // page over the API without having been told the ids.
+    // Read from the URL so a caller can address the page over the API.
     routedIds(): {spaceId: string; pageId: string} {
         const match = (/\/spaces\/([^/]+)\/(?:drafts\/)?([^/?#]+)/).exec(this.page.url());
 
@@ -176,7 +163,6 @@ export class SpacePage {
         await expect(this.publishedEditor).toContainText(text);
     }
 
-    // A reader gets the content, not an editable surface.
     async expectBodyReadOnly() {
         await expect(this.publishedEditor).toHaveAttribute('aria-disabled', 'true');
     }
@@ -185,9 +171,7 @@ export class SpacePage {
         await this.publishButton.click();
     }
 
-    // Asserts on positive signals of the published state — the page left the draft
-    // route and now offers Edit — rather than on the absence of the Publish button,
-    // which a missing or renamed locator would also satisfy.
+    // Positive signals: a missing or renamed Publish button would satisfy its absence.
     async expectPublished() {
         await expect(this.page).not.toHaveURL(/\/drafts\//);
         await expect(this.editButton).toBeVisible();
@@ -197,8 +181,7 @@ export class SpacePage {
         await this.shareButton.click();
     }
 
-    // In read mode the title is a heading; the editable input exists only while
-    // the page is being edited.
+    // Read mode renders the title as a heading; the input exists only while editing.
     async expectPageTitle(title: string) {
         await expect(this.page.getByRole('heading', {name: title, level: 1})).toBeVisible();
     }

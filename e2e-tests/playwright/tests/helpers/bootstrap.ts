@@ -4,18 +4,14 @@
 import {DocsServerContainer, adminPassword, adminUsername, defaultTeamName} from './mmcontainer';
 import {clearState, writeState} from './state';
 
-// Reusing an already-running server is opt-in through this variable alone. It
-// deliberately does NOT key off MM_SERVICESETTINGS_SITEURL: that is exported by
-// most Mattermost dev shells, and keying off it would silently seed teams and
-// users into a developer's live server instead of a throwaway container.
+// Deliberately not keyed off MM_SERVICESETTINGS_SITEURL: most dev shells export it, and
+// that would silently seed data into a developer's live server.
 const useExistingServer = process.env.MM_E2E_USE_EXISTING_SERVER === 'true';
 
-// Returning the teardown as a closure keeps the container handle in scope. A
-// separate globalTeardown file would only see it if both modules happened to load
-// in the same process, and would silently leak containers when they didn't.
+// Teardown is returned as a closure to keep the container handle in scope; a separate
+// globalTeardown file would leak containers whenever it loaded in another process.
 export default async function globalSetup(): Promise<() => Promise<void>> {
-    // A killed run leaves this behind, and a stale file pointing at a server that is
-    // no longer there is a confusing way to fail.
+    // A killed run leaves a stale file pointing at a server that is gone.
     clearState();
 
     if (useExistingServer) {

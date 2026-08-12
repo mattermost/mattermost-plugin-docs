@@ -7,19 +7,12 @@ import {join, resolve} from 'node:path';
 import {GenericContainer, Network, Wait, type StartedNetwork, type StartedTestContainer} from 'testcontainers';
 import {PostgreSqlContainer, type StartedPostgreSqlContainer} from '@testcontainers/postgresql';
 
-// Playwright transpiles to CommonJS; import.meta is unavailable at runtime.
+// Playwright transpiles to CommonJS, so import.meta is unavailable.
 const projectRoot = resolve(__dirname, '../..');
 const repoRoot = resolve(projectRoot, '../..');
 
-// Tracks server master rather than pinning a build. Docs depends on server features
-// that only exist there — the EnableDocs feature flag and the Space channel type — and
-// min_server_version rises as it evolves, so any pin eventually becomes too old rather
-// than merely stale. assertSupportsDocs below turns a server that cannot run Docs into
-// a named failure instead of opaque 501s from every plugin route.
-//
-// Pin via MM_IMAGE to reproduce a run or to bisect a server-side regression. Note the
-// tag floats: it has been seen lagging behind server master by enough to miss a
-// feature flag entirely, so a green run does not prove the newest server was used.
+// Local fallback; CI sets MM_IMAGE in ci.yml. Tracks master because stock releases lack
+// Docs core support and min_server_version rises, so a pin goes stale.
 const defaultImage = 'mattermostdevelopment/mattermost-enterprise-edition:master';
 
 const postgresImage = 'postgres:15';
@@ -33,8 +26,7 @@ const defaultTeamDisplayName = 'eligendi';
 
 const pluginId = 'com.mattermost.docs';
 
-// Mattermost's first boot runs schema migrations, and CI runners are slower than
-// a dev laptop; testcontainers' 60s default is not enough headroom.
+// First boot runs schema migrations; testcontainers' 60s default is too tight.
 const startupTimeoutMs = 180_000;
 
 function pluginBundlePath(): string {
@@ -45,9 +37,7 @@ function pluginBundlePath(): string {
         throw new Error(`No plugin bundle found in ${distDir}. Run "make dist" from the repo root first.`);
     }
 
-    // BUNDLE_NAME embeds the git-derived PLUGIN_VERSION, so the name is not stable
-    // enough to hard-code. Most recently written wins if a stale bundle is lying
-    // around — sorting by name would order 0.10.0 before 0.9.0 and pick the older one.
+    // By mtime, not name: 0.10.0 would sort before 0.9.0.
     return bundles.
         map((name) => join(distDir, name)).
         sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
@@ -111,28 +101,24 @@ export class DocsServerContainer {
                 MM_SQLSETTINGS_DRIVERNAME: 'postgres',
                 MM_SQLSETTINGS_DATASOURCE: 'postgres://mmuser:mostest@db:5432/mattermost_test?sslmode=disable',
 
-                // The Docs plugin returns 501 from every route unless this is on.
+                // Every Docs route 501s without this.
                 MM_FEATUREFLAGS_ENABLEDOCS: 'true',
 
-                // Local mode lets setup drive mmctl over a socket, so seeding the
-                // first admin doesn't need an HTTP bootstrap.
+                // Lets setup drive mmctl over a socket instead of bootstrapping over HTTP.
                 MM_SERVICESETTINGS_ENABLELOCALMODE: 'true',
                 MM_PLUGINSETTINGS_ENABLEUPLOADS: 'true',
 
-                // The plugin bundle is larger than the stock upload limit, which
-                // otherwise rejects it at "plugin add".
+                // The bundle exceeds the stock upload limit.
                 MM_FILESETTINGS_MAXFILESIZE: '256000000',
 
-                // Extracting prepackaged plugins costs tens of seconds and can race
-                // the plugin install below.
+                // Extraction is slow and races the plugin install below.
                 MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: 'false',
                 MM_SERVICESETTINGS_EXPERIMENTALSTRICTCSRFENFORCEMENT: 'false',
                 MM_SERVICESETTINGS_STRICTCSRFENFORCEMENT: 'false',
                 MM_PASSWORDSETTINGS_MINIMUMLENGTH: '5',
                 MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: 'false',
 
-                // Otherwise every first navigation lands on the "open in the desktop
-                // app?" interstitial instead of the product.
+                // Otherwise navigation lands on the desktop-app interstitial.
                 MM_SERVICESETTINGS_ENABLEDESKTOPLANDINGPAGE: 'false',
                 MM_LOGSETTINGS_CONSOLELEVEL: 'DEBUG',
             }).
@@ -144,16 +130,14 @@ export class DocsServerContainer {
             withLogConsumer((stream) => {
                 mkdirSync(join(projectRoot, 'logs'), {recursive: true});
 
-                // Truncate rather than append: a developer reading this after a failure
-                // should see one run, not several interleaved.
+                // Truncate: reading interleaved runs after a failure is worse than one.
                 this.logStream = createWriteStream(join(projectRoot, 'logs', 'server-logs.log'), {flags: 'w'});
                 stream.on('data', (data: string | Buffer) => this.logStream?.write(String(data)));
             }).
             start();
 
-        // Anything failing from here on leaves two containers and a network running,
-        // and globalSetup never gets to return its teardown closure. Ryuk would
-        // normally reap them, but it is disabled in a number of CI images.
+        // Without this, a failure here leaks both containers and the network: globalSetup
+        // never returns its teardown closure, and Ryuk is disabled on some CI images.
         try {
             await this.exec(['mmctl', '--local', 'config', 'set', 'ServiceSettings.SiteURL', this.url()]);
             await this.assertSupportsDocs();
@@ -170,12 +154,8 @@ export class DocsServerContainer {
         return this;
     }
 
-    // Fails loudly and specifically. Without this, an image lacking Docs core support
-    // shows up much later as an unexplained 501 from every plugin route.
     private async assertSupportsDocs() {
-        // Both checks read the server's own client config. `mmctl version` reports the
-        // mmctl build rather than the server, so it only tracks min_server_version by
-        // coincidence and would pass silently on an image where the two diverge.
+        // Client config, not `mmctl version`: that reports the mmctl build, not the server.
         const response = await fetch(
             `${this.url()}/api/v4/config/client?format=old`,
             {signal: AbortSignal.timeout(30_000)},
@@ -227,15 +207,11 @@ export class DocsServerContainer {
         await this.assertPluginRunning();
     }
 
-    // "plugin enable" reports success even when activation then fails, leaving the
-    // plugin listed as inactive — most often because the bundle carries no
-    // linux-amd64 binary, which `make dist` omits when MM_SERVICESETTINGS_ENABLEDEVELOPER
-    // is set in the shell. Without this check that surfaces much later, and far less
-    // legibly, as the Docs UI simply never rendering.
+    // "plugin enable" reports success even when activation then fails, which otherwise
+    // surfaces only as the Docs UI never rendering.
     private async assertPluginRunning() {
         const output = await this.exec(['mmctl', '--local', 'plugin', 'list', '--json']);
 
-        // mmctl brackets the JSON payload with human-readable lines of its own.
         const payload = output.slice(output.indexOf('['), output.lastIndexOf(']') + 1);
         const [{active}] = JSON.parse(payload) as Array<{active: Array<{id: string}>}>;
 

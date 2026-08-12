@@ -22,8 +22,7 @@ runs:
       working-directory: e2e-tests/playwright
       run: npm ci
 
-    # Nothing else lints or type-checks this tree, so without this step errors here
-    # reach master unnoticed.
+    # Nothing else checks this tree.
     - name: ci/check
       shell: bash
       working-directory: e2e-tests/playwright
@@ -31,8 +30,7 @@ runs:
         npm run check
         npm run check-types
 
-    # Keyed on the installed Playwright version rather than the lockfile hash, so an
-    # unrelated dependency bump does not throw away the browser download.
+    # Keyed on the Playwright version, so an unrelated bump keeps the browser cache.
     - name: ci/resolve-playwright-version
       id: playwright-version
       shell: bash
@@ -45,17 +43,14 @@ runs:
         path: ~/.cache/ms-playwright
         key: ${{ runner.os }}-${{ runner.arch }}-playwright-${{ steps.playwright-version.outputs.version }}
 
-    # Run unconditionally rather than only on a cache miss: it re-downloads nothing when
-    # the binaries are already present, and a cache entry that restored but is missing a
-    # binary then self-heals instead of failing with "Executable doesn't exist". The apt
-    # libraries the browser links against live outside the cache and are needed either way.
+    # Unconditional: a no-op when cached, and it self-heals a partial cache. The apt
+    # libraries live outside the cache and are needed either way.
     - name: ci/install-playwright-browsers
       shell: bash
       working-directory: e2e-tests/playwright
       run: npx playwright install --with-deps chromium
 
-    # The build job already produced the bundle; rebuilding here would need a Go and
-    # webapp toolchain this action deliberately does without.
+    # Reuse the build job's bundle; rebuilding would need a Go and webapp toolchain.
     - name: ci/download-plugin-bundle
       uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
       with:
@@ -69,8 +64,6 @@ runs:
         TERM: xterm
       run: npm test
 
-    # always(), so a failing run still publishes the junit report, traces, screenshots
-    # and any videos — the whole point of having them.
     - name: ci/upload-playwright-test-results
       if: always()
       uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -82,8 +75,7 @@ runs:
         if-no-files-found: warn
         retention-days: 14
 
-    # Server logs are DEBUG level and carry session tokens and user emails. Harmless
-    # for a throwaway container, but only worth publishing when a run actually failed.
+    # DEBUG level, carrying session tokens, so only published for a failed run.
     - name: ci/upload-server-logs
       if: failure()
       uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
