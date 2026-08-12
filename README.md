@@ -40,16 +40,19 @@ its own throwaway Mattermost and Postgres via testcontainers, installs the fresh
 plugin into it, and tears everything down afterwards. Nothing touches your local dev server.
 
 The Docs plugin needs a server built with Docs core support — the `EnableDocs` feature flag
-and the Space channel type — which stock releases do not yet ship. The server image is
-pinned to a specific development build in `tests/helpers/mmcontainer.ts`; the floating
-`master` tag is *not* reliable for this. Override it when bumping:
+and the Space channel type — which stock releases do not yet ship. The suite therefore runs
+against the `mattermostdevelopment/mattermost-enterprise-edition:master` development image,
+and checks on startup that the server is new enough and has the flag, so an image that
+cannot run Docs fails with a message saying so.
+
+Pin a specific build to reproduce a run or bisect a server-side regression:
 
 ```bash
 MM_IMAGE=mattermostdevelopment/mattermost-enterprise-edition:<tag> make test-e2e
 ```
 
-If no published tag carries Docs core support, build a server image locally from the
-`mattermost` repository and point `MM_IMAGE` at it.
+If no published image carries Docs core support, build one locally from the `mattermost`
+repository and point `MM_IMAGE` at that.
 
 To run against a Mattermost server you are already running instead of a container:
 

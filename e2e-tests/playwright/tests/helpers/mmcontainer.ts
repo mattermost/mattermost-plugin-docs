@@ -11,11 +11,16 @@ import {PostgreSqlContainer, type StartedPostgreSqlContainer} from '@testcontain
 const projectRoot = resolve(__dirname, '../..');
 const repoRoot = resolve(projectRoot, '../..');
 
-// Pinned to a commit-SHA dev tag, not `master`: the floating `master` tag has been
-// observed to lag far enough behind that it lacks Docs core support entirely (no
-// EnableDocs flag, no Space channel type), which surfaces only as opaque 501s from
-// every plugin route. Override with MM_IMAGE when bumping.
-const defaultImage = 'mattermostdevelopment/mattermost-enterprise-edition:1f08ac5';
+// Tracks server master rather than pinning a build. Docs depends on server features
+// that only exist there — the EnableDocs feature flag and the Space channel type — and
+// min_server_version rises as it evolves, so any pin eventually becomes too old rather
+// than merely stale. assertSupportsDocs below turns a server that cannot run Docs into
+// a named failure instead of opaque 501s from every plugin route.
+//
+// Pin via MM_IMAGE to reproduce a run or to bisect a server-side regression. Note the
+// tag floats: it has been seen lagging behind server master by enough to miss a
+// feature flag entirely, so a green run does not prove the newest server was used.
+const defaultImage = 'mattermostdevelopment/mattermost-enterprise-edition:master';
 
 const postgresImage = 'postgres:15';
 
