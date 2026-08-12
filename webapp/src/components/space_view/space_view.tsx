@@ -10,6 +10,7 @@ import React, {useCallback, useState} from 'react';
 import {Redirect} from 'react-router-dom';
 
 import CommentsPanel from 'components/comments/comments_panel';
+import {ToolbarSlot, ToolbarSlotProvider} from 'components/page_editor/toolbar_slot';
 import SpaceInfoPanel from 'components/space_info/space_info_panel';
 import type {SpaceInfoView} from 'components/space_info/space_info_panel';
 
@@ -110,31 +111,34 @@ const SpaceView = ({space}: {space: Space}) => {
                     onToggleEdit={toggleEdit}
                     onPublish={onPublish}
                 />
-                <div className={styles.body}>
-                    <Sidebar open={treeOpen}>
-                        <PageTreePanel space={space}/>
-                    </Sidebar>
-                    <div className={styles.main}>
-                        <div className={styles.scroll}>
-                            {pageId ? (
-                                <PageContent
-                                    page={page}
-                                    draft={draft}
-                                    editing={isEditing}
-                                />
-                            ) : (
-                                <div className={styles.content}>
-                                    <PageHero
-                                        space={space}
-                                        pageCount={pageCount}
-                                        memberCount={memberCount}
+                <ToolbarSlotProvider>
+                    <div className={styles.body}>
+                        <Sidebar open={treeOpen}>
+                            <PageTreePanel space={space}/>
+                        </Sidebar>
+                        <div className={styles.main}>
+                            <ToolbarSlot/>
+                            <div className={styles.scroll}>
+                                {pageId ? (
+                                    <PageContent
+                                        page={page}
+                                        draft={draft}
+                                        editing={isEditing}
                                     />
-                                    <PageContentPlaceholder/>
-                                </div>
-                            )}
+                                ) : (
+                                    <div className={styles.content}>
+                                        <PageHero
+                                            space={space}
+                                            pageCount={pageCount}
+                                            memberCount={memberCount}
+                                        />
+                                        <PageContentPlaceholder/>
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
-                </div>
+                </ToolbarSlotProvider>
             </div>
             {rhs?.id === 'info' && (
                 <SpaceInfoPanel

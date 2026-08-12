@@ -16,6 +16,7 @@ import {ConflictReason} from 'types/drafts';
 import type {Draft} from 'types/drafts';
 
 import {useDocsNavigation} from './navigation';
+import {flushPendingSaves} from './pending_saves';
 import {useAppDispatch, useAppSelector} from './redux';
 
 type LoadedDraft = {
@@ -82,6 +83,10 @@ export function usePublishDraft(spaceId: string) {
     const {goToPage} = useDocsNavigation();
 
     const publish = useCallback(async (pageId: string, force: boolean) => {
+        if (!await flushPendingSaves()) {
+            throw new Error('unsaved draft changes could not be written');
+        }
+
         const page = await dispatch(publishDraft(spaceId, pageId, force));
         goToPage(spaceId, page.id, {replace: true});
     }, [dispatch, spaceId, goToPage]);
