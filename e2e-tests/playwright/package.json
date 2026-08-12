@@ -1,0 +1,31 @@
+{
+  "name": "mattermost-plugin-docs-e2e-playwright",
+  "private": true,
+  "engines": {
+    "node": "20.x || 22.x || >=24.0.0",
+    "npm": ">=10.1.0"
+  },
+  "scripts": {
+    "check": "eslint . --quiet --cache",
+    "check-types": "tsc --noEmit",
+    "fix": "eslint . --quiet --fix --cache",
+    "playwright:install": "playwright install --with-deps chromium",
+    "playwright:test:headed": "cross-env TZ=Etc/UTC playwright test --headed",
+    "playwright:ui": "cross-env TZ=Etc/UTC playwright test --ui",
+    "test": "cross-env TZ=Etc/UTC playwright test",
+    "test:video": "cross-env TZ=Etc/UTC PW_VIDEO=on playwright test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@playwright/test": "^1.49.1",
+    "@testcontainers/postgresql": "^10.16.0",
+    "@types/node": "^22.10.2",
+    "cross-env": "^7.0.3",
+    "eslint": "^9.17.0",
+    "eslint-plugin-playwright": "^2.1.0",
+    "globals": "^15.14.0",
+    "testcontainers": "^10.16.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1"
+  }
+}

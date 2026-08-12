@@ -29,6 +29,61 @@ make check-style
 
 `make test` requires a reachable Postgres instance; point `TEST_DATABASE_POSTGRESQL_DSN` at it, or run against the standard local dev Postgres if unset. Tests fail (rather than skip) when the DSN is unreachable.
 
+### End-to-end tests
+
+```bash
+make test-e2e
+```
+
+Runs the Playwright suite in `e2e-tests/playwright/`. **Requires Docker**: the suite starts
+its own throwaway Mattermost and Postgres via testcontainers, installs the freshly built
+plugin into it, and tears everything down afterwards. Nothing touches your local dev server.
+
+The Docs plugin needs a server built with Docs core support — the `EnableDocs` feature flag
+and the Space channel type — which stock releases do not yet ship. The server image is
+pinned to a specific development build in `tests/helpers/mmcontainer.ts`; the floating
+`master` tag is *not* reliable for this. Override it when bumping:
+
+```bash
+MM_IMAGE=mattermostdevelopment/mattermost-enterprise-edition:<tag> make test-e2e
+```
+
+If no published tag carries Docs core support, build a server image locally from the
+`mattermost` repository and point `MM_IMAGE` at it.
+
+To run against a Mattermost server you are already running instead of a container:
+
+```bash
+MM_E2E_USE_EXISTING_SERVER=true MM_SERVICESETTINGS_SITEURL=http://localhost:8065 npm test
+```
+
+This seeds real teams and users into that server, so it is opt-in through
+`MM_E2E_USE_EXISTING_SERVER` alone — exporting `MM_SERVICESETTINGS_SITEURL`, as most
+Mattermost dev shells do, is not enough to trigger it.
+
+Other useful scripts, run from `e2e-tests/playwright/`:
+
+```bash
+npm run playwright:test:headed   # watch the browser
+npm run playwright:ui            # interactive UI mode
+npm run test:video               # record video of every test
+npm run check                    # lint
+npm run check-types              # typecheck
+```
+
+#### Recording video
+
+Video is off by default — traces (kept on failure) cover most debugging at a fraction of
+the size. Opt in with `PW_VIDEO`, which takes Playwright's own mode names:
+
+```bash
+PW_VIDEO=on npm test                  # every test
+PW_VIDEO=retain-on-failure npm test   # only tests that failed
+```
+
+Recordings land next to the other artifacts in `test-results/`. A single spec can opt in
+on its own with `test.use({video: 'on'})`.
+
 ## Documentation
 
 

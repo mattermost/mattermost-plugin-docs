@@ -68,8 +68,28 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: ci/test
-        uses: mattermost/actions/plugin-ci/test@0256d363493a1e6b9e361ea788c62a0a73bc00be
+      # test-ci rather than the shared plugin-ci/test action (which runs plain `make
+      # test`): it is the target that emits JUnit for the Go suite, without which there
+      # is no machine-readable unit test result to publish. Run as two steps so a failing
+      # server suite still lets the webapp suite write its own report — a single `make
+      # test-ci` would stop at the first failure and publish half the results.
+      - name: ci/test-server
+        run: make test-ci-server
+
+      - name: ci/test-webapp
+        if: always()
+        run: make test-ci-webapp
+
+      - name: ci/upload-unit-test-results
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: unit-test-results
+          path: |
+            report.xml
+            webapp/junit.xml
+          if-no-files-found: warn
+          retention-days: 14
 
   build:
     if: ${{ github.repository_owner == 'mattermost' || github.event_name != 'schedule' }}
@@ -90,6 +110,29 @@ jobs:
 
       - name: ci/build
         uses: mattermost/actions/plugin-ci/build@0256d363493a1e6b9e361ea788c62a0a73bc00be
+
+  e2e-playwright-tests:
+    if: ${{ github.repository_owner == 'mattermost' || github.event_name != 'schedule' }}
+    runs-on: ubuntu-latest
+    needs: [build]
+    # Generous because the suite's own budget is already large: a 20-minute
+    # globalTimeout plus container startup and 2 retries, after npm ci, a browser
+    # install and two image pulls.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    # No `services:` block on purpose: the suite provisions its own Mattermost and
+    # Postgres via testcontainers, so CI and local runs take the identical path.
+    steps:
+      # Shallow: this job installs the e2e project and downloads the prebuilt bundle,
+      # so it never reads git history.
+      - name: Checkout repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: ci/playwright-e2e-test
+        uses: ./.github/actions/playwright-e2e-test
 
   delivery:
     if: ${{ github.repository_owner == 'mattermost' && github.event_name != 'schedule' && github.ref_name == 'master' }}
