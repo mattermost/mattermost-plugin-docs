@@ -7,31 +7,29 @@ import React from 'react';
 
 import {makeSpace, makeTeam} from 'store/test_fixtures';
 
+import {toast} from 'components/toast';
+
 import CreateSpaceModal from './create_space_modal';
 
 import {renderWithContext} from '../../../tests/react_testing_utils';
 
 const team = makeTeam('team1', 'myteam');
-
-const takenSpaceState = {
-    docs: {
-        spaces: {taken: makeSpace('taken', 'Taken', 'team1')},
-        spacesInTeam: {team1: new Set(['taken'])},
-        pages: {},
-        pagesInSpace: {},
-    },
-    currentTeam: team,
-};
+let createSpaceSpy: jest.SpyInstance;
+let toastErrorSpy: jest.SpyInstance;
 
 function typeName(value: string) {
     fireEvent.change(screen.getByLabelText('Space name'), {target: {value}});
 }
 
 describe('CreateSpaceModal', () => {
-    // Isolate the create path from the mock data source's module-level fixture
-    // store so the "valid submit" test doesn't mutate shared state.
+    // Stub the API create so the form path doesn't hit the network; the server
+    // assigns the opaque id.
     beforeEach(() => {
-        jest.spyOn(docsDataSource, 'createSpace').mockImplementation((input) => makeSpace(input.slug, input.title.trim()));
+        jest.clearAllMocks();
+        createSpaceSpy = jest.spyOn(docsDataSource, 'createSpace').mockImplementation(
+            async (_teamId, input) => makeSpace('new-space-id', input.title.trim(), 'team1'),
+        );
+        toastErrorSpy = jest.spyOn(toast, 'error').mockReturnValue('toast-id');
     });
 
     afterEach(() => {
@@ -47,20 +45,6 @@ describe('CreateSpaceModal', () => {
 
         typeName('My Space');
         expect(screen.getByRole('button', {name: 'Create'})).toBeEnabled();
-    });
-
-    it('focuses the URL field and shows the error when the slug is already taken', async () => {
-        renderWithContext(<CreateSpaceModal onClose={jest.fn()}/>, {state: takenSpaceState});
-
-        // Typing the name auto-derives the slug ("Taken" -> "taken"), which
-        // collides with the existing space.
-        typeName('Taken');
-        fireEvent.click(screen.getByRole('button', {name: 'Create'}));
-
-        const urlInput = await screen.findByLabelText('Space URL');
-
-        await waitFor(() => expect(urlInput).toHaveFocus());
-        expect(screen.getByText('That URL is already taken')).toBeInTheDocument();
     });
 
     it('creates the space and closes on a valid submit', async () => {
@@ -81,6 +65,19 @@ describe('CreateSpaceModal', () => {
         await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
         expect(onCreated.mock.calls[0][0]).toMatchObject({title: 'Fresh Space'});
         expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports a failed create and keeps the modal open', async () => {
+        const onClose = jest.fn();
+        createSpaceSpy.mockRejectedValueOnce(new Error('boom'));
+        jest.spyOn(console, 'error').mockImplementation(() => {});
+        renderWithContext(<CreateSpaceModal onClose={onClose}/>, {state: {currentTeam: team}});
+
+        typeName('Fresh Space');
+        fireEvent.click(screen.getByRole('button', {name: 'Create'}));
+
+        await waitFor(() => expect(toastErrorSpy).toHaveBeenCalledWith('Could not create the space. Please try again.'));
+        expect(onClose).not.toHaveBeenCalled();
     });
 
     it('invokes onClose from the Cancel button', () => {

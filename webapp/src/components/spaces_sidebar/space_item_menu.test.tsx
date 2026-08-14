@@ -5,6 +5,8 @@ import {fireEvent, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 import {copyToClipboard} from 'utils/clipboard';
 
+import {Client4} from 'mattermost-redux/client';
+
 import {makeSpace, makeTeam} from 'store/test_fixtures';
 
 import SpaceItemMenu from './space_item_menu';
@@ -13,6 +15,13 @@ import {renderWithContext} from '../../../tests/react_testing_utils';
 
 jest.mock('utils/clipboard', () => ({
     copyToClipboard: jest.fn(),
+}));
+
+// Stubbed at the hook boundary: mattermost-redux's preferences actions are
+// published as ESM that jest doesn't transform.
+jest.mock('hooks/favorites', () => ({
+    useSpaceFavoriteState: () => 'off',
+    useToggleFavorite: () => jest.fn(),
 }));
 
 const space = makeSpace('docs', 'Docs');
@@ -34,12 +43,17 @@ async function openMenu() {
 
 describe('SpaceItemMenu', () => {
     it('copies the team-scoped space link', async () => {
-        renderMenu();
+        const previousUrl = Client4.getUrl();
+        try {
+            Client4.setUrl('http://localhost:8065/mattermost');
+            renderMenu();
+            await openMenu();
+            fireEvent.click(screen.getByText('Copy link'));
 
-        await openMenu();
-        fireEvent.click(screen.getByText('Copy link'));
-
-        await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('http://localhost:8065/myteam/spaces/docs'));
+            await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('http://localhost:8065/mattermost/myteam/spaces/docs'));
+        } finally {
+            Client4.setUrl(previousUrl);
+        }
     });
 
     // Importing into a Space that already exists decides which of its pages the bundle adopts and whose edits an

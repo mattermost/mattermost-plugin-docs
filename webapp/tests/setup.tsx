@@ -3,6 +3,12 @@
 
 import '@testing-library/jest-dom';
 
+// Base UI waits for a popup's animations to finish before reporting a close as
+// complete, which is how a modal gets to animate out. jsdom runs no animations, so
+// that wait never resolves and the close never completes. Base UI's own escape
+// hatch (see utils/useAnimationsFinished) makes it run the callback immediately.
+(globalThis as {BASE_UI_ANIMATIONS_DISABLED?: boolean}).BASE_UI_ANIMATIONS_DISABLED = true;
+
 // useTeamContext's module also imports team actions (for useEnsureCurrentTeam);
 // the real action tree pulls in ESM-only deps jest doesn't transform. No test
 // exercises team actions, so stub the module everywhere.

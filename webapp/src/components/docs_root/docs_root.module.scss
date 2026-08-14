@@ -4,10 +4,12 @@
     height: 100%;
 }
 
+// Width is set inline from the persisted user width; the divider positions
+// itself against this box, so it has to establish the containing block.
 .sidebar {
+    position: relative;
     display: flex;
     flex-shrink: 0;
-    width: 264px;
     height: 100%;
 }
 

@@ -1,0 +1,73 @@
+// A 12px grab area centered on the container's edge, so the pointer target is
+// forgiving while the visible line stays 4px (matching core).
+.divider {
+    position: absolute;
+    z-index: 5;
+    top: 0;
+    width: 12px;
+    height: 100%;
+    cursor: col-resize;
+
+    &::after {
+        position: absolute;
+        top: 0;
+        width: 4px;
+        height: 100%;
+        background: transparent;
+        content: '';
+    }
+
+    &:hover::after,
+    &:focus-visible::after {
+        background: var(--sidebar-text-active-border);
+    }
+
+    &:focus-visible {
+        outline: none;
+    }
+}
+
+.active::after {
+    background: var(--sidebar-text-active-border);
+}
+
+// Emphasized while the drag is snapped to the default width, so the snap is
+// visible rather than just felt.
+.snapped::after {
+    width: 6px;
+    background: var(--button-bg);
+}
+
+// `left`/`right` name the edge the handle sits on, so the line hugs the border.
+//
+// `--docs-divider-clearance` slides the whole handle outward, off the panel it
+// resizes. A panel that scrolls puts its scrollbar on exactly the edge the handle
+// straddles, and the handle wins the pointer — so the scrollbar becomes hard to
+// grab. At 6px or more the 12px hitbox clears the panel entirely, whatever width
+// the platform draws its scrollbar.
+//
+// The line moves with it rather than staying behind: an indicator you can see but
+// not grab is worse than one that sits a few pixels off the border. `max()` pins it
+// to the handle's inner edge once shifted, so it still reads as hugging the border
+// instead of floating in the content.
+.left {
+    right: calc(-6px - var(--docs-divider-clearance, 0px));
+
+    &::after {
+        left: max(0px, calc(4px - var(--docs-divider-clearance, 0px)));
+    }
+}
+
+.right {
+    left: calc(-6px - var(--docs-divider-clearance, 0px));
+
+    &::after {
+        right: max(0px, calc(4px - var(--docs-divider-clearance, 0px)));
+    }
+}
+
+// Set on <body> for the duration of a drag.
+.resizing {
+    cursor: col-resize;
+    user-select: none;
+}

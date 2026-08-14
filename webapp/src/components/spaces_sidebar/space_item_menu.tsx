@@ -1,8 +1,10 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {useSpaceFavoriteState, useToggleFavorite} from 'hooks/favorites';
+import {useLeaveSpace} from 'hooks/leave_space';
 import {useDocsNavigation} from 'hooks/navigation';
-import React, {useState} from 'react';
+import React, {useCallback, useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {copyToClipboard} from 'utils/clipboard';
 
@@ -10,10 +12,11 @@ import DotsVerticalIcon from '@mattermost/compass-icons/components/dots-vertical
 import DownloadOutlineIcon from '@mattermost/compass-icons/components/download-outline';
 import ExitToAppIcon from '@mattermost/compass-icons/components/exit-to-app';
 import LinkVariantIcon from '@mattermost/compass-icons/components/link-variant';
+import StarIcon from '@mattermost/compass-icons/components/star';
+import StarOutlineIcon from '@mattermost/compass-icons/components/star-outline';
 
 import ConfirmModal from 'components/confirm_modal/confirm_modal';
 import Menu from 'components/menu/menu';
-import type {MenuItemSpec} from 'components/menu/menu_types';
 
 import type {Space} from 'types/docs';
 
@@ -25,86 +28,33 @@ type Props = {
 
 const SpaceItemMenu = ({space}: Props) => {
     const {formatMessage} = useIntl();
-    const {paths, goToImport} = useDocsNavigation();
+    const {paths: absolutePaths, goToImport} = useDocsNavigation({absolute: true});
+    const leaveThisSpace = useLeaveSpace(space);
+    const favoriteState = useSpaceFavoriteState(space.id);
+    const toggleFavorite = useToggleFavorite();
+    const favorited = favoriteState === 'on';
 
     const [confirmLeaveOpen, setConfirmLeaveOpen] = useState(false);
 
-    const copyLink = () => copyToClipboard(`${window.location.origin}${paths.space(space.id)}`);
+    const copyLink = () => copyToClipboard(absolutePaths.space(space.id));
 
-    const items: MenuItemSpec[] = [
+    const confirmLeave = useCallback(async () => {
+        await leaveThisSpace();
+        setConfirmLeaveOpen(false);
+    }, [leaveThisSpace]);
 
-        // Favorite space is deferred until ordering/favorites persist to user
-        // preferences (spec §4, Phase B).
-        // {
-        //     id: 'favorite',
-        //     label: <FormattedMessage id='docs.sidebar.space.favorite' defaultMessage='Add to favorites'/>,
-        //     leadingIcon: <StarOutlineIcon size={18}/>,
-        //     onClick: () => onToggleFavorite(space.id),
-        // },
-
-        // Mute space is deferred until the mute feature exists.
-        // {
-        //     id: 'mute',
-        //     label: formatMessage({id: 'docs.sidebar.space.mute', defaultMessage: 'Mute space'}),
-        //     leadingIcon: <BellOutlineIcon size={18}/>,
-        // },
-        {
-
-            // Importing into a Space that already exists is a decision about *this* Space — which pages it
-            // adopts, and whose edits an overwrite would discard — so it is offered here rather than only from
-            // the "new Space" entry in the sidebar.
-            id: 'import',
-            label: (
-                <FormattedMessage
-                    id='docs.sidebar.space.import'
-                    defaultMessage='Import from Confluence'
-                />
-            ),
-            leadingIcon: <DownloadOutlineIcon size={18}/>,
-            onClick: () => goToImport(space.id),
-        },
-        {
-            id: 'copy-link',
-            label: (
-                <FormattedMessage
-                    id='docs.sidebar.space.copyLink'
-                    defaultMessage='Copy link'
-                />
-            ),
-            leadingIcon: <LinkVariantIcon size={18}/>,
-            onClick: copyLink,
-        },
-
-        // Space settings is deferred until the settings feature exists.
-        // {
-        //     id: 'settings',
-        //     label: formatMessage({id: 'docs.sidebar.space.settings', defaultMessage: 'Space settings'}),
-        //     leadingIcon: <CogOutlineIcon size={18}/>,
-        // },
-        {
-            id: 'leave',
-            label: (
-                <FormattedMessage
-                    id='docs.sidebar.space.leave'
-                    defaultMessage='Leave space'
-                />
-            ),
-            leadingIcon: <ExitToAppIcon size={18}/>,
-            isDestructive: true,
-            hasDivider: true,
-            onClick: () => setConfirmLeaveOpen(true),
-        },
-    ];
-
+    // The accessible name carries the space, since a screen reader reaching this
+    // button has no row to read it from. The tooltip drops it: the pointer is already
+    // resting on the row, so repeating its name there is noise.
     const menuLabel = formatMessage({id: 'docs.sidebar.space.menu', defaultMessage: 'Space options for {name}'}, {name: space.title});
+    const tooltipLabel = formatMessage({id: 'docs.sidebar.space.menuShort', defaultMessage: 'Space options'});
 
     return (
         <>
             <Menu
                 ariaLabel={menuLabel}
                 align='right'
-                items={items}
-                tooltip={menuLabel}
+                tooltip={tooltipLabel}
                 trigger={(
                     <button
                         type='button'
@@ -115,7 +65,65 @@ const SpaceItemMenu = ({space}: Props) => {
                         <DotsVerticalIcon size={16}/>
                     </button>
                 )}
-            />
+            >
+                {/* Mute is deferred until a mute feature exists; space settings
+                  * until that surface lands. */}
+                <Menu.Item
+                    leadingIcon={favorited ? <StarIcon size={18}/> : <StarOutlineIcon size={18}/>}
+                    secondaryLabel={favoriteState === 'partial' ? (
+                        <FormattedMessage
+                            id='docs.sidebar.space.favoritePartial'
+                            defaultMessage='Some pages are favorited'
+                        />
+                    ) : undefined}
+                    onClick={() => toggleFavorite('space', space.id)}
+                >
+                    {favorited ? (
+                        <FormattedMessage
+                            id='docs.sidebar.space.unfavorite'
+                            defaultMessage='Remove from favorites'
+                        />
+                    ) : (
+                        <FormattedMessage
+                            id='docs.sidebar.space.favorite'
+                            defaultMessage='Add to favorites'
+                        />
+                    )}
+                </Menu.Item>
+                <Menu.Item
+                    leadingIcon={<LinkVariantIcon size={18}/>}
+                    onClick={copyLink}
+                >
+                    <FormattedMessage
+                        id='docs.sidebar.space.copyLink'
+                        defaultMessage='Copy link'
+                    />
+                </Menu.Item>
+
+                {/* Importing into a Space that already exists is a decision about *this* Space — which of its
+                  * pages the bundle adopts, and whose edits an overwrite would discard — so it is offered here
+                  * rather than only from the "new Space" entry in the sidebar. */}
+                <Menu.Item
+                    leadingIcon={<DownloadOutlineIcon size={18}/>}
+                    onClick={() => goToImport(space.id)}
+                >
+                    <FormattedMessage
+                        id='docs.sidebar.space.import'
+                        defaultMessage='Import from Confluence'
+                    />
+                </Menu.Item>
+                <Menu.Separator/>
+                <Menu.Item
+                    leadingIcon={<ExitToAppIcon size={18}/>}
+                    destructive={true}
+                    onClick={() => setConfirmLeaveOpen(true)}
+                >
+                    <FormattedMessage
+                        id='docs.sidebar.space.leave'
+                        defaultMessage='Leave space'
+                    />
+                </Menu.Item>
+            </Menu>
             {confirmLeaveOpen && (
                 <ConfirmModal
                     title={(
@@ -132,7 +140,7 @@ const SpaceItemMenu = ({space}: Props) => {
                         />
                     )}
                     isConfirmDestructive={true}
-                    onConfirm={() => setConfirmLeaveOpen(false)}
+                    onConfirm={confirmLeave}
                     onCancel={() => setConfirmLeaveOpen(false)}
                 >
                     <FormattedMessage

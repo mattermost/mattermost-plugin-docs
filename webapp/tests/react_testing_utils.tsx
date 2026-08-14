@@ -15,38 +15,44 @@ import type {Middleware, Store} from 'redux';
 
 import type {GlobalState} from '@mattermost/types/store';
 
-import type {DocsPluginState} from 'store/types';
+import type {DocsEntitiesState} from 'store/types';
 
-const EMPTY_DOCS_STATE: DocsPluginState = {
+const EMPTY_DOCS_ENTITIES: DocsEntitiesState = {
     spaces: {},
     spacesInTeam: {},
     pages: {},
     pagesInSpace: {},
+    spaceMembers: {},
+    drafts: {},
+    draftsInSpace: {},
 };
 
 type TestTeam = {id: string; name: string; display_name?: string};
 type TestUser = {id: string; username?: string; first_name?: string; last_name?: string; nickname?: string};
 
 export type TestStateOptions = {
-    docs?: Partial<DocsPluginState>;
+    docs?: Partial<DocsEntitiesState>;
     currentTeam?: TestTeam;
 
     // The user's teams (for cross-team reads like the switcher). Defaults to just
     // the current team.
     teams?: TestTeam[];
     currentUser?: TestUser;
+
+    // Host user preferences, which is where Docs favorites and sidebar order live.
+    preferences?: Array<{category: string; name: string; value: string}>;
 };
 
 // Builds a host-shaped GlobalState with the Docs plugin subtree under
 // `plugins-<id>` (where the plugin's registered reducer mounts) plus the minimal
 // entities the Docs hooks read (current team + membership + current user).
-export function makeTestState({docs, currentTeam, teams, currentUser}: TestStateOptions = {}): GlobalState {
+export function makeTestState({docs, currentTeam, teams, currentUser, preferences}: TestStateOptions = {}): GlobalState {
     const teamId = currentTeam?.id ?? '';
     const userId = currentUser?.id ?? '';
     const allTeams = teams ?? (currentTeam ? [currentTeam] : []);
 
     return {
-        ['plugins-' + manifest.id]: {...EMPTY_DOCS_STATE, ...docs},
+        ['plugins-' + manifest.id]: {entities: {...EMPTY_DOCS_ENTITIES, ...docs}},
         entities: {
             teams: {
                 currentTeamId: teamId,
@@ -58,6 +64,14 @@ export function makeTestState({docs, currentTeam, teams, currentUser}: TestState
             users: {
                 currentUserId: userId,
                 profiles: currentUser ? {[userId]: currentUser} : {},
+            },
+
+            // Keyed `category--name`, as mattermost-redux's preference selectors expect.
+            preferences: {
+                myPreferences: Object.fromEntries((preferences ?? []).map((preference) => [
+                    `${preference.category}--${preference.name}`,
+                    {user_id: userId, ...preference},
+                ])),
             },
         },
     } as unknown as GlobalState;

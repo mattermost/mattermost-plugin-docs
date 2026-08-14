@@ -8,6 +8,7 @@ const PLUGIN_ID = require('../plugin.json').id;
 
 const NPM_TARGET = process.env.npm_lifecycle_event; //eslint-disable-line no-process-env
 const isDev = NPM_TARGET === 'debug' || NPM_TARGET === 'debug:watch';
+const isAnalyze = NPM_TARGET === 'build:analyze';
 
 const plugins = [
     // Shim Node's `process` for transitive deps whose Node-detection paths read
@@ -37,6 +38,17 @@ if (NPM_TARGET === 'build:watch' || NPM_TARGET === 'debug:watch') {
             });
         },
     });
+}
+
+if (isAnalyze) {
+    // Only loaded for `npm run build:analyze`, so it stays out of normal builds.
+    // eslint-disable-next-line global-require
+    const {BundleAnalyzerPlugin} = require('webpack-bundle-analyzer');
+    plugins.push(new BundleAnalyzerPlugin({
+        analyzerMode: 'static',
+        reportFilename: 'bundle-report.html',
+        openAnalyzer: true,
+    }));
 }
 
 const config = {
@@ -93,16 +105,16 @@ const config = {
                 ],
             },
             {
-                // Inline binary assets into the single plugin bundle, matching
-                // Playbooks/Calls. Emitting separate resource files instead
-                // (`asset`/`asset/resource`, plus code-split chunks) requires an
-                // output.publicPath under the plugin's static route and a backend
-                // handler to serve it (as Boards does) — which also becomes
-                // necessary to support subpath-hosted Mattermost instances.
-                // Adopt that when real, large binary assets or chunking land; no
-                // such assets are imported today.
+                // Emit binary assets as separate files (not inlined) so large
+                // assets don't bloat the bundle. With output.publicPath: 'auto'
+                // the runtime resolves them relative to the served plugin bundle,
+                // so the host serves them from the plugin's static path without a
+                // hardcoded URL — the same mechanism the async chunks rely on.
                 test: /\.(png|eot|tiff|svg|woff2|woff|ttf|gif|mp3|jpg|jpeg)$/,
-                type: 'asset/inline',
+                type: 'asset/resource',
+                generator: {
+                    filename: 'assets/[name].[contenthash][ext]',
+                },
             },
         ],
     },
@@ -119,9 +131,17 @@ const config = {
     output: {
         devtoolNamespace: PLUGIN_ID,
         path: path.join(__dirname, '/dist'),
-        publicPath: '/',
+
+        // 'auto' makes webpack resolve async-chunk and asset/resource URLs at
+        // runtime from where the plugin bundle is served (its static path),
+        // rather than the site root '/'. This lets code-split chunks and emitted
+        // assets load without a hardcoded plugin URL and keeps subpath-hosted
+        // Mattermost instances working.
+        publicPath: 'auto',
         filename: 'main.js',
+        chunkFilename: '[name].[contenthash].js',
     },
+
     mode: (isDev) ? 'eval-source-map' : 'production',
     plugins,
 };

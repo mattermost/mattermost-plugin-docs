@@ -1,0 +1,58 @@
+.panel {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    width: 100%;
+    height: 100%;
+    padding: 8px;
+    border-right: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
+    background: var(--center-channel-bg);
+    overflow-y: auto;
+}
+
+// No gap between root rows: each row carries its own vertical spacing as padding
+// on its drop hitbox, so the hitboxes stay contiguous for drag and drop. The
+// negative block margin cancels the outermost rows' share of that padding, which
+// has no neighbour to space against — without it the tree would grow 4px at each
+// end against the space-home item above and the add-page button below.
+.tree {
+    display: flex;
+    flex-direction: column;
+    margin-block: -4px;
+}
+
+// Available to screen readers only: the tree's key bindings and its move
+// announcements have no visual equivalent.
+.visuallyHidden {
+    position: absolute;
+    overflow: hidden;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+}
+
+.separator {
+    flex-shrink: 0;
+    height: 1px;
+    margin: 8px 4px;
+    background: rgba(var(--center-channel-color-rgb), 0.12);
+}
+
+// Neutral (not accent-blue): scoped under `.btn.btn-quaternary` so it beats
+// core's quaternary button color.
+.addPage:global(.btn.btn-quaternary) {
+    justify-content: flex-start;
+    width: 100%;
+    gap: 6px;
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+    font-weight: 400;
+
+    &:hover {
+        background: rgba(var(--center-channel-color-rgb), 0.08);
+        color: var(--center-channel-color);
+    }
+}

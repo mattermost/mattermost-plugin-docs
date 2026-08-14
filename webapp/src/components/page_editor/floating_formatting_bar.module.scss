@@ -1,0 +1,24 @@
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
+// See LICENSE.txt for license information.
+
+.bar {
+    position: absolute;
+    z-index: 10;
+
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.16);
+    border-radius: 4px;
+    background: var(--center-channel-bg);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+// Wider than the bar that clips to it. The span past the last control is empty, and
+// must stay visible so the control menus are not cut off.
+.track {
+    overflow: visible;
+}
+
+.hidden {
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+}

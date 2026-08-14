@@ -4,6 +4,7 @@
 import {DropIndicator} from '@atlaskit/pragmatic-drag-and-drop-react-drop-indicator/box';
 import classNames from 'classnames';
 import React, {useState} from 'react';
+import {SpaceIcon} from 'utils/space_icon';
 
 import type {Space} from 'types/docs';
 
@@ -20,10 +21,10 @@ type Props = {
 
     // Gates drag-to-reorder until sidebar ordering persists (see SpacesSidebar).
     dndEnabled: boolean;
-    onSelect: (id: string) => void;
+    href: string;
 };
 
-const SpaceItem = ({space, category, active, dndEnabled, onSelect}: Props) => {
+const SpaceItem = ({space, category, active, dndEnabled, href}: Props) => {
     const [element, setElement] = useState<HTMLDivElement | null>(null);
     const {dragging, closestEdge} = useSpaceDragDrop({spaceId: space.id, category, element, enabled: dndEnabled});
 
@@ -32,7 +33,10 @@ const SpaceItem = ({space, category, active, dndEnabled, onSelect}: Props) => {
             className={styles.emoji}
             aria-hidden={true}
         >
-            {space.icon}
+            <SpaceIcon
+                space={space}
+                size={16}
+            />
         </span>
     );
 
@@ -50,7 +54,10 @@ const SpaceItem = ({space, category, active, dndEnabled, onSelect}: Props) => {
                     <SpaceItemMenu space={space}/>
                 )}
                 revealTrailingOnHover={true}
-                onClick={() => onSelect(space.id)}
+                to={href}
+
+                // The row is a drag source; a link's native drag would pre-empt it.
+                draggable={false}
             />
             {closestEdge && (
                 <DropIndicator
@@ -62,4 +69,7 @@ const SpaceItem = ({space, category, active, dndEnabled, onSelect}: Props) => {
     );
 };
 
-export default SpaceItem;
+// Memoized because the sidebar re-renders on every navigation and nav-tab change,
+// which would otherwise re-run every row (each of which registers a drag listener
+// and reads its own favorite state) for a change affecting one or two of them.
+export default React.memo(SpaceItem);

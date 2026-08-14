@@ -4,10 +4,14 @@
 import {
     DOCS_DRAFTS_SEGMENT,
     DOCS_IMPORT_SEGMENT,
+    EDIT_QUERY,
     RESERVED_SEGMENTS,
     SPACE_OR_PAGE_ID_PATTERN,
     draftPath,
+    editDraftPath,
+    editPagePath,
     importPath,
+    overviewPath,
     pagePath,
     spaceImportPath,
     spacePath,
@@ -46,6 +50,7 @@ describe('path builders', () => {
     it('builds the reserved paths from their segments', () => {
         expect(draftPath('myteam', 'space1', 'pageX')).toBe(`/myteam/spaces/space1/${DOCS_DRAFTS_SEGMENT}/pageX`);
         expect(importPath('myteam')).toBe(`/myteam/spaces/${DOCS_IMPORT_SEGMENT}`);
+        expect(overviewPath('myteam', 'space1')).toBe('/myteam/spaces/space1/_overview');
         expect(spaceImportPath('myteam', 'space1')).toBe(`/myteam/spaces/space1/${DOCS_IMPORT_SEGMENT}`);
     });
 
@@ -56,5 +61,25 @@ describe('path builders', () => {
         expect(draftPath('myteam', 'space1', '../elsewhere')).toBe(
             `/myteam/spaces/space1/${DOCS_DRAFTS_SEGMENT}/..%2Felsewhere`,
         );
+    });
+});
+
+describe('editPagePath', () => {
+    it('appends the edit query to the page path', () => {
+        expect(editPagePath('team-1', 'eng', 'runbook')).toBe('/team-1/spaces/eng/runbook?edit=1');
+    });
+
+    it('builds on pagePath so escaping stays in one place', () => {
+        expect(editPagePath('team 1', 'eng', 'run book')).toBe(`${pagePath('team 1', 'eng', 'run book')}?${EDIT_QUERY}=1`);
+    });
+});
+
+describe('editDraftPath', () => {
+    it('appends the edit query to the draft path', () => {
+        expect(editDraftPath('team-1', 'eng', 'runbook')).toBe('/team-1/spaces/eng/_drafts/runbook?edit=1');
+    });
+
+    it('builds on draftPath so escaping stays in one place', () => {
+        expect(editDraftPath('team 1', 'eng', 'run book')).toBe(`${draftPath('team 1', 'eng', 'run book')}?${EDIT_QUERY}=1`);
     });
 });

@@ -57,9 +57,8 @@ const ImportWizard = ({target, onClose}: Props) => {
     // would land on an empty product home. Reloading while the user is still reading the report means the Space
     // is there by the time they leave it.
     //
-    // This is currently a no-op in practice: the store is still fed from the mock data source, which knows
-    // nothing the server wrote. It becomes real with the API-backed data source (PR #12), and is written now so
-    // that landing on a freshly imported Space is not a step someone has to remember later.
+    // Both reads go through the API-backed data source, so this reloads from the server rather than from
+    // anything this page already had — which is the point, since what changed was written by the worker.
     const dispatch = useAppDispatch();
     const importedSpace = job ? importedSpaceId(job) : undefined;
     useEffect(() => {
