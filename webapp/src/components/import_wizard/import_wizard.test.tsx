@@ -8,6 +8,8 @@ import React from 'react';
 
 import * as actions from 'store/actions';
 
+import {clearReadout, getReadoutMessage} from 'components/readout';
+
 import type {ImportJobState, ImportJobView, ImportPreflightResultView} from 'types/imports';
 
 import ImportReviewStep from './import_review_step';
@@ -378,9 +380,7 @@ describe('ImportWizard review step', () => {
                 // The plan's own first page happens to contain no conflicts at all.
                 return Promise.resolve({items: [], page: 0, per_page: 100, has_more: true});
             }
-            return Promise.resolve(options?.page ?
-                {items: [conflictRow('900')], page: 1, per_page: 100, has_more: false} :
-                {items: [conflictRow('101')], page: 0, per_page: 100, has_more: true});
+            return Promise.resolve(options?.page ? {items: [conflictRow('900')], page: 1, per_page: 100, has_more: false} : {items: [conflictRow('101')], page: 0, per_page: 100, has_more: true});
         });
         const confirmSpy = jest.spyOn(importsClient, 'confirmImportJob').mockResolvedValue(makeJob('queued_import'));
 
@@ -544,6 +544,49 @@ describe('ImportWizard review step', () => {
         });
 
         expect(await screen.findByRole('alert')).toHaveTextContent('being recalculated');
+    });
+});
+
+describe('ImportWizard announcements', () => {
+    afterEach(() => {
+        jest.restoreAllMocks();
+        clearReadout();
+    });
+
+    // An import changes on its own, for minutes, and every one of those changes is otherwise conveyed by sight
+    // alone: the step highlight moves, a bar fills, a report appears. Without this, pressing Upload is the last
+    // thing a screen reader user is told.
+    it('announces the step the import has reached', async () => {
+        await uploadAndReach(makeJob('importing', {
+            phase: 'writing_pages',
+            progress: {phase: 'writing_pages', current: 1, total: 4},
+        }));
+
+        await waitFor(() => expect(getReadoutMessage()).toContain('The import is running'));
+    });
+
+    // "Finished" and "finished, with things to review" are different news, and the second is the common case for
+    // a real Space, so the announcement carries the outcome rather than the fact of ending.
+    it('announces the outcome rather than just that it ended', async () => {
+        await uploadAndReach(makeJob('completed_with_issues'));
+
+        await waitFor(() => expect(getReadoutMessage()).toContain('with things to review'));
+    });
+
+    // The job is polled every couple of seconds; announcing per poll would talk over the rest of the page.
+    it('does not repeat itself while the job keeps polling', async () => {
+        const job = makeJob('awaiting_confirmation');
+        jest.spyOn(importsClient, 'getImportPreflightResults').mockResolvedValue({
+            items: [], page: 0, per_page: 100, has_more: false,
+        });
+        await uploadAndReach(job);
+        await waitFor(() => expect(getReadoutMessage()).toContain('ready to review'));
+
+        clearReadout();
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(getReadoutMessage()).toBe('');
     });
 });
 

@@ -5,6 +5,8 @@ import {importReportUrl} from 'client/imports';
 import React from 'react';
 import {useIntl} from 'react-intl';
 
+import {PrimaryButton} from 'components/form_controls/button';
+
 import type {ImportJobView} from 'types/imports';
 
 import styles from './import_wizard.module.scss';
@@ -76,13 +78,12 @@ const ImportResultStep = ({job, onDone}: Props) => {
             </div>
 
             <div className={styles.actions}>
-                <button
+                <PrimaryButton
                     type='button'
-                    className={styles.primary}
                     onClick={onDone}
                 >
                     {formatMessage({id: 'docs.import.result.done', defaultMessage: 'Done'})}
-                </button>
+                </PrimaryButton>
             </div>
         </div>
     );

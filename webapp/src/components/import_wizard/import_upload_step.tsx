@@ -3,8 +3,10 @@
 
 import {importErrorCode, ImportAdmissionError, uploadImportBundle} from 'client/imports';
 import {RestError} from 'client/rest';
-import React, {useState} from 'react';
+import React, {useRef, useState} from 'react';
 import {useIntl} from 'react-intl';
+
+import {PrimaryButton, SecondaryButton} from 'components/form_controls/button';
 
 import type {ImportJobView, ImportTargetRequest} from 'types/imports';
 
@@ -25,6 +27,9 @@ const ImportUploadStep = ({target, onUploaded}: Props) => {
     const [uploading, setUploading] = useState(false);
     const [failure, setFailure] = useState<string | undefined>();
     const [retryAfter, setRetryAfter] = useState<number | undefined>();
+
+    // The visible control is a button, so the input it opens needs a handle.
+    const fileInput = useRef<HTMLInputElement>(null);
 
     const submit = async () => {
         if (!bundle || uploading) {
@@ -60,14 +65,19 @@ const ImportUploadStep = ({target, onUploaded}: Props) => {
                 })}
             </p>
 
-            {/* The native file input is visually hidden rather than styled: its own "No file chosen" text takes a
-                colour the page cannot set, which on a dark theme is all but invisible, and it offers nothing that
-                reads as a control. The input itself still does the work, so the label, keyboard and screen
-                readers behave exactly as before. */}
-            <label className={styles.fileField}>
-                <span className={styles.fileButton}>
+            {/* The native file input is visually hidden and driven by a real button rather than styled in place.
+                Its own "No file chosen" text takes a colour the page cannot set — all but invisible on a dark
+                theme — and it offers nothing that reads as a control. A button that opens it is the affordance,
+                and the chosen filename becomes our own text; the input still does the work, so the accessible
+                name, keyboard and screen readers are unaffected. */}
+            <div className={styles.fileField}>
+                <SecondaryButton
+                    type='button'
+                    disabled={uploading}
+                    onClick={() => fileInput.current?.click()}
+                >
                     {formatMessage({id: 'docs.import.upload.choose', defaultMessage: 'Choose a file'})}
-                </span>
+                </SecondaryButton>
                 <span className={bundle ? styles.fileName : styles.fileNameEmpty}>
                     {bundle ? bundle.name : formatMessage({
                         id: 'docs.import.upload.noFile',
@@ -75,6 +85,7 @@ const ImportUploadStep = ({target, onUploaded}: Props) => {
                     })}
                 </span>
                 <input
+                    ref={fileInput}
                     type='file'
                     accept='.zip,application/zip'
                     className={styles.srOnly}
@@ -85,7 +96,7 @@ const ImportUploadStep = ({target, onUploaded}: Props) => {
                         setFailure(undefined);
                     }}
                 />
-            </label>
+            </div>
 
             {failure ? (
                 <div
@@ -105,14 +116,13 @@ const ImportUploadStep = ({target, onUploaded}: Props) => {
             ) : null}
 
             <div className={styles.actions}>
-                <button
+                <PrimaryButton
                     type='button'
-                    className={styles.primary}
                     disabled={!bundle || uploading}
                     onClick={submit}
                 >
                     {uploading ? formatMessage({id: 'docs.import.upload.uploading', defaultMessage: 'Uploading…'}) : formatMessage({id: 'docs.import.upload.submit', defaultMessage: 'Upload and inspect'})}
-                </button>
+                </PrimaryButton>
             </div>
         </div>
     );

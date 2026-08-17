@@ -4,10 +4,13 @@
 import {cancelImportJob} from 'client/imports';
 import {useImportJob, useResumableImportJob} from 'hooks/imports';
 import {useAppDispatch} from 'hooks/redux';
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {useIntl} from 'react-intl';
 
 import {fetchPages, fetchSpaces} from 'store/actions';
+
+import {SecondaryButton, TertiaryButton} from 'components/form_controls/button';
+import {announce} from 'components/readout';
 
 import type {ImportJobView, ImportTargetRequest} from 'types/imports';
 
@@ -15,6 +18,7 @@ import ImportProgressStep from './import_progress_step';
 import ImportResultStep from './import_result_step';
 import ImportReviewStep from './import_review_step';
 import ImportSourceStep from './import_source_step';
+import type {ImportStep} from './import_steps';
 import {isCancellable, stepForJob, stepsForTarget} from './import_steps';
 import ImportUploadStep from './import_upload_step';
 import styles from './import_wizard.module.scss';
@@ -68,6 +72,22 @@ const ImportWizard = ({target, onClose}: Props) => {
         dispatch(fetchSpaces());
         dispatch(fetchPages(importedSpace));
     }, [dispatch, importedSpace]);
+
+    // An import is the one flow here that changes on its own, for minutes, while the user waits. Every one of
+    // those changes is currently conveyed by sight alone — the step highlight moves, a progress bar fills, a
+    // report appears — so someone using a screen reader is told nothing after they press Upload.
+    //
+    // Announced on the *step*, not on the job: the job is polled every couple of seconds and its progress counter
+    // moves constantly, which would talk over everything else on the page. A step change is the granularity at
+    // which something has actually happened to respond to.
+    const announced = useRef<ImportStep | undefined>();
+    useEffect(() => {
+        if (!job || announced.current === step) {
+            return;
+        }
+        announced.current = step;
+        announce(stepAnnouncement(step, job, formatMessage));
+    }, [step, job, formatMessage]);
 
     const cancel = useCallback(async () => {
         if (!jobId || cancelling) {
@@ -144,13 +164,12 @@ const ImportWizard = ({target, onClose}: Props) => {
                                 defaultMessage: 'You can still upload a bundle. If an import is already running here, the server will refuse it.',
                             })}
                         </p>
-                        <button
+                        <SecondaryButton
                             type='button'
-                            className={styles.secondary}
                             onClick={retry}
                         >
                             {formatMessage({id: 'docs.import.lookupRetry', defaultMessage: 'Check again'})}
-                        </button>
+                        </SecondaryButton>
                     </div>
                 ) : null}
 
@@ -158,18 +177,16 @@ const ImportWizard = ({target, onClose}: Props) => {
 
                 <div className={styles.footer}>
                     {isCancellable(job) ? (
-                        <button
+                        <TertiaryButton
                             type='button'
-                            className={styles.tertiary}
                             disabled={cancelling}
                             onClick={cancel}
                         >
                             {formatMessage({id: 'docs.import.cancel', defaultMessage: 'Cancel import'})}
-                        </button>
+                        </TertiaryButton>
                     ) : null}
-                    <button
+                    <TertiaryButton
                         type='button'
-                        className={styles.tertiary}
 
                         // Called with no argument on purpose: leaving mid-import goes back where the user was, not to
                         // a Space the import has not finished filling. Passing the handler directly would hand it a
@@ -177,7 +194,7 @@ const ImportWizard = ({target, onClose}: Props) => {
                         onClick={() => onClose()}
                     >
                         {formatMessage({id: 'docs.import.close', defaultMessage: 'Close'})}
-                    </button>
+                    </TertiaryButton>
                 </div>
             </div>
         </section>
@@ -256,6 +273,59 @@ function lookupFailureMessage(status: number | undefined, formatMessage: ReturnT
             {id: 'docs.import.lookup.failed', defaultMessage: 'Could not check for a running import (error {status}).'},
             {status},
         );
+    }
+}
+
+// stepAnnouncement says what the import has become and what is now being asked of the listener.
+//
+// Each one names the step *and* whether it needs them, because "review" and "importing" differ in exactly that:
+// one is a request, the other is a status. The terminal announcement carries the outcome rather than the word
+// "done", since finishing with things to review is the common case and is not the same news as finishing clean.
+function stepAnnouncement(
+    step: ImportStep,
+    job: ImportJobView,
+    formatMessage: ReturnType<typeof useIntl>['formatMessage'],
+): string {
+    switch (step) {
+    case 'source':
+        return formatMessage({
+            id: 'docs.import.announce.source',
+            defaultMessage: 'Choose which Confluence Space this bundle continues.',
+        });
+    case 'review':
+        return formatMessage({
+            id: 'docs.import.announce.review',
+            defaultMessage: 'The import plan is ready to review and confirm.',
+        });
+    case 'running':
+        return formatMessage({
+            id: 'docs.import.announce.running',
+            defaultMessage: 'The import is running. You can leave this page; it keeps going.',
+        });
+    case 'done':
+        return announceOutcome(job, formatMessage);
+    default:
+        return formatMessage({
+            id: 'docs.import.announce.upload',
+            defaultMessage: 'Choose a Confluence export to upload.',
+        });
+    }
+}
+
+// announceOutcome distinguishes the four terminal states, matching what the report says on screen.
+function announceOutcome(job: ImportJobView, formatMessage: ReturnType<typeof useIntl>['formatMessage']): string {
+    switch (job.state) {
+    case 'completed':
+        return formatMessage({id: 'docs.import.announce.completed', defaultMessage: 'The import finished.'});
+    case 'completed_with_issues':
+        return formatMessage({
+            id: 'docs.import.announce.completedWithIssues',
+            defaultMessage: 'The import finished, with things to review in the report.',
+        });
+    case 'canceled':
+        return formatMessage({id: 'docs.import.announce.canceled', defaultMessage: 'The import was canceled.'});
+    default:
+        return formatMessage({id: 'docs.import.announce.failed', defaultMessage: 'The import stopped before finishing.'});
     }
 }
 

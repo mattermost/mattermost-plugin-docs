@@ -6,6 +6,9 @@ import {requiredAcknowledgementsSatisfied} from 'hooks/imports';
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useIntl} from 'react-intl';
 
+import {PrimaryButton, SecondaryButton} from 'components/form_controls/button';
+import TextInput from 'components/form_controls/text_input';
+
 import type {ImportJobView, ImportPreflightResultView} from 'types/imports';
 
 import styles from './import_wizard.module.scss';
@@ -222,30 +225,18 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
 
             {needsNewSpace ? (
                 <>
-                    <label className={styles.field}>
-                        <span className={styles.fieldLabel}>
-                            {formatMessage({id: 'docs.import.review.spaceTitle', defaultMessage: 'Name for the new Space'})}
-                        </span>
-                        <input
-                            type='text'
-                            className={styles.textInput}
-                            value={newSpaceTitle}
-                            disabled={submitting}
-                            onChange={(event) => setNewSpaceTitle(event.target.value)}
-                        />
-                    </label>
-                    <label className={styles.field}>
-                        <span className={styles.fieldLabel}>
-                            {formatMessage({id: 'docs.import.review.spaceDescription', defaultMessage: 'Description'})}
-                        </span>
-                        <input
-                            type='text'
-                            className={styles.textInput}
-                            value={newSpaceDescription}
-                            disabled={submitting}
-                            onChange={(event) => setNewSpaceDescription(event.target.value)}
-                        />
-                    </label>
+                    <TextInput
+                        id='docs-import-space-title'
+                        label={formatMessage({id: 'docs.import.review.spaceTitle', defaultMessage: 'Name for the new Space'})}
+                        value={newSpaceTitle}
+                        onChange={setNewSpaceTitle}
+                    />
+                    <TextInput
+                        id='docs-import-space-description'
+                        label={formatMessage({id: 'docs.import.review.spaceDescription', defaultMessage: 'Description'})}
+                        value={newSpaceDescription}
+                        onChange={setNewSpaceDescription}
+                    />
                 </>
             ) : null}
 
@@ -283,9 +274,8 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
                         </label>
                     ))}
                     {moreConflicts ? (
-                        <button
+                        <SecondaryButton
                             type='button'
-                            className={styles.secondary}
                             disabled={loadingConflicts || submitting}
                             onClick={loadConflicts}
                         >
@@ -296,7 +286,7 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
                                 id: 'docs.import.review.moreConflicts',
                                 defaultMessage: 'Show more conflicts',
                             })}
-                        </button>
+                        </SecondaryButton>
                     ) : null}
                 </fieldset>
             ) : null}
@@ -347,13 +337,12 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
                             defaultMessage: 'The pages this import would change could not be read, so it cannot be confirmed yet.',
                         })}
                     </p>
-                    <button
+                    <SecondaryButton
                         type='button'
-                        className={styles.secondary}
                         onClick={() => setAttempt((n) => n + 1)}
                     >
                         {formatMessage({id: 'docs.import.review.loadRetry', defaultMessage: 'Try again'})}
-                    </button>
+                    </SecondaryButton>
                 </div>
             ) : null}
 
@@ -367,14 +356,13 @@ const ImportReviewStep = ({job, onConfirmed}: Props) => {
             ) : null}
 
             <div className={styles.actions}>
-                <button
+                <PrimaryButton
                     type='button'
-                    className={styles.primary}
                     disabled={!canConfirm}
                     onClick={submit}
                 >
                     {formatMessage({id: 'docs.import.review.submit', defaultMessage: 'Start import'})}
-                </button>
+                </PrimaryButton>
             </div>
         </div>
     );

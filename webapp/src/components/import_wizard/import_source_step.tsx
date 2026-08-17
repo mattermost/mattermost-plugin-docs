@@ -5,6 +5,9 @@ import {selectImportSource} from 'client/imports';
 import React, {useState} from 'react';
 import {useIntl} from 'react-intl';
 
+import {PrimaryButton} from 'components/form_controls/button';
+import TextInput from 'components/form_controls/text_input';
+
 import type {ImportJobView} from 'types/imports';
 
 import styles from './import_wizard.module.scss';
@@ -120,18 +123,12 @@ const ImportSourceStep = ({job, onSelected}: Props) => {
             </fieldset>
 
             {isNew ? (
-                <label className={styles.field}>
-                    <span className={styles.fieldLabel}>
-                        {formatMessage({id: 'docs.import.source.nameLabel', defaultMessage: 'Name for this source'})}
-                    </span>
-                    <input
-                        type='text'
-                        className={styles.textInput}
-                        value={displayName}
-                        disabled={submitting}
-                        onChange={(event) => setDisplayName(event.target.value)}
-                    />
-                </label>
+                <TextInput
+                    id='docs-import-source-name'
+                    label={formatMessage({id: 'docs.import.source.nameLabel', defaultMessage: 'Name for this source'})}
+                    value={displayName}
+                    onChange={setDisplayName}
+                />
             ) : null}
 
             {failed ? (
@@ -144,14 +141,13 @@ const ImportSourceStep = ({job, onSelected}: Props) => {
             ) : null}
 
             <div className={styles.actions}>
-                <button
+                <PrimaryButton
                     type='button'
-                    className={styles.primary}
                     disabled={!canContinue}
                     onClick={submit}
                 >
                     {formatMessage({id: 'docs.import.source.submit', defaultMessage: 'Continue'})}
-                </button>
+                </PrimaryButton>
             </div>
         </div>
     );

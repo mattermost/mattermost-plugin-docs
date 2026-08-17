@@ -87,19 +87,6 @@
     cursor: pointer;
 }
 
-.fileButton {
-    padding: 8px 14px;
-    border: 1px solid rgba(var(--center-channel-color-rgb), 0.24);
-    border-radius: 4px;
-    color: var(--center-channel-color);
-    font-size: 13px;
-    font-weight: 600;
-}
-
-.fileField:hover .fileButton {
-    background: rgba(var(--center-channel-color-rgb), 0.08);
-}
-
 .fileName {
     color: rgba(var(--center-channel-color-rgb), 0.75);
     font-size: 13px;
@@ -111,30 +98,12 @@
     font-style: italic;
 }
 
-.field {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-
+// Fieldset legends. The shared TextInput brings its own label, but a legend naming a group of checkboxes is not
+// a control, so it keeps a rule here.
 .fieldLabel {
     color: var(--center-channel-color);
     font-size: 13px;
     font-weight: 600;
-}
-
-.textInput {
-    padding: 10px 12px;
-    border: 1px solid rgba(var(--center-channel-color-rgb), 0.24);
-    border-radius: 4px;
-    background: var(--center-channel-bg);
-    color: var(--center-channel-color);
-    font-size: 14px;
-
-    &:focus {
-        border-color: var(--button-bg);
-        outline: none;
-    }
 }
 
 .choices {
@@ -229,66 +198,6 @@
     justify-content: flex-end;
     border-top: 1px solid rgba(var(--center-channel-color-rgb), 0.08);
     padding-top: 16px;
-}
-
-.primary {
-    padding: 10px 20px;
-    border: none;
-    border-radius: 4px;
-    background: var(--button-bg);
-    color: var(--button-color);
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-
-    &:disabled {
-        opacity: 0.4;
-        cursor: not-allowed;
-    }
-}
-
-// A within-step action — loading more of a list — rather than a step's own decision, so it reads as lighter
-// than .primary without disappearing into the surrounding text the way .tertiary does.
-.secondary {
-    align-self: flex-start;
-    margin-top: 4px;
-    padding: 8px 14px;
-    border: 1px solid rgba(var(--center-channel-color-rgb), 0.16);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--link-color);
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-
-    &:hover:not(:disabled) {
-        background: rgba(var(--center-channel-color-rgb), 0.08);
-    }
-
-    &:disabled {
-        opacity: 0.4;
-        cursor: not-allowed;
-    }
-}
-
-.tertiary {
-    padding: 8px 14px;
-    border: none;
-    border-radius: 4px;
-    background: transparent;
-    color: var(--link-color);
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-
-    &:hover:not(:disabled) {
-        background: rgba(var(--center-channel-color-rgb), 0.08);
-    }
-
-    &:disabled {
-        opacity: 0.4;
-        cursor: not-allowed;
-    }
 }
 
 .srOnly {
