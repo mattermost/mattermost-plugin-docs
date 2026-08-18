@@ -69,16 +69,6 @@ test(
 
         // # Log in and open the Docs product route
         const {page} = await pw.testBrowser.login(user);
-
-        // # Create a space to carry the menu under test — a fresh team starts with none. Created
-        // through the plugin's own API as the logged-in user (the browser session authenticates
-        // the request), since space creation requires team membership the admin lacks.
-        const createSpace = await page.request.post(`/plugins/${PLUGIN_ID}/api/v1/teams/${team.id}/spaces`, {
-            headers: {'X-Requested-With': 'XMLHttpRequest'},
-            data: {title: 'Permissions space'},
-        });
-        expect(createSpace.ok(), 'the space the test drives must be created').toBe(true);
-
         await page.goto(`/${team.name}/spaces`);
 
         // * Verify the product mounted and rendered its sidebar. Every space row carries the
