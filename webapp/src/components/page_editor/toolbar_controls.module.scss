@@ -1,0 +1,63 @@
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
+// See LICENSE.txt for license information.
+
+.control {
+    display: flex;
+    min-width: 32px;
+    height: 32px;
+    padding: 0 7px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: rgba(var(--center-channel-color-rgb), var(--icon-opacity));
+    place-content: center;
+    place-items: center;
+
+    &:hover {
+        background: rgba(var(--center-channel-color-rgb), 0.08);
+        color: rgba(var(--center-channel-color-rgb), var(--icon-opacity-hover));
+        fill: currentcolor;
+    }
+
+    &:active,
+    &.active,
+    &.active:hover {
+        background: rgba(var(--button-bg-rgb), 0.08);
+        color: var(--button-bg);
+        fill: currentcolor;
+    }
+}
+
+.menu {
+    z-index: 1100;
+    min-width: 180px;
+    padding: 8px 0;
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.16);
+    border-radius: 4px;
+    background: var(--center-channel-bg);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.menuItem {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    padding: 8px 20px;
+    border: none;
+    background: transparent;
+    color: var(--center-channel-color);
+    font-size: 14px;
+    gap: 12px;
+    text-align: left;
+
+    &:hover {
+        background: rgba(var(--center-channel-color-rgb), 0.08);
+    }
+}
+
+.swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    flex-shrink: 0;
+}

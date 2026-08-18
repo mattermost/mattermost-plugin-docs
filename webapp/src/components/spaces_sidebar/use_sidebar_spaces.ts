@@ -1,91 +1,126 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {favoriteKey} from 'data/favorites';
+import type {SidebarOrder} from 'data/favorites';
+import {useSidebarOrder, useToggleFavorite} from 'hooks/favorites';
+import {useAppSelector} from 'hooks/redux';
 import {useSpaces} from 'hooks/spaces';
-import {useEffect, useMemo, useState} from 'react';
+import {useTeamContext} from 'hooks/team';
+import {useCallback, useMemo, useState} from 'react';
+
+import {getDocsFavoriteSpaceIds} from 'store/favorites';
 
 import type {Space} from 'types/docs';
 
 import type {DndCategory} from './dnd/types';
 import {useSpacesDnd} from './dnd/use_spaces_dnd';
 
-const moveBetween = (
-    favoriteOrder: string[],
-    spacesOrder: string[],
-    spaceId: string,
-    to: DndCategory,
-    index: number,
-) => {
-    const fav = favoriteOrder.filter((id) => id !== spaceId);
-    const spaces = spacesOrder.filter((id) => id !== spaceId);
-    const target = to === 'favorites' ? fav : spaces;
-    target.splice(Math.max(0, Math.min(index, target.length)), 0, spaceId);
-    return {favoriteOrder: fav, spacesOrder: spaces};
-};
+// Both stored lists hold prefixed favorite keys ("space:<id>"), never bare ids:
+// moveBetween writes a prefixed key into whichever list receives the move, so a
+// list read back as bare ids would silently lose every reordered entry.
+const SPACE_KEY_PREFIX = favoriteKey({type: 'space', id: ''});
 
-// Prunes ids no longer live and returns the same array reference when nothing
-// changed, so callers can bail out of a state update without a re-render.
-const pruneOrder = (order: string[], liveIds: Set<string>): string[] => {
-    const pruned = order.filter((id) => liveIds.has(id));
-    return pruned.length === order.length ? order : pruned;
+// Applies a move of `key` into `to` at `index`, dropping it from both lists first
+// so a cross-category move can't leave a duplicate behind.
+const moveBetween = (order: SidebarOrder, key: string, to: DndCategory, index: number): SidebarOrder => {
+    const favorites = order.favorites.filter((entry) => entry !== key);
+    const spaces = order.spaces.filter((entry) => entry !== key);
+    const target = to === 'favorites' ? favorites : spaces;
+    target.splice(Math.max(0, Math.min(index, target.length)), 0, key);
+    return {favorites, spaces};
 };
 
 export type SidebarSpacesModel = {
     spacesById: Map<string, Space>;
-    favoriteOrder: string[];
+
+    /**
+     * Spaces in the favorites category, in display order: favorited outright, or
+     * holding a favorited page. Favorited pages themselves are surfaced in the
+     * page tree rather than here.
+     */
+    favoriteSpaceIds: string[];
     spacesOrder: string[];
     favoritesCollapsed: boolean;
     toggleFavoritesCollapsed: () => void;
     toggleFavorite: (id: string) => void;
 };
 
-// Holds ordering/favorites in local state today; these move to user
-// preferences in a later phase. `dndEnabled` gates the drag-to-
-// reorder monitor until that persistence exists (see SpacesSidebar).
+/**
+ * Composes the sidebar's display model from the space list, the user's favorites,
+ * and their manual ordering (both persisted as user preferences).
+ *
+ * Order is derived, not trusted: the stored list is a hint, filtered to what's
+ * live and then extended with anything it hasn't seen. So a stale entry can't
+ * hide a space, and a newly created one still appears.
+ */
 export function useSidebarSpaces(dndEnabled: boolean): SidebarSpacesModel {
     const spaces = useSpaces();
-    const [favoriteOrder, setFavoriteOrder] = useState<string[]>([]);
-    const [spacesOrder, setSpacesOrder] = useState<string[]>(() => spaces.map((s) => s.id));
+    const {id: teamId} = useTeamContext();
+    const toggleFavoritePreference = useToggleFavorite();
+    const {order, setOrder} = useSidebarOrder(teamId);
     const [favoritesCollapsed, setFavoritesCollapsed] = useState(false);
 
     const spacesById = useMemo(() => new Map(spaces.map((s) => [s.id, s])), [spaces]);
 
-    // The space set is now reactive (creates/deletes flow through the store),
-    // so reconcile the locally-owned order lists against it: prune ids that no
-    // longer exist, and append ids we haven't seen yet. Guarded so a no-op
-    // update returns the same reference and doesn't retrigger the effect.
-    useEffect(() => {
-        const liveIds = new Set(spaces.map((s) => s.id));
+    const allFavoriteSpaceIds = useAppSelector(getDocsFavoriteSpaceIds);
 
-        setFavoriteOrder((prev) => pruneOrder(prev, liveIds));
-
-        setSpacesOrder((prev) => {
-            const pruned = pruneOrder(prev, liveIds);
-            const tracked = new Set([...pruned, ...favoriteOrder]);
-            const additions = spaces.map((s) => s.id).filter((id) => !tracked.has(id));
-            return additions.length === 0 ? pruned : [...pruned, ...additions];
+    // Sorts ids by their position in the stored order, keeping anything the
+    // stored order hasn't seen at the end (in its natural order).
+    const applyStoredOrder = useCallback((ids: string[], storedKeys: string[], prefix: string) => {
+        const position = new Map<string, number>();
+        storedKeys.forEach((key, index) => {
+            if (key.startsWith(prefix)) {
+                position.set(key.slice(prefix.length), index);
+            }
         });
-    }, [spaces, favoriteOrder]);
+        return [...ids].sort((a, b) => (position.get(a) ?? Number.MAX_SAFE_INTEGER) - (position.get(b) ?? Number.MAX_SAFE_INTEGER));
+    }, []);
 
-    const applyMove = (spaceId: string, from: DndCategory, to: DndCategory, index: number) => {
-        const next = moveBetween(favoriteOrder, spacesOrder, spaceId, to, index);
-        setFavoriteOrder(next.favoriteOrder);
-        setSpacesOrder(next.spacesOrder);
-    };
+    // Favorites are a user preference, so the stored list spans every team (and
+    // can name a space that's been left or deleted). Scoping it to the team's
+    // loaded spaces here is what makes the counts downstream honest — an
+    // out-of-team favorite has no row to render, so counting it would leave the
+    // favorites category looking populated while showing nothing.
+    const favoriteSpaceIds = useMemo(
+        () => applyStoredOrder(allFavoriteSpaceIds.filter((id) => spacesById.has(id)), order.favorites, SPACE_KEY_PREFIX),
+        [allFavoriteSpaceIds, spacesById, order.favorites, applyStoredOrder],
+    );
 
-    const toggleFavorite = (id: string) => {
-        if (favoriteOrder.includes(id)) {
-            applyMove(id, 'favorites', 'spaces', spacesOrder.length);
-        } else {
-            applyMove(id, 'spaces', 'favorites', favoriteOrder.length);
+    // Spaces that aren't favorited, in stored order, then the rest.
+    const spacesOrder = useMemo(() => {
+        const shownInFavorites = new Set(favoriteSpaceIds);
+        const eligible = spaces.map((s) => s.id).filter((id) => !shownInFavorites.has(id));
+        return applyStoredOrder(eligible, order.spaces, SPACE_KEY_PREFIX);
+    }, [spaces, favoriteSpaceIds, order.spaces, applyStoredOrder]);
+
+    // The drag layer works in plain ids (only spaces are draggable), so ids are
+    // mapped back to their stored keys here. A cross-category move also flips
+    // favorite membership — in core, favoriting *is* a move between categories.
+    const applyMove = useCallback((id: string, from: DndCategory, to: DndCategory, index: number) => {
+        const toKeys = (ids: string[]) => ids.map((spaceId) => favoriteKey({type: 'space', id: spaceId}));
+        const stored: SidebarOrder = {favorites: toKeys(favoriteSpaceIds), spaces: toKeys(spacesOrder)};
+        setOrder(moveBetween(stored, favoriteKey({type: 'space', id}), to, index));
+
+        if (from !== to) {
+            toggleFavoritePreference('space', id);
         }
-    };
+    }, [setOrder, favoriteSpaceIds, spacesOrder, toggleFavoritePreference]);
 
-    useSpacesDnd({favoriteOrder, spacesOrder, onReorder: applyMove, enabled: dndEnabled});
+    const toggleFavorite = useCallback((id: string) => toggleFavoritePreference('space', id), [toggleFavoritePreference]);
+
+    // Projected to plain ids so the monitor's indexOf matches the drag payload;
+    // indices still line up with the key list, which is the same list projected.
+    useSpacesDnd({
+        favoriteOrder: favoriteSpaceIds,
+        spacesOrder,
+        onReorder: applyMove,
+        enabled: dndEnabled,
+    });
 
     return {
         spacesById,
-        favoriteOrder,
+        favoriteSpaceIds,
         spacesOrder,
         favoritesCollapsed,
         toggleFavoritesCollapsed: () => setFavoritesCollapsed((v) => !v),

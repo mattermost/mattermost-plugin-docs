@@ -4,17 +4,17 @@
 import {useCreateSpace} from 'hooks/spaces';
 import React from 'react';
 import {useIntl} from 'react-intl';
+import {SpaceIcon} from 'utils/space_icon';
 import {SPACE_DESCRIPTION_MAX_LENGTH, SPACE_NAME_MAX_LENGTH} from 'validation/space_schema';
 
 import GlobeIcon from '@mattermost/compass-icons/components/globe';
 import LockOutlineIcon from '@mattermost/compass-icons/components/lock-outline';
 
-import {PrimaryButton, TertiaryButton} from 'components/form-controls/button';
-import type {SelectorOption} from 'components/form-controls/public_private_selector';
-import PublicPrivateSelector from 'components/form-controls/public_private_selector';
-import TextArea from 'components/form-controls/text_area';
-import TextInput from 'components/form-controls/text_input';
-import UrlInput from 'components/form-controls/url_input';
+import {PrimaryButton, TertiaryButton} from 'components/form_controls/button';
+import type {SelectorOption} from 'components/form_controls/public_private_selector';
+import PublicPrivateSelector from 'components/form_controls/public_private_selector';
+import TextArea from 'components/form_controls/text_area';
+import TextInput from 'components/form_controls/text_input';
 import GenericModal from 'components/generic_modal/generic_modal';
 
 import type {Space, SpaceVisibility} from 'types/docs';
@@ -27,12 +27,10 @@ type Props = {
     onCreated?: (space: Space) => void;
 };
 
-const DEFAULT_SPACE_EMOJI = '📄';
-
 const CreateSpaceModal = ({onClose, onCreated}: Props) => {
     const {formatMessage} = useIntl();
 
-    const {form, slugSchema, baseUrl, changeName, changeSlug, submit, urlInputRef} = useCreateSpace({
+    const {form, changeName, submit} = useCreateSpace({
         onCreated: (space) => {
             onCreated?.(space);
             onClose();
@@ -98,28 +96,11 @@ const CreateSpaceModal = ({onClose, onCreated}: Props) => {
                                 label={formatMessage({id: 'docs.createSpace.nameLabel', defaultMessage: 'Space name'})}
                                 value={field.state.value}
                                 onChange={changeName}
-                                leading={<span aria-hidden='true'>{DEFAULT_SPACE_EMOJI}</span>}
+                                leading={<span aria-hidden='true'><SpaceIcon size={20}/></span>}
                                 error={firstSpaceValidationError(field.state.meta.errors, formatMessage)}
                                 maxLength={SPACE_NAME_MAX_LENGTH}
                                 autoFocus={true}
                                 onEnter={submit}
-                            />
-                        )}
-                    </form.Field>
-                    <form.Field
-                        name='slug'
-                        validators={{onBlurAsync: slugSchema}}
-                    >
-                        {(field) => (
-                            <UrlInput
-                                ref={urlInputRef}
-                                id='docs-create-space-url'
-                                ariaLabel={formatMessage({id: 'docs.createSpace.urlAriaLabel', defaultMessage: 'Space URL'})}
-                                baseUrl={baseUrl}
-                                value={field.state.value}
-                                onChange={changeSlug}
-                                onBlur={field.handleBlur}
-                                error={firstSpaceValidationError(field.state.meta.errors, formatMessage)}
                             />
                         )}
                     </form.Field>

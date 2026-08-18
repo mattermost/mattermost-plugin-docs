@@ -5,6 +5,8 @@ import {fireEvent, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 import {copyToClipboard} from 'utils/clipboard';
 
+import {Client4} from 'mattermost-redux/client';
+
 import {makeSpace, makeTeam} from 'store/test_fixtures';
 
 import SpaceItemMenu from './space_item_menu';
@@ -15,19 +17,12 @@ jest.mock('utils/clipboard', () => ({
     copyToClipboard: jest.fn(),
 }));
 
-// The settings modal reads its state over HTTP on mount; this menu only owns the
-// decision to open it, so the reads are stubbed rather than exercised here.
-jest.mock('client/space_permissions', () => {
-    const actual = jest.requireActual('client/space_permissions');
-    return {
-        ...actual,
-        getSpaceAccess: jest.fn(),
-        getSpaceMembers: jest.fn(),
-        getMemberProfiles: jest.fn(),
-    };
-});
-
-const api = jest.requireMock('client/space_permissions');
+// Stubbed at the hook boundary: mattermost-redux's preferences actions are
+// published as ESM that jest doesn't transform.
+jest.mock('hooks/favorites', () => ({
+    useSpaceFavoriteState: () => 'off',
+    useToggleFavorite: () => jest.fn(),
+}));
 
 const space = makeSpace('docs', 'Docs');
 
@@ -47,37 +42,18 @@ async function openMenu() {
 }
 
 describe('SpaceItemMenu', () => {
-    beforeEach(() => {
-        api.getSpaceAccess.mockResolvedValue({
-            id: space.id,
-            default_capabilities: [],
-            capabilities: ['read_page'],
-            view_access: 'open',
-            update_at: 0,
-        });
-        api.getSpaceMembers.mockResolvedValue({items: [], page: 0, per_page: 100, has_more: false});
-        api.getMemberProfiles.mockResolvedValue([]);
-    });
-
     it('copies the team-scoped space link', async () => {
-        renderMenu();
+        const previousUrl = Client4.getUrl();
+        try {
+            Client4.setUrl('http://localhost:8065/mattermost');
+            renderMenu();
+            await openMenu();
+            fireEvent.click(screen.getByText('Copy link'));
 
-        await openMenu();
-        fireEvent.click(screen.getByText('Copy link'));
-
-        await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('http://localhost:8065/myteam/spaces/docs'));
-    });
-
-    it('opens the permissions modal from the menu, scoped to this space', async () => {
-        renderMenu();
-
-        await openMenu();
-        expect(screen.queryByRole('heading', {name: 'Permissions for Docs'})).not.toBeInTheDocument();
-
-        fireEvent.click(screen.getByText('Space permissions'));
-
-        expect(await screen.findByRole('heading', {name: 'Permissions for Docs'})).toBeInTheDocument();
-        await waitFor(() => expect(api.getSpaceAccess).toHaveBeenCalledWith(space.id));
+            await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('http://localhost:8065/mattermost/myteam/spaces/docs'));
+        } finally {
+            Client4.setUrl(previousUrl);
+        }
     });
 
     it('opens the leave confirmation from the menu', async () => {

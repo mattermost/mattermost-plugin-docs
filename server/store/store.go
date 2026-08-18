@@ -57,6 +57,18 @@ var migrations embed.FS
 
 const defaultQueryTimeout = 30 * time.Second
 
+// pluginMaxOpenConns caps the plugin's own connection pool well below the server's shared
+// master-DB pool (default MaxOpenConns 300), so the plugin can never exhaust that pool on its
+// own even if every connection is held for the maximum lock-wait duration.
+const pluginMaxOpenConns = 15
+
+// pluginMaxIdleConns keeps idle connections available for typical Docs usage without holding
+// onto more of the shared pool than necessary.
+const pluginMaxIdleConns = 5
+
+// pluginConnMaxLifetime bounds how long a pooled connection is reused, as routine hygiene.
+const pluginConnMaxLifetime = 5 * time.Minute
+
 // migrationLockTimeout must exceed the statement timeout: an early expiry could drop the
 // distributed migration lock before DDL completes.
 const migrationLockTimeout = 70 * time.Minute
@@ -76,8 +88,13 @@ func New(db *sql.DB, driverName string, log *pluginapi.LogService) (*Store, erro
 		return nil, fmt.Errorf("docs plugin only supports PostgreSQL; got %q", driverName)
 	}
 
+	sqlxDB := sqlx.NewDb(db, driverName)
+	sqlxDB.SetMaxOpenConns(pluginMaxOpenConns)
+	sqlxDB.SetMaxIdleConns(pluginMaxIdleConns)
+	sqlxDB.SetConnMaxLifetime(pluginConnMaxLifetime)
+
 	s := &Store{
-		db:      sqlx.NewDb(db, driverName),
+		db:      sqlxDB,
 		builder: sq.StatementBuilder.PlaceholderFormat(sq.Dollar),
 		log:     log,
 	}
@@ -328,15 +345,16 @@ type ErrInvalidInput struct {
 // Reason codes for invariants decided atomically under a row lock (see RestorePage, RestoreSpace,
 // CreatePage). Callers map these to their own error keys.
 const (
-	ReasonNotRestorable           = "not_restorable"
-	ReasonNotDeleted              = "not_deleted"
-	ReasonMaxDepthExceeded        = "max_depth_exceeded"
-	ReasonSubtreeMaxDepthExceeded = "subtree_max_depth_exceeded"
-	ReasonParentNotLive           = "parent_not_live"
-	ReasonSubtreeNotOwned         = "subtree_not_owned"
-	ReasonDraftCycle              = "draft_cycle"
-	ReasonDraftTooDeep            = "draft_too_deep"
-	ReasonDraftQuotaExceeded      = "draft_quota_exceeded"
+	ReasonNotRestorable             = "not_restorable"
+	ReasonNotDeleted                = "not_deleted"
+	ReasonMaxDepthExceeded          = "max_depth_exceeded"
+	ReasonSubtreeMaxDepthExceeded   = "subtree_max_depth_exceeded"
+	ReasonParentNotLive             = "parent_not_live"
+	ReasonSubtreeNotOwned           = "subtree_not_owned"
+	ReasonDraftCycle                = "draft_cycle"
+	ReasonDraftTooDeep              = "draft_too_deep"
+	ReasonDraftQuotaExceeded        = "draft_quota_exceeded"
+	ReasonSubtreeTotalBytesExceeded = "subtree_total_bytes_exceeded"
 	// ReasonPageNotLive marks an autosave whose target is not addressable in the request's space:
 	// the page was deleted, snapshotted, or moved out of it, the existing draft belongs to another
 	// space, or the page id was never reserved at all (no page row and no draft). The caller maps

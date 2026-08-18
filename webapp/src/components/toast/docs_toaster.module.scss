@@ -1,0 +1,105 @@
+// Above the modal layer so toasts raised by modal actions stay visible, but
+// below tooltips.
+.viewport {
+    position: fixed;
+    z-index: var(--z-index-popover);
+    right: 24px;
+    bottom: 24px;
+    display: flex;
+
+    // Toasts arrive newest-first, so reversing puts the newest nearest the
+    // corner it animates in from.
+    flex-direction: column-reverse;
+    gap: 8px;
+    width: 386px;
+    max-width: calc(100vw - 48px);
+}
+
+.toast {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 20px;
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.16);
+    border-radius: 4px;
+    background: var(--center-channel-bg);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    transition: opacity 150ms ease-out, transform 150ms ease-out;
+
+    &[data-starting-style],
+    &[data-ending-style] {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+}
+
+.icon {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+}
+
+.success .icon {
+    color: var(--online-indicator);
+}
+
+.error .icon {
+    color: var(--error-text);
+}
+
+.warning .icon {
+    color: var(--away-indicator);
+}
+
+.info .icon {
+    color: var(--button-bg);
+}
+
+.body {
+    display: flex;
+    min-width: 0;
+    flex: 1 0 0;
+    flex-direction: column;
+    gap: 8px;
+    padding-right: 24px;
+    padding-left: 4px;
+}
+
+.title {
+    margin: 0;
+    color: var(--center-channel-color);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 20px;
+    word-break: break-word;
+}
+
+.description {
+    margin: 0;
+    color: rgba(var(--center-channel-color-rgb), 0.75);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 16px;
+    word-break: break-word;
+}
+
+.close {
+    position: absolute;
+    top: 11px;
+    right: 11px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: rgba(var(--center-channel-color-rgb), 0.56);
+    cursor: pointer;
+
+    &:hover {
+        background: rgba(var(--center-channel-color-rgb), 0.08);
+        color: rgba(var(--center-channel-color-rgb), 0.72);
+    }
+}

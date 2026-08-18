@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -573,6 +574,57 @@ func TestFetchDescendantRowsDepthAtCapAllowed(t *testing.T) {
 	descendants, err := s.FetchDescendantRowsForTest(root.Id)
 	require.NoError(t, err, "a subtree exactly at the depth cap must not error")
 	require.Len(t, descendants, store.MaxPageHierarchyDepth)
+}
+
+// TestFetchDescendantRowsByteBudgetExceeded verifies FetchDescendantRowsForTest returns
+// ErrLimitExceeded (with ReasonSubtreeTotalBytesExceeded) rather than materializing the full
+// result set when the subtree's combined Body+SearchText size exceeds
+// MaxPageDescendantsTotalBytes, even though the row count itself stays well under
+// MaxPageDescendantsLimit.
+func TestFetchDescendantRowsByteBudgetExceeded(t *testing.T) {
+	s := openTestDB(t)
+	channelID, root := seedSpaceAndPage(t, s)
+
+	largeBody := strings.Repeat("a", model.PageBodyMaxBytes)
+	largeSearchText := strings.Repeat("a", model.PageSearchTextMaxBytes)
+	perPageBytes := len(largeBody) + len(largeSearchText)
+	pageCount := store.MaxPageDescendantsTotalBytes/perPageBytes + 2
+
+	require.Less(t, pageCount, store.MaxPageDescendantsLimit, "test must exceed the byte budget without also exceeding the row-count cap")
+
+	for range pageCount {
+		child := newPage(root.SpaceId, channelID, mmmodel.NewId(), root.Id)
+		child.Body = largeBody
+		child.SearchText = largeSearchText
+		_, err := s.CreatePage(child, testDefaultMaxDepth)
+		require.NoError(t, err)
+	}
+
+	_, err := s.FetchDescendantRowsForTest(root.Id)
+	require.Error(t, err)
+	require.True(t, store.IsErrLimitExceeded(err), "expected ErrLimitExceeded, got %T: %v", err, err)
+	var limErr *store.ErrLimitExceeded
+	require.True(t, errors.As(err, &limErr))
+	require.Equal(t, store.ReasonSubtreeTotalBytesExceeded, limErr.Reason)
+}
+
+// TestFetchDescendantRowsByteBudgetAllowed verifies a subtree comfortably under
+// MaxPageDescendantsTotalBytes (and MaxPageDescendantsLimit) is returned in full, so the new
+// byte guard does not interfere with ordinary subtree fetches.
+func TestFetchDescendantRowsByteBudgetAllowed(t *testing.T) {
+	s := openTestDB(t)
+	channelID, root := seedSpaceAndPage(t, s)
+
+	for i := range 3 {
+		child := newPage(root.SpaceId, channelID, mmmodel.NewId(), root.Id)
+		child.Body = fmt.Sprintf("small body %d", i)
+		_, err := s.CreatePage(child, testDefaultMaxDepth)
+		require.NoError(t, err)
+	}
+
+	descendants, err := s.FetchDescendantRowsForTest(root.Id)
+	require.NoError(t, err)
+	require.Len(t, descendants, 3)
 }
 
 // TestOptimisticLockConflict verifies that Update with a stale EditAt fails as ErrConflict.
@@ -1875,4 +1927,49 @@ func TestWithSpaceMembershipLockAcquireTimeout(t *testing.T) {
 		return nil
 	}))
 	require.True(t, ran)
+}
+
+// TestNewConfiguresConnectionPoolLimits verifies that New bounds the plugin's own connection
+// pool instead of leaving it unlimited, so a burst of concurrent requests cannot open an
+// unbounded number of connections against the shared master DB.
+func TestNewConfiguresConnectionPoolLimits(t *testing.T) {
+	s := openTestDB(t)
+
+	stats := s.DBStatsForTest()
+	require.Equal(t, store.PluginMaxOpenConnsForTest, stats.MaxOpenConnections,
+		"New must cap MaxOpenConns well below the server's shared master pool")
+	require.Positive(t, store.PluginMaxOpenConnsForTest, "the configured cap itself must not be unbounded (0 means unlimited)")
+}
+
+// TestNewConnectionPoolLimitEnforcedUnderConcurrency verifies the configured MaxOpenConns cap
+// actually bounds concurrently open connections: firing far more concurrent queries than the
+// cap never observes more open connections than the configured limit.
+func TestNewConnectionPoolLimitEnforcedUnderConcurrency(t *testing.T) {
+	s := openTestDB(t)
+
+	const concurrent = 50
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var maxObserved atomic.Int64
+	for range concurrent {
+		wg.Go(func() {
+			<-start
+			_, err := s.RawExecForTest("SELECT pg_sleep(0.05)")
+			require.NoError(t, err)
+			for {
+				open := int64(s.DBStatsForTest().OpenConnections)
+				prev := maxObserved.Load()
+				if open <= prev || maxObserved.CompareAndSwap(prev, open) {
+					break
+				}
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	require.LessOrEqual(t, int(maxObserved.Load()), store.PluginMaxOpenConnsForTest,
+		"observed open connections must never exceed the configured MaxOpenConns cap")
+	require.Positive(t, s.DBStatsForTest().WaitCount,
+		"at least one query must have waited for a connection to confirm the cap was actually exercised")
 }

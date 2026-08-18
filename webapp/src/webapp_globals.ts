@@ -2,7 +2,8 @@
 // See LICENSE.txt for license information.
 
 import type {History} from 'history';
-import type {ComponentType, ElementType, ForwardRefExoticComponent, KeyboardEvent, KeyboardEventHandler, ReactNode, ReactNodeArray, RefAttributes, RefObject} from 'react';
+import React from 'react';
+import type {ComponentType, ElementType, ForwardRefExoticComponent, KeyboardEvent, KeyboardEventHandler, ReactElement, ReactNode, RefAttributes, RefObject} from 'react';
 import type {MessageDescriptor} from 'react-intl';
 import type {Action} from 'redux';
 
@@ -76,7 +77,7 @@ export type SuggestionResults<Item = unknown> =
 
 export type WysiwygEditorProps = {
     value: string;
-    onChange: (markdown: string) => void;
+    onChange: (content: string) => void;
     onSubmit: () => void;
     onFocus?: () => void;
     onBlur?: () => void;
@@ -88,6 +89,18 @@ export type WysiwygEditorProps = {
     useCtrlSend?: boolean;
     sendCodeBlockOnCtrlEnter?: boolean;
     onKeyDown?: (e: KeyboardEvent<HTMLDivElement>) => void;
+
+    // Document mode: 'json' hands the editor structured TipTap content instead of
+    // markdown, which is what a Docs page body is.
+    contentType?: 'markdown' | 'json';
+
+    // TipTap extensions to register on top of the host's own set. Left as
+    // `unknown[]` so consumers don't take a TipTap dependency.
+    extensions?: unknown[];
+
+    // Raised when stored content can't be parsed, so a caller can refuse to edit
+    // rather than overwrite the stored version with a fallback document.
+    onContentError?: (error: Error) => void;
 };
 
 export type SuggestionListProps = {
@@ -115,7 +128,7 @@ export type FormattingBarProps = {
     applyFormatting: (mode: PublishedMarkdownMode) => void;
     disableControls: boolean;
     location: string;
-    additionalControls?: ReactNodeArray;
+    additionalControls?: ReactNode[];
     aiActionsMenu?: ReactNode;
 
     // Returns a Tiptap Editor. Left as `unknown` so consumers don't have to
@@ -128,6 +141,12 @@ export type PublishedWysiwygEditorHandle = {
     focus: () => void;
     blur: () => void;
     getInputBox: () => HTMLElement | null;
+
+    // The underlying TipTap editor, for callers that drive it directly. Absent on
+    // hosts that predate document mode — see hostSupportsDocumentEditor.
+    getEditor?: () => unknown;
+
+    hasContentError?: () => boolean;
 };
 
 export type PublishedFormattingBarHandle = {
@@ -204,16 +223,40 @@ type TimestampProps = {
     children?: ReactNode;
 };
 
+export type AvatarSize = 'xxs' | 'xs' | 'sm' | 'md' | 'lg' | 'xl' | 'xxl';
+
+// Mirrors core's Avatar props (widgets/users/avatar). `name` is set to '' when a
+// visible label already accompanies the avatar, so screen readers don't repeat it.
+type AvatarProps = {
+    url?: string;
+    username?: string;
+    size?: AvatarSize;
+    name?: string;
+};
+
 // Core exposes shared React components to plugins on `window.Components`
-// (core's plugins/export.ts). Timestamp renders localized, timezone-aware
-// relative/absolute times so plugins don't hand-roll date formatting.
+// (core's plugins/export.ts). Timestamp renders localized times; Avatar renders
+// a user's profile picture with the host's sizing/fallback.
 type HostComponents = {
     Timestamp?: ComponentType<TimestampProps>;
+    Avatar?: ComponentType<AvatarProps>;
 };
 
 const hostComponents = (): HostComponents => (window as unknown as {Components?: HostComponents}).Components ?? {};
 
-export const Timestamp = hostComponents().Timestamp;
+// Renders the host Timestamp, or nothing on a host that doesn't publish it. The
+// fallback lives here so callers just render <Timestamp/> without a null check.
+export const Timestamp = (props: TimestampProps): ReactElement | null => {
+    const HostTimestamp = hostComponents().Timestamp;
+    return HostTimestamp ? React.createElement(HostTimestamp, props) : null;
+};
+
+// Renders the host Avatar, or nothing on a host that doesn't publish it. The
+// fallback lives here so callers just render <Avatar/> without a null check.
+export const Avatar = (props: AvatarProps): ReactElement | null => {
+    const HostAvatar = hostComponents().Avatar;
+    return HostAvatar ? React.createElement(HostAvatar, props) : null;
+};
 
 export function getBrowserHistory(): History | undefined {
     return webappUtils().browserHistory;
@@ -236,6 +279,12 @@ export function hostOpenModalAction(modalId: PublishedModalId, dialogProps?: Rec
 // read-only render or an "update your server" empty state.
 export function hostCanUseEditor(): boolean {
     return Boolean(webappUtils().editor?.WysiwygEditor);
+}
+
+// Document-mode support is detected from the handle rather than the module: a host
+// can publish the editor without publishing structured-content access.
+export function hostSupportsDocumentEditor(handle: PublishedWysiwygEditorHandle | null | undefined): boolean {
+    return typeof handle?.getEditor === 'function';
 }
 
 // The published editor components + suggestion provider constructors, or

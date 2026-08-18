@@ -1,525 +1,462 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {RestError} from 'client/rest';
-import {
-    getMemberProfiles,
-    getSpaceAccess,
-    getSpaceMembers,
-    setDefaultCapabilities,
-    setMemberCapabilities,
-    setSpaceViewAccess,
-} from 'client/space_permissions';
-import {useAppSelector} from 'hooks/redux';
-import React, {useCallback, useEffect, useRef, useState} from 'react';
+import {useDocsNavigation} from 'hooks/navigation';
+import {useAppDispatch, useAppSelector} from 'hooks/redux';
+import React, {useEffect, useMemo, useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
+import {SpaceIcon} from 'utils/space_icon';
 
-import type {UserProfile} from '@mattermost/types/users';
+import ArchiveOutlineIcon from '@mattermost/compass-icons/components/archive-outline';
+import CogOutlineIcon from '@mattermost/compass-icons/components/cog-outline';
+import FileTextOutlineIcon from '@mattermost/compass-icons/components/file-text-outline';
+import HomeVariantOutlineIcon from '@mattermost/compass-icons/components/home-variant-outline';
+import InformationOutlineIcon from '@mattermost/compass-icons/components/information-outline';
+import type IconProps from '@mattermost/compass-icons/components/props';
+import ShieldOutlineIcon from '@mattermost/compass-icons/components/shield-outline';
 
-import {getTeammateNameDisplaySetting} from 'mattermost-redux/selectors/entities/preferences';
-import {displayUsername} from 'mattermost-redux/utils/user_utils';
+import {deleteSpace, fetchPages, updateSpace} from 'store/actions';
+import {getPagesForSpace, getSpace} from 'store/selectors';
 
-import {PrimaryButton, TertiaryButton} from 'components/form-controls/button';
+import ConfirmModal from 'components/confirm_modal/confirm_modal';
+import {Button, DestructiveButton} from 'components/form_controls/button';
+import Select from 'components/form_controls/select';
+import type {SelectOption} from 'components/form_controls/select';
+import TextArea from 'components/form_controls/text_area';
+import TextInput from 'components/form_controls/text_input';
 import GenericModal from 'components/generic_modal/generic_modal';
+import SaveChangesBar from 'components/save_changes_bar/save_changes_bar';
+import {Tab, TabList, TabPanel, Tabs, TabsSeparator} from 'components/tabs/tabs';
 
+import {SPACE_PROP_DEFAULT_PAGE_ID} from 'types/docs';
 import type {Space} from 'types/docs';
-import type {Capability, SpaceMember, SpaceViewAccess} from 'types/permissions';
-import {Capabilities, DEFAULT_CAPABILITY_ORDER, MEMBER_CAPABILITY_ORDER} from 'types/permissions';
 
-import CapabilityToggles, {useCapabilityLabels} from './capability_toggles';
+import PermissionsTab from './permissions_tab';
 import styles from './space_settings_modal.module.scss';
+
+export type SpaceSettingsTab = 'info' | 'permissions' | 'configuration' | 'archive';
 
 type Props = {
     space: Space;
     onClose: () => void;
+    initialTab?: SpaceSettingsTab;
 };
 
-// One page of members. The list is a management surface for a space's own
-// membership, not a directory, so a single generous page covers it; has_more
-// drives an explicit notice rather than silently truncating.
-const MEMBERS_PER_PAGE = 100;
+type TabDef = {
+    id: SpaceSettingsTab;
+    label: string;
+    icon: React.ComponentType<IconProps>;
 
-const sameSet = (a: Capability[], b: Capability[]): boolean =>
-    a.length === b.length && a.every((capability) => b.includes(capability));
+    // Renders a separator above the item, grouping the destructive action away
+    // from the settings sections.
+    separated?: boolean;
 
-const SpaceSettingsModal = ({space, onClose}: Props) => {
+    destructive?: boolean;
+};
+
+const SpaceSettingsModal = ({space, onClose, initialTab = 'info'}: Props) => {
     const {formatMessage} = useIntl();
-    const capabilityLabels = useCapabilityLabels();
+    const {paths: absolutePaths} = useDocsNavigation({absolute: true});
+    const [activeTab, setActiveTab] = useState<SpaceSettingsTab>(initialTab);
 
-    const teammateNameDisplay = useAppSelector(getTeammateNameDisplaySetting) || '';
+    const tabs: TabDef[] = [
+        {id: 'info', label: formatMessage({id: 'docs.spaceSettings.tab.info', defaultMessage: 'Info'}), icon: InformationOutlineIcon},
+        {id: 'permissions', label: formatMessage({id: 'docs.spaceSettings.tab.permissions', defaultMessage: 'Permissions'}), icon: ShieldOutlineIcon},
+        {id: 'configuration', label: formatMessage({id: 'docs.spaceSettings.tab.configuration', defaultMessage: 'Configuration'}), icon: CogOutlineIcon},
+        {id: 'archive', label: formatMessage({id: 'docs.spaceSettings.tab.archive', defaultMessage: 'Archive space'}), icon: ArchiveOutlineIcon, separated: true, destructive: true},
+    ];
 
-    // Held locally rather than read from the host's user entities: the modal
-    // needs names for exactly the members it lists, and a space's membership is
-    // not otherwise loaded into that store.
-    const [profiles, setProfiles] = useState<Record<string, UserProfile>>({});
+    const info = useInfoTab(space);
+    const [discarding, setDiscarding] = useState(false);
 
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState('');
-    const [loadFailed, setLoadFailed] = useState(false);
-
-    const [viewAccess, setViewAccess] = useState<SpaceViewAccess>('open');
-    const [savedViewAccess, setSavedViewAccess] = useState<SpaceViewAccess>('open');
-    const [savingViewAccess, setSavingViewAccess] = useState(false);
-
-    // Sent back as expected_update_at on save, so a concurrent edit to the
-    // space surfaces as the server's conflict message rather than silently
-    // overwriting it.
-    const [updateAt, setUpdateAt] = useState(0);
-
-    const [defaults, setDefaults] = useState<Capability[]>([]);
-    const [savedDefaults, setSavedDefaults] = useState<Capability[]>([]);
-    const [savingDefaults, setSavingDefaults] = useState(false);
-
-    const [members, setMembers] = useState<SpaceMember[]>([]);
-    const [hasMoreMembers, setHasMoreMembers] = useState(false);
-
-    // Tracked per member (not a single id) so that editing two members
-    // concurrently doesn't let one row's completion clear the other's
-    // in-flight state. The ref guards against a second save starting for the
-    // same member before the state update from the first has committed; the
-    // state copy drives the aria-busy indication.
-    const savingMembersRef = useRef<Set<string>>(new Set());
-    const [savingMemberIds, setSavingMemberIds] = useState<Set<string>>(new Set());
-
-    // A toggle that arrives while that member's save is still in flight is not
-    // dropped: it is recorded here and picked up as soon as the in-flight save
-    // settles, so a quick double-toggle ends up persisting both, not just the
-    // first.
-    const pendingMemberSavesRef = useRef<Map<string, Capability[]>>(new Map());
-
-    // Member saves are triggered from click handlers, not the load effect, so
-    // they need their own unmount guard: the same cancelled-flag shape as the
-    // load effect below, but held in a ref since it must survive across calls.
-    const unmountedRef = useRef(false);
-    useEffect(() => {
-        return () => {
-            unmountedRef.current = true;
-        };
-    }, []);
-
-    // Whether the caller may edit the space-wide default. Manage authority is
-    // enough to reach this screen and change a member's grants, but repointing
-    // the default is space-admin only, so the section renders read-only for a
-    // manage-tier caller rather than failing on save.
-    const [canEditDefaults, setCanEditDefaults] = useState(false);
-
-    // Members may be unreadable while the space itself is readable: the listing
-    // requires manage authority. That is a narrower view, not an error.
-    const [canListMembers, setCanListMembers] = useState(false);
-
-    const describeError = useCallback((err: unknown): string => {
-        if (err instanceof RestError) {
-            return err.message;
-        }
-        return formatMessage({id: 'docs.spaceSettings.genericError', defaultMessage: 'Something went wrong. Please try again.'});
-    }, [formatMessage]);
-
-    useEffect(() => {
-        let cancelled = false;
-
-        const load = async () => {
-            setLoading(true);
-            setError('');
-            setLoadFailed(false);
-            try {
-                const access = await getSpaceAccess(space.id);
-                if (cancelled) {
-                    return;
-                }
-                setDefaults(access.default_capabilities);
-                setSavedDefaults(access.default_capabilities);
-                setCanEditDefaults(access.capabilities.includes(Capabilities.ADMIN_SPACE));
-                setViewAccess(access.view_access);
-                setSavedViewAccess(access.view_access);
-                setUpdateAt(access.update_at);
-
-                try {
-                    const page = await getSpaceMembers(space.id, 0, MEMBERS_PER_PAGE);
-                    if (cancelled) {
-                        return;
-                    }
-                    setMembers(page.items);
-                    setHasMoreMembers(page.has_more);
-                    setCanListMembers(true);
-
-                    // Names are cosmetic: a failure here leaves the rows
-                    // labelled by user id rather than failing the screen.
-                    const fetched = await getMemberProfiles(page.items.map((member) => member.user_id)).catch(() => []);
-                    if (!cancelled) {
-                        setProfiles(Object.fromEntries(fetched.map((profile) => [profile.id, profile])));
-                    }
-                } catch (membersErr) {
-                    if (cancelled) {
-                        return;
-                    }
-
-                    // A refusal here means the caller can read the space but not
-                    // manage it; anything else is a real failure worth showing.
-                    if (membersErr instanceof RestError && membersErr.status === 403) {
-                        setCanListMembers(false);
-                    } else {
-                        setError(describeError(membersErr));
-                    }
-                }
-            } catch (accessErr) {
-                if (!cancelled) {
-                    setError(describeError(accessErr));
-                    setLoadFailed(true);
-                }
-            } finally {
-                if (!cancelled) {
-                    setLoading(false);
-                }
-            }
-        };
-
-        load();
-        return () => {
-            cancelled = true;
-        };
-    }, [space.id, describeError]);
-
-    const saveVisibility = async () => {
-        setSavingViewAccess(true);
-        setError('');
-        try {
-            const updated = await setSpaceViewAccess(space.id, viewAccess, updateAt);
-            setViewAccess(updated.view_access);
-            setSavedViewAccess(updated.view_access);
-            setUpdateAt(updated.update_at);
-        } catch (err) {
-            setError(describeError(err));
-
-            // A conflict means the baseline is stale; re-read it so a retry
-            // can succeed. The pending selection is kept — only the baseline
-            // and the saved value move.
-            if (err instanceof RestError && err.status === 409) {
-                const fresh = await getSpaceAccess(space.id).catch(() => undefined);
-                if (fresh) {
-                    setSavedViewAccess(fresh.view_access);
-                    setUpdateAt(fresh.update_at);
-                }
-            }
-        } finally {
-            setSavingViewAccess(false);
-        }
-    };
-
-    const saveDefaults = async () => {
-        setSavingDefaults(true);
-        setError('');
-        try {
-            const updated = await setDefaultCapabilities(space.id, defaults);
-            setDefaults(updated.default_capabilities);
-            setSavedDefaults(updated.default_capabilities);
-        } catch (err) {
-            setError(describeError(err));
-        } finally {
-            setSavingDefaults(false);
-        }
-    };
-
-    // Sends the desired set, then recurses on whatever toggle was coalesced
-    // while that request was in flight, so a fast run of toggles ends with
-    // every one of them persisted rather than just the first. `fallback` is
-    // the last value the server actually confirmed, for reverting to on
-    // failure — the member's prior state on the first call, the previous
-    // round's response on every recursion after that.
-    const applyMemberSave = async (userId: string, desired: Capability[], fallback: SpaceMember | undefined): Promise<void> => {
-        try {
-            const updated = await setMemberCapabilities(space.id, userId, desired);
-            if (unmountedRef.current) {
-                return;
-            }
-            setMembers((current) => current.map((member) => (member.user_id === userId ? updated : member)));
-
-            const pending = pendingMemberSavesRef.current.get(userId);
-            pendingMemberSavesRef.current.delete(userId);
-            if (pending === undefined || sameSet(pending, updated.granted_capabilities)) {
-                return;
-            }
-            await applyMemberSave(userId, pending, updated);
-        } catch (err) {
-            // The toggle that arrived while this attempt was in flight gets
-            // its own attempt before anything reverts: only give up and fall
-            // back to server truth once there is no newer desired state left
-            // to try.
-            const pending = pendingMemberSavesRef.current.get(userId);
-            pendingMemberSavesRef.current.delete(userId);
-            if (pending !== undefined) {
-                await applyMemberSave(userId, pending, fallback);
-                return;
-            }
-            if (unmountedRef.current) {
-                return;
-            }
-
-            // A 404 means the member was removed while this screen was open.
-            // Reverting would resurrect a row whose every further save gets the
-            // same rejection, so the row is dropped instead.
-            if (err instanceof RestError && err.status === 404) {
-                setError(formatMessage({id: 'docs.spaceSettings.memberGone', defaultMessage: 'That person is no longer a member of this space.'}));
-                setMembers((current) => current.filter((member) => member.user_id !== userId));
-                return;
-            }
-            setError(describeError(err));
-            if (fallback) {
-                setMembers((current) => current.map((member) => (member.user_id === userId ? fallback : member)));
-            }
-        }
-    };
-
-    const saveMember = async (userId: string, granted: Capability[]) => {
-        // Every toggle is reflected immediately, whether or not a save is
-        // already in flight for this member, so the checkbox never appears to
-        // ignore a click. A save failure reverts it to the last value the
-        // server confirmed.
-        setMembers((current) => current.map((member) => (member.user_id === userId ? {...member, granted_capabilities: granted} : member)));
-
-        // A toggle for a member whose save is already in flight is coalesced
-        // into the pending set rather than disabling the row (which would
-        // blur focus away from the checkbox the user just clicked): the
-        // in-flight save picks it up once it settles.
-        if (savingMembersRef.current.has(userId)) {
-            pendingMemberSavesRef.current.set(userId, granted);
+    // Guard the close affordances (backdrop, Esc, ✕) when there are unsaved
+    // edits, confirming a discard before actually closing.
+    const handleClose = () => {
+        if (info.dirty) {
+            setDiscarding(true);
             return;
         }
-
-        const originalMember = members.find((member) => member.user_id === userId);
-
-        savingMembersRef.current.add(userId);
-        setSavingMemberIds(new Set(savingMembersRef.current));
-        setError('');
-
-        try {
-            await applyMemberSave(userId, granted, originalMember);
-        } finally {
-            savingMembersRef.current.delete(userId);
-            if (!unmountedRef.current) {
-                setSavingMemberIds(new Set(savingMembersRef.current));
-            }
-        }
+        onClose();
     };
 
-    // useFallbackUsername is off so an unresolved profile yields an empty string
-    // rather than the generic "Someone": on a permissions screen the row has to
-    // stay attributable, so it falls back to the user id instead.
-    const memberName = (userId: string): string => displayUsername(profiles[userId], teammateNameDisplay, false) || userId;
-
-    const footer = (
-        <TertiaryButton
-            type='button'
-            onClick={onClose}
-        >
-            {formatMessage({id: 'docs.spaceSettings.close', defaultMessage: 'Close'})}
-        </TertiaryButton>
+    const title = (
+        <FormattedMessage
+            id='docs.spaceSettings.title'
+            defaultMessage='Space Settings'
+        />
     );
 
     return (
         <GenericModal
             className={styles.modal}
-            title={formatMessage({id: 'docs.spaceSettings.title', defaultMessage: 'Permissions for {name}'}, {name: space.title})}
-            onClose={onClose}
-            footer={footer}
+            title={title}
+            ariaLabel={formatMessage({id: 'docs.spaceSettings.title', defaultMessage: 'Space Settings'})}
+            onClose={handleClose}
         >
-            <div className={styles.body}>
-                {error !== '' && (
-                    <div
-                        className={styles.error}
-                        role='alert'
-                    >
-                        {error}
-                    </div>
-                )}
+            <Tabs
+                className={styles.body}
+                orientation='vertical'
+                value={activeTab}
+                onValueChange={(value) => setActiveTab(value as SpaceSettingsTab)}
+            >
+                <TabList
+                    className={styles.nav}
+                    aria-label={formatMessage({id: 'docs.spaceSettings.navLabel', defaultMessage: 'Space settings sections'})}
+                >
+                    {tabs.map((tab) => {
+                        const Icon = tab.icon;
+                        return (
+                            <React.Fragment key={tab.id}>
+                                {tab.separated && <TabsSeparator/>}
+                                <Tab
+                                    value={tab.id}
+                                    leadingIcon={<Icon size={16}/>}
+                                    destructive={tab.destructive}
+                                >
+                                    {tab.label}
+                                </Tab>
+                            </React.Fragment>
+                        );
+                    })}
+                </TabList>
 
-                {loading && (
-                    <p
-                        className={styles.note}
-                        role='status'
+                <div className={styles.pane}>
+                    <TabPanel
+                        value='info'
+                        className={styles.panelContent}
+                    >
+                        <InfoTab
+                            space={space}
+                            info={info}
+                            url={absolutePaths.space(space.id)}
+                        />
+                    </TabPanel>
+                    <TabPanel
+                        value='permissions'
+                        className={styles.panelContent}
+                    >
+                        <PermissionsTab
+                            space={space}
+                            onClose={onClose}
+                        />
+                    </TabPanel>
+                    <TabPanel
+                        value='configuration'
+                        className={styles.panelContent}
+                    >
+                        <ConfigurationTab/>
+                    </TabPanel>
+                    <TabPanel
+                        value='archive'
+                        className={styles.panelContent}
+                    >
+                        <ArchiveTab
+                            space={space}
+                            onClose={onClose}
+                        />
+                    </TabPanel>
+                </div>
+            </Tabs>
+            {info.dirty && (
+                <div className={styles.floatingFooter}>
+                    <SaveChangesBar
+                        state={info.error ? 'error' : 'editing'}
+                        errorMessage={info.error}
+                        saving={info.saving}
+                        onSave={info.save}
+                        onReset={info.reset}
+                    />
+                </div>
+            )}
+
+            {/* Nested inside this dialog's tree so Base UI stacks it as a child
+                dialog rather than a sibling at the app root. */}
+            {discarding && (
+                <ConfirmModal
+                    isConfirmDestructive={true}
+                    title={formatMessage({id: 'docs.spaceSettings.discard.title', defaultMessage: 'Discard unsaved changes?'})}
+                    confirmButtonText={formatMessage({id: 'docs.spaceSettings.discard.confirm', defaultMessage: 'Discard changes'})}
+                    onConfirm={() => {
+                        setDiscarding(false);
+                        onClose();
+                    }}
+                    onCancel={() => setDiscarding(false)}
+                >
+                    <FormattedMessage
+                        id='docs.spaceSettings.discard.body'
+                        defaultMessage='Your unsaved changes to this space will be lost.'
+                    />
+                </ConfirmModal>
+            )}
+        </GenericModal>
+    );
+};
+
+export const Section = ({title, children}: {title: React.ReactNode; children: React.ReactNode}) => (
+    <section className={styles.section}>
+        <h2 className={styles.sectionTitle}>{title}</h2>
+        {children}
+    </section>
+);
+
+type InfoTabState = {
+    name: string;
+    setName: (value: string) => void;
+    description: string;
+    setDescription: (value: string) => void;
+
+    // '' = the space front door (hero) rather than a specific page.
+    landingPageId: string;
+    setLandingPageId: (value: string) => void;
+    error?: string;
+    dirty: boolean;
+    canSave: boolean;
+    saving: boolean;
+    save: () => void;
+    reset: () => void;
+};
+
+// Owns the editable Info-tab fields and the save flow. The baseline is read live
+// from the store (via getSpace) so a successful save clears the dirty state and
+// the floating save bar without closing the modal. Save no longer closes; the
+// user dismisses the modal themselves (guarded when there are unsaved changes).
+function useInfoTab(space: Space): InfoTabState {
+    const dispatch = useAppDispatch();
+    const liveSpace = useAppSelector((state) => getSpace(state, space.id)) ?? space;
+
+    const savedLandingPageId = liveSpace.props?.[SPACE_PROP_DEFAULT_PAGE_ID] ?? '';
+
+    const [name, setName] = useState(space.title);
+    const [description, setDescription] = useState(space.description ?? '');
+    const [landingPageId, setLandingPageId] = useState(savedLandingPageId);
+    const [error, setError] = useState<string>();
+    const [saving, setSaving] = useState(false);
+
+    const dirty = name.trim() !== liveSpace.title ||
+        description.trim() !== (liveSpace.description ?? '') ||
+        landingPageId !== savedLandingPageId;
+    const canSave = dirty && Boolean(name.trim()) && !saving;
+
+    const save = async () => {
+        if (!canSave) {
+            return;
+        }
+        setSaving(true);
+        setError(undefined);
+        try {
+            // Props replace wholesale server-side, so merge onto the live map to
+            // avoid dropping keys this UI doesn't manage.
+            const props = {...liveSpace.props, [SPACE_PROP_DEFAULT_PAGE_ID]: landingPageId};
+            await dispatch(updateSpace(space.id, {title: name.trim(), description: description.trim(), props}));
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const reset = () => {
+        setName(liveSpace.title);
+        setDescription(liveSpace.description ?? '');
+        setLandingPageId(savedLandingPageId);
+        setError(undefined);
+    };
+
+    return {name, setName, description, setDescription, landingPageId, setLandingPageId, error, dirty, canSave, saving, save, reset};
+}
+
+const InfoTab = ({space, info, url}: {space: Space; info: InfoTabState; url: string}) => {
+    const {formatMessage} = useIntl();
+
+    // The landing-page options need the space's pages, which aren't guaranteed
+    // loaded when settings is opened from outside the space view.
+    const dispatch = useAppDispatch();
+    useEffect(() => {
+        dispatch(fetchPages(space.id));
+    }, [dispatch, space.id]);
+
+    const pages = useAppSelector((state) => getPagesForSpace(state, space.id));
+
+    const landingPageOptions: SelectOption[] = useMemo(() => [
+        {
+            value: '',
+            label: formatMessage({id: 'docs.spaceSettings.info.landingSpaceHome', defaultMessage: 'Space home'}),
+            leadingIcon: <HomeVariantOutlineIcon size={16}/>,
+        },
+        ...pages.map((page) => ({
+            value: page.id,
+            label: page.title,
+            leadingIcon: <FileTextOutlineIcon size={16}/>,
+        })),
+    ], [pages, formatMessage]);
+
+    return (
+        <Section
+            title={(
+                <FormattedMessage
+                    id='docs.spaceSettings.info.heading'
+                    defaultMessage='Space info'
+                />
+            )}
+        >
+            <div className={styles.field}>
+                <TextInput
+                    id='docs-space-settings-name'
+                    label={formatMessage({id: 'docs.spaceSettings.info.nameLabel', defaultMessage: 'Space name'})}
+                    value={info.name}
+                    onChange={info.setName}
+                    maxLength={64}
+                    leading={(
+                        <SpaceIcon
+                            space={space}
+                            size={18}
+                        />
+                    )}
+                />
+                <div className={styles.urlRow}>
+                    <span className={styles.helper}>
+                        <FormattedMessage
+                            id='docs.spaceSettings.info.urlLabel'
+                            defaultMessage='Space URL'
+                        />
+                    </span>
+                    <span className={styles.urlText}>{url}</span>
+                    <Button
+                        emphasis='quaternary'
+                        size='xs'
+                        disabled={true}
+                        className={styles.inlineButton}
                     >
                         <FormattedMessage
-                            id='docs.spaceSettings.loading'
-                            defaultMessage='Loading permissions…'
+                            id='docs.spaceSettings.info.editUrl'
+                            defaultMessage='Edit'
                         />
-                    </p>
-                )}
-
-                {!loading && !loadFailed && (
-                    <>
-                        <section className={styles.section}>
-                            <h2 className={styles.sectionTitle}>
-                                <FormattedMessage
-                                    id='docs.spaceSettings.visibility.title'
-                                    defaultMessage='Visibility'
-                                />
-                            </h2>
-                            <fieldset className={styles.toggles}>
-                                <legend className={styles.togglesLegend}>
-                                    {formatMessage({id: 'docs.spaceSettings.visibility.legend', defaultMessage: 'Space visibility'})}
-                                </legend>
-                                <div className={styles.toggle}>
-                                    <input
-                                        id='docs-space-visibility-open'
-                                        type='radio'
-                                        name='docs-space-visibility'
-                                        checked={viewAccess === 'open'}
-                                        disabled={!canEditDefaults || savingViewAccess}
-                                        onChange={() => setViewAccess('open')}
-                                    />
-                                    <label htmlFor='docs-space-visibility-open'>
-                                        {formatMessage({id: 'docs.spaceSettings.visibility.open.option', defaultMessage: 'Open — Anyone on this team can find and read this space.'})}
-                                    </label>
-                                </div>
-                                <div className={styles.toggle}>
-                                    <input
-                                        id='docs-space-visibility-private'
-                                        type='radio'
-                                        name='docs-space-visibility'
-                                        checked={viewAccess === 'private'}
-                                        disabled={!canEditDefaults || savingViewAccess}
-                                        onChange={() => setViewAccess('private')}
-                                    />
-                                    <label htmlFor='docs-space-visibility-private'>
-                                        {formatMessage({id: 'docs.spaceSettings.visibility.private.option', defaultMessage: 'Private — Only members can find and read this space.'})}
-                                    </label>
-                                </div>
-                            </fieldset>
-                            {viewAccess === 'private' && savedViewAccess === 'open' && (
-                                <p
-                                    className={styles.note}
-                                    role='status'
-                                >
-                                    <FormattedMessage
-                                        id='docs.spaceSettings.visibility.privatizeNote'
-                                        defaultMessage='Members keep their access — review the member list below. "Joined automatically" marks members who arrived while the space was open.'
-                                    />
-                                </p>
-                            )}
-                            {canEditDefaults ? (
-                                <PrimaryButton
-                                    type='button'
-                                    disabled={savingViewAccess || viewAccess === savedViewAccess}
-                                    onClick={saveVisibility}
-                                >
-                                    {formatMessage({id: 'docs.spaceSettings.visibility.save', defaultMessage: 'Save visibility'})}
-                                </PrimaryButton>
-                            ) : (
-                                <p className={styles.note}>
-                                    <FormattedMessage
-                                        id='docs.spaceSettings.visibility.readOnly'
-                                        defaultMessage='Only a space administrator can change the space visibility.'
-                                    />
-                                </p>
-                            )}
-                        </section>
-
-                        <section className={styles.section}>
-                            <h2 className={styles.sectionTitle}>
-                                <FormattedMessage
-                                    id='docs.spaceSettings.defaults.title'
-                                    defaultMessage='Everyone in this space'
-                                />
-                            </h2>
-                            <p className={styles.note}>
-                                <FormattedMessage
-                                    id='docs.spaceSettings.defaults.description'
-                                    defaultMessage='What every member can do without an individual grant. {readPage} is always included.'
-                                    values={{readPage: capabilityLabels[Capabilities.READ_PAGE]}}
-                                />
-                            </p>
-                            <CapabilityToggles
-                                idPrefix='docs-space-default'
-                                legend={formatMessage({id: 'docs.spaceSettings.defaults.legend', defaultMessage: 'Default permissions'})}
-                                options={DEFAULT_CAPABILITY_ORDER}
-                                selected={defaults}
-                                disabled={!canEditDefaults || savingDefaults}
-                                onChange={setDefaults}
-                            />
-                            {canEditDefaults ? (
-                                <PrimaryButton
-                                    type='button'
-                                    disabled={savingDefaults || sameSet(defaults, savedDefaults)}
-                                    onClick={saveDefaults}
-                                >
-                                    {formatMessage({id: 'docs.spaceSettings.defaults.save', defaultMessage: 'Save defaults'})}
-                                </PrimaryButton>
-                            ) : (
-                                <p className={styles.note}>
-                                    <FormattedMessage
-                                        id='docs.spaceSettings.defaults.readOnly'
-                                        defaultMessage='Only a space administrator can change the default permissions.'
-                                    />
-                                </p>
-                            )}
-                        </section>
-
-                        {canListMembers && (
-                            <section className={styles.section}>
-                                <h2 className={styles.sectionTitle}>
-                                    <FormattedMessage
-                                        id='docs.spaceSettings.members.title'
-                                        defaultMessage='Individual members'
-                                    />
-                                </h2>
-                                <p className={styles.note}>
-                                    <FormattedMessage
-                                        id='docs.spaceSettings.members.description'
-                                        defaultMessage='Grants added on top of the space default. Clearing them leaves the member with the default.'
-                                    />
-                                </p>
-
-                                {members.map((member) => (
-                                    <div
-                                        key={member.user_id}
-                                        className={styles.member}
-                                    >
-                                        <div className={styles.memberName}>{memberName(member.user_id)}</div>
-                                        {member.auto_joined && (
-                                            <p className={styles.note}>
-                                                <FormattedMessage
-                                                    id='docs.spaceSettings.members.autoJoined'
-                                                    defaultMessage='Joined automatically'
-                                                />
-                                            </p>
-                                        )}
-                                        {member.is_guest ? (
-                                            <p className={styles.note}>
-                                                <FormattedMessage
-                                                    id='docs.spaceSettings.members.guest'
-                                                    defaultMessage='Guests can only view pages, and cannot be granted more.'
-                                                />
-                                            </p>
-                                        ) : (
-                                            <CapabilityToggles
-                                                idPrefix={`docs-space-member-${member.user_id}`}
-                                                legend={formatMessage(
-                                                    {id: 'docs.spaceSettings.members.legend', defaultMessage: 'Permissions for {name}'},
-                                                    {name: memberName(member.user_id)},
-                                                )}
-                                                options={MEMBER_CAPABILITY_ORDER}
-                                                selected={member.granted_capabilities}
-                                                busy={savingMemberIds.has(member.user_id)}
-                                                onChange={(next) => saveMember(member.user_id, next)}
-                                            />
-                                        )}
-                                    </div>
-                                ))}
-
-                                {hasMoreMembers && (
-                                    <p className={styles.note}>
-                                        <FormattedMessage
-                                            id='docs.spaceSettings.members.truncated'
-                                            defaultMessage='Only the first {count} members are shown.'
-                                            values={{count: MEMBERS_PER_PAGE}}
-                                        />
-                                    </p>
-                                )}
-                            </section>
-                        )}
-                    </>
-                )}
+                    </Button>
+                </div>
             </div>
-        </GenericModal>
+
+            <div className={styles.field}>
+                <span className={styles.fieldLabel}>
+                    <FormattedMessage
+                        id='docs.spaceSettings.info.descriptionLabel'
+                        defaultMessage='Description'
+                    />
+                </span>
+                <TextArea
+                    id='docs-space-settings-description'
+                    label={formatMessage({id: 'docs.spaceSettings.info.descriptionPlaceholder', defaultMessage: 'Enter a description for this space…'})}
+                    value={info.description}
+                    onChange={info.setDescription}
+                    maxLength={1024}
+                    rows={3}
+                />
+                <p className={styles.helper}>
+                    <FormattedMessage
+                        id='docs.spaceSettings.info.descriptionHelper'
+                        defaultMessage='Describe how this space should be used. This will show when browsing spaces.'
+                    />
+                </p>
+            </div>
+
+            <Select
+                id='docs-space-settings-landing-page'
+                label={formatMessage({id: 'docs.spaceSettings.info.landingLabel', defaultMessage: 'Default landing page'})}
+                value={info.landingPageId}
+                options={landingPageOptions}
+                onChange={info.setLandingPageId}
+            />
+
+        </Section>
+    );
+};
+
+const ConfigurationTab = () => (
+    <Section
+        title={(
+            <FormattedMessage
+                id='docs.spaceSettings.configuration.heading'
+                defaultMessage='Configuration'
+            />
+        )}
+    >
+        <p className={styles.copy}>
+            <FormattedMessage
+                id='docs.spaceSettings.configuration.comingSoon'
+                defaultMessage='Space configuration options are coming soon.'
+            />
+        </p>
+    </Section>
+);
+
+const ArchiveTab = ({space, onClose}: {space: Space; onClose: () => void}) => {
+    const {formatMessage} = useIntl();
+    const dispatch = useAppDispatch();
+    const {goHome} = useDocsNavigation();
+    const [error, setError] = useState<string>();
+    const [confirming, setConfirming] = useState(false);
+
+    const confirmArchive = async () => {
+        setError(undefined);
+        try {
+            await dispatch(deleteSpace(space.id));
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+            setConfirming(false);
+            return;
+        }
+
+        setConfirming(false);
+        onClose();
+        goHome();
+    };
+
+    return (
+        <Section
+            title={(
+                <FormattedMessage
+                    id='docs.spaceSettings.archive.heading'
+                    defaultMessage='Archive space'
+                />
+            )}
+        >
+            <div className={styles.archiveCard}>
+                <p className={styles.copy}>
+                    <FormattedMessage
+                        id='docs.spaceSettings.archive.copy'
+                        defaultMessage='Archiving removes this space and its pages from the team. Members will lose access. You can ask an admin to restore it later.'
+                    />
+                </p>
+                <DestructiveButton
+                    leadingIcon={<ArchiveOutlineIcon size={16}/>}
+                    onClick={() => setConfirming(true)}
+                >
+                    <FormattedMessage
+                        id='docs.spaceSettings.archive.button'
+                        defaultMessage='Archive space'
+                    />
+                </DestructiveButton>
+                {error && <div className={styles.error}>{error}</div>}
+            </div>
+
+            {/* Rendered inside this modal's tree (not through the modal
+                controller, which mounts at the app root) so Base UI sees it as a
+                nested dialog and stacks it over the settings modal. */}
+            {confirming && (
+                <ConfirmModal
+                    isConfirmDestructive={true}
+                    title={formatMessage({id: 'docs.spaceSettings.archive.confirmTitle', defaultMessage: 'Archive this space?'})}
+                    confirmButtonText={formatMessage({id: 'docs.spaceSettings.archive.confirmButton', defaultMessage: 'Archive'})}
+                    onConfirm={confirmArchive}
+                    onCancel={() => setConfirming(false)}
+                >
+                    <FormattedMessage
+                        id='docs.spaceSettings.archive.confirmBody'
+                        defaultMessage='“{title}” and its pages will be archived and members will lose access. This can be undone by an admin.'
+                        values={{title: space.title}}
+                    />
+                </ConfirmModal>
+            )}
+        </Section>
     );
 };
 

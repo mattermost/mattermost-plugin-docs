@@ -15,10 +15,10 @@ export type DocsNavKey = 'home' | 'notifications' | 'drafts';
 
 type Props = {
     active: DocsNavKey | null;
-    onSelect: (key: DocsNavKey) => void;
+    homeHref: string;
 };
 
-const SpacesSidebarNav = ({active, onSelect}: Props) => {
+const SpacesSidebarNav = ({active, homeHref}: Props) => {
     const {formatMessage} = useIntl();
 
     return (
@@ -27,7 +27,7 @@ const SpacesSidebarNav = ({active, onSelect}: Props) => {
                 leading={<HomeVariantOutlineIcon size={16}/>}
                 label={formatMessage({id: 'docs.sidebar.nav.home', defaultMessage: 'Home'})}
                 active={active === 'home'}
-                onClick={() => onSelect('home')}
+                to={homeHref}
             />
         </div>
     );

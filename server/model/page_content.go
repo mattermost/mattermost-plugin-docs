@@ -14,10 +14,11 @@ import (
 	"github.com/pkg/errors"
 )
 
-const (
-	TipTapDocType   = "doc"
-	EmptyTipTapJSON = `{"type":"doc","content":[]}`
-)
+const TipTapDocType = "doc"
+
+// EmptyTipTapJSON is a rendered-empty document. TipTap's root schema requires at least one block
+// (`block+`); the paragraph gives the editor a valid text block for its initial selection and caret.
+const EmptyTipTapJSON = `{"type":"doc","content":[{"type":"paragraph"}]}`
 
 // TipTapDocument is the parsed form of a TipTap editor document. Content is left as an untyped node
 // tree because node attributes and nesting vary per editor extension; the permitted node and mark
@@ -46,10 +47,7 @@ func BuildSearchText(doc TipTapDocument) string {
 // parse-level, not per-field, so there is no single i18n key to attach per reason.
 func ParseTipTapDocument(contentJSON string) (TipTapDocument, error) {
 	if contentJSON == "" {
-		return TipTapDocument{
-			Type:    TipTapDocType,
-			Content: []map[string]any{},
-		}, nil
+		contentJSON = EmptyTipTapJSON
 	}
 
 	// Reject over-limit content before parsing: json.Unmarshal materializes every node as a
@@ -68,11 +66,10 @@ func ParseTipTapDocument(contentJSON string) (TipTapDocument, error) {
 		return TipTapDocument{}, errors.New("content must be valid TipTap JSON with type: doc")
 	}
 
-	// A document with no "content" key (or an explicit null) decodes to a nil slice, which would
-	// re-marshal to "content":null. Empty content is [] everywhere else, and a client walking the
-	// array would fault on null, so normalize to the one empty representation.
-	if doc.Content == nil {
-		doc.Content = []map[string]any{}
+	// TipTap's root schema is `block+`, so omitted, null, and empty content are all normalized to a
+	// single empty paragraph before the document reaches the editor.
+	if len(doc.Content) == 0 {
+		doc.Content = []map[string]any{{"type": "paragraph"}}
 	}
 
 	if err := sanitizeTipTapDocument(&doc); err != nil {

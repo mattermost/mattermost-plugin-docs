@@ -1,0 +1,19 @@
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
+// See LICENSE.txt for license information.
+
+// Invisible until a drag is over it, and free in layout: the negative block
+// margins pull it back over the padding its neighbours already reserve for
+// spacing, so inserting it moves nothing. It overlaps 4px of the last row's
+// bottom padding — which is reparent surface, since this strip only exists when
+// that row is expanded — and 4px of whatever follows.
+.zone {
+    position: relative;
+    height: 8px;
+    flex-shrink: 0;
+    margin-block: -4px;
+}
+
+.blocked {
+    border-radius: 2px;
+    box-shadow: inset 0 0 0 2px var(--error-text);
+}

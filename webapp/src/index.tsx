@@ -1,13 +1,15 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {publishPagePresence} from 'client/presence_events';
+import type {PagePresenceEvent} from 'client/presence_events';
 import manifest from 'manifest';
 import type {Reducer} from 'redux';
 import {DOCS_BASE_URL, DOCS_SWITCHER_LINK_URL} from 'routing/paths';
 
 import reducer from 'store/reducer';
 
-import DocsRoot from 'components/docs_root/docs_root';
+import DocsRootLazy from 'components/docs_root/docs_root_lazy';
 import DocsSettingsButton from 'components/docs_settings_button/docs_settings_button';
 
 import type {PluginRegistry} from 'types/mattermost-webapp';
@@ -19,6 +21,8 @@ import type {PluginRegistry} from 'types/mattermost-webapp';
 const SWITCHER_ICON = 'file-text-outline';
 
 const DocsHeaderCentre = () => null;
+
+const PAGE_PRESENCE_EVENT = `custom_${manifest.id}_page_presence_updated`;
 
 export default class Plugin {
     public async initialize(registry: PluginRegistry) {
@@ -39,12 +43,16 @@ export default class Plugin {
         // out).
         registry.registerReducer(reducer as Reducer);
 
+        registry.registerWebSocketEventHandler<PagePresenceEvent>(PAGE_PRESENCE_EVENT, (msg) => {
+            publishPagePresence(msg.data);
+        });
+
         registry.registerProduct({
             baseURL: DOCS_BASE_URL,
             switcherIcon: SWITCHER_ICON,
             switcherText: 'Docs',
             switcherLinkURL: DOCS_SWITCHER_LINK_URL,
-            mainComponent: DocsRoot,
+            mainComponent: DocsRootLazy,
             headerCentreComponent: DocsHeaderCentre,
             headerRightComponent: DocsSettingsButton,
             showTeamSidebar: true,

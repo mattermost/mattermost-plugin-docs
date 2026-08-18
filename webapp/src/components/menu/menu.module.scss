@@ -49,8 +49,19 @@
     }
 }
 
+// Base UI marks the submenu trigger while its popup is open, so it keeps the
+// highlight after the pointer moves into the nested menu.
+.submenuTrigger[data-popup-open] {
+    background: rgba(var(--center-channel-color-rgb), 0.08);
+}
+
 .destructive {
     color: var(--error-text);
+}
+
+.disabled {
+    opacity: 0.4;
+    pointer-events: none;
 }
 
 .link {
@@ -88,4 +99,15 @@
     color: rgba(var(--center-channel-color-rgb), 0.64);
     font-size: 12px;
     line-height: 16px;
+}
+
+.itemTrailing {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+}
+
+.destructive .itemTrailing {
+    color: var(--error-text);
 }

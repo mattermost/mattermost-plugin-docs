@@ -40,6 +40,12 @@
     border: none;
     background: transparent;
     cursor: pointer;
+    text-decoration: none;
+
+    &:hover,
+    &:focus {
+        text-decoration: none;
+    }
 }
 
 .icon {
