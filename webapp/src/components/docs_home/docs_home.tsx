@@ -250,17 +250,13 @@ const EmptyHero = ({onCreateSpace, onBrowseSpaces}: Props) => {
                 </div>
                 <div className={styles.heroActions}>
                     <PrimaryButton
-                        size='lg'
                         className={styles.cta}
                         onClick={onCreateSpace}
                     >
                         <NotebookOutlineIcon size={18}/>
                         {formatMessage({id: 'docs.home.createSpace', defaultMessage: 'Create a space'})}
                     </PrimaryButton>
-                    <TertiaryButton
-                        size='lg'
-                        onClick={onBrowseSpaces}
-                    >
+                    <TertiaryButton onClick={onBrowseSpaces}>
                         {formatMessage({id: 'docs.home.browseSpaces', defaultMessage: 'Browse spaces'})}
                     </TertiaryButton>
                 </div>
