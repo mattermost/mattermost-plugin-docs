@@ -96,7 +96,14 @@ const CreateSpaceModal = ({onClose, onCreated}: Props) => {
                                 label={formatMessage({id: 'docs.createSpace.nameLabel', defaultMessage: 'Space name'})}
                                 value={field.state.value}
                                 onChange={changeName}
-                                leading={<span aria-hidden='true'><SpaceIcon size={20} space={{visibility: 'private'}}/></span>}
+                                leading={(
+                                    <span aria-hidden='true'>
+                                        <SpaceIcon
+                                            size={20}
+                                            space={{visibility: 'private'}}
+                                        />
+                                    </span>
+                                )}
                                 error={firstSpaceValidationError(field.state.meta.errors, formatMessage)}
                                 maxLength={SPACE_NAME_MAX_LENGTH}
                                 autoFocus={true}

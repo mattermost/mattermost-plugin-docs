@@ -141,7 +141,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
     // so typing still works while editing.
     useEffect(() => {
         if (!canEnterEdit) {
-            return;
+            return undefined;
         }
 
         const onKeyDown = (event: KeyboardEvent) => {
@@ -171,7 +171,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
 
     useEffect(() => {
         if (!canCommit || publishing) {
-            return;
+            return undefined;
         }
 
         const onKeyDown = (event: KeyboardEvent) => {
@@ -184,7 +184,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
 
             event.preventDefault();
             event.stopPropagation();
-            void publish();
+            publish().catch(() => undefined);
         };
 
         document.addEventListener('keydown', onKeyDown, true);

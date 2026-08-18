@@ -58,7 +58,7 @@ const AddMembersField = ({excludeIds, onAdd, disabled, large = false, commitOnSe
     const changePending = useCallback((users: MemberProfile[]) => {
         setPending(users);
         if (commitOnSelect && users.length > 0 && !busy) {
-            void add(users);
+            add(users).catch(() => undefined);
         }
     }, [add, busy, commitOnSelect]);
 
