@@ -41,8 +41,11 @@
     white-space: nowrap;
 }
 
-.roleTrigger {
-    gap: 4px;
+.roleTrigger:global(.btn.btn-sm) {
+    min-width: 0;
+    padding: 6px 8px;
+    gap: 8px;
+    background: transparent;
     color: var(--link-color);
     font-weight: 600;
 }

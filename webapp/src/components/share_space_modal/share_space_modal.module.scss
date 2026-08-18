@@ -4,7 +4,7 @@
 }
 
 .copyLink {
-    gap: 6px;
+    gap: 8px;
 }
 
 .body {
@@ -56,9 +56,20 @@
     height: 32px;
 }
 
-.accessTrigger {
-    gap: 4px;
+// Text + chevron, not a filled 40px control. Scoped under `.btn.btn-sm` to beat
+// core's quaternary padding and min-width.
+.accessTrigger:global(.btn.btn-sm),
+.canView:global(.btn.btn-sm) {
+    min-width: 0;
+    height: 32px;
+    padding: 6px 8px;
+    gap: 8px;
+    background: transparent;
     font-weight: 600;
+}
+
+.accessTrigger:global(.btn.btn-sm) {
+    color: var(--center-channel-color);
 }
 
 .accessHint {
@@ -67,8 +78,6 @@
     line-height: 20px;
 }
 
-.canView {
-    gap: 4px;
+.canView:global(.btn.btn-sm) {
     color: var(--link-color);
-    font-weight: 600;
 }

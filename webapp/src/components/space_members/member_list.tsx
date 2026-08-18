@@ -144,7 +144,6 @@ const MemberList = ({members, avatarSize, showYouBadge = false, spaceTitle, comf
                                 member={member}
                                 isCurrentUser={isCurrentUser}
                                 disabled={actions.disabled}
-                                comfortable={comfortable}
                                 onRemove={() => confirmRemove(member)}
                                 onLeave={confirmLeave}
                             />
