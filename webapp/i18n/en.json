@@ -150,6 +150,7 @@
   "docs.share.search": "Add people or groups",
   "docs.share.searching": "Searching…",
   "docs.share.title": "Share ''{name}''",
+  "docs.share.visibility.disabledReason": "Public spaces are coming soon",
   "docs.share.visibility.private": "Private",
   "docs.share.visibility.privateHint": "Only invited members",
   "docs.share.visibility.public": "Public",

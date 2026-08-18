@@ -75,21 +75,23 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
     const footer = (
         <div className={styles.access}>
             <div className={styles.accessLeft}>
-                <span className={styles.accessIcon}>
-                    <LockOutlineIcon size={18}/>
-                </span>
-                <Button
+                <button
                     type='button'
-                    emphasis='quaternary'
-                    size='sm'
                     className={styles.accessTrigger}
+                    disabled={true}
+                    aria-haspopup='listbox'
+                    title={formatMessage({
+                        id: 'docs.share.visibility.disabledReason',
+                        defaultMessage: 'Public spaces are coming soon',
+                    })}
                 >
+                    <LockOutlineIcon size={16}/>
                     <FormattedMessage
                         id='docs.share.visibility.private'
                         defaultMessage='Private'
                     />
                     <ChevronDownIcon size={16}/>
-                </Button>
+                </button>
                 <span className={styles.accessHint}>
                     <FormattedMessage
                         id='docs.share.visibility.privateHint'
