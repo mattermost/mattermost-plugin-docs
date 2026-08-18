@@ -11,7 +11,7 @@ import type {Space} from 'types/docs';
 // A space's icon: its custom emoji when set, otherwise a glyph for its
 // visibility — a globe for a public space, a lock for a private one. Visibility
 // isn't persisted yet (no view_access on the server until PR #10), so an absent
-// value reads as public, the only state the product supports today.
+// value reads as public. New spaces default to private in the create form.
 //
 // The glyph deliberately differs from a page's (file-text/folder): spaces and
 // pages sit side by side in the sidebar's favorites, so they must not look alike.

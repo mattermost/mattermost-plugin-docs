@@ -14,8 +14,8 @@ export type SelectorOption = {
     title: string;
     description: string;
 
-    // A disabled option is shown but not selectable (e.g. private spaces before
-    // space-level permissions exist).
+    // A disabled option is shown but not selectable (e.g. public spaces before
+    // team-wide view_access exists).
     disabled?: boolean;
     disabledReason?: string;
 };
