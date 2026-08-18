@@ -9,8 +9,8 @@ import AccountMultipleOutlineIcon from '@mattermost/compass-icons/components/acc
 import AccountMultiplePlusOutlineIcon from '@mattermost/compass-icons/components/account-multiple-plus-outline';
 import ChevronDownIcon from '@mattermost/compass-icons/components/chevron-down';
 import ExitToAppIcon from '@mattermost/compass-icons/components/exit-to-app';
-import GlobeIcon from '@mattermost/compass-icons/components/globe';
 import LightbulbOutlineIcon from '@mattermost/compass-icons/components/lightbulb-outline';
+import LockOutlineIcon from '@mattermost/compass-icons/components/lock-outline';
 import PlusIcon from '@mattermost/compass-icons/components/plus';
 import SettingsOutlineIcon from '@mattermost/compass-icons/components/settings-outline';
 
@@ -114,7 +114,7 @@ const SpacesSidebarHeader = ({teamName, teamDescription, onCreateSpace, onBrowse
                     {formatMessage({id: 'docs.sidebar.add.create', defaultMessage: 'Create a space'})}
                 </Menu.Item>
                 <Menu.Item
-                    leadingIcon={<GlobeIcon size={18}/>}
+                    leadingIcon={<LockOutlineIcon size={18}/>}
                     onClick={onBrowseSpaces}
                 >
                     {formatMessage({id: 'docs.sidebar.add.browse', defaultMessage: 'Browse spaces'})}
