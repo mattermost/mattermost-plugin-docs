@@ -82,6 +82,17 @@ describe('PageTitle edit mode', () => {
         expect(notPrevented).toBe(false);
     });
 
+    it('leaves Cmd/Ctrl+Enter for publish rather than committing the title', () => {
+        const onCommit = jest.fn();
+        renderTitle({editing: true, onCommit});
+        const field = screen.getByRole('textbox', {name: 'Page title'});
+
+        fireEvent.keyDown(field, {key: 'Enter', metaKey: true});
+        fireEvent.keyDown(field, {key: 'Enter', ctrlKey: true});
+
+        expect(onCommit).not.toHaveBeenCalled();
+    });
+
     it('commits on blur', () => {
         const onCommit = jest.fn();
         renderTitle({editing: true, onCommit});
