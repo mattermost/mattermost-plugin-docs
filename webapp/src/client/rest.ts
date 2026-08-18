@@ -67,9 +67,10 @@ async function request<T>(url: string, options: FetchOptions): Promise<T> {
     let serverErrorId: string | undefined;
     try {
         body = await response.json();
-        const data = body as {message?: string; id?: string};
-        message = data.message || message;
-        serverErrorId = data.id;
+        const data = body as {message?: string; id?: string; error?: {message?: string; id?: string}};
+        const errorData = data.error ?? data;
+        message = errorData.message || message;
+        serverErrorId = errorData.id;
     } catch {
         // Non-JSON error body — keep the status-based message.
     }
