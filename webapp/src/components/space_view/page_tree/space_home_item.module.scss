@@ -3,18 +3,12 @@
 .row {
     display: flex;
     width: 100%;
-    min-height: 32px;
+    height: 32px;
     align-items: center;
     gap: 8px;
     min-width: 0;
-
-    // Matches the tree's own row gap, so Overview reads as the list's first row.
     margin-block-end: 8px;
-    padding-block: 2px;
-
-    // Stands in for a tree row's chevron slot (16px) plus its gap (4px), so the
-    // icon lands on the same axis as the page rows' icons and the Pages toggle's.
-    padding-inline: 20px 4px;
+    padding: 6px 8px;
     border: none;
     border-radius: 4px;
     background: transparent;
