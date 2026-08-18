@@ -18,12 +18,8 @@
 .column {
     max-width: 700px;
     margin: 0 auto;
-    padding: 0 24px 96px;
-}
+    padding: 0 0 96px;
 
-
-
-.column {
     :global {
         .WysiwygEditor .ProseMirror {
             min-height: 60vh;
@@ -38,6 +34,20 @@
 
 .surface {
     position: relative;
+}
+
+// View mode still mounts a disabled editor so the body cannot be typed in, but
+// the host greys disabled fields. Reading should look like page copy.
+.reading :global {
+    .WysiwygEditor,
+    .WysiwygEditor .ProseMirror,
+    .custom-textarea,
+    .custom-textarea[disabled] {
+        opacity: 1;
+        color: var(--center-channel-color);
+        -webkit-text-fill-color: var(--center-channel-color);
+        cursor: default;
+    }
 }
 
 .pinnedToolbar {

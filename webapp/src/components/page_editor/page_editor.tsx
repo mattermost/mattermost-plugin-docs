@@ -1,6 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import classNames from 'classnames';
 import {usePublishDraft} from 'hooks/drafts';
 import {useHostEditor} from 'hooks/host_editor';
 import {usePageEditing} from 'hooks/page_editing';
@@ -175,7 +176,7 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
 
                     <div
                         ref={surfaceRef}
-                        className={styles.surface}
+                        className={classNames(styles.surface, {[styles.reading]: !editing})}
                     >
                         {editing && !pinned && (
                             <FloatingFormattingBar
