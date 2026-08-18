@@ -136,10 +136,7 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
                 toolbarSlot,
             )}
 
-            <div
-                className={styles.scroll}
-                data-docs-scroll=''
-            >
+            <div className={styles.scroll}>
                 <div className={styles.column}>
                     {documentMode === false && (
                         <div className={styles.notice}>

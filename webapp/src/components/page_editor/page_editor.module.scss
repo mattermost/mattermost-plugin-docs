@@ -1,18 +1,13 @@
 .root {
     display: flex;
-    flex: 1 1 0;
     flex-direction: column;
     min-width: 0;
-
-    min-height: 0;
-    height: 100%;
     background: var(--center-channel-bg);
 }
 
 .scroll {
     flex: 1 1 auto;
     min-height: 320px;
-    overflow-y: auto;
 }
 
 .column {
