@@ -50,6 +50,7 @@ type Props = {
     titleActions?: React.ReactNode;
     headerContent?: React.ReactNode;
     footer?: React.ReactNode;
+    footerClassName?: string;
 
     /** Divider under the header. On by default; opt out for minimal modals. */
     headerDivider?: boolean;
@@ -59,7 +60,7 @@ type Props = {
     children: React.ReactNode;
 };
 
-const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, initialFocus, showCloseButton = true, closeDisabled = false, titleActions, headerContent, footer, headerDivider = true, footerDivider = false, children}: Props) => {
+const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, initialFocus, showCloseButton = true, closeDisabled = false, titleActions, headerContent, footer, footerClassName, headerDivider = true, footerDivider = false, children}: Props) => {
     const {formatMessage} = useIntl();
     const closeLabel = formatMessage({id: 'docs.genericModal.close', defaultMessage: 'Close'});
 
@@ -185,7 +186,7 @@ const GenericModal = ({onClose, title, ariaLabel, className, headerClassName, in
                                     {headerContent}
                                 </div>
                                 {children}
-                                {footer && <div className={classNames(styles.footer, {[styles.footerDivider]: footerDivider})}>{footer}</div>}
+                                {footer && <div className={classNames(styles.footer, {[styles.footerDivider]: footerDivider}, footerClassName)}>{footer}</div>}
                             </ModalCloseContext.Provider>
                         </ModalNestingContext.Provider>
                     </Dialog.Popup>

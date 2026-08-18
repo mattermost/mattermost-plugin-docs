@@ -53,7 +53,8 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
     const title = (
         <FormattedMessage
             id='docs.share.title'
-            defaultMessage='Share space'
+            defaultMessage="Share ''{name}''"
+            values={{name: space.title}}
         />
     );
 
@@ -74,11 +75,12 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
     const footer = (
         <div className={styles.access}>
             <div className={styles.accessLeft}>
-                <GlobeIcon size={20}/>
+                <span className={styles.accessIcon}>
+                    <GlobeIcon size={18}/>
+                </span>
                 <Button
                     type='button'
                     emphasis='quaternary'
-                    size='sm'
                     className={styles.accessTrigger}
                 >
                     <FormattedMessage
@@ -97,7 +99,6 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
             <Button
                 type='button'
                 emphasis='quaternary'
-                size='sm'
                 className={styles.canView}
             >
                 <FormattedMessage
@@ -114,25 +115,34 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
             className={styles.modal}
             title={title}
             titleActions={titleActions}
-            ariaLabel={formatMessage({id: 'docs.share.title', defaultMessage: 'Share space'})}
+            ariaLabel={formatMessage({id: 'docs.share.title', defaultMessage: "Share ''{name}''"}, {name: space.title})}
             onClose={onClose}
             footer={footer}
+            footerClassName={styles.footer}
+            footerDivider={true}
         >
             <div className={styles.body}>
                 {canManageMembers && (
-                    <AddMembersField
-                        excludeIds={memberIds}
-                        onAdd={addMembers}
-                        disabled={busy}
-                    />
+                    <div className={styles.search}>
+                        <AddMembersField
+                            excludeIds={memberIds}
+                            onAdd={addMembers}
+                            disabled={busy}
+                            large={true}
+                            commitOnSelect={true}
+                        />
+                    </div>
                 )}
-                <MemberList
-                    members={members}
-                    avatarSize='md'
-                    showYouBadge={true}
-                    spaceTitle={space.title}
-                    actions={actions}
-                />
+                <div className={styles.members}>
+                    <MemberList
+                        members={members}
+                        avatarSize='md'
+                        showYouBadge={true}
+                        spaceTitle={space.title}
+                        comfortable={true}
+                        actions={actions}
+                    />
+                </div>
             </div>
         </GenericModal>
     );

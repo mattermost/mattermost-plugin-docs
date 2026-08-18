@@ -20,6 +20,7 @@ type Props = {
     disabled: boolean;
     onRemove: () => void;
     onLeave: () => void;
+    comfortable?: boolean;
 };
 
 /**
@@ -28,14 +29,14 @@ type Props = {
  * Role items are rendered disabled rather than hidden, so the menu does not change
  * shape when PR #10's capabilities make them real.
  */
-const MemberRowMenu = ({member, isCurrentUser, disabled, onRemove, onLeave}: Props) => {
+const MemberRowMenu = ({member, isCurrentUser, disabled, onRemove, onLeave, comfortable = false}: Props) => {
     const {formatMessage} = useIntl();
 
     const trigger = (
         <Button
             type='button'
             emphasis='quaternary'
-            size='sm'
+            size={comfortable ? undefined : 'sm'}
             className={styles.roleTrigger}
             aria-label={formatMessage(
                 {id: 'docs.spaceMembers.menu.label', defaultMessage: 'Admin, manage {name}'},

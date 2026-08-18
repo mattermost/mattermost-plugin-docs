@@ -31,6 +31,9 @@ type Props = {
     /** Names the space in the leave confirmation. Only needed alongside `actions`. */
     spaceTitle?: string;
 
+    /** 64px rows with 40px role triggers, matching the Share modal. */
+    comfortable?: boolean;
+
     // Absent means a read-only roster. Expressed as the absence of actions rather
     // than a flag, so a row can never render a menu with nothing behind it.
     actions?: MemberListActions;
@@ -45,7 +48,7 @@ type Props = {
  * it — so both confirm first. Confirming here rather than in each surface keeps the
  * copy in one place and means a new surface cannot forget it.
  */
-const MemberList = ({members, avatarSize, showYouBadge = false, spaceTitle, actions}: Props) => {
+const MemberList = ({members, avatarSize, showYouBadge = false, spaceTitle, comfortable = false, actions}: Props) => {
     const currentUserId = useAppSelector(getCurrentUserId);
 
     const confirmRemove = (member: MemberProfile) => openDocsModal((modal) => (
@@ -135,11 +138,13 @@ const MemberList = ({members, avatarSize, showYouBadge = false, spaceTitle, acti
                         avatarSize={avatarSize}
                         isCurrentUser={isCurrentUser}
                         showYouBadge={showYouBadge}
+                        comfortable={comfortable}
                         trailing={hasAction && actions && (
                             <MemberRowMenu
                                 member={member}
                                 isCurrentUser={isCurrentUser}
                                 disabled={actions.disabled}
+                                comfortable={comfortable}
                                 onRemove={() => confirmRemove(member)}
                                 onLeave={confirmLeave}
                             />

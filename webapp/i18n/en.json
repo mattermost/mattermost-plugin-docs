@@ -149,7 +149,7 @@
   "docs.share.remove": "Remove {name}",
   "docs.share.search": "Add people or groups",
   "docs.share.searching": "Searching…",
-  "docs.share.title": "Share space",
+  "docs.share.title": "Share ''{name}''",
   "docs.share.visibility.public": "Public",
   "docs.share.visibility.publicHint": "Anyone in Mattermost",
   "docs.sidebar.add.browse": "Browse spaces",

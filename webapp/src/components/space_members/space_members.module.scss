@@ -11,12 +11,18 @@
     padding: 8px 0;
 }
 
+.memberRowComfortable {
+    min-height: 64px;
+    gap: 8px;
+    padding: 16px 20px;
+}
+
 .memberInfo {
     display: flex;
     flex: 1 1 auto;
     min-width: 0;
     align-items: baseline;
-    gap: 6px;
+    gap: 8px;
 }
 
 .memberName {

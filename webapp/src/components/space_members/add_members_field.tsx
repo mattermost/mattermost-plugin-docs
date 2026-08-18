@@ -18,15 +18,25 @@ type Props = {
     /** Resolves to the users that failed, which stay as chips. */
     onAdd: (users: MemberProfile[]) => Promise<MemberProfile[]>;
     disabled: boolean;
+
+    /** 48px field, matching the Share modal search. */
+    large?: boolean;
+
+    /**
+     * Commit each selection immediately instead of collecting chips behind Add.
+     * The Share modal uses this; Settings keeps the explicit Add button.
+     */
+    commitOnSelect?: boolean;
 };
 
 /**
- * The add-people control: pick several, then commit them with Add.
+ * The add-people control. Settings collects chips then commits with Add; the
+ * Share modal commits each pick immediately (no Add button).
  *
  * Owns the pending selection so consumers pass only the current member ids and never
  * have to know that pending chips exist.
  */
-const AddMembersField = ({excludeIds, onAdd, disabled}: Props) => {
+const AddMembersField = ({excludeIds, onAdd, disabled, large = false, commitOnSelect = false}: Props) => {
     const [pending, setPending] = useState<MemberProfile[]>([]);
     const [adding, setAdding] = useState(false);
     const busy = disabled || adding;
@@ -36,34 +46,44 @@ const AddMembersField = ({excludeIds, onAdd, disabled}: Props) => {
         [excludeIds, pending],
     );
 
-    const add = useCallback(async () => {
+    const add = useCallback(async (users: MemberProfile[]) => {
         setAdding(true);
         try {
-            setPending(await onAdd(pending));
+            setPending(await onAdd(users));
         } finally {
             setAdding(false);
         }
-    }, [onAdd, pending]);
+    }, [onAdd]);
+
+    const changePending = useCallback((users: MemberProfile[]) => {
+        setPending(users);
+        if (commitOnSelect && users.length > 0 && !busy) {
+            void add(users);
+        }
+    }, [add, busy, commitOnSelect]);
 
     return (
         <div className={styles.addField}>
             <PeoplePicker
                 selected={pending}
                 excludeIds={exclude}
-                onChange={setPending}
+                onChange={changePending}
                 disabled={busy}
+                large={large}
             />
-            <PrimaryButton
-                type='button'
-                size='sm'
-                disabled={pending.length === 0 || busy}
-                onClick={add}
-            >
-                <FormattedMessage
-                    id='docs.spaceMembers.add'
-                    defaultMessage='Add'
-                />
-            </PrimaryButton>
+            {!commitOnSelect && (
+                <PrimaryButton
+                    type='button'
+                    size='sm'
+                    disabled={pending.length === 0 || busy}
+                    onClick={() => add(pending)}
+                >
+                    <FormattedMessage
+                        id='docs.spaceMembers.add'
+                        defaultMessage='Add'
+                    />
+                </PrimaryButton>
+            )}
         </div>
     );
 };
