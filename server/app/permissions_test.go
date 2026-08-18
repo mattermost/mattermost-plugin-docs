@@ -118,7 +118,7 @@ func TestAutoJoin_ProvenanceMarkerLifecycle(t *testing.T) {
 	// does not write this table).
 	testutil.MustAddChannelMember(t, h.db, space.ChannelId, userID)
 
-	_, appErr = h.svc.SetSpaceMemberCapabilities(space, userID, []string{model.CapabilityCommentPage}, mmmodel.NewId())
+	_, appErr = h.svc.SetSpaceMemberCapabilities(space, userID, []string{mmmodel.PermissionCommentPage.Id}, mmmodel.NewId())
 	require.Nil(t, appErr)
 
 	members, _, appErr = h.svc.GetSpaceMembers(space, 0, 60)
@@ -231,7 +231,7 @@ func TestUndoAutoJoin_SkipsRemovalWhenLegitimizedConcurrently(t *testing.T) {
 	// target read is master-backed; the auto-join above only ran through the mocked pluginapi call,
 	// which does not write this table, so seed it directly.
 	testutil.MustAddChannelMember(t, h.db, space.ChannelId, userID)
-	_, appErr = h.svc.SetSpaceMemberCapabilities(space, userID, []string{model.CapabilityCommentPage}, mmmodel.NewId())
+	_, appErr = h.svc.SetSpaceMemberCapabilities(space, userID, []string{mmmodel.PermissionCommentPage.Id}, mmmodel.NewId())
 	require.Nil(t, appErr)
 
 	h.svc.UndoAutoJoin(joined, space, userID)

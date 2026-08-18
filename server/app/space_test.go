@@ -136,7 +136,7 @@ func TestServiceCreateSpace_SchemeDenialKeepsStatus(t *testing.T) {
 	h := openTestServiceWithAPI(t, mockAPI)
 
 	// A single capability matches no preset, so the create resolves through the shared pool.
-	capabilities := []string{model.CapabilityCreatePage}
+	capabilities := []string{mmmodel.PermissionCreatePage.Id}
 	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: mmmodel.NewId(), Title: "Unlicensed"}, mmmodel.NewId(), &capabilities, nil)
 
 	require.NotNil(t, appErr)
@@ -819,14 +819,14 @@ func TestServiceSetSpaceDefaultCapabilities_SameSchemeStillConfiguresRoles(t *te
 	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true)
 	h := openTestServiceWithAPI(t, mockAPI)
 
-	capabilities := []string{model.CapabilityCreatePage}
-	pooledName := model.SharedSchemeNameForCapabilities(capabilities)
+	capabilities := []string{mmmodel.PermissionCreatePage.Id}
+	pooledName := model.SharedSchemeNameForPermissions(capabilities)
 	schemeID := mmmodel.NewId()
 	userRole, adminRole, guestRole := pooledName+"_user", pooledName+"_admin", pooledName+"_guest"
 	mockAPI.On("GetSchemeByName", pooledName).Return(&mmmodel.Scheme{
 		Id:                      schemeID,
 		Name:                    pooledName,
-		DisplayName:             model.SharedSchemeDisplayNameForCapabilities(capabilities),
+		DisplayName:             model.SharedSchemeDisplayNameForPermissions(capabilities),
 		Scope:                   mmmodel.SchemeScopeChannel,
 		DefaultChannelUserRole:  userRole,
 		DefaultChannelAdminRole: adminRole,
@@ -851,7 +851,7 @@ func TestServiceSetSpaceDefaultCapabilities_SameSchemeStillConfiguresRoles(t *te
 
 	require.Nil(t, appErr)
 	require.Equal(t, capabilities, updated.DefaultCapabilities)
-	require.ElementsMatch(t, []string{model.CapabilityReadPage, model.CapabilityCreatePage},
+	require.ElementsMatch(t, []string{mmmodel.PermissionReadPage.Id, mmmodel.PermissionCreatePage.Id},
 		unconfiguredUserRole.Permissions,
 		"resubmitting the set a space already resolves to must write the roles it was left without")
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_updated",
@@ -870,14 +870,14 @@ func TestServiceSetSpaceDefaultCapabilities_UserRoleAloneUnconfiguredStillWrites
 	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true)
 	h := openTestServiceWithAPI(t, mockAPI)
 
-	capabilities := []string{model.CapabilityCreatePage}
-	pooledName := model.SharedSchemeNameForCapabilities(capabilities)
+	capabilities := []string{mmmodel.PermissionCreatePage.Id}
+	pooledName := model.SharedSchemeNameForPermissions(capabilities)
 	schemeID := mmmodel.NewId()
 	userRoleName, adminRoleName, guestRoleName := pooledName+"_user", pooledName+"_admin", pooledName+"_guest"
 	mockAPI.On("GetSchemeByName", pooledName).Return(&mmmodel.Scheme{
 		Id:                      schemeID,
 		Name:                    pooledName,
-		DisplayName:             model.SharedSchemeDisplayNameForCapabilities(capabilities),
+		DisplayName:             model.SharedSchemeDisplayNameForPermissions(capabilities),
 		Scope:                   mmmodel.SchemeScopeChannel,
 		DefaultChannelUserRole:  userRoleName,
 		DefaultChannelAdminRole: adminRoleName,
@@ -887,7 +887,7 @@ func TestServiceSetSpaceDefaultCapabilities_UserRoleAloneUnconfiguredStillWrites
 
 	unconfiguredUserRole := testutil.StubRole(mockAPI, userRoleName, nil)
 	testutil.StubRole(mockAPI, adminRoleName, mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions))
-	testutil.StubRole(mockAPI, guestRoleName, []string{model.CapabilityReadPage})
+	testutil.StubRole(mockAPI, guestRoleName, []string{mmmodel.PermissionReadPage.Id})
 	testutil.StubPatchRole(mockAPI)
 
 	channelID := mmmodel.NewId()
@@ -900,7 +900,7 @@ func TestServiceSetSpaceDefaultCapabilities_UserRoleAloneUnconfiguredStillWrites
 
 	require.Nil(t, appErr)
 	require.Equal(t, capabilities, updated.DefaultCapabilities)
-	require.ElementsMatch(t, []string{model.CapabilityReadPage, model.CapabilityCreatePage},
+	require.ElementsMatch(t, []string{mmmodel.PermissionReadPage.Id, mmmodel.PermissionCreatePage.Id},
 		unconfiguredUserRole.Permissions,
 		"the recovery branch must be reached and write the still-unconfigured user role")
 	mockAPI.AssertCalled(t, "PatchRole", unconfiguredUserRole.Id, mock.AnythingOfType("*model.RolePatch"))
@@ -938,7 +938,7 @@ func TestServiceSetSpaceDefaultCapabilities_ResponseReflectsRequestedNotStaleRea
 	// Frozen on a permission set that does not match the request below, and never updated by the
 	// PatchRole stub: a caller that re-read this role after the write would see the wrong set.
 	mockAPI.On("GetRoleByName", userRole).
-		Return(&mmmodel.Role{Id: mmmodel.NewId(), Name: userRole, Permissions: []string{model.CapabilityCommentPage}}, nil)
+		Return(&mmmodel.Role{Id: mmmodel.NewId(), Name: userRole, Permissions: []string{mmmodel.PermissionCommentPage.Id}}, nil)
 	mockAPI.On("GetRoleByName", adminRole).Return(&mmmodel.Role{Id: mmmodel.NewId(), Name: adminRole}, nil)
 	mockAPI.On("GetRoleByName", guestRole).Return(&mmmodel.Role{Id: mmmodel.NewId(), Name: guestRole}, nil)
 	mockAPI.On("PatchRole", mock.AnythingOfType("string"), mock.AnythingOfType("*model.RolePatch")).

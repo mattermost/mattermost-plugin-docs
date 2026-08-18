@@ -1,0 +1,294 @@
+// Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
+// See LICENSE.txt for license information.
+
+package model
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"maps"
+	"net/http"
+	"slices"
+	"strings"
+
+	mmmodel "github.com/mattermost/mattermost/server/public/model"
+)
+
+// The space permission vocabulary is the core page-permission id strings themselves, so the API
+// speaks the same tokens core enforces — no invented level names.
+
+// grantableMemberPermissions is the wire vocabulary a caller may explicitly grant to a member:
+// the five atomic per-page permissions plus the admin permission. Atomic here and throughout
+// means indivisible — one generated role granting exactly one permission, never a bundle.
+var grantableMemberPermissions = map[string]bool{
+	mmmodel.PermissionCreatePage.Id:    true,
+	mmmodel.PermissionCommentPage.Id:   true,
+	mmmodel.PermissionEditPage.Id:      true,
+	mmmodel.PermissionDeleteOwnPage.Id: true,
+	mmmodel.PermissionDeletePage.Id:    true,
+	mmmodel.PermissionAdminSpace.Id:    true,
+}
+
+// grantableDefaultPermissions is the wire vocabulary a space-default permission set may hold:
+// the five atomic per-page permissions. admin_space is member-grant-only, never a space default.
+var grantableDefaultPermissions = map[string]bool{
+	mmmodel.PermissionCreatePage.Id:    true,
+	mmmodel.PermissionCommentPage.Id:   true,
+	mmmodel.PermissionEditPage.Id:      true,
+	mmmodel.PermissionDeleteOwnPage.Id: true,
+	mmmodel.PermissionDeletePage.Id:    true,
+}
+
+// permissionAtomicRole maps each non-admin grantable permission to the core atomic role
+// that carries it in ExplicitRoles.
+var permissionAtomicRole = map[string]string{
+	mmmodel.PermissionCreatePage.Id:    mmmodel.SpacePageCreatorRoleId,
+	mmmodel.PermissionCommentPage.Id:   mmmodel.SpacePageCommenterRoleId,
+	mmmodel.PermissionEditPage.Id:      mmmodel.SpacePageEditorRoleId,
+	mmmodel.PermissionDeleteOwnPage.Id: mmmodel.SpacePageDeleterOwnRoleId,
+	mmmodel.PermissionDeletePage.Id:    mmmodel.SpacePageDeleterRoleId,
+}
+
+// atomicRolePermission is the reverse of permissionAtomicRole, used to parse a stored
+// ExplicitRoles string back into the granted permission set. Derived from permissionAtomicRole so
+// the two cannot drift.
+var atomicRolePermission = func() map[string]string {
+	m := make(map[string]string, len(permissionAtomicRole))
+	for permission, roleName := range permissionAtomicRole {
+		m[roleName] = permission
+	}
+	return m
+}()
+
+// stripReadPage projects a core permission slice onto its wire id strings with the implicit
+// read_page baseline removed, so a canonical core permission set can be single-sourced into the
+// read_page-free wire vocabulary without drift.
+func stripReadPage(permissions []*mmmodel.Permission) []string {
+	return slices.DeleteFunc(mmmodel.PermissionIDs(permissions), func(id string) bool {
+		return id == mmmodel.PermissionReadPage.Id
+	})
+}
+
+// spaceAdminEffectivePermissions is the full permission set a SchemeAdmin member effectively
+// holds, single-sourced from core's canonical admin permission slice (SpaceAdminRolePermissions,
+// which already includes read_page). Stored already normalized, like presetPermissionSets below,
+// so the accessor copies without re-deriving the canonical form on every call.
+var spaceAdminEffectivePermissions = NormalizePermissions(mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions))
+
+// presetPermissionSets are the three seeded default-permission presets in wire form (read_page-
+// free — the baseline is implicit and never listed), single-sourced from core's canonical
+// permission slices. Stored already normalized so the lookups below compare and copy without
+// re-deriving the canonical form on every call.
+var presetPermissionSets = map[string][]string{
+	mmmodel.SchemeNameSpaceContribute: NormalizePermissions(stripReadPage(mmmodel.SpaceDefaultContributePermissions)),
+	mmmodel.SchemeNameSpaceComment:    NormalizePermissions(stripReadPage(mmmodel.SpaceDefaultCommentPermissions)),
+	mmmodel.SchemeNameSpaceReadOnly:   NormalizePermissions(stripReadPage(mmmodel.SpaceDefaultReadOnlyPermissions)),
+}
+
+// validatePermissions validates permissions against allowed, rejecting read_page as the
+// non-grantable baseline, plus admin_space when rejectAdmin is set. An unknown token is rejected.
+// Dedup-tolerant. where attributes the rejection to the calling validator.
+func validatePermissions(where string, permissions []string, allowed map[string]bool, rejectAdmin bool) *mmmodel.AppError {
+	for _, p := range permissions {
+		if p == mmmodel.PermissionReadPage.Id {
+			return mmmodel.NewAppError(where, "model.space_capabilities.read_page_not_grantable.app_error", nil, "", http.StatusBadRequest)
+		}
+		if rejectAdmin && p == mmmodel.PermissionAdminSpace.Id {
+			return mmmodel.NewAppError(where, "model.space_capabilities.admin_not_a_default.app_error", nil, "", http.StatusBadRequest)
+		}
+		if !allowed[p] {
+			return mmmodel.NewAppError(where, "model.space_capabilities.unknown_capability.app_error", map[string]any{"Capability": p}, "", http.StatusBadRequest)
+		}
+	}
+	return nil
+}
+
+// ValidateGrantedPermissions validates a per-member granted-permission request: each token must
+// be one of the grantable member permissions.
+func ValidateGrantedPermissions(permissions []string) *mmmodel.AppError {
+	return validatePermissions("ValidateGrantedPermissions", permissions, grantableMemberPermissions, false)
+}
+
+// ValidateDefaultPermissions validates a space-default permission set: same rule as
+// ValidateGrantedPermissions, plus admin_space is also rejected — a space default is never
+// admin-granting.
+func ValidateDefaultPermissions(permissions []string) *mmmodel.AppError {
+	return validatePermissions("ValidateDefaultPermissions", permissions, grantableDefaultPermissions, true)
+}
+
+// RolesForPermissions maps the requested non-admin permissions to their atomic role names for
+// ExplicitRoles, and reports whether admin_space was requested (schemeAdmin). The base
+// schemeUserRole token is always emitted first — core rejects a member update that leaves the base
+// scheme role unset. Pure: schemeUserRole (the scheme's generated user-role name) comes from the
+// caller, resolved via a store lookup elsewhere.
+func RolesForPermissions(permissions []string, schemeUserRole string) (explicitRoles string, schemeAdmin bool) {
+	roles := []string{schemeUserRole}
+	for _, p := range NormalizePermissions(permissions) {
+		if p == mmmodel.PermissionAdminSpace.Id {
+			schemeAdmin = true
+			continue
+		}
+		if roleName, ok := permissionAtomicRole[p]; ok {
+			roles = append(roles, roleName)
+		}
+	}
+	return strings.Join(roles, " "), schemeAdmin
+}
+
+// MemberPermissions is the reverse projection of a member's stored role state onto the permission
+// vocabulary: Effective is the member's effective permission set, Granted is the per-member
+// granted set beyond the space default.
+type MemberPermissions struct {
+	Effective []string
+	Granted   []string
+	IsAdmin   bool
+	IsGuest   bool
+}
+
+// PermissionsFromMember reverse-projects a member's raw role state onto the permission vocabulary.
+// explicitRoles is the raw space-delimited ChannelMember.ExplicitRoles string; any token that is
+// not an atomic role (a generated per-scheme role granting exactly one page permission)
+// is ignored (harmless if the base scheme token is passed too).
+// defaultPermissions is the space's default permission set (wire form, read_page-free).
+//
+// A SchemeGuest member's effective set is read_page alone — neither the space default nor its own
+// granted set. A guest resolves through the read-only DefaultChannelGuestRole rather than the
+// scheme's user-role default, and the write gate holds a guest to read_page even when a grant made
+// before a demotion is still recorded in ExplicitRoles. Granted still reports what is recorded, so
+// the two fields together show a stale grant rather than hiding it.
+//
+// A SchemeAdmin member's effective set additionally includes the full canonical admin
+// permission set, since SchemeAdmin resolves through DefaultChannelAdminRole regardless of what is
+// (or isn't) recorded in ExplicitRoles/the space default. Pure: the model never touches the store.
+func PermissionsFromMember(explicitRoles string, schemeAdmin, schemeGuest bool, defaultPermissions []string) MemberPermissions {
+	granted := make(map[string]bool)
+	for token := range strings.FieldsSeq(explicitRoles) {
+		if p, ok := atomicRolePermission[token]; ok {
+			granted[p] = true
+		}
+	}
+	if schemeAdmin {
+		granted[mmmodel.PermissionAdminSpace.Id] = true
+	}
+	grantedList := NormalizePermissions(slices.Collect(maps.Keys(granted)))
+
+	effective := map[string]bool{mmmodel.PermissionReadPage.Id: true}
+	if !schemeGuest {
+		if schemeAdmin {
+			for _, p := range spaceAdminEffectivePermissions {
+				effective[p] = true
+			}
+		}
+		for _, p := range defaultPermissions {
+			effective[p] = true
+		}
+		for _, p := range grantedList {
+			effective[p] = true
+		}
+	}
+
+	return MemberPermissions{
+		Effective: NormalizePermissions(slices.Collect(maps.Keys(effective))),
+		Granted:   grantedList,
+		IsAdmin:   schemeAdmin,
+		IsGuest:   schemeGuest,
+	}
+}
+
+// AdminEffectivePermissions returns the full permission set a SchemeAdmin effectively holds, wire
+// form, non-nil.
+func AdminEffectivePermissions() []string {
+	// Cloned, not returned directly: the set is package state a caller must not be able to mutate
+	// through the returned slice.
+	return slices.Clone(spaceAdminEffectivePermissions)
+}
+
+// DefaultPermissionsFrom projects a pooled scheme's stored user-role permission set
+// (raw core permission ids) onto the wire default-permission vocabulary: read_page (the implicit
+// baseline) and any non-default permission are stripped; only the grantable default
+// permission tokens survive.
+func DefaultPermissionsFrom(permissions []string) []string {
+	out := make([]string, 0, len(permissions))
+	for _, p := range permissions {
+		if grantableDefaultPermissions[p] {
+			out = append(out, p)
+		}
+	}
+	return NormalizePermissions(out)
+}
+
+// DefaultPermissionsForSchemeName returns the wire-form default permission set for one of the
+// three seeded preset scheme names, or false if name is not a preset.
+func DefaultPermissionsForSchemeName(name string) ([]string, bool) {
+	permissions, ok := presetPermissionSets[name]
+	if !ok {
+		return nil, false
+	}
+	// Cloned, not returned directly: the presets are package state a caller must not be able to
+	// mutate through the returned slice.
+	return slices.Clone(permissions), true
+}
+
+// SharedSchemeNamePrefix labels every scheme in the shared default-permission pool. The suffix is
+// derived from the permission set, so one scheme serves every space configured that way. Exported
+// so a caller matching pooled scheme names resolves the prefix from here rather than restating it.
+const SharedSchemeNamePrefix = "docs_space_default_"
+
+// sharedSchemeDisplayNamePrefix opens the operator-facing name of a pooled scheme, which then lists
+// the permission set the scheme grants.
+const sharedSchemeDisplayNamePrefix = "Space defaults: "
+
+// sharedSchemeNameDigestLength is how much of the digest the pool scheme name carries. Together
+// with SharedSchemeNamePrefix it fits core's 64-character limit with room to spare, and 64 bits is
+// far more than a vocabulary of a few tokens can collide within.
+const sharedSchemeNameDigestLength = 16
+
+// SharedSchemeNameForPermissions returns the pool scheme name expressing permissions: a
+// deterministic function of the permission set, so two spaces configured the same way resolve to
+// one shared scheme rather than each owning an identical private copy. The suffix is a digest
+// rather than the tokens themselves, which keeps the name inside core's 64-character
+// [a-z0-9_] limit and — unlike a positional encoding — leaves existing names meaning what they
+// always meant when the permission vocabulary grows.
+func SharedSchemeNameForPermissions(permissions []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(NormalizePermissions(permissions), " ")))
+	return SharedSchemeNamePrefix + hex.EncodeToString(sum[:])[:sharedSchemeNameDigestLength]
+}
+
+// SharedSchemeDisplayNameForPermissions returns the operator-facing name of the pooled scheme for
+// permissions, listing the set so the digest in the scheme name is legible in the System Console.
+// Truncated to core's DisplayName limit, which the current vocabulary is far short of.
+func SharedSchemeDisplayNameForPermissions(permissions []string) string {
+	name := sharedSchemeDisplayNamePrefix + strings.Join(NormalizePermissions(permissions), ", ")
+	if len(name) > mmmodel.SchemeDisplayNameMaxLength {
+		name = name[:mmmodel.SchemeDisplayNameMaxLength]
+	}
+	return name
+}
+
+// SchemeNameForDefaultPermissions returns the seeded preset scheme name matching permissions, or false
+// if permissions does not match any preset. Recognition is set equality — order-insensitive, deduplicated
+// — never a raw array comparison.
+func SchemeNameForDefaultPermissions(permissions []string) (string, bool) {
+	normalized := NormalizePermissions(permissions)
+	for name, preset := range presetPermissionSets {
+		if slices.Equal(preset, normalized) {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// NormalizePermissions dedupes and sorts permissions into a deterministic, non-nil slice.
+func NormalizePermissions(permissions []string) []string {
+	seen := make(map[string]bool, len(permissions))
+	out := make([]string, 0, len(permissions))
+	for _, p := range permissions {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	slices.Sort(out)
+	return out
+}

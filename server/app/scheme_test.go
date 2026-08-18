@@ -26,14 +26,14 @@ func TestGetOrCreateSharedScheme_ConcurrentCreateAdoptsWinner(t *testing.T) {
 	s, _ := testutil.OpenTestStore(t)
 	mockAPI := &plugintest.API{}
 	capabilities := []string{"create_page"}
-	name := model.SharedSchemeNameForCapabilities(capabilities)
+	name := model.SharedSchemeNameForPermissions(capabilities)
 
 	// Shaped exactly as the racing plugin instance would have created it — name, scope, and
 	// display name all derived from the capability set — since adoption verifies that shape.
 	winner := &mmmodel.Scheme{
 		Id:                      mmmodel.NewId(),
 		Name:                    name,
-		DisplayName:             model.SharedSchemeDisplayNameForCapabilities(capabilities),
+		DisplayName:             model.SharedSchemeDisplayNameForPermissions(capabilities),
 		Scope:                   mmmodel.SchemeScopeChannel,
 		DefaultChannelUserRole:  "winner_user_role",
 		DefaultChannelAdminRole: "winner_admin_role",
@@ -68,7 +68,7 @@ func TestGetOrCreateSharedScheme_ConcurrentCreateAdoptsWinner(t *testing.T) {
 // is still adopted, since refusing would permanently brick the capability set.
 func TestGetOrCreateSharedScheme_AdoptionGuard(t *testing.T) {
 	capabilities := []string{"create_page"}
-	name := model.SharedSchemeNameForCapabilities(capabilities)
+	name := model.SharedSchemeNameForPermissions(capabilities)
 
 	t.Run("team scope refused", func(t *testing.T) {
 		s, _ := testutil.OpenTestStore(t)
@@ -76,7 +76,7 @@ func TestGetOrCreateSharedScheme_AdoptionGuard(t *testing.T) {
 		mockAPI.On("GetSchemeByName", name).Return(&mmmodel.Scheme{
 			Id:          mmmodel.NewId(),
 			Name:        name,
-			DisplayName: model.SharedSchemeDisplayNameForCapabilities(capabilities),
+			DisplayName: model.SharedSchemeDisplayNameForPermissions(capabilities),
 			Scope:       mmmodel.SchemeScopeTeam,
 		}, nil).Once()
 

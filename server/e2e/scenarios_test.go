@@ -137,10 +137,10 @@ func TestScenarios(t *testing.T) {
 		// The real grant surface: the space admin assigns create_page + edit_page to CONTRIB.
 		var grantResp pluginmodel.SpaceMember
 		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityCreatePage, pluginmodel.CapabilityEditPage}}, &grantResp)
+			map[string][]string{"granted_capabilities": {mmmodel.PermissionCreatePage.Id, mmmodel.PermissionEditPage.Id}}, &grantResp)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "granting CONTRIB capabilities: %s", body)
-		require.ElementsMatch(t, []string{pluginmodel.CapabilityCreatePage, pluginmodel.CapabilityEditPage}, grantResp.GrantedCapabilities,
+		require.ElementsMatch(t, []string{mmmodel.PermissionCreatePage.Id, mmmodel.PermissionEditPage.Id}, grantResp.GrantedCapabilities,
 			"grant round-tripped as %v", grantResp.GrantedCapabilities)
 
 		status, body, err = doPluginRequest(ctx, contrib.client, http.MethodPost, "/spaces/"+space.Id+"/pages",
@@ -196,7 +196,7 @@ func TestScenarios(t *testing.T) {
 	t.Run("scenario4_announcement_space", func(t *testing.T) {
 		var space pluginmodel.Space
 		status, body, err := doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/teams/"+team.Id+"/spaces",
-			map[string]any{"title": "Scenario Announcement Space", "default_capabilities": []string{pluginmodel.CapabilityCommentPage}}, &space)
+			map[string]any{"title": "Scenario Announcement Space", "default_capabilities": []string{mmmodel.PermissionCommentPage.Id}}, &space)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusCreated, status, "createSpace failed: %s", body)
 		spacesToClean = append(spacesToClean, space.Id)
@@ -207,7 +207,7 @@ func TestScenarios(t *testing.T) {
 		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodGet, "/spaces/"+space.Id, nil, &withAccess)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "get space: %s", body)
-		require.ElementsMatch(t, []string{pluginmodel.CapabilityCommentPage}, withAccess.DefaultCapabilities,
+		require.ElementsMatch(t, []string{mmmodel.PermissionCommentPage.Id}, withAccess.DefaultCapabilities,
 			"comment default not set at create: %s", body)
 
 		addSpaceMember(t, ctx, spaceAdmin, space.Id, member.id)
@@ -223,7 +223,7 @@ func TestScenarios(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, status, "plain member create (comment default grants no create_page): %s", body)
 
 		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityCreatePage}}, nil)
+			map[string][]string{"granted_capabilities": {mmmodel.PermissionCreatePage.Id}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "granting CONTRIB create_page: %s", body)
 
@@ -253,12 +253,12 @@ func TestScenarios(t *testing.T) {
 		require.Equal(t, http.StatusCreated, status, "admin seed page failed: %s", body)
 
 		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityCreatePage}}, nil)
+			map[string][]string{"granted_capabilities": {mmmodel.PermissionCreatePage.Id}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "granting A create_page: %s", body)
 
 		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+member.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityEditPage}}, nil)
+			map[string][]string{"granted_capabilities": {mmmodel.PermissionEditPage.Id}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "granting B edit_page: %s", body)
 
@@ -343,7 +343,7 @@ func TestScenarios(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, status, "guest update: %s", body)
 
 		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+guestCandidate.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityCreatePage}}, nil)
+			map[string][]string{"granted_capabilities": {mmmodel.PermissionCreatePage.Id}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusBadRequest, status, "granting a guest capabilities: %s", body)
 		require.Equal(t, "app.space.member.guest_not_assignable.app_error", appErrorID(body))
@@ -372,12 +372,12 @@ func TestScenarios(t *testing.T) {
 		require.Equal(t, http.StatusCreated, status, "admin add member: %s", body)
 
 		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+s7ID+"/members/"+contrib.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityEditPage}}, nil)
+			map[string][]string{"granted_capabilities": {mmmodel.PermissionEditPage.Id}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "admin set member capabilities: %s", body)
 
 		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+s7ID+"/default-capabilities",
-			map[string][]string{"default_capabilities": {pluginmodel.CapabilityCommentPage}}, nil)
+			map[string][]string{"default_capabilities": {mmmodel.PermissionCommentPage.Id}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "admin set default capabilities: %s", body)
 
@@ -408,12 +408,12 @@ func TestScenarios(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, status, "control add member")
 
 		status, _, err = doPluginRequest(ctx, member.client, http.MethodPut, "/spaces/"+s7ID+"/members/"+contrib.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityEditPage}}, nil)
+			map[string][]string{"granted_capabilities": {mmmodel.PermissionEditPage.Id}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusForbidden, status, "control set member capabilities")
 
 		status, _, err = doPluginRequest(ctx, member.client, http.MethodPut, "/spaces/"+s7ID+"/default-capabilities",
-			map[string][]string{"default_capabilities": {pluginmodel.CapabilityCommentPage}}, nil)
+			map[string][]string{"default_capabilities": {mmmodel.PermissionCommentPage.Id}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusForbidden, status, "control set default capabilities")
 
@@ -434,7 +434,7 @@ func TestScenarios(t *testing.T) {
 	// is enforced against it, and switching back to a preset repoints the channel, leaving the
 	// superseded scheme in place for any other space using it.
 	t.Run("scenario8_custom_capability_scheme", func(t *testing.T) {
-		customCaps := []string{pluginmodel.CapabilityCreatePage, pluginmodel.CapabilityEditPage}
+		customCaps := []string{mmmodel.PermissionCreatePage.Id, mmmodel.PermissionEditPage.Id}
 
 		var space pluginmodel.Space
 		status, body, err := doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/teams/"+team.Id+"/spaces",
@@ -533,10 +533,10 @@ func TestScenarios(t *testing.T) {
 
 		var granted pluginmodel.SpaceMember
 		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {pluginmodel.CapabilityDeletePage}}, &granted)
+			map[string][]string{"granted_capabilities": {mmmodel.PermissionDeletePage.Id}}, &granted)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "granting delete_page: %s", body)
-		require.Contains(t, granted.GrantedCapabilities, pluginmodel.CapabilityDeletePage,
+		require.Contains(t, granted.GrantedCapabilities, mmmodel.PermissionDeletePage.Id,
 			"delete_page did not round-trip through ExplicitRoles: %s", body)
 		require.False(t, granted.IsAdmin, "granting delete_page must not make the member a space admin")
 
@@ -550,7 +550,7 @@ func TestScenarios(t *testing.T) {
 	// the scheme is minted, the backing channel is attached to it, and only then does the role
 	// patch carrying delete_page become admissible to core.
 	t.Run("delete_any_as_space_default", func(t *testing.T) {
-		defaultCaps := []string{pluginmodel.CapabilityCreatePage, pluginmodel.CapabilityDeletePage}
+		defaultCaps := []string{mmmodel.PermissionCreatePage.Id, mmmodel.PermissionDeletePage.Id}
 
 		var space pluginmodel.Space
 		status, body, err := doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/teams/"+team.Id+"/spaces",

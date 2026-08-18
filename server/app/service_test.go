@@ -73,8 +73,7 @@ func openTestService(t *testing.T) *testHarness {
 		Return(mmmodel.ChannelMembers{}, nil).Maybe()
 	mockAPI.On("DeleteChannel", mock.Anything).Return(nil).Maybe()
 	mockAPI.On("RestoreChannel", mock.Anything).Return(nil).Maybe()
-	mockAPI.On("GetChannelOfType", mock.Anything, mock.Anything).
-		Return((*mmmodel.Channel)(nil), &mmmodel.AppError{Id: "app.channel.get.app_error", StatusCode: http.StatusNotFound}).Maybe()
+	mockAPI.On("GetChannelOfType", mock.Anything, mock.Anything).Return((*mmmodel.Channel)(nil), nil).Maybe()
 	svc := app.New(s, nil, pluginapi.NewClient(mockAPI, nil))
 
 	return &testHarness{svc: svc, store: s, db: db}

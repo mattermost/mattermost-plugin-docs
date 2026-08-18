@@ -35,7 +35,7 @@ func permissionSetsEqual(a, b []string) bool {
 // from an interrupted create.
 //
 // Core accepts a scheme name as proof of space scope only for the reserved preset names
-// (model.SchemeNameForDefaultCapabilities recognizes them); a pooled scheme proves its scope by
+// (model.SchemeNameForDefaultPermissions recognizes them); a pooled scheme proves its scope by
 // having a space backing channel point at it instead.
 
 // schemeRoles is the generated channel-scheme role names governing one backing channel's scheme.
@@ -116,10 +116,10 @@ func (s *Service) getRolePermissionsByName(roleName string) ([]string, error) {
 	return role.Permissions, nil
 }
 
-// getOrCreateSharedScheme resolves the pooled channel scheme expressing capabilities, creating it
-// on first use. The name is a pure function of the capability set (see
-// model.SharedSchemeNameForCapabilities), so every space configured that way resolves to the same
-// scheme: two schemes carrying one capability set would be indistinguishable in behaviour, since
+// getOrCreateSharedScheme resolves the pooled channel scheme expressing a permission set, creating it
+// on first use. The name is a pure function of the permission set (see
+// model.SharedSchemeNameForPermissions), so every space configured that way resolves to the same
+// scheme: two schemes carrying one permission set would be indistinguishable in behaviour, since
 // nothing reads a scheme id or a generated role name for meaning.
 //
 // The returned roles start on core's default channel baseline when the scheme is new, and the
@@ -128,7 +128,7 @@ func (s *Service) getRolePermissionsByName(roleName string) ([]string, error) {
 // created by a racing caller may still be mid-configuration when this one finds it, and rewriting
 // an already-correct permission set is idempotent.
 func (s *Service) getOrCreateSharedScheme(capabilities []string) (string, *schemeRoles, error) {
-	name := model.SharedSchemeNameForCapabilities(capabilities)
+	name := model.SharedSchemeNameForPermissions(capabilities)
 	if scheme, err := s.client.Scheme.GetByName(name); err == nil {
 		if scopeErr := s.adoptableSharedScheme(scheme, capabilities); scopeErr != nil {
 			return "", nil, scopeErr
@@ -146,7 +146,7 @@ func (s *Service) getOrCreateSharedScheme(capabilities []string) (string, *schem
 
 	scheme, err := s.client.Scheme.Create(&mmmodel.Scheme{
 		Name:        name,
-		DisplayName: model.SharedSchemeDisplayNameForCapabilities(capabilities),
+		DisplayName: model.SharedSchemeDisplayNameForPermissions(capabilities),
 		Scope:       mmmodel.SchemeScopeChannel,
 	})
 	if err != nil {
@@ -177,7 +177,7 @@ func (s *Service) adoptableSharedScheme(scheme *mmmodel.Scheme, capabilities []s
 	if scheme.Scope != mmmodel.SchemeScopeChannel {
 		return errors.New("scheme " + scheme.Name + " under the pooled name has scope " + scheme.Scope + "; the pool only adopts channel-scoped schemes")
 	}
-	if expected := model.SharedSchemeDisplayNameForCapabilities(capabilities); scheme.DisplayName != expected {
+	if expected := model.SharedSchemeDisplayNameForPermissions(capabilities); scheme.DisplayName != expected {
 		s.log.Warn("adopting a pooled space scheme whose display name is not the pool's; its roles will be rewritten to the pool's permission sets",
 			"scheme_id", scheme.Id, "scheme_name", scheme.Name, "display_name", scheme.DisplayName, "expected_display_name", expected)
 	}
@@ -215,14 +215,14 @@ func rolesFromScheme(scheme *mmmodel.Scheme) *schemeRoles {
 // admin/guest roles stranded at core's broader channel defaults behind a User role that reads as
 // already correct.
 func (s *Service) configureSharedScheme(roles *schemeRoles, capabilities []string) (changed bool, err error) {
-	capabilities = model.NormalizeCapabilitySet(capabilities)
+	capabilities = model.NormalizePermissions(capabilities)
 	roleSets := []struct {
 		name  string
 		perms []string
 	}{
 		{roles.AdminRoleName, mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions)},
-		{roles.GuestRoleName, []string{model.CapabilityReadPage}},
-		{roles.UserRoleName, append([]string{model.CapabilityReadPage}, capabilities...)},
+		{roles.GuestRoleName, []string{mmmodel.PermissionReadPage.Id}},
+		{roles.UserRoleName, append([]string{mmmodel.PermissionReadPage.Id}, capabilities...)},
 	}
 	for _, rs := range roleSets {
 		rsChanged, err := s.setRolePermissions(rs.name, rs.perms)

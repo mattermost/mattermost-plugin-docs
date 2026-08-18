@@ -62,8 +62,8 @@ func (s *Service) resolveSpaceScheme(capabilities []string) (schemeID string, ro
 	// Normalize before the permission set is persisted: the validators are dedup-tolerant, so
 	// without this a request repeating one allowlisted token would write that repetition verbatim
 	// into the generated role's Permissions column.
-	capabilities = model.NormalizeCapabilitySet(capabilities)
-	if presetName, ok := model.SchemeNameForDefaultCapabilities(capabilities); ok {
+	capabilities = model.NormalizePermissions(capabilities)
+	if presetName, ok := model.SchemeNameForDefaultPermissions(capabilities); ok {
 		scheme, getErr := s.getSchemeByName(presetName)
 		if getErr != nil {
 			// Core seeds the presets; the plugin only reads them. A miss therefore means the server
@@ -155,11 +155,11 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultCapabili
 	}
 	space.ViewAccess = va
 
-	capabilities, _ := model.DefaultCapabilitiesForSchemeName(mmmodel.SchemeNameSpaceContribute)
+	capabilities, _ := model.DefaultPermissionsForSchemeName(mmmodel.SchemeNameSpaceContribute)
 	if defaultCapabilities != nil {
 		capabilities = *defaultCapabilities
 	}
-	if capErr := model.ValidateDefaultCapabilities(capabilities); capErr != nil {
+	if capErr := model.ValidateDefaultPermissions(capabilities); capErr != nil {
 		return nil, capErr
 	}
 
@@ -233,8 +233,8 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultCapabili
 	// aborts the create, so reaching this point means the creator holds the full admin set.
 	wrapper := &model.SpaceWithAccess{
 		Space:               *saved,
-		DefaultCapabilities: model.NormalizeCapabilitySet(capabilities),
-		Capabilities:        model.AdminEffectiveCapabilities(),
+		DefaultCapabilities: model.NormalizePermissions(capabilities),
+		Capabilities:        model.AdminEffectivePermissions(),
 	}
 	wrapper.Props = maps.Clone(saved.Props)
 	wrapper.EnsureCapabilities()
@@ -294,7 +294,7 @@ func (s *Service) defaultCapabilitiesForRoles(roles *schemeRoles) ([]string, err
 	if err != nil {
 		return nil, err
 	}
-	return model.DefaultCapabilitiesFromPermissions(perms), nil
+	return model.DefaultPermissionsFrom(perms), nil
 }
 
 // BuildSpaceWithAccess resolves the GET /spaces/{id} response wrapper: the space's default
@@ -338,15 +338,15 @@ func (s *Service) buildSpaceWithAccess(space *model.Space, userID string, knownD
 	var capabilities []string
 	switch resolution {
 	case ReadViaSysadmin:
-		capabilities = model.AdminEffectiveCapabilities()
+		capabilities = model.AdminEffectivePermissions()
 	case ReadViaMember:
 		member, memErr := s.client.Channel.GetMember(space.ChannelId, userID)
 		if memErr != nil {
 			return nil, mmmodel.NewAppError("BuildSpaceWithAccess", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memErr)
 		}
-		capabilities = model.CapabilitiesFromMember(member.ExplicitRoles, member.SchemeAdmin, member.SchemeGuest, defaultCapabilities).Effective
+		capabilities = model.PermissionsFromMember(member.ExplicitRoles, member.SchemeAdmin, member.SchemeGuest, defaultCapabilities).Effective
 	case ReadViaOpenFallthrough:
-		capabilities = []string{model.CapabilityReadPage}
+		capabilities = []string{mmmodel.PermissionReadPage.Id}
 	default:
 		return nil, existenceHidingForbidden("BuildSpaceWithAccess")
 	}
@@ -368,7 +368,7 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 	if space == nil {
 		return nil, mmmodel.NewAppError("SetSpaceDefaultCapabilities", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	if appErr := model.ValidateDefaultCapabilities(capabilities); appErr != nil {
+	if appErr := model.ValidateDefaultPermissions(capabilities); appErr != nil {
 		return nil, appErr
 	}
 	if appErr := s.requireClient("SetSpaceDefaultCapabilities", "space_id", space.Id); appErr != nil {
@@ -398,8 +398,8 @@ func (s *Service) SetSpaceDefaultCapabilities(space *model.Space, capabilities [
 		// the no-op shortcut, so it is carried as a value rather than failing the whole operation.
 		liveCapabilities, liveCapabilitiesErr := s.spaceDefaultCapabilitiesFromChannel(space.ChannelId, channel)
 
-		requested = model.NormalizeCapabilitySet(capabilities)
-		_, requestedIsPreset := model.SchemeNameForDefaultCapabilities(requested)
+		requested = model.NormalizePermissions(capabilities)
+		_, requestedIsPreset := model.SchemeNameForDefaultPermissions(requested)
 
 		// An unchanged non-preset set is settled here, on the projected capabilities, so the no-op
 		// costs no scheme resolution at all. A preset request is left to the id comparison below,

@@ -680,7 +680,7 @@ func TestServiceSetSpaceMemberCapabilities_DefaultCapabilitiesFailureAbortsBefor
 	h := openTestServiceWithAPI(t, mockAPI)
 	space, actingUserID := createSpaceForMemberTests(t, h, mockAPI)
 
-	_, appErr := h.svc.SetSpaceMemberCapabilities(space, targetUserID, []string{model.CapabilityEditPage}, actingUserID)
+	_, appErr := h.svc.SetSpaceMemberCapabilities(space, targetUserID, []string{mmmodel.PermissionEditPage.Id}, actingUserID)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
 	// space.ChannelId's creator-role assignment during createSpaceForMemberTests' CreateSpace call
@@ -707,7 +707,7 @@ func TestServiceSetSpaceMemberCapabilities_PublishesToChannelAndUser(t *testing.
 	testutil.MustAddChannelMember(t, h.db, space.ChannelId, targetUserID)
 
 	_, appErr := h.svc.SetSpaceMemberCapabilities(space, targetUserID,
-		[]string{model.CapabilityEditPage}, actingUserID)
+		[]string{mmmodel.PermissionEditPage.Id}, actingUserID)
 	require.Nil(t, appErr)
 
 	payload := map[string]any{"space_id": space.Id, "user_id": targetUserID}

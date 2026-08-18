@@ -214,11 +214,11 @@ func TestHandler_CreateSpace(t *testing.T) {
 	require.Equal(t, "My Space", created.Title)
 	// Create establishes the space's access state, so the response carries it and the caller needs
 	// no follow-up read: the seeded contribute default, and the creator's own admin set.
-	contribute, ok := model.DefaultCapabilitiesForSchemeName(mmmodel.SchemeNameSpaceContribute)
+	contribute, ok := model.DefaultPermissionsForSchemeName(mmmodel.SchemeNameSpaceContribute)
 	require.True(t, ok)
 	require.Equal(t, contribute, created.DefaultCapabilities)
-	require.Equal(t, model.AdminEffectiveCapabilities(), created.Capabilities)
-	require.Contains(t, created.Capabilities, model.CapabilityAdminSpace)
+	require.Equal(t, model.AdminEffectivePermissions(), created.Capabilities)
+	require.Contains(t, created.Capabilities, mmmodel.PermissionAdminSpace.Id)
 }
 
 // TestHandler_CreateSpace_IgnoresServerOwnedFields ensures the create handler does not trust
@@ -673,7 +673,7 @@ func TestHandler_AddSpaceMember_RejectsCapabilities(t *testing.T) {
 
 			rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/members", adminID, map[string]any{
 				"user_id": targetUserID,
-				field:     []string{model.CapabilityCommentPage},
+				field:     []string{mmmodel.PermissionCommentPage.Id},
 			})
 			require.Equal(t, http.StatusBadRequest, rec.Code)
 
@@ -1979,7 +1979,7 @@ func TestHandler_AddSpaceMember_GuestProjectsReadOnly(t *testing.T) {
 	require.Equal(t, targetUserID, member.UserId)
 	require.True(t, member.IsGuest)
 	require.False(t, member.IsAdmin)
-	require.Equal(t, []string{model.CapabilityReadPage}, member.Capabilities)
+	require.Equal(t, []string{mmmodel.PermissionReadPage.Id}, member.Capabilities)
 	require.Empty(t, member.GrantedCapabilities)
 }
 
@@ -2266,7 +2266,7 @@ func TestHandler_SetSpaceMemberCapabilities_EmptyDoesNotDemoteBelowDefault(t *te
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &member))
 	require.Empty(t, member.GrantedCapabilities)
 	require.ElementsMatch(t,
-		[]string{model.CapabilityReadPage, model.CapabilityCommentPage, model.CapabilityCreatePage, model.CapabilityEditPage, model.CapabilityDeleteOwnPage},
+		[]string{mmmodel.PermissionReadPage.Id, mmmodel.PermissionCommentPage.Id, mmmodel.PermissionCreatePage.Id, mmmodel.PermissionEditPage.Id, mmmodel.PermissionDeleteOwnPage.Id},
 		member.Capabilities)
 }
 
@@ -2360,7 +2360,7 @@ func stubSpaceCustomSchemeCreate(t *testing.T, mockAPI *plugintest.API) string {
 	userRole, adminRole, guestRole := "custom_scheme_user_role", "custom_scheme_admin_role", "custom_scheme_guest_role"
 	customScheme := &mmmodel.Scheme{
 		Id:                      customSchemeID,
-		Name:                    model.SharedSchemeNameForCapabilities([]string{"create_page"}),
+		Name:                    model.SharedSchemeNameForPermissions([]string{"create_page"}),
 		Scope:                   mmmodel.SchemeScopeChannel,
 		DefaultChannelUserRole:  userRole,
 		DefaultChannelAdminRole: adminRole,
@@ -2384,9 +2384,9 @@ func stubSpaceCustomSchemeCreate(t *testing.T, mockAPI *plugintest.API) string {
 func assertCustomSchemeRolePermissions(t *testing.T, mockAPI *plugintest.API, capabilities []string) {
 	t.Helper()
 	expected := map[string][]string{
-		"custom_scheme_user_role":  append([]string{model.CapabilityReadPage}, capabilities...),
+		"custom_scheme_user_role":  append([]string{mmmodel.PermissionReadPage.Id}, capabilities...),
 		"custom_scheme_admin_role": mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions),
-		"custom_scheme_guest_role": {model.CapabilityReadPage},
+		"custom_scheme_guest_role": {mmmodel.PermissionReadPage.Id},
 	}
 	for roleName, perms := range expected {
 		mockAPI.AssertCalled(t, "PatchRole",
@@ -2396,7 +2396,7 @@ func assertCustomSchemeRolePermissions(t *testing.T, mockAPI *plugintest.API, ca
 			}),
 			mock.MatchedBy(func(p *mmmodel.RolePatch) bool {
 				return p != nil && p.Permissions != nil && slices.Equal(
-					model.NormalizeCapabilitySet(*p.Permissions), model.NormalizeCapabilitySet(perms))
+					model.NormalizePermissions(*p.Permissions), model.NormalizePermissions(perms))
 			}))
 	}
 }
@@ -2512,7 +2512,7 @@ func TestHandler_SetSpaceDefaultCapabilities_CreatesPooledScheme(t *testing.T) {
 	// The pool key is a pure function of the capability set, so the minted scheme's name is exactly
 	// the one any other space requesting this set would resolve to.
 	mockAPI.AssertCalled(t, "CreateScheme", mock.MatchedBy(func(s *mmmodel.Scheme) bool {
-		return s.Name == model.SharedSchemeNameForCapabilities([]string{"create_page"})
+		return s.Name == model.SharedSchemeNameForPermissions([]string{"create_page"})
 	}))
 	require.NotNil(t, channel.SchemeId)
 	require.Equal(t, customSchemeID, *channel.SchemeId, "the channel must be repointed at the pooled scheme")
@@ -2745,7 +2745,7 @@ func TestHandler_OpenSpaceReadFallthrough_VisibleWithReadPublicChannel(t *testin
 	require.Equal(t, http.StatusOK, rec.Code)
 	var wrapper model.SpaceWithAccess
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &wrapper))
-	require.Equal(t, []string{model.CapabilityReadPage}, wrapper.Capabilities)
+	require.Equal(t, []string{mmmodel.PermissionReadPage.Id}, wrapper.Capabilities)
 }
 
 // TestHandler_OpenSpaceReadFallthrough_HiddenWithoutReadPublicChannel verifies the complementary

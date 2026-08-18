@@ -65,7 +65,7 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int) ([]*mod
 // toSpaceMember builds the wire representation of a channel member's capability state.
 // autoJoined reports whether the member carries the auto-join provenance marker.
 func toSpaceMember(cm *mmmodel.ChannelMember, defaultCapabilities []string, autoJoined bool) *model.SpaceMember {
-	mc := model.CapabilitiesFromMember(cm.ExplicitRoles, cm.SchemeAdmin, cm.SchemeGuest, defaultCapabilities)
+	mc := model.PermissionsFromMember(cm.ExplicitRoles, cm.SchemeAdmin, cm.SchemeGuest, defaultCapabilities)
 	member := &model.SpaceMember{
 		UserId:              cm.UserId,
 		Capabilities:        mc.Effective,
@@ -170,14 +170,14 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 	if !mmmodel.IsValidId(targetUserID) {
 		return nil, mmmodel.NewAppError("SetSpaceMemberCapabilities", "app.space.member.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	if appErr := model.ValidateGrantedCapabilities(capabilities); appErr != nil {
+	if appErr := model.ValidateGrantedPermissions(capabilities); appErr != nil {
 		return nil, appErr
 	}
 	if appErr := s.requireClient("SetSpaceMemberCapabilities", "space_id", space.Id, "user_id", targetUserID); appErr != nil {
 		return nil, appErr
 	}
 
-	requestedAdmin := slices.Contains(capabilities, model.CapabilityAdminSpace)
+	requestedAdmin := slices.Contains(capabilities, mmmodel.PermissionAdminSpace.Id)
 	selfTargeted := targetUserID == actingUserID
 
 	// The scheme-role read, the target's current admin status, the escalation-guard decision, and
@@ -196,7 +196,7 @@ func (s *Service) SetSpaceMemberCapabilities(space *model.Space, targetUserID st
 		if rolesErr != nil {
 			return schemeAppError("SetSpaceMemberCapabilities", rolesErr)
 		}
-		newRoles, newSchemeAdmin = model.RolesForCapabilities(capabilities, resolvedRoles.UserRoleName)
+		newRoles, newSchemeAdmin = model.RolesForPermissions(capabilities, resolvedRoles.UserRoleName)
 		// Resolved here, before the write below commits, rather than after the lock: the space's
 		// default capability set does not change during a member-capability write (only
 		// SetSpaceDefaultCapabilities changes it, serialized behind this same lock), so nothing about
