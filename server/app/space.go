@@ -851,6 +851,10 @@ func (s *Service) retryStuckChannelRestore(spaceID string) (*model.Space, *mmmod
 func (s *Service) backingChannelArchived(channelID string) (bool, error) {
 	channel, err := s.client.Channel.GetChannelOfType(channelID, mmmodel.ChannelTypeSpace)
 	if err != nil {
+		var appErr *mmmodel.AppError
+		if errors.As(err, &appErr) && appErr.StatusCode == http.StatusNotFound {
+			return false, nil
+		}
 		return false, err
 	}
 	return channel != nil && channel.DeleteAt != 0, nil
