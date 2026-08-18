@@ -127,18 +127,8 @@
     }
 }
 
-.notice {
-    padding: 8px 12px;
-    margin-top: 16px;
-    border-radius: 4px;
-    background: rgba(var(--away-indicator-rgb), 0.08);
-    color: var(--center-channel-color);
-    font-size: 12px;
-}
-
-.error {
-    background: rgba(var(--center-channel-color-rgb), 0.04);
-    color: var(--error-text);
+.banner {
+    margin-bottom: 16px;
 }
 
 .empty {
