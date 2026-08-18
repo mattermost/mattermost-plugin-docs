@@ -166,7 +166,9 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
         };
 
         document.addEventListener('keydown', onKeyDown);
-        return () => document.removeEventListener('keydown', onKeyDown);
+        return () => {
+            document.removeEventListener('keydown', onKeyDown);
+        };
     }, [canEnterEdit, onToggleEdit]);
 
     useEffect(() => {
@@ -188,7 +190,9 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
         };
 
         document.addEventListener('keydown', onKeyDown, true);
-        return () => document.removeEventListener('keydown', onKeyDown, true);
+        return () => {
+            document.removeEventListener('keydown', onKeyDown, true);
+        };
     }, [canCommit, publishing, publish]);
 
     // The open page's last-updated time, the draft's own while it is unpublished,
