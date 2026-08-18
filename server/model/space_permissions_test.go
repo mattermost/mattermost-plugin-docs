@@ -54,6 +54,43 @@ func TestRolesForPermissions_PermissionsFromMember_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestRolesForPermissions_AtomicRoleMapping pins each permission to the atomic role that carries it.
+// The round-trip test above proves only that the permission/role maps agree with each other — the
+// reverse map is derived from the forward one — so any permutation of the pairing still round-trips
+// unchanged. Asserting the role name per permission is what catches a swap that would grant
+// edit_page where create_page was requested. Both directions are pinned against the role constant
+// rather than against each other.
+func TestRolesForPermissions_AtomicRoleMapping(t *testing.T) {
+	const schemeUserRole = "generated_scheme_user_role"
+
+	atomicRoles := map[string]string{
+		mmmodel.PermissionCreatePage.Id:    mmmodel.SpacePageCreatorRoleId,
+		mmmodel.PermissionCommentPage.Id:   mmmodel.SpacePageCommenterRoleId,
+		mmmodel.PermissionEditPage.Id:      mmmodel.SpacePageEditorRoleId,
+		mmmodel.PermissionDeleteOwnPage.Id: mmmodel.SpacePageDeleterOwnRoleId,
+		mmmodel.PermissionDeletePage.Id:    mmmodel.SpacePageDeleterRoleId,
+	}
+
+	for permission, roleName := range atomicRoles {
+		t.Run(permission, func(t *testing.T) {
+			explicitRoles, schemeAdmin := model.RolesForPermissions([]string{permission}, schemeUserRole)
+			require.False(t, schemeAdmin, "%s must not imply admin", permission)
+			require.Equal(t, []string{schemeUserRole, roleName}, strings.Fields(explicitRoles))
+
+			granted := model.PermissionsFromMember(roleName, false, false, nil).Granted
+			require.Equal(t, []string{permission}, granted, "%s must reverse-project to %s", roleName, permission)
+		})
+	}
+
+	t.Run(mmmodel.PermissionAdminSpace.Id, func(t *testing.T) {
+		// admin_space is carried by the SchemeAdmin flag rather than an atomic role, so it must emit
+		// the base scheme-user token alone.
+		explicitRoles, schemeAdmin := model.RolesForPermissions([]string{mmmodel.PermissionAdminSpace.Id}, schemeUserRole)
+		require.True(t, schemeAdmin)
+		require.Equal(t, []string{schemeUserRole}, strings.Fields(explicitRoles))
+	})
+}
+
 // TestPermissionsFromMember_Guest verifies that a SchemeGuest member's effective permissions are
 // read_page alone: neither the space default nor a grant recorded before a demotion contributes,
 // since a guest resolves through the read-only guest role and the write gate holds them to reads.
@@ -125,6 +162,73 @@ func TestPresetRoundTrip(t *testing.T) {
 	t.Run("a non-preset set is not recognized", func(t *testing.T) {
 		_, ok := model.SchemeNameForDefaultPermissions([]string{mmmodel.PermissionCreatePage.Id})
 		require.False(t, ok)
+	})
+}
+
+// TestPresetPermissionContents pins the literal permission set each seeded preset grants.
+// TestPresetRoundTrip above derives both lookup directions from the same preset table, so swapping
+// two presets stays self-consistent and round-trips cleanly; only asserting the contents catches a
+// mix-up that would seed a comment-only space with create/edit rights. read_page is the implicit
+// baseline and must never appear in a wire-form preset.
+func TestPresetPermissionContents(t *testing.T) {
+	presets := map[string][]string{
+		mmmodel.SchemeNameSpaceContribute: {
+			mmmodel.PermissionCommentPage.Id,
+			mmmodel.PermissionCreatePage.Id,
+			mmmodel.PermissionEditPage.Id,
+			mmmodel.PermissionDeleteOwnPage.Id,
+		},
+		mmmodel.SchemeNameSpaceComment:  {mmmodel.PermissionCommentPage.Id},
+		mmmodel.SchemeNameSpaceReadOnly: {},
+	}
+
+	for name, want := range presets {
+		t.Run(name, func(t *testing.T) {
+			got, ok := model.DefaultPermissionsForSchemeName(name)
+			require.True(t, ok)
+			require.ElementsMatch(t, want, got)
+			require.NotContains(t, got, mmmodel.PermissionReadPage.Id)
+		})
+	}
+}
+
+// TestSharedSchemeNameForPermissions pins the pooled scheme name's literal shape. Every other
+// caller in the suite builds its expected name by calling this same function, which is tautological
+// — a shortened digest or a dropped prefix would survive all of them. The name must stay inside
+// core's [a-z0-9_]{2,64} limit, and it must be a pure function of the permission SET so two spaces
+// configured the same way share one scheme instead of each owning an identical private copy.
+func TestSharedSchemeNameForPermissions(t *testing.T) {
+	contribute, ok := model.DefaultPermissionsForSchemeName(mmmodel.SchemeNameSpaceContribute)
+	require.True(t, ok)
+
+	name := model.SharedSchemeNameForPermissions(contribute)
+
+	require.True(t, strings.HasPrefix(name, model.SharedSchemeNamePrefix), "got %q", name)
+	// The digest length is pinned: shortening it would raise the collision risk silently.
+	require.Len(t, name, len(model.SharedSchemeNamePrefix)+16)
+	require.LessOrEqual(t, len(name), mmmodel.SchemeNameMaxLength)
+	require.Regexp(t, `^[a-z0-9_]{2,64}$`, name)
+
+	t.Run("depends on the set, not the order or duplication", func(t *testing.T) {
+		shuffled := make([]string, 0, len(contribute)*2)
+		for i := len(contribute) - 1; i >= 0; i-- {
+			shuffled = append(shuffled, contribute[i], contribute[i])
+		}
+		require.Equal(t, name, model.SharedSchemeNameForPermissions(shuffled))
+	})
+
+	t.Run("a different set gets a different name", func(t *testing.T) {
+		comment, ok := model.DefaultPermissionsForSchemeName(mmmodel.SchemeNameSpaceComment)
+		require.True(t, ok)
+		require.NotEqual(t, name, model.SharedSchemeNameForPermissions(comment))
+	})
+
+	t.Run("display name lists the set and fits core's limit", func(t *testing.T) {
+		displayName := model.SharedSchemeDisplayNameForPermissions(contribute)
+		require.LessOrEqual(t, len(displayName), mmmodel.SchemeDisplayNameMaxLength)
+		for _, p := range contribute {
+			require.Contains(t, displayName, p)
+		}
 	})
 }
 

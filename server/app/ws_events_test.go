@@ -80,6 +80,32 @@ func TestServiceDeletePage_FailurePublishesNothing(t *testing.T) {
 	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "page_deleted", mock.Anything, mock.Anything)
 }
 
+// TestServicePublishToChannels_OmitListFailureDropsEvent verifies the omit-list resolution is
+// fail-closed: when the lookup itself errors the event is dropped for that channel rather than
+// delivered unfiltered. An unfiltered broadcast would reach exactly the former team members the
+// omit list exists to exclude, so a missed refresh signal is the safer failure. The mutation still
+// succeeds — WS delivery is best-effort and must never fail the write it announces.
+func TestServicePublishToChannels_OmitListFailureDropsEvent(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
+
+	// Break the omit-list lookup by removing the table it reads. The test database is per-test, so
+	// dropping the stand-in is invisible to other tests.
+	_, dbErr := h.db.Exec(`DROP TABLE TeamMembers`)
+	require.NoError(t, dbErr)
+
+	title := "Renamed"
+	_, appErr := h.svc.UpdatePage(page.Id, space.Id, &model.PagePatch{Title: &title}, new(page.EditAt), false, userID)
+	require.Nil(t, appErr, "a failed omit-list lookup must not fail the mutation")
+
+	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "page_updated", mock.Anything, mock.Anything)
+}
+
 // TestServiceRestorePage_PublishesRestoredEvent pins page_restored: page/space payload, broadcast
 // to the restored page's backing channel.
 func TestServiceRestorePage_PublishesRestoredEvent(t *testing.T) {

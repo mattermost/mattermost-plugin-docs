@@ -188,6 +188,11 @@ func TestSpacePatchIsValid(t *testing.T) {
 		aerr := (&model.SpacePatch{Props: &props}).IsValid()
 		require.Nil(t, aerr)
 	})
+
+	t.Run("ViewAccess only accepted", func(t *testing.T) {
+		aerr := (&model.SpacePatch{ViewAccess: mmmodel.NewPointer(model.ViewAccessPrivate)}).IsValid()
+		require.Nil(t, aerr)
+	})
 }
 
 func TestSpacePatch(t *testing.T) {
@@ -235,6 +240,15 @@ func TestSpacePatch(t *testing.T) {
 	t.Run("nil patch is a no-op", func(t *testing.T) {
 		s := base()
 		s.Patch(nil)
+		require.Equal(t, "orig", s.Title)
+	})
+
+	t.Run("ViewAccess is applied", func(t *testing.T) {
+		s := base()
+		s.ViewAccess = model.ViewAccessOpen
+		s.Patch(&model.SpacePatch{ViewAccess: mmmodel.NewPointer(model.ViewAccessPrivate)})
+		require.Equal(t, model.ViewAccessPrivate, s.ViewAccess)
+		// A ViewAccess-only patch must leave every other field alone.
 		require.Equal(t, "orig", s.Title)
 	})
 }

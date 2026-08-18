@@ -414,6 +414,49 @@ func TestRequireSpaceDraftWrite_LookupFailureIsNotADenial(t *testing.T) {
 	mockAPI.AssertNumberOfCalls(t, "GetTeamMember", 1)
 }
 
+// TestRequireSpaceDraftWrite_EitherPermissionAdmits pins the OR-semantics of the two-attempt draft
+// gate: holding either create_page or edit_page is enough, and holding neither is refused. The
+// edit-only case is the one that matters — edit_page without create_page is an ordinary capability
+// grant, so dropping the fallback would silently revoke draft access from every editor-only member
+// while every other test in the suite still passed.
+func TestRequireSpaceDraftWrite_EitherPermissionAdmits(t *testing.T) {
+	for name, granted := range map[string]*mmmodel.Permission{
+		"edit_page only":   mmmodel.PermissionEditPage,
+		"create_page only": mmmodel.PermissionCreatePage,
+	} {
+		t.Run(name, func(t *testing.T) {
+			mockAPI := &plugintest.API{}
+			userID := mmmodel.NewId()
+			channelID := mmmodel.NewId()
+			// Registered before the harness so these decide, not its catch-alls.
+			for _, p := range []*mmmodel.Permission{mmmodel.PermissionCreatePage, mmmodel.PermissionEditPage} {
+				mockAPI.On("HasPermissionToChannel", userID, channelID, p).Return(p.Id == granted.Id).Maybe()
+			}
+			h := openTestServiceWithAPI(t, mockAPI)
+			space := testutil.MustCreateSpace(t, h.store, channelID, mmmodel.NewId())
+
+			joined, appErr := h.svc.RequireSpaceDraftWrite("test", space, userID, app.ReadViaMember)
+			require.Nil(t, appErr, "%s must admit a draft write", granted.Id)
+			require.False(t, joined, "a member admission never auto-joins")
+		})
+	}
+
+	t.Run("neither permission is refused", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		userID := mmmodel.NewId()
+		channelID := mmmodel.NewId()
+		for _, p := range []*mmmodel.Permission{mmmodel.PermissionCreatePage, mmmodel.PermissionEditPage} {
+			mockAPI.On("HasPermissionToChannel", userID, channelID, p).Return(false).Maybe()
+		}
+		h := openTestServiceWithAPI(t, mockAPI)
+		space := testutil.MustCreateSpace(t, h.store, channelID, mmmodel.NewId())
+
+		_, appErr := h.svc.RequireSpaceDraftWrite("test", space, userID, app.ReadViaMember)
+		require.NotNil(t, appErr)
+		require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+	})
+}
+
 // TestResolveSpacePageOwnOrAny_CheckFailureIsNotADenial pins the same error discipline on the
 // own/any gate that TestRequireSpaceDraftWrite_LookupFailureIsNotADenial pins on the draft gate:
 // a failure of either attempt surfaces as itself.

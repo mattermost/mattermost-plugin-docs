@@ -1820,6 +1820,42 @@ func TestHandler_DeletePage_NonMemberAutoJoinsViaDeletePageDefault(t *testing.T)
 	mockAPI.AssertCalled(t, "AddChannelMember", channelID, stranger)
 }
 
+// TestHandler_UpdatePage_NonMemberAutoJoinUndoneOnInvalidBody verifies the rollback half of the
+// auto-join pre-step: a non-member admitted through the open-space fall-through is joined before
+// the write is attempted, and a malformed request body then rejects the write in
+// handleUpdatePage's decode step — before the service is ever called. The membership the pre-step
+// created must not survive that rejection.
+func TestHandler_UpdatePage_NonMemberAutoJoinUndoneOnInvalidBody(t *testing.T) {
+	mockAPI := newEnabledMockAPI()
+	stranger := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+
+	// Same shape as TestHandler_DeletePage_NonMemberAutoJoinsViaDeletePageDefault: read_page is
+	// withheld so the read gate admits the stranger only through the open-space fall-through, and
+	// edit_page stands in for what their post-join role would grant.
+	mockAPI.On("HasPermissionToChannel", stranger, channelID, mmmodel.PermissionReadPage).Return(false)
+	mockAPI.On("HasPermissionToChannel", stranger, channelID, mmmodel.PermissionEditPage).Return(true)
+	mockAPI.On("RolesGrantPermission", mock.Anything, mmmodel.PermissionEditPage.Id).Return(true)
+	mockAPI.On("AddChannelMember", channelID, stranger).
+		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: stranger}, nil)
+	// The rollback this test pins: without it, the membership the pre-step created would survive
+	// the rejected write.
+	mockAPI.On("DeleteChannelMember", channelID, stranger).Return(nil)
+
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, channelID)
+	page := seedPage(t, h.store, space.Id, channelID, "")
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, bytes.NewReader([]byte("{not json")))
+	req.Header.Set("Mattermost-User-ID", stranger)
+	rec := httptest.NewRecorder()
+	h.plugin.ServeHTTP(&plugin.Context{}, rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	mockAPI.AssertCalled(t, "AddChannelMember", channelID, stranger)
+	mockAPI.AssertCalled(t, "DeleteChannelMember", channelID, stranger)
+}
+
 // TestHandler_GetSpacePagesHasMoreBoundary pins the has_more transition exactly at the page-size
 // boundary: a window equal to the result count reports has_more=false; one smaller reports true.
 func TestHandler_GetSpacePagesHasMoreBoundary(t *testing.T) {
