@@ -32,7 +32,7 @@ func TestServiceUpdatePage_PublishesUpdatedEvent(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
 	title := "Renamed"
@@ -52,7 +52,7 @@ func TestServiceDeletePage_PublishesDeletedEvent(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
 	require.Nil(t, h.svc.DeletePage(page.Id, space.Id, userID))
@@ -70,7 +70,7 @@ func TestServiceDeletePage_FailurePublishesNothing(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
 	appErr := h.svc.DeletePage(page.Id, mmmodel.NewId(), userID)
@@ -88,7 +88,7 @@ func TestServiceRestorePage_PublishesRestoredEvent(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 	require.Nil(t, h.svc.DeletePage(page.Id, space.Id, userID))
 
@@ -108,7 +108,7 @@ func TestServiceDuplicatePage_PublishesDuplicatedEvent(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
 	copyRoot, appErr := h.svc.DuplicatePage(page.Id, space, userID, false, nil, nil)
@@ -132,9 +132,9 @@ func TestServiceMovePageToSpace_PublishesEventToBothChannels(t *testing.T) {
 	teamID := mmmodel.NewId()
 	userID := mmmodel.NewId()
 	chA := mmmodel.NewId()
-	spaceA := seedSpaceForTeam(t, h.store, h.db, chA, teamID)
+	spaceA := seedSpaceForTeam(t, h.store, chA, teamID)
 	chB := mmmodel.NewId()
-	spaceB := seedSpaceForTeam(t, h.store, h.db, chB, teamID)
+	spaceB := seedSpaceForTeam(t, h.store, chB, teamID)
 	page := mustCreatePage(t, h.store, spaceA.Id, chA, userID, "")
 
 	moved, appErr := h.svc.MovePageToSpace(page.Id, spaceA, spaceB, nil, new(page.UpdateAt), false, userID, "")
@@ -167,7 +167,7 @@ func TestServiceMovePageToSpace_NoOpPublishesNothing(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
 	same, appErr := h.svc.MovePageToSpace(page.Id, space, space, nil, new(page.UpdateAt), false, userID, "")
@@ -187,7 +187,7 @@ func TestServiceUpdatePageDraft_PublishesPresenceEvent(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 
 	// Use a published page so UpdatePageDraft takes the channel-broadcast path.
 	page := publishNewPage(t, h, space, userID, "Doc", "v1")
@@ -221,7 +221,7 @@ func TestServiceUpdatePageDraft_PresenceBroadcastThrottled(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	page := publishNewPage(t, h, space, userID, "Doc", "v1")
 
 	presenceBroadcasts := func() int {
@@ -257,7 +257,7 @@ func TestServicePublishPageDraft_PublishesCreatedEvent(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 
 	page := publishNewPage(t, h, space, userID, "Doc", "hello")
 
@@ -287,7 +287,7 @@ func TestServicePublishPageDraft_PublishesUpdatedEvent(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	page := publishNewPage(t, h, space, userID, "Doc", "original")
 
 	// Start an edit session against the live page's baseline, then publish it.
@@ -328,7 +328,7 @@ func TestServiceDeletePageDraft_PublishesPresenceEvent(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 
 	// Use a published page so the edit-draft delete takes the channel-broadcast path.
 	page := publishNewPage(t, h, space, userID, "Doc", "v1")
@@ -363,7 +363,7 @@ func TestServiceUpdatePageDraft_NewPageDraftPublishesToUserOnly(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 
 	// Create a new-page draft — no published page row exists yet.
 	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Unpublished", "")
@@ -400,7 +400,7 @@ func TestServiceDeletePageDraft_NewPageDraftClearsSelfPresenceOnly(t *testing.T)
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 
 	// Create a new-page draft — no published page row exists yet.
 	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Unpublished", "")
@@ -439,7 +439,7 @@ func TestServiceUpdatePageDraft_PresenceRateLimitSuppressesSecondBroadcast(t *te
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	page := publishNewPage(t, h, space, userID, "Doc", "v1")
 
 	// Reset call log so only the two autosaves below are counted.
@@ -491,7 +491,7 @@ func TestServiceUpdateSpace_PublishesUpdatedEvent(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
 
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	// The post-update channel-metadata sync looks the backing channel up; a nil channel makes it
 	// a no-op without needing channel-update expectations.
 	mockAPI.On("GetChannelOfType", mock.Anything, mock.Anything).Return((*mmmodel.Channel)(nil), nil)
@@ -517,7 +517,7 @@ func TestServiceDeleteSpace_PublishesDeletedEvent(t *testing.T) {
 	teamID := mmmodel.NewId()
 	channelID := mmmodel.NewId()
 	testutil.MustAddChannel(t, h.db, channelID, teamID)
-	space := seedSpaceForTeam(t, h.store, h.db, channelID, teamID)
+	space := seedSpaceForTeam(t, h.store, channelID, teamID)
 	memberA := mmmodel.NewId()
 	memberB := mmmodel.NewId()
 	testutil.MustAddChannelMember(t, h.db, channelID, memberA)
@@ -566,7 +566,7 @@ func TestServiceDeleteSpace_SnapshotFailureFallsBackToChannelBroadcast(t *testin
 	db = h.db
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	// The test database is per-test, so dropping the stand-in is invisible to other tests.
 	_, dbErr := h.db.Exec(`DROP TABLE TeamMembers`)
 	require.NoError(t, dbErr)
@@ -602,7 +602,7 @@ func TestServiceRestoreSpace_PublishesRestoredEvent(t *testing.T) {
 	h := openTestServiceWithAPI(t, mockAPI)
 
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	mockAPI.On("DeleteChannel", channelID).Return(nil)
 	mockAPI.On("RestoreChannel", channelID).Return(nil)
 

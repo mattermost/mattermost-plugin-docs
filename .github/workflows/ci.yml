@@ -218,7 +218,13 @@ jobs:
       # The secret is defined once at the organization and granted to selected repositories; the
       # name matches the one the server and the other plugin repos already use.
       - name: ci/e2e
-        run: go test -tags e2e -count=1 -v ./server/e2e/...
+        run: |
+          if [[ -z "$MM_LICENSE" ]]; then
+            echo "MM_E2E_TEST_LICENSE_ONPREM_ENT is not available to this repository." >&2
+            echo "The scheme-backed scenarios require an Enterprise license; grant the org secret to this repo." >&2
+            exit 1
+          fi
+          go test -tags e2e -count=1 -v ./server/e2e/...
         env:
           MM_LICENSE: ${{ secrets.MM_E2E_TEST_LICENSE_ONPREM_ENT }}
 

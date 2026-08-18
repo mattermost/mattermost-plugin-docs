@@ -4,7 +4,6 @@
 package app_test
 
 import (
-	"database/sql"
 	"net/http"
 	"testing"
 
@@ -22,7 +21,7 @@ import (
 // seedSpaceForTeam creates a space with a caller-chosen team id (mustCreateSpace randomizes it).
 // No test in this package resolves a scheme for a store-direct-created space, so no per-channel
 // scheme stub is registered here.
-func seedSpaceForTeam(t *testing.T, s *store.Store, db *sql.DB, channelID, teamID string) *model.Space {
+func seedSpaceForTeam(t *testing.T, s *store.Store, channelID, teamID string) *model.Space {
 	t.Helper()
 	return testutil.MustCreateSpace(t, s, channelID, teamID)
 }
@@ -47,9 +46,9 @@ func TestServiceMovePageToSpace(t *testing.T) {
 	user := mmmodel.NewId()
 
 	chA := mmmodel.NewId()
-	spaceA := seedSpaceForTeam(t, h.store, h.db, chA, teamID)
+	spaceA := seedSpaceForTeam(t, h.store, chA, teamID)
 	chB := mmmodel.NewId()
-	spaceB := seedSpaceForTeam(t, h.store, h.db, chB, teamID)
+	spaceB := seedSpaceForTeam(t, h.store, chB, teamID)
 
 	root := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
 	child := mustCreatePage(t, h.store, spaceA.Id, chA, user, root.Id)
@@ -85,9 +84,9 @@ func TestServiceMovePageToSpace_ReturnsMovedPage(t *testing.T) {
 	user := mmmodel.NewId()
 
 	chA := mmmodel.NewId()
-	spaceA := seedSpaceForTeam(t, h.store, h.db, chA, teamID)
+	spaceA := seedSpaceForTeam(t, h.store, chA, teamID)
 	chB := mmmodel.NewId()
-	spaceB := seedSpaceForTeam(t, h.store, h.db, chB, teamID)
+	spaceB := seedSpaceForTeam(t, h.store, chB, teamID)
 
 	target := mustCreatePage(t, h.store, spaceB.Id, chB, user, "")
 	page := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
@@ -113,9 +112,9 @@ func TestServiceMovePageToSpace_RejectsCrossTeam(t *testing.T) {
 	user := mmmodel.NewId()
 
 	chA := mmmodel.NewId()
-	spaceA := seedSpaceForTeam(t, h.store, h.db, chA, mmmodel.NewId())
+	spaceA := seedSpaceForTeam(t, h.store, chA, mmmodel.NewId())
 	chB := mmmodel.NewId()
-	spaceB := seedSpaceForTeam(t, h.store, h.db, chB, mmmodel.NewId())
+	spaceB := seedSpaceForTeam(t, h.store, chB, mmmodel.NewId())
 
 	page := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
 	_, appErr := h.svc.MovePageToSpace(page.Id, spaceA, spaceB, nil, new(int64(0)), true, mmmodel.NewId(), "")
@@ -159,9 +158,9 @@ func TestServiceMovePageToSpace_RejectsParentInWrongSpace(t *testing.T) {
 	user := mmmodel.NewId()
 
 	chA := mmmodel.NewId()
-	spaceA := seedSpaceForTeam(t, h.store, h.db, chA, teamID)
+	spaceA := seedSpaceForTeam(t, h.store, chA, teamID)
 	chB := mmmodel.NewId()
-	spaceB := seedSpaceForTeam(t, h.store, h.db, chB, teamID)
+	spaceB := seedSpaceForTeam(t, h.store, chB, teamID)
 
 	page := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
 	parentInA := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
@@ -182,9 +181,9 @@ func TestServiceMovePageToSpace_RejectsMissingParent(t *testing.T) {
 	user := mmmodel.NewId()
 
 	chA := mmmodel.NewId()
-	spaceA := seedSpaceForTeam(t, h.store, h.db, chA, teamID)
+	spaceA := seedSpaceForTeam(t, h.store, chA, teamID)
 	chB := mmmodel.NewId()
-	spaceB := seedSpaceForTeam(t, h.store, h.db, chB, teamID)
+	spaceB := seedSpaceForTeam(t, h.store, chB, teamID)
 
 	page := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
 
@@ -203,9 +202,9 @@ func TestServiceMovePageToSpace_RejectsDepthExceeded(t *testing.T) {
 	user := mmmodel.NewId()
 
 	chA := mmmodel.NewId()
-	spaceA := seedSpaceForTeam(t, h.store, h.db, chA, teamID)
+	spaceA := seedSpaceForTeam(t, h.store, chA, teamID)
 	chB := mmmodel.NewId()
-	spaceB := seedSpaceForTeam(t, h.store, h.db, chB, teamID)
+	spaceB := seedSpaceForTeam(t, h.store, chB, teamID)
 
 	// Build a chain in spaceB down to MaxPageDepth; a child under the deepest node would breach it.
 	parentID := ""
@@ -229,9 +228,9 @@ func TestServiceMovePageToSpace_RewritesSnapshots(t *testing.T) {
 	user := mmmodel.NewId()
 
 	chA := mmmodel.NewId()
-	spaceA := seedSpaceForTeam(t, h.store, h.db, chA, teamID)
+	spaceA := seedSpaceForTeam(t, h.store, chA, teamID)
 	chB := mmmodel.NewId()
-	spaceB := seedSpaceForTeam(t, h.store, h.db, chB, teamID)
+	spaceB := seedSpaceForTeam(t, h.store, chB, teamID)
 
 	root := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
 
@@ -259,7 +258,7 @@ func TestServiceMovePageToSpace_RejectsCycle(t *testing.T) {
 	user := mmmodel.NewId()
 
 	chA := mmmodel.NewId()
-	spaceA := seedSpaceForTeam(t, h.store, h.db, chA, teamID)
+	spaceA := seedSpaceForTeam(t, h.store, chA, teamID)
 
 	root := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
 	child := mustCreatePage(t, h.store, spaceA.Id, chA, user, root.Id)
@@ -280,9 +279,9 @@ func TestServiceMovePageToSpace_StaleBaselineConflicts(t *testing.T) {
 	user := mmmodel.NewId()
 
 	chA := mmmodel.NewId()
-	spaceA := seedSpaceForTeam(t, h.store, h.db, chA, teamID)
+	spaceA := seedSpaceForTeam(t, h.store, chA, teamID)
 	chB := mmmodel.NewId()
-	spaceB := seedSpaceForTeam(t, h.store, h.db, chB, teamID)
+	spaceB := seedSpaceForTeam(t, h.store, chB, teamID)
 
 	page := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
 
@@ -307,7 +306,7 @@ func TestServiceMovePageToSpace_NoOpEnforcesBaseline(t *testing.T) {
 	user := mmmodel.NewId()
 
 	chA := mmmodel.NewId()
-	spaceA := seedSpaceForTeam(t, h.store, h.db, chA, teamID)
+	spaceA := seedSpaceForTeam(t, h.store, chA, teamID)
 
 	// A freshly created root page in spaceA: targeting spaceA with parentPageID nil is the genuine
 	// no-op (already in the target space, already at the root).
@@ -336,7 +335,7 @@ func TestServiceMovePageToSpace_SameSpaceReparent(t *testing.T) {
 	teamID := mmmodel.NewId()
 	user := mmmodel.NewId()
 	ch := mmmodel.NewId()
-	space := seedSpaceForTeam(t, h.store, h.db, ch, teamID)
+	space := seedSpaceForTeam(t, h.store, ch, teamID)
 
 	newParent := mustCreatePage(t, h.store, space.Id, ch, user, "")
 	page := mustCreatePage(t, h.store, space.Id, ch, user, "")
@@ -368,7 +367,7 @@ func TestServiceMovePageToSpace_SameSpaceRequiredOwnerID(t *testing.T) {
 	teamID := mmmodel.NewId()
 	owner := mmmodel.NewId()
 	ch := mmmodel.NewId()
-	space := seedSpaceForTeam(t, h.store, h.db, ch, teamID)
+	space := seedSpaceForTeam(t, h.store, ch, teamID)
 
 	newParent := mustCreatePage(t, h.store, space.Id, ch, owner, "")
 	parentID := newParent.Id
@@ -401,9 +400,9 @@ func TestServiceMovePageToSpace_NoOpRejectsStaleSource(t *testing.T) {
 	user := mmmodel.NewId()
 
 	chA := mmmodel.NewId()
-	spaceA := seedSpaceForTeam(t, h.store, h.db, chA, teamID)
+	spaceA := seedSpaceForTeam(t, h.store, chA, teamID)
 	chB := mmmodel.NewId()
-	spaceB := seedSpaceForTeam(t, h.store, h.db, chB, teamID)
+	spaceB := seedSpaceForTeam(t, h.store, chB, teamID)
 
 	page := mustCreatePage(t, h.store, spaceA.Id, chA, user, "")
 

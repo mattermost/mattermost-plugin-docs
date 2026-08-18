@@ -47,7 +47,7 @@ func publishNewPage(t *testing.T, h *testHarness, space *model.Space, userID, ti
 
 func TestUpdatePageDraftPreservesBodyOnTitleOnlyAutosave(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Doc", "")
@@ -66,7 +66,7 @@ func TestUpdatePageDraftPreservesBodyOnTitleOnlyAutosave(t *testing.T) {
 
 func TestPublishEmptyDraftBodyDoesNotWipePage(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	page := publishNewPage(t, h, space, userID, "Important", "ORIGINAL")
@@ -91,7 +91,7 @@ func TestPublishEmptyDraftBodyDoesNotWipePage(t *testing.T) {
 func TestPublishNoOpDraftDiscardsAndReturnsExistingPage(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	page := publishNewPage(t, h, space, userID, "Doc", "original")
@@ -119,7 +119,7 @@ func TestPublishNoOpDraftDiscardsAndReturnsExistingPage(t *testing.T) {
 
 func TestPublishRejectsMissingBaselineOnEdit(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	page := publishNewPage(t, h, space, userID, "Doc", "v1")
@@ -153,7 +153,7 @@ func TestPublishRejectsMissingBaselineOnEdit(t *testing.T) {
 func TestPublishRejectsNoBaselineOnExistingPageEdit(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
@@ -182,7 +182,7 @@ func TestPublishRejectsNoBaselineOnExistingPageEdit(t *testing.T) {
 
 func TestPublishStaleBaselineConflicts(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	page := publishNewPage(t, h, space, userID, "Doc", "v1")
@@ -218,7 +218,7 @@ func TestPublishStaleBaselineConflicts(t *testing.T) {
 // path in PublishPageDraft guards only the concurrent-delete race, which this flow cannot produce.
 func TestPublishAfterPageDeleteReturns404(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	page := publishNewPage(t, h, space, userID, "Doomed", "x")
@@ -236,8 +236,8 @@ func TestPublishAfterPageDeleteReturns404(t *testing.T) {
 
 func TestDeletePageDraftRejectsWrongSpace(t *testing.T) {
 	h := openTestService(t)
-	spaceA := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
-	spaceB := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	spaceA := mustCreateSpace(t, h.store, mmmodel.NewId())
+	spaceB := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	draft, appErr := h.svc.CreateSpaceDraft(userID, spaceA.Id, "In A", "")
@@ -260,7 +260,7 @@ func TestDeletePageDraftRejectsWrongSpace(t *testing.T) {
 // draft gone / 409 conflict). Either way the page ends up live and the draft consumed.
 func TestPublishPageDraftConcurrentPublishesConverge(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Doc", "")
@@ -317,7 +317,7 @@ func TestPublishPageDraftConcurrentPublishesConverge(t *testing.T) {
 // row at all (as opposed to a page living in another space, covered below).
 func TestGetPageActiveEditorsUnknownPageReturns404(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 
 	_, appErr := h.svc.GetPageActiveEditors(mmmodel.NewId(), space.Id)
 	require.NotNil(t, appErr)
@@ -326,8 +326,8 @@ func TestGetPageActiveEditorsUnknownPageReturns404(t *testing.T) {
 
 func TestGetPageActiveEditorsRejectsWrongSpace(t *testing.T) {
 	h := openTestService(t)
-	spaceA := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
-	spaceB := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	spaceA := mustCreateSpace(t, h.store, mmmodel.NewId())
+	spaceB := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	page := publishNewPage(t, h, spaceA, userID, "Doc", "x")
@@ -345,7 +345,7 @@ func TestGetPageActiveEditorsRejectsWrongSpace(t *testing.T) {
 
 func TestActiveEditorsSurfacesHeartbeat(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	page := publishNewPage(t, h, space, userID, "Doc", "x")
@@ -366,7 +366,7 @@ func TestActiveEditorsSurfacesHeartbeat(t *testing.T) {
 
 func TestPublishSetsLastModifiedBy(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	page := publishNewPage(t, h, space, userID, "Doc", "x")
@@ -375,7 +375,7 @@ func TestPublishSetsLastModifiedBy(t *testing.T) {
 
 func TestPublishForceOverridesStaleBaseline(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	page := publishNewPage(t, h, space, userID, "Doc", "v1")
@@ -402,7 +402,7 @@ func TestPublishForceOverridesStaleBaseline(t *testing.T) {
 
 func TestPublishForceDoesNotRevertUntouchedField(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	page := publishNewPage(t, h, space, userID, "Original title", "original body")
@@ -430,7 +430,7 @@ func TestPublishForceDoesNotRevertUntouchedField(t *testing.T) {
 
 func TestUpdatePageDraftRejectsStaleBaselineAfterPublish(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	page := publishNewPage(t, h, space, userID, "Doc", "v1")
@@ -462,7 +462,7 @@ func TestUpdatePageDraftRejectsStaleBaselineAfterPublish(t *testing.T) {
 
 func TestUpdatePageDraftPreservesPropsOnOmit(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Doc", "")
@@ -496,7 +496,7 @@ func TestUpdatePageDraftPreservesPropsOnOmit(t *testing.T) {
 // by Draft.IsValid's size guard in the store, surfaced through the app layer.
 func TestUpdatePageDraftRejectsOversizedBody(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Doc", "")
@@ -517,7 +517,7 @@ func TestUpdatePageDraftRejectsOversizedBody(t *testing.T) {
 // carries no props preserves them.
 func TestPublishCarriesDraftProps(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	// New-page publish adopts the draft's props.
@@ -556,8 +556,8 @@ func TestPublishCarriesDraftProps(t *testing.T) {
 
 func TestPublishRejectsForeignSpacePage(t *testing.T) {
 	h := openTestService(t)
-	spaceA := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
-	spaceB := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	spaceA := mustCreateSpace(t, h.store, mmmodel.NewId())
+	spaceB := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userA, userB := mmmodel.NewId(), mmmodel.NewId()
 
 	// userA reserves a page id in space A.
@@ -596,7 +596,7 @@ func TestPublishRejectsForeignSpacePage(t *testing.T) {
 
 func TestUpdatePageDraftPreservesTitleOnBodyOnlyAutosave(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Keep Title", "")
@@ -614,7 +614,7 @@ func TestUpdatePageDraftPreservesTitleOnBodyOnlyAutosave(t *testing.T) {
 
 func TestUpdatePageDraftSanitizesBody(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Doc", "")
@@ -634,7 +634,7 @@ func TestUpdatePageDraftSanitizesBody(t *testing.T) {
 // publish a content-only edit, because the edit path never reparents.
 func TestPublishEditIgnoresStaleParentGuard(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	parent := publishNewPage(t, h, space, userID, "Parent", "p")
@@ -668,7 +668,7 @@ func TestPublishEditIgnoresStaleParentGuard(t *testing.T) {
 
 func TestUpdatePageDraftRejectsInvalidPageID(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: "not-a-valid-id", Title: "x"}, nil, nil, nil, "")
@@ -678,7 +678,7 @@ func TestUpdatePageDraftRejectsInvalidPageID(t *testing.T) {
 
 func TestCreateSpaceDraftRejectsForeignDraftParent(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userA, userB := mmmodel.NewId(), mmmodel.NewId()
 
 	parent, appErr := h.svc.CreateSpaceDraft(userA, space.Id, "Parent", "")
@@ -699,7 +699,7 @@ func TestCreateSpaceDraftRejectsForeignDraftParent(t *testing.T) {
 
 func TestUpdatePageDraftRejectsInvalidUserID(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{UserId: "bad-id", SpaceId: space.Id, PageId: mmmodel.NewId()}, nil, nil, nil, "")
 	require.NotNil(t, appErr)
@@ -716,7 +716,7 @@ func TestUpdatePageDraftRejectsInvalidSpaceID(t *testing.T) {
 
 func TestCreateSpaceDraftRejectsEmptyTitle(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 
 	_, appErr := h.svc.CreateSpaceDraft(mmmodel.NewId(), space.Id, "", "")
 	require.NotNil(t, appErr)
@@ -725,7 +725,7 @@ func TestCreateSpaceDraftRejectsEmptyTitle(t *testing.T) {
 
 func TestCreateSpaceDraftRejectsTitleOverCap(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	longTitle := strings.Repeat("x", model.PageTitleMaxRunes+1)
 
 	_, appErr := h.svc.CreateSpaceDraft(mmmodel.NewId(), space.Id, longTitle, "")
@@ -735,7 +735,7 @@ func TestCreateSpaceDraftRejectsTitleOverCap(t *testing.T) {
 
 func TestCreateSpaceDraftRejectsMalformedParentID(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 
 	_, appErr := h.svc.CreateSpaceDraft(mmmodel.NewId(), space.Id, "Doc", "not-a-valid-id")
 	require.NotNil(t, appErr)
@@ -747,7 +747,7 @@ func TestCreateSpaceDraftRejectsMalformedParentID(t *testing.T) {
 // the draft has already been consumed by publish, rather than recreating a phantom draft.
 func TestUpdatePageDraftRejectsResurrectionAfterNewPagePublish(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Doc", "")
@@ -776,7 +776,7 @@ func TestUpdatePageDraftRejectsResurrectionAfterNewPagePublish(t *testing.T) {
 // parent to a page that already (transitively) points back to the draft must be rejected.
 func TestUpdatePageDraftRejectsDraftParentCycle(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	draftA, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "A", "")
@@ -800,7 +800,7 @@ func TestUpdatePageDraftRejectsDraftParentCycle(t *testing.T) {
 
 func TestUpdatePageDraftRejectsDraftHierarchyTooDeep(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	// Build a chain of model.MaxPageDepth+1 drafts. The first draft is the root
@@ -834,7 +834,7 @@ func TestUpdatePageDraftRejectsDraftHierarchyTooDeep(t *testing.T) {
 
 func TestDeletePageDraftReparentsChildren(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	// Create a parent draft P and a child draft C that points to P.
@@ -866,8 +866,8 @@ func TestDeletePageDraftReparentsChildren(t *testing.T) {
 
 func TestGetPageDraftCrossSpaceReturns404(t *testing.T) {
 	h := openTestService(t)
-	spaceA := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
-	spaceB := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	spaceA := mustCreateSpace(t, h.store, mmmodel.NewId())
+	spaceB := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	draft, appErr := h.svc.CreateSpaceDraft(userID, spaceA.Id, "Doc", "")
@@ -881,7 +881,7 @@ func TestGetPageDraftCrossSpaceReturns404(t *testing.T) {
 
 func TestDeletePageDraftRejectsInvalidUserID(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 
 	appErr := h.svc.DeletePageDraft("bad-id", space.Id, mmmodel.NewId(), "")
 	require.NotNil(t, appErr)
@@ -890,7 +890,7 @@ func TestDeletePageDraftRejectsInvalidUserID(t *testing.T) {
 
 func TestDeletePageDraftRejectsInvalidPageID(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 
 	appErr := h.svc.DeletePageDraft(mmmodel.NewId(), space.Id, "bad-id", "")
 	require.NotNil(t, appErr)
@@ -899,8 +899,8 @@ func TestDeletePageDraftRejectsInvalidPageID(t *testing.T) {
 
 func TestPublishNewPageRejectsCrossSpaceParent(t *testing.T) {
 	h := openTestService(t)
-	spaceA := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
-	spaceB := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	spaceA := mustCreateSpace(t, h.store, mmmodel.NewId())
+	spaceB := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	// Publish a live parent in spaceA.
@@ -929,7 +929,7 @@ func TestPublishNewPageRejectsCrossSpaceParent(t *testing.T) {
 
 func TestGetPageActiveEditorsRejectsInvalidPageID(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 
 	_, appErr := h.svc.GetPageActiveEditors("not-valid", space.Id)
 	require.NotNil(t, appErr)
@@ -938,7 +938,7 @@ func TestGetPageActiveEditorsRejectsInvalidPageID(t *testing.T) {
 
 func TestCreateSpaceDraftEnforcesQuota(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	// Fill the user's quota by inserting rows directly; calling CreateSpaceDraft 100 times
@@ -967,7 +967,7 @@ func TestCreateSpaceDraftEnforcesQuota(t *testing.T) {
 // the service layer, independent of HTTP routing.
 func TestGetPageDraftRejectsInvalidIDs(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID, pageID := mmmodel.NewId(), mmmodel.NewId()
 
 	cases := []struct {
@@ -991,7 +991,7 @@ func TestGetPageDraftRejectsInvalidIDs(t *testing.T) {
 // validation, which handler tests reach only through valid routes.
 func TestGetPageDraftsForSpaceRejectsInvalidIDs(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 
 	_, _, appErr := h.svc.GetPageDraftsForSpace("not-valid", space.Id, 0, 10)
 	require.NotNil(t, appErr)
@@ -1016,7 +1016,7 @@ func TestGetPageActiveEditorsRejectsInvalidSpaceID(t *testing.T) {
 // draft left unset.
 func TestPublishForceAppliesDraftFieldOverConcurrentEdit(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	page := publishNewPage(t, h, space, userID, "Original title", "original body")
@@ -1047,7 +1047,7 @@ func TestPublishForceAppliesDraftFieldOverConcurrentEdit(t *testing.T) {
 // is the only bound on the write path.
 func TestUpdatePageDraftRejectsOversizedFileIds(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	// 12 valid ids serialize to ~349 runes, over the DraftFileIdsMaxRunes=300 cap.
@@ -1067,7 +1067,7 @@ func TestUpdatePageDraftRejectsOversizedFileIds(t *testing.T) {
 // and this guard is the only bound on the written value.
 func TestUpdatePageDraftRejectsOversizedProps(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	props := mmmodel.StringInterface{"k": strings.Repeat("x", model.PagePropsMaxBytes)}
@@ -1081,7 +1081,7 @@ func TestUpdatePageDraftRejectsOversizedProps(t *testing.T) {
 // intent, including the empty entry an empty-slice clear must not admit.
 func TestUpdatePageDraftRejectsInvalidFileId(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
 	for name, entry := range map[string]string{"malformed id": "not-a-valid-id", "empty entry": ""} {

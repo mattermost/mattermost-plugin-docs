@@ -302,7 +302,7 @@ func TestResolveSpaceRead_FormerTeamMemberDenied(t *testing.T) {
 		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: userID, DeleteAt: 1}, nil)
 	h := openTestServiceWithAPI(t, mockAPI)
 
-	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 
 	resolution, appErr := h.svc.ResolveSpaceRead("test", space, userID)
 	require.Nil(t, appErr)
@@ -511,7 +511,7 @@ func TestServiceCreateSpace_CompensatingDelete(t *testing.T) {
 
 	// Pre-seed a live space that already owns collisionChannelID, so the second insert
 	// trips the unique channel-id constraint and the row save fails.
-	mustCreateSpace(t, h.store, h.db, collisionChannelID)
+	mustCreateSpace(t, h.store, collisionChannelID)
 
 	testutil.MustSeedChannelScheme(t, mockAPI, collisionChannelID, mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
@@ -540,7 +540,7 @@ func TestServiceCreateSpace_CompensatingDeleteAlsoFails(t *testing.T) {
 
 	// Pre-seed a live space that already owns collisionChannelID, so the second insert
 	// trips the unique channel-id constraint and the row save fails.
-	mustCreateSpace(t, h.store, h.db, collisionChannelID)
+	mustCreateSpace(t, h.store, collisionChannelID)
 
 	testutil.MustSeedChannelScheme(t, mockAPI, collisionChannelID, mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
@@ -792,7 +792,7 @@ func TestServiceSetSpaceDefaultCapabilities_ConfigureFailureRollsBack(t *testing
 	channel := testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
 	pooledSchemeID := stubSchemeCreate(t, mockAPI, "unconfigurable", &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
 
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	_, appErr := h.svc.SetSpaceDefaultCapabilities(space, []string{"create_page"}, mmmodel.NewId())
 
 	require.NotNil(t, appErr)
@@ -845,7 +845,7 @@ func TestServiceSetSpaceDefaultCapabilities_SameSchemeStillConfiguresRoles(t *te
 	testutil.StubChannelScheme(mockAPI, channelID, &mmmodel.Channel{
 		Id: channelID, Type: mmmodel.ChannelTypeSpace, SchemeId: &schemeID,
 	})
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 
 	updated, appErr := h.svc.SetSpaceDefaultCapabilities(space, capabilities, sysadminID)
 
@@ -894,7 +894,7 @@ func TestServiceSetSpaceDefaultCapabilities_UserRoleAloneUnconfiguredStillWrites
 	testutil.StubChannelScheme(mockAPI, channelID, &mmmodel.Channel{
 		Id: channelID, Type: mmmodel.ChannelTypeSpace, SchemeId: &schemeID,
 	})
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 
 	updated, appErr := h.svc.SetSpaceDefaultCapabilities(space, capabilities, sysadminID)
 
@@ -944,7 +944,7 @@ func TestServiceSetSpaceDefaultCapabilities_ResponseReflectsRequestedNotStaleRea
 	mockAPI.On("PatchRole", mock.AnythingOfType("string"), mock.AnythingOfType("*model.RolePatch")).
 		Return(&mmmodel.Role{}, nil)
 
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 
 	updated, appErr := h.svc.SetSpaceDefaultCapabilities(space, []string{"create_page"}, sysadminID)
 	require.Nil(t, appErr)
@@ -986,7 +986,7 @@ func TestServiceRestoreSpace_UnarchivesBackingChannel(t *testing.T) {
 // optimistic-lock baseline.
 func TestServiceUpdateSpace(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 
 	patched, appErr := h.svc.UpdateSpace(space, &model.SpacePatch{Title: mmmodel.NewPointer("New Title"), Description: mmmodel.NewPointer("New Desc")}, new(space.UpdateAt), false, "")
 	require.Nil(t, appErr)
@@ -1049,7 +1049,7 @@ func TestServiceUpdateSpace(t *testing.T) {
 // than silently bumping UpdateAt (mirroring PagePatch's nothing-to-update guard).
 func TestServiceUpdateSpace_NoChangesRejected(t *testing.T) {
 	h := openTestService(t)
-	space := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 
 	_, appErr := h.svc.UpdateSpace(space, &model.SpacePatch{}, new(space.UpdateAt), false, "")
 	require.NotNil(t, appErr)
@@ -1104,7 +1104,7 @@ func TestResolveSpaceRead_MemberAdmitted(t *testing.T) {
 	// The harness stubs GetTeamMember to an active membership and read_page to true.
 	teamID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 
 	resolution, appErr := h.svc.ResolveSpaceRead("test", space, userID)
 	require.Nil(t, appErr)
@@ -1124,7 +1124,7 @@ func TestResolveSpaceRead_NonMemberDeniedOnPrivateSpace(t *testing.T) {
 
 	// The harness stubs GetTeamMember to an active membership, so the stranger clears the team
 	// gate and is denied purely on the channel-scoped check.
-	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), mmmodel.NewId())
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), mmmodel.NewId())
 	space.ViewAccess = model.ViewAccessPrivate
 
 	resolution, appErr := h.svc.ResolveSpaceRead("test", space, strangerID)
@@ -1361,7 +1361,7 @@ func TestServiceMovePage_PublishesMovedEvent(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	parent := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 

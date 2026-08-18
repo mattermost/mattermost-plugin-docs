@@ -25,7 +25,7 @@ import (
 func TestServiceDuplicatePage(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
 	parent := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
@@ -54,7 +54,7 @@ func TestServiceDuplicatePage(t *testing.T) {
 func TestServiceDuplicatePage_CopiesSearchText(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
 	source, appErr := h.svc.CreatePage(space.Id, "", "Searchable", "body text", userID)
@@ -73,7 +73,7 @@ func TestServiceDuplicatePage_CopiesSearchText(t *testing.T) {
 func TestServiceDuplicatePage_CopiesProps(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
 	source, appErr := h.svc.CreatePage(space.Id, "", "Has Props", "body text", userID)
@@ -104,7 +104,7 @@ func TestServiceDuplicatePage_CopiesProps(t *testing.T) {
 func TestServiceDuplicatePage_TruncatesLongTitle(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
 	longTitle := strings.Repeat("x", model.PageTitleMaxRunes)
@@ -146,7 +146,7 @@ func TestServiceDuplicatePage_NilSpace(t *testing.T) {
 func TestServiceDuplicatePage_InvalidUserID(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	source := mustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 	_, appErr := h.svc.DuplicatePage(source.Id, space, "not-an-id", false, nil, nil)
@@ -161,7 +161,7 @@ func TestServiceDuplicatePage_InvalidUserID(t *testing.T) {
 func TestServiceDuplicatePage_IncludeChildren(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
 	source := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
@@ -198,7 +198,7 @@ func TestServiceDuplicatePage_IncludeChildren(t *testing.T) {
 func TestServiceDuplicatePage_MaxDepthExceeded(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
 	// A chain of MaxPageDepth pages: the deepest has MaxPageDepth-1 ancestors, so a single page
@@ -223,7 +223,7 @@ func TestServiceDuplicatePage_MaxDepthExceeded(t *testing.T) {
 func TestServiceDuplicatePage_TargetParentNotFound(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
 	source := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
@@ -241,7 +241,7 @@ func TestServiceDuplicatePage_TargetParentNotFound(t *testing.T) {
 func TestServiceDuplicatePage_TargetParentIsSourceItself(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
 	source := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
@@ -260,10 +260,10 @@ func TestServiceDuplicatePage_TargetParentInWrongSpace(t *testing.T) {
 	userID := mmmodel.NewId()
 	teamID := mmmodel.NewId()
 
-	sourceSpace := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
+	sourceSpace := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 	source := mustCreatePage(t, h.store, sourceSpace.Id, sourceSpace.ChannelId, userID, "")
 
-	targetSpace := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
+	targetSpace := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 	// parentInSource lives in sourceSpace, not targetSpace — an invalid destination parent for a
 	// copy landing in targetSpace.
 	parentInSource := mustCreatePage(t, h.store, sourceSpace.Id, sourceSpace.ChannelId, userID, "")
@@ -281,10 +281,10 @@ func TestServiceDuplicatePage_TargetSpaceAndParent(t *testing.T) {
 	userID := mmmodel.NewId()
 	teamID := mmmodel.NewId()
 
-	sourceSpace := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
+	sourceSpace := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 	source := mustCreatePage(t, h.store, sourceSpace.Id, sourceSpace.ChannelId, userID, "")
 
-	targetSpace := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
+	targetSpace := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 	targetParent := mustCreatePage(t, h.store, targetSpace.Id, targetSpace.ChannelId, userID, "")
 
 	dup, appErr := h.svc.DuplicatePage(source.Id, sourceSpace, userID, false, targetSpace, &targetParent.Id)
@@ -302,11 +302,11 @@ func TestServiceDuplicatePage_CrossSpaceDefaultsToRoot(t *testing.T) {
 	userID := mmmodel.NewId()
 	teamID := mmmodel.NewId()
 
-	sourceSpace := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
+	sourceSpace := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 	sourceParent := mustCreatePage(t, h.store, sourceSpace.Id, sourceSpace.ChannelId, userID, "")
 	source := mustCreatePage(t, h.store, sourceSpace.Id, sourceSpace.ChannelId, userID, sourceParent.Id)
 
-	targetSpace := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
+	targetSpace := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 
 	dup, appErr := h.svc.DuplicatePage(source.Id, sourceSpace, userID, false, targetSpace, nil)
 	require.Nil(t, appErr)
@@ -320,10 +320,10 @@ func TestServiceDuplicatePage_CrossTeamRejected(t *testing.T) {
 	h := openTestService(t)
 	userID := mmmodel.NewId()
 
-	sourceSpace := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	sourceSpace := mustCreateSpace(t, h.store, mmmodel.NewId())
 	source := mustCreatePage(t, h.store, sourceSpace.Id, sourceSpace.ChannelId, userID, "")
 
-	targetSpace := mustCreateSpace(t, h.store, h.db, mmmodel.NewId())
+	targetSpace := mustCreateSpace(t, h.store, mmmodel.NewId())
 
 	_, appErr := h.svc.DuplicatePage(source.Id, sourceSpace, userID, false, targetSpace, nil)
 	require.NotNil(t, appErr)
@@ -336,7 +336,7 @@ func TestServiceDuplicatePage_CrossTeamRejected(t *testing.T) {
 func TestServiceDuplicatePage_IncludeChildren_MaxDepthExceeded(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 
 	// A chain of MaxPageDepth-1 pages: the deepest has MaxPageDepth-2 ancestors, so
@@ -364,7 +364,7 @@ func TestServiceDuplicatePage_IncludeChildren_MaxDepthExceeded(t *testing.T) {
 func TestServiceDuplicatePage_InvalidParentID(t *testing.T) {
 	h := openTestService(t)
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, h.db, channelID)
+	space := mustCreateSpace(t, h.store, channelID)
 	userID := mmmodel.NewId()
 	source := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 

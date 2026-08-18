@@ -63,7 +63,7 @@ test(
         await expect
             .poll(
                 async () => (await adminClient.getPlugins()).active.map((plugin) => plugin.id),
-                {message: `the ${PLUGIN_ID} plugin must be deployed on this server`},
+                {message: `the ${PLUGIN_ID} plugin must be deployed on this server`, timeout: 30_000},
             )
             .toContain(PLUGIN_ID);
 

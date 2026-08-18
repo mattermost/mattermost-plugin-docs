@@ -26,7 +26,7 @@ import (
 func stubNonMember(mockAPI *plugintest.API, userID string) {
 	for _, p := range []*mmmodel.Permission{
 		mmmodel.PermissionReadPage, mmmodel.PermissionCreatePage, mmmodel.PermissionCommentPage,
-		mmmodel.PermissionEditPage, mmmodel.PermissionDeleteOwnPage,
+		mmmodel.PermissionEditPage, mmmodel.PermissionDeleteOwnPage, mmmodel.PermissionDeletePage,
 	} {
 		mockAPI.On("HasPermissionToChannel", userID, mock.Anything, p).Return(false).Maybe()
 	}
@@ -467,7 +467,6 @@ func TestRequireSpacePagePermissionFrom_FallthroughAdmitsReadOnly(t *testing.T) 
 			mockAPI := &plugintest.API{}
 			userID := mmmodel.NewId()
 			stubNonMember(mockAPI, userID)
-			mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionDeletePage).Return(false).Maybe()
 			h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
 
 			appErr := h.svc.RequireSpacePagePermissionFrom("test", space, userID, perm, app.ReadViaOpenFallthrough)
@@ -507,7 +506,7 @@ func TestRequireSpacePagePermission_FormerTeamMemberDenied(t *testing.T) {
 		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: userID, DeleteAt: 1}, nil)
 	h := openTestServiceWithAPI(t, mockAPI)
 
-	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 
 	appErr := h.svc.RequireSpacePagePermission("test", space, userID, mmmodel.PermissionReadPage)
 	require.NotNil(t, appErr)
@@ -535,7 +534,7 @@ func TestResolveSpaceRead_ComplianceModeSuppressesOpenFallthrough(t *testing.T) 
 
 	// The default space fixture is open, and the harness stubs GetTeamMember to an active
 	// membership, so the stranger clears the team gate and reaches the open-space fall-through.
-	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), mmmodel.NewId())
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), mmmodel.NewId())
 
 	resolution, appErr := h.svc.ResolveSpaceRead("test", space, strangerID)
 	require.Nil(t, appErr)
@@ -561,7 +560,7 @@ func TestResolveSpaceRead_UnreadableConfigSuppressesOpenFallthrough(t *testing.T
 
 	// The default space fixture is open, and the harness stubs GetTeamMember to an active
 	// membership, so the stranger clears the team gate and reaches the open-space fall-through.
-	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), mmmodel.NewId())
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), mmmodel.NewId())
 
 	resolution, appErr := h.svc.ResolveSpaceRead("test", space, strangerID)
 	require.Nil(t, appErr)
@@ -584,7 +583,7 @@ func teamManagerHarness(t *testing.T, viewAccess model.ViewAccess) (*testHarness
 	mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionManageSpace).Return(true).Maybe()
 	h := openTestServiceWithAPI(t, mockAPI)
 
-	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 	if space.ViewAccess != viewAccess {
 		updated, err := h.store.UpdateSpace(space.Id, &model.SpacePatch{ViewAccess: &viewAccess}, space.UpdateAt, false)
 		require.NoError(t, err)
@@ -638,7 +637,7 @@ func formerAdminHarness(t *testing.T) (*testHarness, *model.Space, string, *plug
 	mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionManageSpace).Return(true).Maybe()
 	h := openTestServiceWithAPI(t, mockAPI)
 
-	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), teamID)
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 	return h, space, userID, mockAPI
 }
 
@@ -692,7 +691,7 @@ func TestResolveSpaceRead_GuestDeniedOpenFallthrough(t *testing.T) {
 	// The default fixture is open and the harness stubs an active team membership, so the guest
 	// clears the team gate and reaches the fall-through — where team_guest's missing
 	// read_public_channel is the only thing left to deny them.
-	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), mmmodel.NewId())
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), mmmodel.NewId())
 
 	resolution, appErr := h.svc.ResolveSpaceRead("test", space, guestID)
 	require.Nil(t, appErr)
@@ -732,7 +731,7 @@ func TestRequireSpacePagePermission_DemotedGuestDeniedWrites(t *testing.T) {
 				Return(&mmmodel.User{Id: guestID, Roles: mmmodel.SystemGuestRoleId}, nil)
 			testutil.StubGuestTeamDefaults(mockAPI, guestID)
 			h := openTestServiceWithAPI(t, mockAPI)
-			space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), mmmodel.NewId())
+			space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), mmmodel.NewId())
 
 			appErr := h.svc.RequireSpacePagePermission("test", space, guestID, perm)
 
@@ -750,7 +749,7 @@ func TestRequireSpacePagePermission_DemotedGuestKeepsRead(t *testing.T) {
 	guestID := mmmodel.NewId()
 	testutil.StubGuestTeamDefaults(mockAPI, guestID)
 	h := openTestServiceWithAPI(t, mockAPI)
-	space := seedSpaceForTeam(t, h.store, h.db, mmmodel.NewId(), mmmodel.NewId())
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), mmmodel.NewId())
 
 	appErr := h.svc.RequireSpacePagePermission("test", space, guestID, mmmodel.PermissionReadPage)
 

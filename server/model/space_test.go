@@ -130,6 +130,28 @@ func TestSpaceIsValid(t *testing.T) {
 		require.NotNil(t, aerr)
 		require.Equal(t, "model.shared.props_too_large.app_error", aerr.Id)
 	})
+
+	t.Run("empty ViewAccess rejected", func(t *testing.T) {
+		s := validSpace()
+		s.ViewAccess = ""
+		aerr := s.IsValid()
+		require.NotNil(t, aerr)
+		require.Equal(t, "model.space.is_valid.view_access.app_error", aerr.Id)
+	})
+
+	t.Run("unknown ViewAccess rejected", func(t *testing.T) {
+		s := validSpace()
+		s.ViewAccess = "public"
+		aerr := s.IsValid()
+		require.NotNil(t, aerr)
+		require.Equal(t, "model.space.is_valid.view_access.app_error", aerr.Id)
+	})
+
+	t.Run("private ViewAccess accepted", func(t *testing.T) {
+		s := validSpace()
+		s.ViewAccess = model.ViewAccessPrivate
+		require.Nil(t, s.IsValid())
+	})
 }
 
 func TestSpacePatchIsValid(t *testing.T) {
