@@ -33,6 +33,10 @@ const SpaceHomeItem = ({space}: Props) => {
             onClick={() => goToOverview(space.id)}
         >
             <span
+                className={styles.chevronSpacer}
+                aria-hidden={true}
+            />
+            <span
                 className={styles.icon}
                 aria-hidden={true}
             >
