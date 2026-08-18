@@ -20,7 +20,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 32px 0 0;
+    padding: 56px 0 0;
 
     &:hover .topActions,
     &:focus-within .topActions {
@@ -31,8 +31,8 @@
 // Sits in the title's top padding; hidden until the title area is hovered.
 .topActions {
     position: absolute;
-    top: 4px;
-    left: 0;
+    top: 16px;
+    left: -8px;
     display: flex;
     align-items: center;
     gap: 4px;
