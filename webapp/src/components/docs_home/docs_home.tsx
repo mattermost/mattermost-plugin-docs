@@ -50,6 +50,7 @@ const DocsHome = ({onCreateSpace, onBrowseSpaces}: Props) => {
             }
             right={
                 <PrimaryButton
+                    size='sm'
                     className={styles.cta}
                     onClick={onCreateSpace}
                 >
