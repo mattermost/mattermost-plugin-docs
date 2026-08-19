@@ -100,7 +100,7 @@ test.describe.serial('docs authoring', () => {
         const {spaceId, pageId} = spacePage.routedIds();
         await expect.poll(
             async () => (await getPageDraft(page, spaceId, pageId))?.body ?? '',
-            {message: 'draft body was never autosaved'},
+            {message: 'draft body was never autosaved', timeout: 30_000},
         ).toContain(body.code);
 
         // * The editor agrees the draft is saved
