@@ -44,9 +44,19 @@ export class DocsSwitcherPage {
         await this.result(title).click();
     }
 
+    // The list pre-highlights the first entry and ArrowDown wraps, so walk the highlight
+    // onto the wanted option: a fixed number of presses opens whatever else matched.
     async selectResultWithKeyboard(title: string) {
-        await expect(this.result(title)).toBeVisible();
-        await this.searchInput.press('ArrowDown');
+        const option = this.result(title);
+        await expect(option).toBeVisible();
+
+        await expect(async () => {
+            if (await option.getAttribute('aria-selected') !== 'true') {
+                await this.searchInput.press('ArrowDown');
+            }
+            await expect(option).toHaveAttribute('aria-selected', 'true');
+        }).toPass({timeout: 10_000});
+
         await this.searchInput.press('Enter');
     }
 }
