@@ -103,6 +103,8 @@ describe('PermissionsTab', () => {
         renderTab();
 
         expect(screen.getByText('Public')).toBeInTheDocument();
+        expect(screen.getByRole('radio', {name: /Private/})).toHaveAttribute('aria-checked', 'true');
+        expect(screen.getByRole('radio', {name: /Public/})).toBeDisabled();
         expect(screen.getByText('External sharing')).toBeInTheDocument();
     });
 

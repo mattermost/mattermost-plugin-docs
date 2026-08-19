@@ -82,6 +82,7 @@ describe('ShareSpaceModal', () => {
     it('lists the members with the current user marked', () => {
         renderModal();
 
+        expect(screen.getByRole('dialog', {name: "Share 'Engineering'"})).toBeInTheDocument();
         expect(screen.getByText('Caleb')).toBeInTheDocument();
         expect(screen.getByText('(You)')).toBeInTheDocument();
         expect(screen.getByText('Ada')).toBeInTheDocument();

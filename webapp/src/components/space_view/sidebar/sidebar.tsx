@@ -10,9 +10,9 @@ import ResizableDivider from 'components/resizable_divider/resizable_divider';
 
 import styles from './sidebar.module.scss';
 
-export const DEFAULT_SIDEBAR_WIDTH = 264;
+export const DEFAULT_SIDEBAR_WIDTH = 232;
 export const MIN_SIDEBAR_WIDTH = 200;
-export const MAX_SIDEBAR_WIDTH = 480;
+export const MAX_SIDEBAR_WIDTH = 232;
 
 // Clears the pages panel's own scrollbar, which sits on the edge the resize handle
 // straddles; without it the handle takes the clicks meant for the scrollbar.

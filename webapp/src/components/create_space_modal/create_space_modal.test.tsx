@@ -41,6 +41,8 @@ describe('CreateSpaceModal', () => {
 
         expect(screen.getByLabelText('Space name')).toBeInTheDocument();
         expect(screen.getByRole('radiogroup', {name: 'Space visibility'})).toBeInTheDocument();
+        expect(screen.getByRole('radio', {name: /Private Space/})).toHaveAttribute('aria-checked', 'true');
+        expect(screen.getByRole('radio', {name: /Public Space/})).toBeDisabled();
         expect(screen.getByRole('button', {name: 'Create'})).toBeDisabled();
 
         typeName('My Space');
