@@ -186,10 +186,12 @@ export class DocsServerContainer {
         }
     }
 
+    // Containers before the network, and each failure is contained: a stop() that threw
+    // would strand the remaining resources and replace the setup error that called it.
     async stop() {
-        await this.container?.stop();
-        await this.pgContainer?.stop();
-        await this.network?.stop();
+        await this.stopQuietly('Mattermost container', () => this.container?.stop());
+        await this.stopQuietly('Postgres container', () => this.pgContainer?.stop());
+        await this.stopQuietly('Docker network', () => this.network?.stop());
 
         await new Promise<void>((done) => {
             if (!this.logStream || this.logStream.writableEnded) {
@@ -198,5 +200,13 @@ export class DocsServerContainer {
             }
             this.logStream.end(done);
         });
+    }
+
+    private async stopQuietly(what: string, stop: () => Promise<unknown> | undefined) {
+        try {
+            await stop();
+        } catch (error) {
+            console.error(`[e2e] Failed to stop the ${what}:`, error);
+        }
     }
 }
