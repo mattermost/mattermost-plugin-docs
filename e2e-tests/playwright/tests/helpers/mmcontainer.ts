@@ -1,11 +1,13 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, type WriteStream} from 'node:fs';
+import {createWriteStream, existsSync, mkdirSync, readdirSync, statSync, type WriteStream} from 'node:fs';
 import {join, resolve} from 'node:path';
 
 import {GenericContainer, Network, Wait, type StartedNetwork, type StartedTestContainer} from 'testcontainers';
 import {PostgreSqlContainer, type StartedPostgreSqlContainer} from '@testcontainers/postgresql';
+
+import {assertServerSupportsDocs, pluginId} from './preflight';
 
 // Playwright transpiles to CommonJS, so import.meta is unavailable.
 const projectRoot = resolve(__dirname, '../..');
@@ -24,8 +26,6 @@ const adminEmail = 'sysadmin@sample.mattermost.com';
 export const defaultTeamName = 'ad-1';
 const defaultTeamDisplayName = 'eligendi';
 
-const pluginId = 'com.mattermost.docs';
-
 // First boot runs schema migrations; testcontainers' 60s default is too tight.
 const startupTimeoutMs = 180_000;
 
@@ -41,25 +41,6 @@ function pluginBundlePath(): string {
     return bundles.
         map((name) => join(distDir, name)).
         sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
-}
-
-function requiredServerVersion(): string {
-    const manifest = JSON.parse(readFileSync(join(repoRoot, 'plugin.json'), 'utf8')) as {min_server_version: string};
-    return manifest.min_server_version;
-}
-
-function isVersionAtLeast(actual: string, required: string): boolean {
-    const toParts = (v: string) => v.split('.').map((n) => parseInt(n, 10) || 0);
-    const [a, r] = [toParts(actual), toParts(required)];
-
-    for (let i = 0; i < Math.max(a.length, r.length); i++) {
-        const diff = (a[i] ?? 0) - (r[i] ?? 0);
-        if (diff !== 0) {
-            return diff > 0;
-        }
-    }
-
-    return true;
 }
 
 export class DocsServerContainer {
@@ -92,7 +73,7 @@ export class DocsServerContainer {
             await this.startContainers(image);
 
             await this.exec(['mmctl', '--local', 'config', 'set', 'ServiceSettings.SiteURL', this.url()]);
-            await this.assertSupportsDocs();
+            await assertServerSupportsDocs(this.url(), 'Pin a newer dev tag via MM_IMAGE.');
 
             await this.createAdmin();
             await this.createTeam(defaultTeamName, defaultTeamDisplayName);
@@ -157,30 +138,6 @@ export class DocsServerContainer {
                 stream.on('data', (data: string | Buffer) => this.logStream?.write(String(data)));
             }).
             start();
-    }
-
-    private async assertSupportsDocs() {
-        // Client config, not `mmctl version`: that reports the mmctl build, not the server.
-        const response = await fetch(
-            `${this.url()}/api/v4/config/client?format=old`,
-            {signal: AbortSignal.timeout(30_000)},
-        );
-        const config = await response.json() as Record<string, string>;
-
-        const required = requiredServerVersion();
-        const version = config.Version;
-
-        if (!version || !isVersionAtLeast(version, required)) {
-            throw new Error(
-                `Mattermost image reports version ${version ?? 'unknown'}, but the plugin requires >= ${required}. Pin a newer dev tag via MM_IMAGE.`,
-            );
-        }
-
-        if (config.FeatureFlagEnableDocs !== 'true') {
-            throw new Error(
-                'Mattermost image does not support the EnableDocs feature flag, so it lacks Docs core support. Pin a newer dev tag via MM_IMAGE.',
-            );
-        }
     }
 
     private async createAdmin() {

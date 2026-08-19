@@ -2,6 +2,7 @@
 // See LICENSE.txt for license information.
 
 import {DocsServerContainer, adminPassword, adminUsername, defaultTeamName} from './mmcontainer';
+import {assertPluginActive, assertServerSupportsDocs} from './preflight';
 import {clearState, writeState} from './state';
 
 // Deliberately not keyed off MM_SERVICESETTINGS_SITEURL: most dev shells export it, and
@@ -19,10 +20,18 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
 
         console.log(`[e2e] MM_E2E_USE_EXISTING_SERVER=true — running against ${baseURL}. This seeds real data into that server.`);
 
+        const username = process.env.MM_ADMIN_USERNAME || adminUsername;
+        const password = process.env.MM_ADMIN_PASSWORD || adminPassword;
+
+        // The container path gets these checks during setup; without them here an
+        // unsupported server fails much later, as an opaque browser or API failure.
+        await assertServerSupportsDocs(baseURL);
+        await assertPluginActive(baseURL, username, password);
+
         writeState({
             baseURL,
-            adminUsername: process.env.MM_ADMIN_USERNAME || adminUsername,
-            adminPassword: process.env.MM_ADMIN_PASSWORD || adminPassword,
+            adminUsername: username,
+            adminPassword: password,
             teamName: process.env.MM_TEAM_NAME || defaultTeamName,
         });
 
