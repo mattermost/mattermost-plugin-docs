@@ -18,7 +18,8 @@ const stateFile = resolve(projectRoot, '.e2e-state.json');
 // Playwright evaluates the config before globalSetup, so the mapped port cannot live
 // there; it is written here and read by the baseURL fixture.
 export function writeState(state: E2EState) {
-    writeFileSync(stateFile, JSON.stringify(state, null, 2));
+    // Holds the admin password; mode matters most when targeting a real server.
+    writeFileSync(stateFile, JSON.stringify(state, null, 2), {mode: 0o600});
 }
 
 export function readState(): E2EState {
