@@ -1,6 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {subscribeToImportJobUpdates} from 'client/import_events';
 import {getImportJob, listImportJobs} from 'client/imports';
 import {RestError} from 'client/rest';
 import {useCallback, useEffect, useRef, useState} from 'react';
@@ -78,12 +79,12 @@ export type ImportJobPollState = {
     refresh: () => Promise<ImportJobView | undefined>;
 };
 
-// useImportJob polls one import job for as long as it can still change.
+// useImportJob follows one import job for as long as it can still change.
 //
-// Polling rather than relying on the WebSocket event is deliberate for this first pass: the server does
-// publish an actor-scoped import_job_updated, but it is best-effort and at most one per second or 25
-// pages, so a client that only listened could sit on a stale view indefinitely if one were dropped.
-// Polling is the correctness floor; the event is a latency optimization to layer on top.
+// It polls *and* listens. The server publishes an actor-scoped import_job_updated, but at most once per second
+// or every 25 pages and with no delivery guarantee, so a client that only listened could sit on a stale view
+// indefinitely if one were dropped — during a reconnect, say. Polling is therefore the correctness floor and the
+// event is pure latency relief: it re-enters the same loop early rather than feeding state of its own.
 export function useImportJob(jobId: string | undefined): ImportJobPollState {
     const [job, setJob] = useState<ImportJobView | undefined>();
     const [loading, setLoading] = useState<boolean>(Boolean(jobId));
@@ -186,6 +187,29 @@ export function useImportJob(jobId: string | undefined): ImportJobPollState {
             }
         };
     }, [jobId, read, schedule]);
+
+    // The worker's progress event, used as a nudge to read rather than as the new state.
+    //
+    // It arrives at most once per second or every 25 pages and carries five fields, where the job view carries
+    // the plan, the counts and the acknowledgements — so applying it directly would build a partial view from an
+    // event that is best-effort by design, and a dropped one would leave that view wrong until the next poll.
+    // Re-entering the loop instead keeps polling as the floor and takes only the waiting out: a fifteen-second
+    // idle poll becomes immediate when the plan is published, and progress advances as pages land rather than on
+    // the next tick.
+    useEffect(() => {
+        if (!jobId) {
+            return undefined;
+        }
+        return subscribeToImportJobUpdates((event) => {
+            if (event.job_id !== jobId || !mounted.current) {
+                return;
+            }
+
+            // Through the loop, not a bare read: the cadence has to be recomputed from whatever the read finds,
+            // and a terminal state has to stop the polling rather than leave a timer running.
+            tickRef.current();
+        });
+    }, [jobId]);
 
     const refresh = useCallback(async () => {
         if (!jobId) {

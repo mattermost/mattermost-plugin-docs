@@ -265,6 +265,7 @@ func (s *Service) computeImportPreflight(job *model.ImportJob, mappingRevision i
 		Manifest: job.BundleSummary.Counts,
 		Actions:  st.actions,
 		Authors:  st.authors,
+		Links:    job.BundleSummary.Links,
 	}
 	revision, err := importPreflightRevision(st, summary)
 	if err != nil {

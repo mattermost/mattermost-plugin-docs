@@ -131,6 +131,40 @@ func TestImportReport_DeclaresWhetherItDescribesOnePlan(t *testing.T) {
 		"the revision named must be the one the rows were read against")
 }
 
+// TestImportReport_CountsDiscoveredLinks covers a figure both reports declared and neither measured.
+//
+// The summaries carried a links block from the start and nothing ever populated it, so every report stated zero
+// same-source links, zero unresolved, zero file placeholders — for bundles full of them. A count nobody fills in
+// is worse than an absent one: a reader cannot tell it apart from a real zero, and this one was being read as
+// "this bundle has no cross-page links at all".
+func TestImportReport_CountsDiscoveredLinks(t *testing.T) {
+	api := newImportMockAPI(importMockOptions{teamMember: true, canCreateChannel: true, channelMember: true})
+	h := openTestPlugin(t, api)
+	actorID := mmmodel.NewId()
+
+	// The fixture's pages after the first carry a braced page placeholder in a link plus one left in ordinary
+	// text, so there is something real to count.
+	jobID, view := h.uploadAndPreflight(t, actorID, newTargetRequest(mmmodel.NewId()),
+		importfixture.Options{Pages: 4, WithFindings: true}, "")
+
+	preflight, _ := decodeReport(t, h, jobID, actorID, "preflight")
+	discovered := preflight.Counts.Links["same_source"] + preflight.Counts.Links["unresolved"]
+	require.Greater(t, discovered, 0, "the bundle carries placeholder links, so the plan must count them")
+
+	// The same figures reach the job view the wizard reads, not just the downloadable report.
+	require.Equal(t, preflight.Counts.Links["same_source"], view.Preflight.Counts.Links["same_source"])
+
+	// Executing an import does not change how many placeholders the bundle contained, so the final report
+	// reports the same figures rather than recomputing or losing them.
+	h.confirmAndExecute(t, actorID, jobID, view, true)
+	final, _ := decodeReport(t, h, jobID, actorID, "final")
+	require.Equal(t, preflight.Counts.Links, final.Counts.Links)
+
+	// Categories the importer cannot resolve yet are absent rather than present and zero.
+	require.NotContains(t, final.Counts.Links, "cross_source_unique")
+	require.NotContains(t, final.Counts.Links, "ambiguous")
+}
+
 // reportIssueCodes collects the codes a report carries.
 func reportIssueCodes(report *model.ImportReport) []string {
 	codes := make([]string, 0, len(report.Issues))

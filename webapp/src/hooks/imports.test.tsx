@@ -2,6 +2,7 @@
 // See LICENSE.txt for license information.
 
 import {act, renderHook, waitFor} from '@testing-library/react';
+import {publishImportJobUpdate} from 'client/import_events';
 import * as importsClient from 'client/imports';
 import {RestError} from 'client/rest';
 
@@ -307,6 +308,131 @@ describe('useImportJob', () => {
     });
 });
 
+describe('useImportJob websocket updates', () => {
+    beforeEach(() => {
+        jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+        jest.clearAllTimers();
+        jest.useRealTimers();
+        jest.restoreAllMocks();
+    });
+
+    const renderImportJob = async (jobId: string | undefined) => {
+        const rendered = renderHook(() => useImportJob(jobId));
+        await act(async () => {
+            await Promise.resolve();
+        });
+        return rendered;
+    };
+
+    // The point of listening: a job waiting on the worker is polled every two seconds and a job waiting on a
+    // person every fifteen, so without the event a published plan sits unseen for up to fifteen seconds.
+    it('reads immediately when the worker says the job changed', async () => {
+        const get = jest.spyOn(importsClient, 'getImportJob').
+            mockResolvedValueOnce(makeJob('preflighting')).
+            mockResolvedValue(makeJob('awaiting_confirmation'));
+
+        const {result} = await renderImportJob('job1');
+        await waitFor(() => expect(result.current.job?.state).toBe('preflighting'));
+        expect(get).toHaveBeenCalledTimes(1);
+
+        // No timer is advanced: the read has to come from the event alone.
+        await act(async () => {
+            publishImportJobUpdate({
+                job_id: 'job1',
+                state: 'awaiting_confirmation',
+                phase: '',
+                progress_current: 0,
+                progress_total: 0,
+            });
+        });
+
+        await waitFor(() => expect(result.current.job?.state).toBe('awaiting_confirmation'));
+        expect(get).toHaveBeenCalledTimes(2);
+    });
+
+    // The event is a nudge, not the new state: it carries five fields where the view carries the plan, the counts
+    // and the acknowledgements, so what lands must be what the server was asked for.
+    it('takes its state from the read rather than from the event', async () => {
+        jest.spyOn(importsClient, 'getImportJob').mockResolvedValue(
+            makeJob('importing', {progress: {phase: 'writing_pages', current: 40, total: 150}}),
+        );
+
+        const {result} = await renderImportJob('job1');
+        await waitFor(() => expect(result.current.job?.state).toBe('importing'));
+
+        await act(async () => {
+            publishImportJobUpdate({
+                job_id: 'job1',
+                state: 'completed',
+                phase: '',
+                progress_current: 999,
+                progress_total: 999,
+            });
+        });
+
+        await waitFor(() => expect(result.current.job?.progress.current).toBe(40));
+        expect(result.current.job?.state).toBe('importing');
+    });
+
+    it('ignores an event for another job', async () => {
+        const get = jest.spyOn(importsClient, 'getImportJob').mockResolvedValue(makeJob('importing'));
+
+        const {result} = await renderImportJob('job1');
+        await waitFor(() => expect(result.current.job?.state).toBe('importing'));
+        const before = get.mock.calls.length;
+
+        await act(async () => {
+            publishImportJobUpdate({
+                job_id: 'someone-elses-job',
+                state: 'completed',
+                phase: '',
+                progress_current: 1,
+                progress_total: 1,
+            });
+        });
+
+        expect(get).toHaveBeenCalledTimes(before);
+    });
+
+    // The event re-enters the loop rather than replacing it, so the cadence is recomputed from what the read
+    // found — and a terminal job stops the polling instead of leaving a timer running.
+    it('keeps polling on the new cadence after an event', async () => {
+        const get = jest.spyOn(importsClient, 'getImportJob').
+            mockResolvedValueOnce(makeJob('awaiting_confirmation')).
+            mockResolvedValueOnce(makeJob('importing')).
+            mockResolvedValue(makeJob('completed'));
+
+        const {result} = await renderImportJob('job1');
+        await waitFor(() => expect(result.current.job?.state).toBe('awaiting_confirmation'));
+
+        await act(async () => {
+            publishImportJobUpdate({
+                job_id: 'job1',
+                state: 'importing',
+                phase: 'writing_pages',
+                progress_current: 1,
+                progress_total: 4,
+            });
+        });
+        await waitFor(() => expect(result.current.job?.state).toBe('importing'));
+
+        // Now on the brisk cadence, which the event switched it to by way of the read.
+        await act(async () => {
+            jest.advanceTimersByTime(IMPORT_POLL_ACTIVE_MS);
+        });
+        await waitFor(() => expect(result.current.job?.state).toBe('completed'));
+
+        const settled = get.mock.calls.length;
+        await act(async () => {
+            jest.advanceTimersByTime(IMPORT_POLL_ACTIVE_MS * 5);
+        });
+        expect(get).toHaveBeenCalledTimes(settled);
+    });
+});
+
 describe('useResumableImportJob', () => {
     const renderResume = async (target: Parameters<typeof useResumableImportJob>[0]) => {
         const rendered = renderHook(() => useResumableImportJob(target));
@@ -419,9 +545,7 @@ describe('useResumableImportJob', () => {
             target: {kind: 'new', team_id: 'other-team', existed: false},
         });
         jest.spyOn(importsClient, 'listImportJobs').mockImplementation((options) =>
-            Promise.resolve(options?.page ?
-                page([makeJob('importing', {id: 'wanted'})]) :
-                page([elsewhere], true)),
+            Promise.resolve(options?.page ? page([makeJob('importing', {id: 'wanted'})]) : page([elsewhere], true)),
         );
 
         const {result} = await renderResume({kind: 'new', team_id: 'team1'});

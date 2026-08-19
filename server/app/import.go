@@ -299,6 +299,11 @@ func bundleSummaryOf(summary *importer.InspectionSummary) model.ImportBundleSumm
 			RestrictedEmittedPages:  summary.Restricted.EmittedPages,
 			RestrictedManifestOnly:  summary.Restricted.ManifestOnly,
 		},
+		Links: model.ImportLinkCounts{
+			SameSource:       summary.Links.SameSource,
+			Unresolved:       summary.Links.Unresolved,
+			FilePlaceholders: summary.Links.FilePlaceholders,
+		},
 	}
 }
 
@@ -765,7 +770,21 @@ func importPreflightReportSummary(job *model.ImportJob) *model.ImportReportSumma
 				"mapped":            summary.Authors.Mapped,
 				"fallback_to_actor": summary.Authors.FallbackToActor,
 			},
+			Links: importLinkCountsMap(summary.Links),
 		},
+	}
+}
+
+// importLinkCountsMap renders the discovered-placeholder counts for a report.
+//
+// A map rather than a struct, matching the action and author counts beside it: the categories are a property of
+// what the importer can currently resolve, and a reader iterating the map sees exactly the ones that were
+// measured instead of having to know which struct fields are meaningful in which release.
+func importLinkCountsMap(links model.ImportLinkCounts) map[string]int {
+	return map[string]int{
+		"same_source":       links.SameSource,
+		"unresolved":        links.Unresolved,
+		"file_placeholders": links.FilePlaceholders,
 	}
 }
 
@@ -791,6 +810,7 @@ func importFinalReportSummary(job *model.ImportJob) *model.ImportReportSummary {
 				"mapped":            summary.Authors.Mapped,
 				"fallback_to_actor": summary.Authors.FallbackToActor,
 			},
+			Links: importLinkCountsMap(summary.Links),
 		},
 	}
 }

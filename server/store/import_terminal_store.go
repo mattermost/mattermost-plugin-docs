@@ -565,7 +565,9 @@ func (s *Store) recordCompletionStaleOutcomes(tx sqlx.ExtContext, job *model.Imp
 // worker passes and a restart reports exactly what a reader of those rows would count. Must be called inside
 // tx, after every terminal row has been written.
 func (s *Store) composeImportFinalSummary(tx sqlx.ExtContext, job *model.ImportJob) (model.ImportFinalSummary, bool, error) {
-	summary := model.ImportFinalSummary{Manifest: job.BundleSummary.Counts}
+	// Manifest and link figures come from the bundle rather than the rows: both describe what was *offered*,
+	// which executing it does not change.
+	summary := model.ImportFinalSummary{Manifest: job.BundleSummary.Counts, Links: job.BundleSummary.Links}
 
 	type outcomeTally struct {
 		ActualAction string

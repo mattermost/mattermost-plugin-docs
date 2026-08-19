@@ -723,12 +723,16 @@ type ImportAuthorCounts struct {
 }
 
 // ImportLinkCounts counts discovered placeholder links by resolution category.
+//
+// Every field here is a number the importer actually measures during inspection. The plan also describes
+// cross_source_unique and ambiguous counts, which require resolving a placeholder against the durable mappings
+// of *other* ImportSources in the same Space (§14/§16); until that resolution exists, those categories are
+// absent from the report rather than present and always zero. A count of zero has to mean "none found", or a
+// reader cannot use any of them.
 type ImportLinkCounts struct {
-	SameSource        int `json:"same_source"`
-	CrossSourceUnique int `json:"cross_source_unique"`
-	Ambiguous         int `json:"ambiguous"`
-	Unresolved        int `json:"unresolved"`
-	FilePlaceholders  int `json:"file_placeholders"`
+	SameSource       int `json:"same_source"`
+	Unresolved       int `json:"unresolved"`
+	FilePlaceholders int `json:"file_placeholders"`
 }
 
 // ImportNewSpaceMetadata is the confirmed, user-editable metadata for a new Space.
@@ -1007,6 +1011,10 @@ type ImportBundleSummary struct {
 	Source        ImportReportSource  `json:"source"`
 	SpaceDefaults ImportSpaceDefaults `json:"space_defaults"`
 	Counts        ImportBundleCounts  `json:"counts"`
+	// Links are discovered while the bundle is inspected, so they belong to the bundle rather than to any
+	// later stage: the plan and the final report both carry the same figures, because nothing about executing
+	// an import changes how many placeholders the bundle contained.
+	Links ImportLinkCounts `json:"links"`
 }
 
 // Value implements driver.Valuer for the BundleSummary jsonb column.
