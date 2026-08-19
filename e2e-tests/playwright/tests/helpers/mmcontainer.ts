@@ -82,9 +82,31 @@ export class DocsServerContainer {
         return output;
     }
 
+    // Every allocation lives inside one try: a failure past the first one leaks containers
+    // and the network, because globalSetup never returns its teardown closure and Ryuk is
+    // disabled on some CI images.
     async start(): Promise<DocsServerContainer> {
         const image = process.env.MM_IMAGE || defaultImage;
 
+        try {
+            await this.startContainers(image);
+
+            await this.exec(['mmctl', '--local', 'config', 'set', 'ServiceSettings.SiteURL', this.url()]);
+            await this.assertSupportsDocs();
+
+            await this.createAdmin();
+            await this.createTeam(defaultTeamName, defaultTeamDisplayName);
+            await this.addUserToTeam(adminUsername, defaultTeamName);
+            await this.installPlugin();
+        } catch (error) {
+            await this.stop();
+            throw error;
+        }
+
+        return this;
+    }
+
+    private async startContainers(image: string) {
         this.network = await new Network().start();
 
         this.pgContainer = await new PostgreSqlContainer(postgresImage).
@@ -135,23 +157,6 @@ export class DocsServerContainer {
                 stream.on('data', (data: string | Buffer) => this.logStream?.write(String(data)));
             }).
             start();
-
-        // Without this, a failure here leaks both containers and the network: globalSetup
-        // never returns its teardown closure, and Ryuk is disabled on some CI images.
-        try {
-            await this.exec(['mmctl', '--local', 'config', 'set', 'ServiceSettings.SiteURL', this.url()]);
-            await this.assertSupportsDocs();
-
-            await this.createAdmin();
-            await this.createTeam(defaultTeamName, defaultTeamDisplayName);
-            await this.addUserToTeam(adminUsername, defaultTeamName);
-            await this.installPlugin();
-        } catch (error) {
-            await this.stop();
-            throw error;
-        }
-
-        return this;
     }
 
     private async assertSupportsDocs() {
