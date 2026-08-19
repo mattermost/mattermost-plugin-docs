@@ -60,8 +60,9 @@ const PageTitle = ({value, editing, onChange, onCommit, onCancel}: Props) => {
             onValueChange={(newValue) => onChange([...newValue].slice(0, TITLE_MAX_LENGTH).join(''))}
             onBlur={onCommit}
             onKeyDown={(e) => {
-                if (e.key === 'Enter') {
+                if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) {
                     // A title is one line; Enter means "done", not "new line".
+                    // Cmd/Ctrl+Enter publishes instead — see page_header hotkeys.
                     e.preventDefault();
                     onCommit();
                 }

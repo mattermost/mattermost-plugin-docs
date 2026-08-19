@@ -47,21 +47,22 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
     };
 
     // Scaffolding: view-access and per-member capabilities land with PR #10, so
-    // the selector, search and role dropdowns are visual only.
+    // the selector, search and role dropdowns are visual only. Public is shown
+    // but disabled until that lands, matching the create-space form.
     const accessOptions = useMemo(() => [
         {
             value: 'public',
             icon: <GlobeIcon size={20}/>,
             title: formatMessage({id: 'docs.spaceSettings.permissions.public.title', defaultMessage: 'Public'}),
             description: formatMessage({id: 'docs.spaceSettings.permissions.public.description', defaultMessage: 'Anyone in the team can find and view this space.'}),
+            disabled: true,
+            disabledReason: formatMessage({id: 'docs.spaceSettings.permissions.public.comingSoon', defaultMessage: 'Public spaces are coming soon'}),
         },
         {
             value: 'private',
             icon: <LockOutlineIcon size={20}/>,
             title: formatMessage({id: 'docs.spaceSettings.permissions.private.title', defaultMessage: 'Private'}),
             description: formatMessage({id: 'docs.spaceSettings.permissions.private.description', defaultMessage: 'Only invited members can view this space.'}),
-            disabled: true,
-            disabledReason: formatMessage({id: 'docs.spaceSettings.permissions.private.comingSoon', defaultMessage: 'Coming soon'}),
         },
     ], [formatMessage]);
 
@@ -78,7 +79,7 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                 <PublicPrivateSelector
                     ariaLabel={formatMessage({id: 'docs.spaceSettings.permissions.accessLabel', defaultMessage: 'Space access'})}
                     options={accessOptions}
-                    value='public'
+                    value='private'
                     onChange={() => {}}
                 />
             </Section>

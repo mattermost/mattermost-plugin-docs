@@ -4,8 +4,7 @@
 import {defineMessage} from 'react-intl';
 
 // Whether a space is visible to the whole team or only invited members. Only
-// 'public' is selectable in the initial MVF — space-level permissions (and thus
-// private spaces) are not built yet.
+// 'private' is selectable for now — public (open) spaces wait on view_access.
 export type SpaceVisibility = 'public' | 'private';
 
 // Field names and shapes mirror the server model (server/model/space.go) —

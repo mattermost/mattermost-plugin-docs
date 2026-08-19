@@ -1,6 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import classNames from 'classnames';
 import type {MemberProfile} from 'hooks/members';
 import React from 'react';
 import {FormattedMessage} from 'react-intl';
@@ -16,10 +17,11 @@ type Props = {
 
     /** Row-end slot. Absent on a read-only roster. */
     trailing?: React.ReactNode;
+    comfortable?: boolean;
 };
 
-const MemberRow = ({member, avatarSize, isCurrentUser, showYouBadge, trailing}: Props) => (
-    <div className={styles.memberRow}>
+const MemberRow = ({member, avatarSize, isCurrentUser, showYouBadge, trailing, comfortable = false}: Props) => (
+    <div className={classNames(styles.memberRow, {[styles.memberRowComfortable]: comfortable})}>
         <Avatar
             url={member.avatarUrl}
             username={member.username}

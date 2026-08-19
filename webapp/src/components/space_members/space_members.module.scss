@@ -11,12 +11,18 @@
     padding: 8px 0;
 }
 
+.memberRowComfortable {
+    min-height: 64px;
+    gap: 8px;
+    padding: 16px 20px;
+}
+
 .memberInfo {
     display: flex;
     flex: 1 1 auto;
     min-width: 0;
     align-items: baseline;
-    gap: 6px;
+    gap: 8px;
 }
 
 .memberName {
@@ -35,8 +41,11 @@
     white-space: nowrap;
 }
 
-.roleTrigger {
-    gap: 4px;
+.roleTrigger:global(.btn.btn-sm) {
+    min-width: 0;
+    padding: 6px 8px;
+    gap: 8px;
+    background: transparent;
     color: var(--link-color);
     font-weight: 600;
 }
