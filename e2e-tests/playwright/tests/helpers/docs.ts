@@ -22,7 +22,6 @@ export interface DocsPage {
 }
 
 export interface SpaceMember {
-    space_id: string;
     user_id: string;
 }
 
