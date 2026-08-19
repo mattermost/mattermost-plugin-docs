@@ -38,6 +38,11 @@ export async function assertServerSupportsDocs(baseURL: string, remedy = '') {
         `${baseURL}/api/v4/config/client?format=old`,
         {signal: AbortSignal.timeout(requestTimeoutMs)},
     );
+
+    if (!response.ok) {
+        throw new Error(`Unable to read the client config at ${baseURL} (${response.status}).`);
+    }
+
     const config = await response.json() as Record<string, string>;
 
     const required = requiredServerVersion();
