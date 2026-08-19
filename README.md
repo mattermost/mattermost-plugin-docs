@@ -57,7 +57,8 @@ repository and point `MM_IMAGE` at that.
 To run against a Mattermost server you are already running instead of a container:
 
 ```bash
-MM_E2E_USE_EXISTING_SERVER=true MM_SERVICESETTINGS_SITEURL=http://localhost:8065 npm test
+cd e2e-tests/playwright && \
+  MM_E2E_USE_EXISTING_SERVER=true MM_SERVICESETTINGS_SITEURL=http://localhost:8065 npm test
 ```
 
 This seeds real teams and users into that server, so it is opt-in through
