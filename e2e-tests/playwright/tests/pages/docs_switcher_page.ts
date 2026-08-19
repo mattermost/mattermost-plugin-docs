@@ -54,8 +54,9 @@ export class DocsSwitcherPage {
             if (await option.getAttribute('aria-selected') !== 'true') {
                 await this.searchInput.press('ArrowDown');
             }
-            await expect(option).toHaveAttribute('aria-selected', 'true');
-        }).toPass({timeout: 10_000});
+            // Short: this assertion shares its window with the retry loop around it.
+            await expect(option).toHaveAttribute('aria-selected', 'true', {timeout: 1_000});
+        }).toPass({timeout: 10_000, intervals: [100, 250, 500]});
 
         await this.searchInput.press('Enter');
     }
