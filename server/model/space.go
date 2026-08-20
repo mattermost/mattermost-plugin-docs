@@ -56,36 +56,44 @@ type Space struct {
 
 // SpaceWithAccess carries the caller-relevant access state alongside the plain Space fields. The
 // anonymous Space embed keeps the JSON flat, mirroring core's ChannelMemberWithTeamData pattern.
-// DefaultCapabilities is the space's default capability set, read_page-free (the implicit
-// baseline). Capabilities is the caller's own effective set and does include read_page, since an
+// DefaultPermissions is the space's default permission set, read_page-free (the implicit
+// baseline). Permissions is the caller's own effective set and does include read_page, since an
 // effective set states what the caller may actually do rather than what was granted on top of the
 // baseline. Both are non-nil-on-empty.
 //
+// Permissions states what the caller may do in this space, not where the authority came from, so it
+// carries manage_space when the caller holds the manage tier — whether through channel admin_space,
+// a team-level grant, or being a system admin. Nothing here is scoped to the backing channel: this
+// is the plugin's own answer, not a projection of a channel's permission set, and a caller's
+// authority over a space legitimately arrives from outside it. SpaceMember.Permissions is the
+// narrower per-member statement — what the space itself grants that member — and does not resolve
+// team-level authority, which would cost a lookup per row.
+//
 // An endpoint returns this wrapper when it establishes access state (CreateSpace), changes it
-// (SetSpaceDefaultCapabilities), reads a space directly (GET /spaces/{id}), or patches one
+// (SetSpaceDefaultPermissions), reads a space directly (GET /spaces/{id}), or patches one
 // (PATCH /spaces/{id}): a patch may alter view_access, which moves who may read the space, and
 // answering with the wrapper keeps a client refreshing its cached entry from dropping the
-// capability fields. The endpoints that return a bare Space are the restore route, which alters
-// neither field, and the team listing, which omits them because resolving a capability set per
+// permission fields. The endpoints that return a bare Space are the restore route, which alters
+// neither field, and the team listing, which omits them because resolving a permission set per
 // space would cost a scheme-and-role lookup per row.
 //
 // Because the embed is flat, a bare Space and this wrapper are indistinguishable to a client that
 // types them alike: a client caching a space must merge a bare-Space response into its cached
-// entry rather than replace it, or it will drop the capability fields an earlier read supplied.
+// entry rather than replace it, or it will drop the permission fields an earlier read supplied.
 type SpaceWithAccess struct {
 	Space
-	DefaultCapabilities []string `json:"default_capabilities"`
-	Capabilities        []string `json:"capabilities"`
+	DefaultPermissions []string `json:"default_permissions"`
+	Permissions        []string `json:"permissions"`
 }
 
-// EnsureCapabilities normalizes DefaultCapabilities and Capabilities to non-nil slices so they
+// EnsurePermissions normalizes DefaultPermissions and Permissions to non-nil slices so they
 // marshal as JSON [] rather than null, mirroring the Space.GetProps discipline.
-func (w *SpaceWithAccess) EnsureCapabilities() {
-	if w.DefaultCapabilities == nil {
-		w.DefaultCapabilities = []string{}
+func (w *SpaceWithAccess) EnsurePermissions() {
+	if w.DefaultPermissions == nil {
+		w.DefaultPermissions = []string{}
 	}
-	if w.Capabilities == nil {
-		w.Capabilities = []string{}
+	if w.Permissions == nil {
+		w.Permissions = []string{}
 	}
 }
 
@@ -100,33 +108,33 @@ type SpacePatch struct {
 }
 
 // SpaceMember is the API-facing view of a user's membership in a space. Membership is backed by
-// the space's channel; this type projects the caller's effective membership state — capabilities,
+// the space's channel; this type projects the caller's effective membership state — permissions,
 // admin/guest standing — while the raw channel mechanics (channel id, generated scheme-role names,
 // ExplicitRoles string, notify props) stay internal.
 type SpaceMember struct {
 	UserId string `json:"user_id"`
-	// Capabilities is the member's effective capability set (space default union granted),
+	// Permissions is the member's effective permission set (space default union granted),
 	// including the read_page baseline.
-	Capabilities []string `json:"capabilities"`
-	// GrantedCapabilities is the member's per-member granted set beyond the space default,
+	Permissions []string `json:"permissions"`
+	// GrantedPermissions is the member's per-member granted set beyond the space default,
 	// read_page-free since the baseline is never independently granted.
-	GrantedCapabilities []string `json:"granted_capabilities"`
-	IsAdmin             bool     `json:"is_admin"`
-	IsGuest             bool     `json:"is_guest"`
+	GrantedPermissions []string `json:"granted_permissions"`
+	IsAdmin            bool     `json:"is_admin"`
+	IsGuest            bool     `json:"is_guest"`
 	// AutoJoined reports whether the member was added by the open-space auto-join pre-step rather
 	// than invited/added deliberately, so a membership review (e.g. after an open->private flip)
 	// can tell the two apart.
 	AutoJoined bool `json:"auto_joined"`
 }
 
-// EnsureCapabilities normalizes Capabilities and GrantedCapabilities to non-nil slices so they
+// EnsurePermissions normalizes Permissions and GrantedPermissions to non-nil slices so they
 // marshal as JSON [] rather than null, mirroring the Space.GetProps discipline.
-func (m *SpaceMember) EnsureCapabilities() {
-	if m.Capabilities == nil {
-		m.Capabilities = []string{}
+func (m *SpaceMember) EnsurePermissions() {
+	if m.Permissions == nil {
+		m.Permissions = []string{}
 	}
-	if m.GrantedCapabilities == nil {
-		m.GrantedCapabilities = []string{}
+	if m.GrantedPermissions == nil {
+		m.GrantedPermissions = []string{}
 	}
 }
 

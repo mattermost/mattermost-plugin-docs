@@ -10,5 +10,12 @@
 # guards, role composition, or the migrations this suite exercises without moving the pin at all.
 # Bump this line in the same PR that depends on the newer core behaviour.
 #
+# Core CI's per-commit images are not retained indefinitely: the previous pin
+# (102b12d804d3135deb7ed261db944020d799d89b) no longer resolves to a published tag, which makes both
+# e2e suites unrunnable rather than merely stale. When a pin stops resolving, bump it to a commit
+# whose image is still published — verify with
+#   curl -s -o /dev/null -w '%{http_code}' \
+#     https://hub.docker.com/v2/repositories/mattermostdevelopment/mattermost-team-edition/tags/<7-char-sha>/
+#
 # One sha, comments and blank lines ignored.
-102b12d804d3135deb7ed261db944020d799d89b
+56b239719d191e156bc55326a5fefc25174139db

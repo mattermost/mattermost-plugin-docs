@@ -24,16 +24,16 @@
     "translation": "The request body exceeds the maximum allowed size of {{.MaxBytes}} bytes."
   },
   {
-    "id": "api.space.add_member.capabilities_not_allowed.app_error",
-    "translation": "Capabilities cannot be set when adding a member. Add the member first, then set their capabilities."
+    "id": "api.space.add_member.permissions_not_allowed.app_error",
+    "translation": "Permissions cannot be set when adding a member. Add the member first, then set their permissions."
   },
   {
-    "id": "api.space.set_default_capabilities.capabilities_required.app_error",
-    "translation": "The default_capabilities field is required. Send an empty list to clear every default capability."
+    "id": "api.space.set_default_permissions.permissions_required.app_error",
+    "translation": "The default_permissions field is required. Send an empty list to clear every default permission."
   },
   {
-    "id": "api.space.set_member_capabilities.capabilities_required.app_error",
-    "translation": "The granted_capabilities field is required. Send an empty list to clear every granted capability."
+    "id": "api.space.set_member_permissions.permissions_required.app_error",
+    "translation": "The granted_permissions field is required. Send an empty list to clear every granted permission."
   },
   {
     "id": "app.optimistic_lock.baseline_required.app_error",
@@ -404,6 +404,10 @@
     "translation": "Invalid user ID."
   },
   {
+    "id": "app.space.access.member_lookup_failed.app_error",
+    "translation": "Failed to verify space membership."
+  },
+  {
     "id": "app.space.access.team_lookup_failed.app_error",
     "translation": "Failed to verify team membership."
   },
@@ -418,6 +422,10 @@
   {
     "id": "app.space.auto_join.get_space_failed.app_error",
     "translation": "Failed to look up the space."
+  },
+  {
+    "id": "app.space.auto_join.provenance_write_failed.app_error",
+    "translation": "Failed to record how this membership was created. Please try again."
   },
   {
     "id": "app.space.client_not_wired.app_error",
@@ -472,19 +480,19 @@
     "translation": "Unable to verify team membership."
   },
   {
-    "id": "app.space.default_capabilities.channel_scheme_missing.app_error",
+    "id": "app.space.default_permissions.channel_scheme_missing.app_error",
     "translation": "The space has no permission scheme."
   },
   {
-    "id": "app.space.default_capabilities.repoint_failed.app_error",
-    "translation": "Failed to apply the new default capabilities."
+    "id": "app.space.default_permissions.repoint_failed.app_error",
+    "translation": "Failed to apply the new default permissions."
   },
   {
-    "id": "app.space.default_capabilities.scheme_configure_failed.app_error",
+    "id": "app.space.default_permissions.scheme_configure_failed.app_error",
     "translation": "Failed to configure the space's new permission scheme."
   },
   {
-    "id": "app.space.default_capabilities.scheme_configure_rollback_failed.app_error",
+    "id": "app.space.default_permissions.scheme_configure_rollback_failed.app_error",
     "translation": "Failed to configure the space's new permission scheme, and the space could not be returned to its previous one. Contact your system administrator."
   },
   {
@@ -532,8 +540,12 @@
     "translation": "Failed to count the space's administrators."
   },
   {
+    "id": "app.space.member.clear_auto_join_failed.app_error",
+    "translation": "Failed to update how this membership was created. Please try again."
+  },
+  {
     "id": "app.space.member.guest_not_assignable.app_error",
-    "translation": "Capabilities cannot be assigned to a guest."
+    "translation": "Permissions cannot be assigned to a guest."
   },
   {
     "id": "app.space.member.invalid_user_id.app_error",
@@ -552,12 +564,16 @@
     "translation": "Unable to verify the user's team membership."
   },
   {
-    "id": "app.space.member.update_capabilities_failed.app_error",
-    "translation": "Failed to update the member's capabilities."
+    "id": "app.space.member.update_permissions_failed.app_error",
+    "translation": "Failed to update the member's permissions."
   },
   {
     "id": "app.space.member.user_not_found.app_error",
     "translation": "The specified user could not be found."
+  },
+  {
+    "id": "app.space.pooled_scheme_conflict.app_error",
+    "translation": "This space's permissions could not be applied because another permission scheme on this server conflicts with them. Contact your system administrator."
   },
   {
     "id": "app.space.preset_scheme_missing.app_error",
@@ -816,15 +832,15 @@
     "translation": "The update contains no changes."
   },
   {
-    "id": "model.space_capabilities.admin_not_a_default.app_error",
-    "translation": "The admin_space capability cannot be a space default."
+    "id": "model.space_permissions.admin_not_a_default.app_error",
+    "translation": "The admin_space permission cannot be a space default."
   },
   {
-    "id": "model.space_capabilities.read_page_not_grantable.app_error",
-    "translation": "The read_page capability cannot be granted; every space member holds it."
+    "id": "model.space_permissions.read_page_not_grantable.app_error",
+    "translation": "The read_page permission cannot be granted; every space member holds it."
   },
   {
-    "id": "model.space_capabilities.unknown_capability.app_error",
-    "translation": "Unknown capability: {{.Capability}}."
+    "id": "model.space_permissions.unknown_permission.app_error",
+    "translation": "Unknown permission: {{.Permission}}."
   }
 ]

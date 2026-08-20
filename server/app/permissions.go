@@ -5,9 +5,7 @@ package app
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
-	"slices"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
@@ -26,23 +24,6 @@ const (
 	ReadViaMember
 	ReadViaOpenFallthrough
 )
-
-// String names the resolution, so a log field or a failed test assertion reports how the read was
-// admitted rather than the underlying integer.
-func (r ReadResolution) String() string {
-	switch r {
-	case ReadDenied:
-		return "denied"
-	case ReadViaSysadmin:
-		return "sysadmin"
-	case ReadViaMember:
-		return "member"
-	case ReadViaOpenFallthrough:
-		return "open_fallthrough"
-	default:
-		return fmt.Sprintf("ReadResolution(%d)", int(r))
-	}
-}
 
 // existenceHidingForbidden is the shared 403 every enforcement helper returns on a lookup miss
 // or a denied check, so a caller cannot distinguish "doesn't exist", "not a member", and "no
@@ -160,11 +141,14 @@ func (s *Service) RequireSpacePagePermission(where string, space *model.Space, u
 	return s.evaluatePagePermission(where, space, userID, perm, member != nil, member)
 }
 
-// isGuest reports whether userID holds core's system-wide guest role. Read from the user rather
-// than from the backing channel's ChannelMember.SchemeGuest: the two carry the same standing —
-// a demotion stamps system_guest on the user and mirrors it onto every membership in the same
-// transaction — and the user is the record that standing originates from.
-func (s *Service) isGuest(userID string) (bool, error) {
+// resolveGuest reports whether userID holds core's system-wide guest role. Named for the lookup it
+// performs rather than as an is-predicate, since unlike isComplianceEnabled and
+// hasOpenTeamFallthrough it can fail and its caller must handle that separately from a false.
+//
+// Read from the user rather than from the backing channel's ChannelMember.SchemeGuest: the two
+// carry the same standing — a demotion stamps system_guest on the user and mirrors it onto every
+// membership in the same transaction — and the user is the record that standing originates from.
+func (s *Service) resolveGuest(userID string) (bool, error) {
 	user, err := s.client.User.Get(userID)
 	if err != nil {
 		return false, err
@@ -179,8 +163,8 @@ func (s *Service) isGuest(userID string) (bool, error) {
 // holds one, and nil when active was established without reading the row.
 //
 // A guest is held to read_page whatever the composed channel permission says. Demoting a user to
-// guest clears SchemeUser/SchemeAdmin but leaves the atomic capability roles (one role per granted
-// capability) a prior grant wrote into ExplicitRoles, and core composes those into the member's channel permissions regardless of
+// guest clears SchemeUser/SchemeAdmin but leaves the atomic permission roles (one role per granted
+// permission) a prior grant wrote into ExplicitRoles, and core composes those into the member's channel permissions regardless of
 // guest standing — so a gate that trusted the composed permission alone would let a demoted guest
 // keep writing.
 func (s *Service) evaluatePagePermission(where string, space *model.Space, userID string, perm *mmmodel.Permission, active bool, member *mmmodel.TeamMember) *mmmodel.AppError {
@@ -188,7 +172,7 @@ func (s *Service) evaluatePagePermission(where string, space *model.Space, userI
 		if perm.Id == mmmodel.PermissionReadPage.Id {
 			return nil
 		}
-		guest, err := s.isGuest(userID)
+		guest, err := s.resolveGuest(userID)
 		if err != nil {
 			return mmmodel.NewAppError(where, "app.space.access.user_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 		}
@@ -231,8 +215,10 @@ func (s *Service) RequireSpacePagePermissionFrom(where string, space *model.Spac
 
 // ResolveSpacePageOwnOrAny decides a page operation that is granted by either of two permissions:
 // a broad one covering any page, or a narrower own-page one that applies when the caller owns the
-// target. delete_page with delete_own_page is the pair; move-to-space's remove-class gate is the
-// other. The caller is admitted by anyPerm alone, or by ownPerm when ownerMatches. Each of the two
+// target. Both callers pass delete_page as the broad permission and delete_own_page as the
+// own-page one: deleting a page, and the source side of a move to another space, which removes the
+// page from the source just as a delete would.
+// The caller is admitted by anyPerm alone, or by ownPerm when ownerMatches. Each of the two
 // attempts has to tell a denial apart from a failed lookup, which is why the sequence lives here
 // instead of being repeated per handler.
 //
@@ -289,7 +275,7 @@ func (s *Service) RequireSpaceAdminOrTeamPerm(where string, space *model.Space, 
 }
 
 // RequireSpaceAdminOrSysadmin gates the space-wide exposure-policy knobs (ViewAccess, default
-// capabilities) and admin-affecting member changes: sysadmin, or channel admin_space plus active
+// permissions) and admin-affecting member changes: sysadmin, or channel admin_space plus active
 // team membership. No team-manage_space branch — those knobs are stricter than ordinary manage.
 func (s *Service) RequireSpaceAdminOrSysadmin(where string, space *model.Space, userID string) *mmmodel.AppError {
 	member, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
@@ -299,8 +285,24 @@ func (s *Service) RequireSpaceAdminOrSysadmin(where string, space *model.Space, 
 	if sysadmin {
 		return nil
 	}
-	if member != nil && s.client.User.HasPermissionToChannel(userID, space.ChannelId, mmmodel.PermissionAdminSpace) {
-		return nil
+	if member != nil {
+		// The SchemeAdmin flag is read from the master rather than composed through
+		// HasPermissionToChannel, which answers from GetAllChannelMembersForUser's cache. Every
+		// caller that re-runs this gate inside the space-membership lock does so to catch a
+		// demotion that landed while it waited, and a cached composition can still report the
+		// pre-demotion roles — so the re-check would admit exactly the actor it exists to exclude.
+		//
+		// The flag is the whole signal for admin_space: RolesForPermissions turns an admin_space
+		// grant into SchemeAdmin rather than an ExplicitRoles token, PermissionsFromMember derives
+		// the permission back from that flag alone, and the permission is rejected as a space
+		// default and carried by no team or system role. A non-member has no row and is denied.
+		schemeAdmin, _, flagErr := s.store.MemberSchemeFlags(space.ChannelId, userID)
+		switch {
+		case flagErr == nil && schemeAdmin:
+			return nil
+		case flagErr != nil && !errors.As(flagErr, new(*store.ErrNotFound)):
+			return mmmodel.NewAppError(where, "app.space.access.member_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(flagErr)
+		}
 	}
 	return existenceHidingForbidden(where)
 }
@@ -354,7 +356,7 @@ func (s *Service) RequireSpacePublish(where string, space *model.Space, userID s
 	return s.requirePageWriteFrom(where, space, userID, perm, admittedVia)
 }
 
-// DefaultRolesGrantPermission reports whether space's current default capability set (the scheme's
+// DefaultRolesGrantPermission reports whether space's current default permission set (the scheme's
 // generated user role) grants perm to a plain member — the auto-join admission test. ErrNotFound
 // from the underlying lookup — a channel without a scheme, or one that no longer exists at all —
 // reports false, not an error.
@@ -383,11 +385,19 @@ func spaceIDOrEmpty(space *model.Space) string {
 
 // AutoJoinIfDefaultGranted is the auto-join pre-step: when a non-member's write was admitted only via
 // the open-space read fall-through (admittedVia == ReadViaOpenFallthrough) and the space's
-// current default capability set grants perm to a plain member, it joins userID to the backing
-// channel (idempotent, and published as a membership-added event) so the subsequent write-gate
-// re-check passes as a member. The
+// current default permission set grants perm to a plain member, it joins userID to the backing
+// channel (idempotent, and published as a membership-added event) so the write-gate re-check that
+// follows is able to admit them as a member. The
 // open-read admission is re-validated before joining: a concurrent open->private flip between the
 // admitting read and this pre-step aborts the join.
+//
+// Able to, not certain to: that re-check resolves membership through the plugin API, which reads a
+// replica (see store/membership_store.go), so a replica lagging behind this add reports the caller
+// as a non-member and the write is refused with the shared 403. The direction is safe and a retry
+// succeeds once the replica catches up, but under sustained lag the write keeps failing and each
+// attempt repeats this join and its undo. Deliberately not closed by trusting `joined` and skipping
+// the re-check: everything that check establishes is already known here except guest standing, and
+// a second spelling of that clamp is how two copies of a security check drift apart.
 // ownerCheck, when non-nil, must additionally hold (used for delete_own_page, where the caller
 // must already own the target page before being joined). Returns whether a join happened.
 func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, admittedVia ReadResolution, perm *mmmodel.Permission, ownerCheck func() (bool, error)) (bool, *mmmodel.AppError) {
@@ -456,8 +466,27 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 		if isMember {
 			return nil // Already a member.
 		}
+		// Marked before the add, not after. UndoAutoJoin decides whether to remove this membership
+		// by looking the marker up, and reads its absence as "an admin legitimized this member", so
+		// a membership without its marker is one no undo will ever reclaim. Marking afterwards
+		// cannot rule that out: the marker write can fail, and the compensating removal can fail
+		// too, leaving exactly that state. Marking first inverts the only residue a failure can
+		// leave into an inert one — a marker with no membership grants nothing, because every write
+		// gate derives authority from real channel membership, never from this table.
+		//
+		// The write is an idempotent upsert, so a retry of a join that already marked is a no-op.
+		if markErr := s.store.MarkAutoJoined(fresh.Id, userID); markErr != nil {
+			return mmmodel.NewAppError("AutoJoinIfDefaultGranted", "app.space.auto_join.provenance_write_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(markErr)
+		}
 		member, addErr := s.client.Channel.AddMember(fresh.ChannelId, userID)
 		if addErr != nil {
+			// Best-effort, unlike the marker write above: what is left behind is a marker for a
+			// membership that does not exist, which no gate consults. A stale row is also cleared
+			// by the next AddSpaceMember or auto-join for this pair.
+			if clearErr := s.store.ClearAutoJoined(fresh.Id, userID); clearErr != nil {
+				s.log.Warn("failed to clear the auto-join provenance marker of a join that did not happen",
+					"space_id", fresh.Id, "user_id", userID, "err", clearErr)
+			}
 			// A vanished user is a caller-state condition, not a server fault; AddSpaceMember
 			// classifies the same failure the same way.
 			if errors.Is(addErr, pluginapi.ErrNotFound) {
@@ -467,12 +496,6 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 		}
 		joined = true
 		joinedUserID, joinedChannelID = member.UserId, fresh.ChannelId
-		// Best-effort: the membership itself is what the write gate re-checks next, so a marker
-		// write failure must not fail an auto-join that otherwise succeeded. It only degrades the
-		// membership review's provenance signal for this member.
-		if markErr := s.markAutoJoined(fresh.Id, member.UserId); markErr != nil {
-			s.log.Warn("failed to record auto-join provenance marker", "space_id", fresh.Id, "user_id", member.UserId, "err", markErr)
-		}
 		return nil
 	})
 	if lockErr != nil {
@@ -500,7 +523,7 @@ func (s *Service) AutoJoinIfDefaultGranted(space *model.Space, userID string, ad
 // leftover membership grants no more than the space defaults already granted the caller.
 //
 // Guarded by the auto-join provenance marker: the pre-step releases the membership lock before the
-// guarded write it admits runs, so an admin can legitimize the same membership (a capability grant
+// guarded write it admits runs, so an admin can legitimize the same membership (a permission grant
 // or a deliberate re-add, both of which clear the marker) in the window before this call re-takes
 // the lock. Deleting unconditionally would then discard a membership the admin just granted, on the
 // strength of a request that has nothing to do with it. The marker is checked here, not before the
@@ -511,14 +534,14 @@ func (s *Service) UndoAutoJoin(joined bool, space *model.Space, userID string) {
 	}
 	removed := false
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
-		ids, idsErr := s.autoJoinedIDs(space.Id)
-		if idsErr != nil {
+		autoJoined, markerErr := s.store.IsAutoJoined(space.Id, userID)
+		if markerErr != nil {
 			// Cannot confirm the marker either way; fail closed toward leaving the membership in
 			// place rather than risking discarding one an admin just legitimized.
-			s.log.Warn("failed to check auto-join provenance marker before undo; leaving the membership in place", "space_id", space.Id, "user_id", userID, "err", idsErr)
+			s.log.Warn("failed to check auto-join provenance marker before undo; leaving the membership in place", "space_id", space.Id, "user_id", userID, "err", markerErr)
 			return nil
 		}
-		if !slices.Contains(ids, userID) {
+		if !autoJoined {
 			s.log.Debug("auto-join undo skipped: membership was legitimized concurrently", "space_id", space.Id, "user_id", userID)
 			return nil
 		}
@@ -526,7 +549,7 @@ func (s *Service) UndoAutoJoin(joined bool, space *model.Space, userID string) {
 			return err
 		}
 		removed = true
-		if clearErr := s.clearAutoJoined(space.Id, userID); clearErr != nil {
+		if clearErr := s.store.ClearAutoJoined(space.Id, userID); clearErr != nil {
 			// Best-effort, matching the marker write itself: the membership is already gone, which
 			// is what the write gate re-checks; a stale marker only degrades the provenance signal.
 			s.log.Warn("failed to clear auto-join provenance marker", "space_id", space.Id, "user_id", userID, "err", clearErr)

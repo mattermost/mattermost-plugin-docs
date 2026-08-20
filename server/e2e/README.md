@@ -9,7 +9,7 @@ the authoritative behavioral spec for them.
 
 ## Why a locally built core image
 
-The core changes this epic depends on (the `Space` channel type, the atomic per-page capability
+The core changes this epic depends on (the `Space` channel type, the atomic per-page permission
 roles, the seeded preset schemes) live on an **unmerged** core branch, so no published Mattermost
 image carries them yet. `build/build-core-image.sh` cross-compiles `./cmd/mattermost` from that
 branch and packages it into a minimal Docker image (`$CORE_IMAGE`, default `mm-docs-rbac-core:dev`).
@@ -32,22 +32,11 @@ core behaviour.
 The image this script builds is **API-only**: server binary plus i18n, templates and fonts, and an
 empty `client/`. That is all the suites here need — every assertion is an HTTP call.
 
-The browser suites do not use this image, or Testcontainers, at all. Both the System Console spec in
-the core checkout and the plugin's own suite under `e2e/` run in Playwright's default *external*
-mode against a server that is already running, so a run costs seconds rather than a container boot.
-They need that server to serve the webapp, which a core checkout does not do out of the box — build
-the core webapp once, copy it into the server's `client/` directory, and restart the server:
-
-```sh
-(cd <core-checkout>/webapp && npm run build)              # once
-cp -R <core-checkout>/webapp/channels/dist/. <core-checkout>/server/client/
-```
-
-Two details that are easy to lose an afternoon to: a **symlink** into `server/client` serves
-`root.html` but 404s every asset, so copy rather than link; and the client directory is resolved
-**once, at boot** (`fileutils.FindDir` in `web/static.go`), so populating it under a running server
-registers no static handler — restart afterwards. Without the webapp the server answers `/api/v4`
-normally and returns 500 for every page.
+The browser suite under `e2e-tests/playwright/` boots its **own** Testcontainers server from the
+same pinned core image this script builds (it reads `MM_IMAGE`; CI passes the same `CORE_IMAGE` both
+suites consume, so the two can never assert against different servers). It therefore needs an image
+that serves the webapp, which the API-only image above does not — see
+`e2e-tests/playwright/README-VENDORED.md` for how that suite is run.
 
 A bare tag (no `/`) is treated as locally built: if it is absent the suite fails immediately and
 names the build script, rather than letting Testcontainers fail mid-boot. A namespaced tag is
@@ -58,7 +47,7 @@ assumed pullable and is left to Testcontainers to fetch.
 Requires Docker.
 
 ```sh
-make test-e2e
+make test-e2e-server
 ```
 
 This ensures the plugin bundle exists (`make dist` if it is missing or carries no linux binary for
@@ -75,7 +64,7 @@ all tests finish. Every scenario creates its own space and it is deleted at the 
 ## Enterprise license
 
 The suite boots the server with an Enterprise license, and fails at startup without one. Three
-subtests need it: the scheme-backed capability sets (scenario 8 and the `delete_page` default)
+subtests need it: the scheme-backed permission sets (scenario 8 and the `delete_page` default)
 drive core's `CreateScheme`, gated on the `CustomPermissionsSchemes` feature, and scenario 6's
 read-only guest reviewer drives the real `POST /users/{id}/demote`. Unlicensed, all three answer
 with a 501 that no assertion can read as a pass or a failure of the behavior under test.
@@ -88,7 +77,7 @@ The license is never committed. Supply it either way:
 | `MM_LICENSE_FILE` | a path to a file holding it | a local run |
 
 ```sh
-MM_LICENSE_FILE=/path/to/mattermost.mattermost-license make test-e2e
+MM_LICENSE_FILE=/path/to/mattermost.mattermost-license make test-e2e-server
 ```
 
 CI reads `MM_E2E_TEST_LICENSE_ONPREM_ENT`, the organization secret the server and the other plugin

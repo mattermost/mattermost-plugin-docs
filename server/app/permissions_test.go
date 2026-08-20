@@ -88,7 +88,7 @@ func TestAutoJoin_JoinsWhenDefaultGrants(t *testing.T) {
 
 // TestAutoJoin_ProvenanceMarkerLifecycle covers the auto-join provenance marker end to end: set on
 // a successful auto-join and visible through GetSpaceMembers, then cleared by a deliberate admin
-// capability change on the same member (SetSpaceMemberCapabilities), which must supersede it.
+// permission change on the same member (SetSpaceMemberPermissions), which must supersede it.
 func TestAutoJoin_ProvenanceMarkerLifecycle(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	userID := mmmodel.NewId()
@@ -112,19 +112,96 @@ func TestAutoJoin_ProvenanceMarkerLifecycle(t *testing.T) {
 	require.Len(t, members, 1)
 	require.True(t, members[0].AutoJoined, "a member added by the auto-join pre-step must be marked auto-joined")
 
-	// A deliberate admin act on this member's capabilities supersedes how they got here. The
+	// A deliberate admin act on this member's permissions supersedes how they got here. The
 	// last-admin/target read is master-backed, not the plugin API's GetChannelMember, so seed the
 	// stand-in row directly (the auto-join above only ran through the mocked pluginapi call, which
 	// does not write this table).
 	testutil.MustAddChannelMember(t, h.db, space.ChannelId, userID)
 
-	_, appErr = h.svc.SetSpaceMemberCapabilities(space, userID, []string{mmmodel.PermissionCommentPage.Id}, mmmodel.NewId())
+	_, appErr = h.svc.SetSpaceMemberPermissions(space, userID, []string{mmmodel.PermissionCommentPage.Id}, mmmodel.NewId())
 	require.Nil(t, appErr)
 
 	members, _, appErr = h.svc.GetSpaceMembers(space, 0, 60)
 	require.Nil(t, appErr)
 	require.Len(t, members, 1)
-	require.False(t, members[0].AutoJoined, "a deliberate admin capability change must clear the auto-join marker")
+	require.False(t, members[0].AutoJoined, "a deliberate admin permission change must clear the auto-join marker")
+}
+
+// TestAutoJoin_ProvenanceMarkerFailureAddsNoMembership pins the write order the undo path depends
+// on. UndoAutoJoin removes a membership only while its marker exists, and reads a missing marker as
+// "an admin legitimized this member" — so a membership that outlives its marker is one nothing ever
+// reclaims. Marking first is what rules that out: the failure can then only leave a marker with no
+// membership, which grants nothing, because authority comes from channel membership and roles.
+//
+// The assertion that carries this is AssertNotCalled on the add: restoring the add-then-mark order
+// makes the add happen, so this test fails rather than merely reporting a different error.
+func TestAutoJoin_ProvenanceMarkerFailureAddsNoMembership(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	stubNonMember(mockAPI, userID)
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	roleName := testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)
+	mockAPI.On("RolesGrantPermission", []string{roleName}, mmmodel.PermissionCreatePage.Id).Return(true)
+
+	// Stubbed so an add would succeed if it were reached: the point is that it is not reached, and
+	// an unstubbed call would fail as a panic rather than as the assertion below.
+	mockAPI.On("AddChannelMember", space.ChannelId, userID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil).Maybe()
+
+	// The marker table is the only thing dropped, so every read ahead of the marker write still
+	// answers and the join reaches exactly the step under test.
+	_, dbErr := h.db.Exec(`DROP TABLE DOCS_SpaceAutoJoin`)
+	require.NoError(t, dbErr)
+
+	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
+	require.NotNil(t, appErr, "a marker write that failed must fail the join rather than proceed untracked")
+	require.Equal(t, "app.space.auto_join.provenance_write_failed.app_error", appErr.Id)
+	require.False(t, joined)
+	mockAPI.AssertNotCalled(t, "AddChannelMember", space.ChannelId, userID)
+}
+
+// TestRequireSpacePublish_JoinedThenDeniedLeavesNoMembership covers the property that makes the
+// auto-join safe to run ahead of the gate it enables: when the gate refuses after the join has
+// committed, the caller is told it joined, so the membership can be undone and the rejected request
+// leaves nothing behind.
+//
+// It also pins the direction of the one window this design accepts. The post-join re-check reads
+// membership through the plugin API, which answers from a replica, so a replica lagging behind the
+// add reports a non-member and the write is refused — modelled here by a channel check that never
+// reports the permission. Refusing is the safe direction; what must not happen is refusing *and*
+// keeping the membership.
+func TestRequireSpacePublish_JoinedThenDeniedLeavesNoMembership(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	// Registered before the harness so it beats StubDefaultSpacePermissions' catch-all: no
+	// backing-channel permission is ever reported for this user, which is both what forces the
+	// fall-through read and what stands in for a re-check that cannot see the fresh membership.
+	stubNonMember(mockAPI, userID)
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	// The space default does grant create_page, so the auto-join is authorized and proceeds.
+	mockAPI.On("RolesGrantPermission", []string{testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)}, mmmodel.PermissionCreatePage.Id).Return(true)
+	mockAPI.On("AddChannelMember", space.ChannelId, userID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
+	mockAPI.On("DeleteChannelMember", space.ChannelId, userID).Return(nil)
+
+	joined, appErr := h.svc.RequireSpacePublish("test", space, userID, app.ReadViaOpenFallthrough, true)
+
+	require.True(t, joined, "the caller must learn a membership was created, or it cannot undo one")
+	require.NotNil(t, appErr, "a re-check that cannot see the membership must refuse, not admit")
+	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+	require.Equal(t, "app.space.access.forbidden.app_error", appErr.Id,
+		"the refusal must be the shared existence-hiding 403, not a distinguishable one")
+
+	// What the API layer does with that pair, and the half that matters: no membership survives a
+	// request the server refused.
+	h.svc.UndoAutoJoin(joined, space, userID)
+	mockAPI.AssertCalled(t, "DeleteChannelMember", space.ChannelId, userID)
+
+	members, err := h.store.AutoJoinedIDs(space.Id)
+	require.NoError(t, err)
+	require.NotContains(t, members, userID, "the undo must clear the provenance marker with the membership")
 }
 
 // TestUndoAutoJoin_ClearsProvenanceMarker covers the other half of the marker's lifecycle: undoing
@@ -209,7 +286,7 @@ func TestRemoveSpaceMember_ClearsProvenanceMarker(t *testing.T) {
 }
 
 // TestUndoAutoJoin_SkipsRemovalWhenLegitimizedConcurrently is the marker guard's positive case: an
-// admin capability grant lands, clearing the marker, in the window between the auto-join and the
+// admin permission grant lands, clearing the marker, in the window between the auto-join and the
 // undo of the rejected write it admitted. The undo must leave the now-deliberate membership intact.
 func TestUndoAutoJoin_SkipsRemovalWhenLegitimizedConcurrently(t *testing.T) {
 	mockAPI := &plugintest.API{}
@@ -227,11 +304,11 @@ func TestUndoAutoJoin_SkipsRemovalWhenLegitimizedConcurrently(t *testing.T) {
 	require.True(t, joined)
 
 	// A deliberate admin act legitimizes the membership before the guarded write's own rejection
-	// reaches UndoAutoJoin — clearing the marker, exactly as SetSpaceMemberCapabilities does. The
+	// reaches UndoAutoJoin — clearing the marker, exactly as SetSpaceMemberPermissions does. The
 	// target read is master-backed; the auto-join above only ran through the mocked pluginapi call,
 	// which does not write this table, so seed it directly.
 	testutil.MustAddChannelMember(t, h.db, space.ChannelId, userID)
-	_, appErr = h.svc.SetSpaceMemberCapabilities(space, userID, []string{mmmodel.PermissionCommentPage.Id}, mmmodel.NewId())
+	_, appErr = h.svc.SetSpaceMemberPermissions(space, userID, []string{mmmodel.PermissionCommentPage.Id}, mmmodel.NewId())
 	require.Nil(t, appErr)
 
 	h.svc.UndoAutoJoin(joined, space, userID)
@@ -241,7 +318,7 @@ func TestUndoAutoJoin_SkipsRemovalWhenLegitimizedConcurrently(t *testing.T) {
 
 // TestUndoAutoJoin_SkipsRemovalWhenLegitimizedByDeliberateReAdd is
 // TestUndoAutoJoin_SkipsRemovalWhenLegitimizedConcurrently's counterpart for the other legitimizing
-// act: a deliberate re-add via AddSpaceMember (not just a capability grant) also clears the marker,
+// act: a deliberate re-add via AddSpaceMember (not just a permission grant) also clears the marker,
 // and does so atomically with the add under the space-keyed lock, so UndoAutoJoin can only ever see
 // the clear wholly before or wholly after its own locked marker check — never in between.
 func TestUndoAutoJoin_SkipsRemovalWhenLegitimizedByDeliberateReAdd(t *testing.T) {
@@ -260,7 +337,7 @@ func TestUndoAutoJoin_SkipsRemovalWhenLegitimizedByDeliberateReAdd(t *testing.T)
 	require.True(t, joined)
 
 	// An admin deliberately re-adds the same user before the guarded write's own rejection reaches
-	// UndoAutoJoin. Core affirms the re-add of an existing member; AddSpaceMember clears the marker.
+	// UndoAutoJoin. Re-adding an existing member is a no-op for core; AddSpaceMember clears the marker.
 	_, appErr = h.svc.AddSpaceMember(space, userID)
 	require.Nil(t, appErr)
 
@@ -270,7 +347,7 @@ func TestUndoAutoJoin_SkipsRemovalWhenLegitimizedByDeliberateReAdd(t *testing.T)
 }
 
 // TestAutoJoin_DefaultDoesNotGrant covers the admission test: the fall-through alone never joins.
-// A space whose default capability set withholds the permission leaves the caller a non-member, so
+// A space whose default permission set withholds the permission leaves the caller a non-member, so
 // the write gate that follows denies them rather than silently granting access by joining first.
 func TestAutoJoin_DefaultDoesNotGrant(t *testing.T) {
 	mockAPI := &plugintest.API{}
@@ -416,7 +493,7 @@ func TestRequireSpaceDraftWrite_LookupFailureIsNotADenial(t *testing.T) {
 
 // TestRequireSpaceDraftWrite_EitherPermissionAdmits pins the OR-semantics of the two-attempt draft
 // gate: holding either create_page or edit_page is enough, and holding neither is refused. The
-// edit-only case is the one that matters — edit_page without create_page is an ordinary capability
+// edit-only case is the one that matters — edit_page without create_page is an ordinary permission
 // grant, so dropping the fallback would silently revoke draft access from every editor-only member
 // while every other test in the suite still passed.
 func TestRequireSpaceDraftWrite_EitherPermissionAdmits(t *testing.T) {
@@ -703,7 +780,7 @@ func TestRequireSpaceAdminOrTeamPerm_FormerTeamMemberDenied(t *testing.T) {
 }
 
 // TestRequireSpaceAdminOrSysadmin_FormerTeamMemberDenied is the same guard on the stricter gate:
-// the space-wide exposure knobs (ViewAccess, default capabilities) and admin-affecting member
+// the space-wide exposure knobs (ViewAccess, default permissions) and admin-affecting member
 // changes. This gate has no team-permission branch at all, so its channel-admin branch is the only
 // non-sysadmin way in — making the team-active conjunct the whole of its membership requirement.
 func TestRequireSpaceAdminOrSysadmin_FormerTeamMemberDenied(t *testing.T) {
@@ -715,6 +792,61 @@ func TestRequireSpaceAdminOrSysadmin_FormerTeamMemberDenied(t *testing.T) {
 	require.Equal(t, "app.space.access.forbidden.app_error", appErr.Id,
 		"the denial must be the shared existence-hiding 403, not a distinguishable one")
 	mockAPI.AssertNotCalled(t, "HasPermissionToChannel", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// TestRequireSpaceAdminOrSysadmin_ReadsSchemeAdminFromMaster pins WHERE this gate gets its answer,
+// not just what the answer is. Every other test here can be satisfied by either source, so without
+// this one nothing fails if the master read is swapped back for the cached permission composition.
+//
+// The gate is re-run inside the space-membership lock precisely to catch a demotion that landed
+// while the caller waited for it. HasPermissionToChannel answers from GetAllChannelMembersForUser
+// with allowFromCache set, on a context that is not pinned to the master, so it can still report
+// the pre-demotion roles — the re-check would then admit exactly the actor it exists to exclude.
+// Reading the SchemeAdmin flag off ChannelMembers on the master is what makes it observe the write.
+//
+// The demotion itself is not interleaved here: a cached grant and an absent row are the same
+// divergence this asserts, and expressing it as "no row" makes the test deterministic.
+func TestRequireSpaceAdminOrSysadmin_ReadsSchemeAdminFromMaster(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	teamID := mmmodel.NewId()
+	// An active team member, so the gate reaches its admin branch rather than stopping at the
+	// membership guard. Registered before the harness, whose catch-alls match otherwise.
+	mockAPI.On("GetTeamMember", teamID, userID).
+		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: userID}, nil).Maybe()
+	// The cached composition says yes. The master says nothing — there is no ChannelMembers row.
+	mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionAdminSpace).Return(true).Maybe()
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
+
+	appErr := h.svc.RequireSpaceAdminOrSysadmin("test", space, userID)
+	require.NotNil(t, appErr,
+		"the gate must read SchemeAdmin from the master; a cached admin_space grant with no ChannelMembers row must not admit")
+	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+	require.Equal(t, "app.space.access.forbidden.app_error", appErr.Id,
+		"the denial must be the shared existence-hiding 403, not a distinguishable one")
+}
+
+// TestRequireSpaceAdminOrSysadmin_SchemeAdminRowAdmits is the positive half of the pair above: the
+// same gate, the same absent cached grant, and a real SchemeAdmin row is all it takes. Together the
+// two pin the source of truth in both directions, so neither swapping the read back nor dropping
+// the branch entirely can pass.
+func TestRequireSpaceAdminOrSysadmin_SchemeAdminRowAdmits(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	teamID := mmmodel.NewId()
+	mockAPI.On("GetTeamMember", teamID, userID).
+		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: userID}, nil).Maybe()
+	// Deliberately denied on the cached path, to show the row alone carries the admission.
+	mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionAdminSpace).Return(false).Maybe()
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
+	testutil.MustAddChannelAdmin(t, h.db, space.ChannelId, userID)
+
+	require.Nil(t, h.svc.RequireSpaceAdminOrSysadmin("test", space, userID),
+		"a SchemeAdmin row on the master is the whole signal for admin_space and must admit on its own")
 }
 
 // TestResolveSpaceRead_GuestDeniedOpenFallthrough covers the guest exclusion from the open-space
@@ -758,7 +890,7 @@ func TestResolveSpaceRead_InvalidUserIDIsBadRequest(t *testing.T) {
 
 // TestRequireSpacePagePermission_DemotedGuestDeniedWrites covers the grant that outlives a
 // demotion. Core clears SchemeUser/SchemeAdmin when a user becomes a guest but leaves the atomic
-// capability roles a prior grant wrote into ExplicitRoles, and it composes those into the member's
+// permission roles a prior grant wrote into ExplicitRoles, and it composes those into the member's
 // channel permissions whatever the member's guest standing — so the channel check still reports
 // the write permission, as the harness's default channel grants model here. The gate must deny it
 // anyway, since a guest is read-only in a space.

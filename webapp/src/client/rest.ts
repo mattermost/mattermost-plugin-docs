@@ -111,7 +111,9 @@ export const doFetch = <T>(path: string, {method = 'GET', body, signal}: DoFetch
         ...(body === undefined ? {} : {body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}}),
     });
 
-type Paginated<T> = {
+// The list-endpoint envelope (paginatedResponse in server/api.go). Owned here rather than in a
+// per-feature types module: it is transport shape, shared by every paginated Docs endpoint.
+export type Paginated<T> = {
     items: T[];
     page: number;
     per_page: number;

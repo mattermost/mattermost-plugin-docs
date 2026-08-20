@@ -22,7 +22,7 @@ import (
 // /api/v1 prefix (full root: <siteUrl>/plugins/com.mattermost.docs/api/v1/).
 //
 // Authorization: every route requires an authenticated user via MattermostAuthorizationRequired.
-// Every space- and page-scoped handler additionally gates on the capability-based RBAC model:
+// Every space- and page-scoped handler additionally gates on the permission-based RBAC model:
 // requireSpaceRead/requireSpacePagePerm for reads, requirePageWrite/requireDeleteOwnOrAnyFrom for
 // page writes (with the open-space auto-join pre-step), requireSpaceManage for membership
 // management and general space-field updates, and requireSpaceAdmin/requireSpaceDelete for the
@@ -50,13 +50,13 @@ func (p *Plugin) initRouter() *mux.Router {
 	api.HandleFunc("/spaces/{space_id}/members", p.handleGetSpaceMembers).Methods(http.MethodGet)
 	api.HandleFunc("/spaces/{space_id}/members", p.handleAddSpaceMember).Methods(http.MethodPost)
 	api.HandleFunc("/spaces/{space_id}/members/{user_id}", p.handleRemoveSpaceMember).Methods(http.MethodDelete)
-	// PUT, not PATCH: these two replace the capability set outright — the body carries the full set
+	// PUT, not PATCH: these two replace the permission set outright — the body carries the full set
 	// the target should end up with, and a token omitted from it is revoked. There is no
 	// add-one/remove-one form. PATCH on this API means "nil fields leave unchanged" (see
 	// PATCH /spaces/{space_id}), so a caller generalizing from that would read an omitted token as
 	// "leave it alone" and silently revoke it instead.
-	api.HandleFunc("/spaces/{space_id}/members/{user_id}/capabilities", p.handleSetSpaceMemberCapabilities).Methods(http.MethodPut)
-	api.HandleFunc("/spaces/{space_id}/default-capabilities", p.handleSetSpaceDefaultCapabilities).Methods(http.MethodPut)
+	api.HandleFunc("/spaces/{space_id}/members/{user_id}/permissions", p.handleSetSpaceMemberPermissions).Methods(http.MethodPut)
+	api.HandleFunc("/spaces/{space_id}/default-permissions", p.handleSetSpaceDefaultPermissions).Methods(http.MethodPut)
 
 	// Page collection.
 	api.HandleFunc("/spaces/{space_id}/pages", p.handleGetSpacePages).Methods(http.MethodGet)
@@ -178,7 +178,7 @@ func (p *Plugin) requireSpaceManage(w http.ResponseWriter, spaceID, userID strin
 }
 
 // requireSpaceAdmin gates a route on Service.RequireSpaceAdminOrSysadmin — the space-wide
-// exposure-policy knobs (ViewAccess, default capabilities).
+// exposure-policy knobs (ViewAccess, default permissions).
 func (p *Plugin) requireSpaceAdmin(w http.ResponseWriter, spaceID, userID string) (*model.Space, bool) {
 	return p.requireSpaceGate(w, spaceID, false, func(space *model.Space) *mmmodel.AppError {
 		return p.service.RequireSpaceAdminOrSysadmin("api.space.admin", space, userID)

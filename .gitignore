@@ -3,6 +3,18 @@ dist/
 webapp/src/manifest.ts
 server/manifest.go
 
+# Dependencies, at any depth. The per-directory ignores (webapp/.gitignore,
+# e2e-tests/playwright/.gitignore) are kept, but a suite added without one staged its whole
+# node_modules tree, so this is the backstop that does not depend on remembering.
+node_modules/
+
+# Enterprise licenses and local env files. Both e2e suites read a license from a path
+# (MM_LICENSE_FILE), so one easily ends up saved inside the repo. Narrow on purpose:
+# a broad *.license would also shadow the LICENSE files that ship inside dependencies.
+*.mattermost-license
+.env
+.env.*
+
 # Mac
 .DS_Store
 
@@ -17,12 +29,6 @@ server/manifest.go
 
 # Local deploy/dev scripts
 /scripts/
-
-# Browser e2e artifacts (the suite itself is checked in). storage_state holds authenticated
-# session cookies written by playwright-lib per test user — never commit them.
-/e2e/node_modules/
-/e2e/results/
-/e2e/storage_state/
 
 # Implementation plans (local, not shared)
 /plans/

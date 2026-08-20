@@ -6,6 +6,7 @@ import {useAutosaveStatus} from 'hooks/autosave_status';
 import {useFullscreen} from 'hooks/fullscreen';
 import {usePagePresence} from 'hooks/page_presence';
 import {useCreateRootPage} from 'hooks/pages';
+import {useCanCreatePage} from 'hooks/permissions';
 import {useSidebarWidth} from 'hooks/sidebar_width';
 import {useCurrentUserId} from 'hooks/user';
 import React, {useCallback, useEffect, useState} from 'react';
@@ -91,6 +92,10 @@ type Props = {
 const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogglePages, onToggleComments, onToggleEdit, onPublish}: Props) => {
     const {formatMessage} = useIntl();
     const createRootPage = useCreateRootPage(space.id);
+
+    // Withheld rather than disabled, as the space's other unauthorized actions are
+    // (Space settings, Archive space): an action the server will refuse is not offered.
+    const canCreatePage = useCanCreatePage(space.id);
     const autosaveStatus = useAutosaveStatus();
 
     // Read here rather than passed in: the sidebar it hides belongs to the product
@@ -238,7 +243,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                     </span>
                 </Button>
                 {treeOpen && <Spacer/>}
-                {treeOpen && (
+                {treeOpen && canCreatePage && (
                     <Button
                         emphasis='quaternary'
                         size='sm'

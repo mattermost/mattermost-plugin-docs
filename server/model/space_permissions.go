@@ -60,9 +60,8 @@ var atomicRolePermission = func() map[string]string {
 	return m
 }()
 
-// stripReadPage projects a core permission slice onto its wire id strings with the implicit
-// read_page baseline removed, so a canonical core permission set can be single-sourced into the
-// read_page-free wire vocabulary without drift.
+// stripReadPage returns permissions' wire id strings with read_page removed, so a canonical core
+// permission set can be single-sourced into the read_page-free wire vocabulary without drift.
 func stripReadPage(permissions []*mmmodel.Permission) []string {
 	return slices.DeleteFunc(mmmodel.PermissionIDs(permissions), func(id string) bool {
 		return id == mmmodel.PermissionReadPage.Id
@@ -91,13 +90,13 @@ var presetPermissionSets = map[string][]string{
 func validatePermissions(where string, permissions []string, allowed map[string]bool, rejectAdmin bool) *mmmodel.AppError {
 	for _, p := range permissions {
 		if p == mmmodel.PermissionReadPage.Id {
-			return mmmodel.NewAppError(where, "model.space_capabilities.read_page_not_grantable.app_error", nil, "", http.StatusBadRequest)
+			return mmmodel.NewAppError(where, "model.space_permissions.read_page_not_grantable.app_error", nil, "", http.StatusBadRequest)
 		}
 		if rejectAdmin && p == mmmodel.PermissionAdminSpace.Id {
-			return mmmodel.NewAppError(where, "model.space_capabilities.admin_not_a_default.app_error", nil, "", http.StatusBadRequest)
+			return mmmodel.NewAppError(where, "model.space_permissions.admin_not_a_default.app_error", nil, "", http.StatusBadRequest)
 		}
 		if !allowed[p] {
-			return mmmodel.NewAppError(where, "model.space_capabilities.unknown_capability.app_error", map[string]any{"Capability": p}, "", http.StatusBadRequest)
+			return mmmodel.NewAppError(where, "model.space_permissions.unknown_permission.app_error", map[string]any{"Permission": p}, "", http.StatusBadRequest)
 		}
 	}
 	return nil
@@ -276,6 +275,27 @@ func SchemeNameForDefaultPermissions(permissions []string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// SpacePermissionsOnly returns the space channel-scoped permissions among permissions, normalized.
+//
+// A role read back from core carries more than a space permission set. Core seeds a new channel
+// scheme's User and Guest roles with the moderated subset of the corresponding built-in role, and
+// on every read it merges into any scheme-managed role each non-moderated channel permission the
+// higher-scoped built-in role holds — read_channel, upload_file, edit_post and the rest. Comparing
+// a raw role read against a space permission set therefore never matches, whatever the role grants.
+//
+// Filtering to the space permissions is what makes such a comparison well-defined, and it is the
+// comparison core's merge supports: the merge carries a role's own space permissions through
+// unchanged, precisely so a space scheme's grants survive it.
+func SpacePermissionsOnly(permissions []string) []string {
+	out := make([]string, 0, len(permissions))
+	for _, p := range permissions {
+		if mmmodel.IsSpaceChannelScopedPermissionID(p) {
+			out = append(out, p)
+		}
+	}
+	return NormalizePermissions(out)
 }
 
 // NormalizePermissions dedupes and sorts permissions into a deterministic, non-nil slice.

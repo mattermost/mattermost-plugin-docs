@@ -7,7 +7,7 @@
 // (see README.md in this directory). It boots a real Mattermost server (built from the paired core
 // branch that carries the space-permission changes) via Testcontainers, installs the plugin into
 // it, and drives the seven Confluence permission scenarios plus their named parity gaps through the
-// real HTTP API — no mocks. Build with -tags e2e (see `make test-e2e`); it is excluded from
+// real HTTP API — no mocks. Build with -tags e2e (see `make test-e2e-server`); it is excluded from
 // `go test ./...` and CI's default run by the build tag.
 package e2e
 
@@ -198,7 +198,7 @@ func waitForPhase2Migration(ctx context.Context, adminClient *mmmodel.Client4) e
 // resolveBundlePath globs dist/ (relative to this package's directory) for the built plugin
 // bundle, failing with a clear pointer to `make dist` when it is absent. Several bundles can sit
 // there (a version bump, or a stale host-only bundle from `make server`), so the one with the
-// newest modification time is selected — the same one `make test-e2e` inspects before deciding
+// newest modification time is selected — the same one `make test-e2e-server` inspects before deciding
 // to rebuild.
 func resolveBundlePath() (string, error) {
 	matches, err := filepath.Glob("../../dist/" + pluginID + "-*.tar.gz")

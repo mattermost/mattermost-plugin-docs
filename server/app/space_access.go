@@ -26,7 +26,7 @@ func (s *Service) requireClient(where string, kv ...any) *mmmodel.AppError {
 	if s.client != nil {
 		return nil
 	}
-	s.log.Error("pluginapi client not wired; denying access", append([]any{"operation", where}, kv...)...)
+	s.log.Warn("pluginapi client not wired; denying access", append([]any{"operation", where}, kv...)...)
 	return mmmodel.NewAppError(where, "app.space.client_not_wired.app_error", nil, "", http.StatusInternalServerError)
 }
 

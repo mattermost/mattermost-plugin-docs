@@ -6,9 +6,9 @@ import {RestError} from 'client/rest';
 import {Client4} from 'mattermost-redux/client';
 
 import {
-    getSpaceMembers,
-    setDefaultCapabilities,
-    setMemberCapabilities,
+    listAllSpaceMembers,
+    setDefaultPermissions,
+    setMemberPermissions,
     setSpaceViewAccess,
 } from './space_permissions';
 
@@ -30,32 +30,32 @@ describe('client/space_permissions', () => {
     it('addresses the plugin routes under the configured server url', async () => {
         fetchMock.mockResolvedValue(jsonResponse({items: [], page: 0, per_page: 100, has_more: false}));
 
-        await getSpaceMembers('space1', 0, 100);
+        await listAllSpaceMembers('space1');
 
         expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8065/plugins/com.mattermost.docs/api/v1/spaces/space1/members?page=0&per_page=100');
     });
 
     it('sends an explicit empty list when a grant is cleared', async () => {
-        fetchMock.mockResolvedValue(jsonResponse({user_id: 'user2', capabilities: [], granted_capabilities: []}));
+        fetchMock.mockResolvedValue(jsonResponse({user_id: 'user2', permissions: [], granted_permissions: []}));
 
-        await setMemberCapabilities('space1', 'user2', []);
+        await setMemberPermissions('space1', 'user2', []);
 
         const [, options] = fetchMock.mock.calls[0];
         expect(options.method).toBe('PUT');
-        expect(JSON.parse(options.body)).toEqual({granted_capabilities: []});
+        expect(JSON.parse(options.body)).toEqual({granted_permissions: []});
     });
 
-    it('names the default-capabilities field the server requires', async () => {
-        fetchMock.mockResolvedValue(jsonResponse({id: 'space1', default_capabilities: [], capabilities: []}));
+    it('names the default-permissions field the server requires', async () => {
+        fetchMock.mockResolvedValue(jsonResponse({id: 'space1', default_permissions: [], permissions: []}));
 
-        await setDefaultCapabilities('space1', ['edit_page']);
+        await setDefaultPermissions('space1', ['edit_page']);
 
         const [, options] = fetchMock.mock.calls[0];
-        expect(JSON.parse(options.body)).toEqual({default_capabilities: ['edit_page']});
+        expect(JSON.parse(options.body)).toEqual({default_permissions: ['edit_page']});
     });
 
     it('sends a visibility change as a PATCH carrying the optimistic-lock baseline', async () => {
-        fetchMock.mockResolvedValue(jsonResponse({id: 'space1', default_capabilities: [], capabilities: [], view_access: 'private', update_at: 101}));
+        fetchMock.mockResolvedValue(jsonResponse({id: 'space1', default_permissions: [], permissions: [], view_access: 'private', update_at: 101}));
 
         await setSpaceViewAccess('space1', 'private', 100);
 
@@ -71,20 +71,24 @@ describe('client/space_permissions', () => {
             current_page: null,
         }, false, 409));
 
-        await expect(setMemberCapabilities('space1', 'user2', [])).rejects.toMatchObject({
+        await expect(setMemberPermissions('space1', 'user2', [])).rejects.toMatchObject({
             status: 409,
             message: 'Cannot demote the last admin.',
             server_error_id: 'app.space.member.last_admin.app_error',
         });
     });
 
+    // A real id and status this route can answer with. A space the caller cannot see answers 403,
+    // never 404: the server deliberately reports "denied" and "does not exist" identically so a
+    // caller cannot probe which it is. Modelling a 404 for that case would document behaviour the
+    // server was built not to have.
     it('raises the server message and status from a flat AppError body on a non-conflict refusal', async () => {
-        fetchMock.mockResolvedValue(jsonResponse({id: 'app.space.not_found.app_error', message: 'Space not found.'}, false, 404));
+        fetchMock.mockResolvedValue(jsonResponse({id: 'app.space.member.user_not_found.app_error', message: 'Member not found.'}, false, 404));
 
-        await expect(setMemberCapabilities('space1', 'user2', [])).rejects.toMatchObject({
+        await expect(setMemberPermissions('space1', 'user2', [])).rejects.toMatchObject({
             status: 404,
-            message: 'Space not found.',
-            server_error_id: 'app.space.not_found.app_error',
+            message: 'Member not found.',
+            server_error_id: 'app.space.member.user_not_found.app_error',
         });
     });
 
@@ -96,14 +100,14 @@ describe('client/space_permissions', () => {
             json: () => Promise.reject(new Error('not json')),
         } as unknown as Response);
 
-        await expect(getSpaceMembers('space1', 0, 100)).rejects.toBeInstanceOf(RestError);
+        await expect(listAllSpaceMembers('space1')).rejects.toBeInstanceOf(RestError);
     });
 
     it('escapes ids so a path segment cannot be forged', async () => {
-        fetchMock.mockResolvedValue(jsonResponse({user_id: 'x', capabilities: [], granted_capabilities: []}));
+        fetchMock.mockResolvedValue(jsonResponse({user_id: 'x', permissions: [], granted_permissions: []}));
 
-        await setMemberCapabilities('space/1', '../admin', []);
+        await setMemberPermissions('space/1', '../admin', []);
 
-        expect(fetchMock.mock.calls[0][0]).toContain('/spaces/space%2F1/members/..%2Fadmin/capabilities');
+        expect(fetchMock.mock.calls[0][0]).toContain('/spaces/space%2F1/members/..%2Fadmin/permissions');
     });
 });

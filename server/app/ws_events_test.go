@@ -691,12 +691,12 @@ func TestServiceRemoveSpaceMember_PublishesMemberRemovedEvent(t *testing.T) {
 		&mmmodel.WebsocketBroadcast{UserId: targetID})
 }
 
-// TestServiceSetSpaceMemberCapabilities_DefaultCapabilitiesFailureAbortsBeforeCommit covers the
-// ordering fix: resolving the space's default capabilities (defaultCapabilitiesForRoles) now runs
+// TestServiceSetSpaceMemberPermissions_DefaultPermissionsFailureAbortsBeforeCommit covers the
+// ordering fix: resolving the space's default permissions (defaultPermissionsForRoles) now runs
 // inside the lock, before the role write, rather than after it. A failure there must abort before
 // UpdateChannelMemberRoles ever runs — not surface a write that already committed as an error while
 // silently skipping its WS event.
-func TestServiceSetSpaceMemberCapabilities_DefaultCapabilitiesFailureAbortsBeforeCommit(t *testing.T) {
+func TestServiceSetSpaceMemberPermissions_DefaultPermissionsFailureAbortsBeforeCommit(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	targetUserID := mmmodel.NewId()
 	// Registered before the harness so it wins over StubPresetSchemes' GetRoleByName stub for the
@@ -706,39 +706,39 @@ func TestServiceSetSpaceMemberCapabilities_DefaultCapabilitiesFailureAbortsBefor
 	h := openTestServiceWithAPI(t, mockAPI)
 	space, actingUserID := createSpaceForMemberTests(t, h, mockAPI)
 
-	_, appErr := h.svc.SetSpaceMemberCapabilities(space, targetUserID, []string{mmmodel.PermissionEditPage.Id}, actingUserID)
+	_, appErr := h.svc.SetSpaceMemberPermissions(space, targetUserID, []string{mmmodel.PermissionEditPage.Id}, actingUserID)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
 	// space.ChannelId's creator-role assignment during createSpaceForMemberTests' CreateSpace call
 	// already exercised UpdateChannelMemberRoles once, so the assertion is scoped to targetUserID —
-	// the only call SetSpaceMemberCapabilities itself would make.
+	// the only call SetSpaceMemberPermissions itself would make.
 	mockAPI.AssertNotCalled(t, "UpdateChannelMemberRoles", space.ChannelId, targetUserID, mock.Anything)
-	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "space_member_capabilities_updated", mock.Anything, mock.Anything)
+	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "space_member_permissions_updated", mock.Anything, mock.Anything)
 }
 
-// TestServiceSetSpaceMemberCapabilities_PublishesToChannelAndUser pins
-// space_member_capabilities_updated's two delivery targets. The direct publish is what guarantees
-// the target learns its own capabilities changed, so a regression to channel-only delivery would
+// TestServiceSetSpaceMemberPermissions_PublishesToChannelAndUser pins
+// space_member_permissions_updated's two delivery targets. The direct publish is what guarantees
+// the target learns its own permissions changed, so a regression to channel-only delivery would
 // leave exactly the affected user uninformed.
-func TestServiceSetSpaceMemberCapabilities_PublishesToChannelAndUser(t *testing.T) {
+func TestServiceSetSpaceMemberPermissions_PublishesToChannelAndUser(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
 	space, actingUserID := createSpaceForMemberTests(t, h, mockAPI)
 	targetUserID := mmmodel.NewId()
 
-	// A non-admin capability granted to another non-admin member reaches neither the
+	// A non-admin permission granted to another non-admin member reaches neither the
 	// admin-affecting nor the self-targeted arm of the escalation guard, so no space-admin
 	// permission is read here. The target's flags come from the master-backed store read, so seed
 	// its row directly.
 	testutil.MustAddChannelMember(t, h.db, space.ChannelId, targetUserID)
 
-	_, appErr := h.svc.SetSpaceMemberCapabilities(space, targetUserID,
+	_, appErr := h.svc.SetSpaceMemberPermissions(space, targetUserID,
 		[]string{mmmodel.PermissionEditPage.Id}, actingUserID)
 	require.Nil(t, appErr)
 
 	payload := map[string]any{"space_id": space.Id, "user_id": targetUserID}
-	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_capabilities_updated", payload,
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_permissions_updated", payload,
 		&mmmodel.WebsocketBroadcast{UserId: targetUserID})
-	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_capabilities_updated", payload,
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_permissions_updated", payload,
 		&mmmodel.WebsocketBroadcast{ChannelId: space.ChannelId})
 }

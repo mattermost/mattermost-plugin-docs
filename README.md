@@ -32,10 +32,11 @@ make check-style
 ### End-to-end tests
 
 ```bash
-make test-e2e
+make test-e2e-server
+make test-e2e-playwright
 ```
 
-Runs the containerized server E2E suite in `server/e2e/` (a real Mattermost server built from the paired core branch, via Docker — see `server/e2e/README.md` for the image and license prerequisites). The browser-level Playwright suite lives separately in `e2e/` with its own setup, documented in `e2e/README.md`.
+Two suites, both against a real Mattermost server built from the paired core branch and started in Docker. `test-e2e-server` runs the API-level Go suite in `server/e2e/`; `test-e2e-playwright` runs the browser-level suite in `e2e-tests/playwright/`. Both need the pinned core image and an Enterprise license — see `server/e2e/README.md` for the image and license prerequisites, and `e2e-tests/playwright/README-VENDORED.md` for what the browser suite carries on top of upstream's harness.
 
 ## Documentation
 

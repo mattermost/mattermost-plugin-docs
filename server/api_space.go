@@ -15,9 +15,9 @@ import (
 
 const maxSpaceBodyBytes = 1 << 20 // 1 MiB
 
-// maxCapabilitiesBodyBytes caps the capability-set request bodies, which carry only capability
+// maxPermissionsBodyBytes caps the permission-set request bodies, which carry only permission
 // tokens from a small fixed vocabulary — no content fields.
-const maxCapabilitiesBodyBytes = 4 * 1024 // 4 KiB
+const maxPermissionsBodyBytes = 4 * 1024 // 4 KiB
 
 // handleGetTeamSpaces handles GET /api/v1/teams/{team_id}/spaces.
 func (p *Plugin) handleGetTeamSpaces(w http.ResponseWriter, r *http.Request) {
@@ -39,11 +39,11 @@ func (p *Plugin) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 	teamID := mux.Vars(r)["team_id"]
 
 	var req struct {
-		Title               string            `json:"title"`
-		Description         string            `json:"description,omitempty"`
-		Icon                string            `json:"icon,omitempty"`
-		DefaultCapabilities *[]string         `json:"default_capabilities,omitempty"`
-		ViewAccess          *model.ViewAccess `json:"view_access,omitempty"`
+		Title              string            `json:"title"`
+		Description        string            `json:"description,omitempty"`
+		Icon               string            `json:"icon,omitempty"`
+		DefaultPermissions *[]string         `json:"default_permissions,omitempty"`
+		ViewAccess         *model.ViewAccess `json:"view_access,omitempty"`
 	}
 	if !p.decodeJSONBody(w, r, maxSpaceBodyBytes, &req, "handleCreateSpace", false) {
 		return
@@ -58,7 +58,7 @@ func (p *Plugin) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 		Description: req.Description,
 		Icon:        req.Icon,
 	}
-	created, appErr := p.service.CreateSpace(space, userID, req.DefaultCapabilities, req.ViewAccess)
+	created, appErr := p.service.CreateSpace(space, userID, req.DefaultPermissions, req.ViewAccess)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return
@@ -67,7 +67,7 @@ func (p *Plugin) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetSpace handles GET /api/v1/spaces/{space_id}, returning the SpaceWithAccess wrapper
-// carrying the space's default capability set and the caller's own effective capabilities.
+// carrying the space's default permission set and the caller's own effective permissions.
 func (p *Plugin) handleGetSpace(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
@@ -112,7 +112,7 @@ func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 	}
 	// Answered with the same SpaceWithAccess wrapper the create and single-read routes return.
 	// Returning a bare space here would flatten to a body a client cannot tell apart from the
-	// wrapper, so refreshing a cached record from this response would silently drop the capability
+	// wrapper, so refreshing a cached record from this response would silently drop the permission
 	// fields the other two routes supplied. Resolved BEFORE the mutation, on the pre-update space
 	// already in hand from the gate, so a failure here aborts with nothing committed and a still-valid
 	// baseline for the caller's retry — rather than leaving a fallible lookup after the commit that
@@ -129,18 +129,18 @@ func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
-	// The capability fields resolved above still hold: this route's patch touches only
+	// The permission fields resolved above still hold: this route's patch touches only
 	// title/description/icon/props/view_access, never member roles or the scheme's default
-	// capabilities, and requireSpaceManage/UpdateSpace's stricter admin gate on a ViewAccess change
-	// mean the caller already held whatever capabilities they hold now before this call — so
+	// permissions, and requireSpaceManage/UpdateSpace's stricter admin gate on a ViewAccess change
+	// mean the caller already held whatever permissions they hold now before this call — so
 	// carrying them over is exact, not an approximation, of a fresh post-commit resolution.
 	wrapper := &model.SpaceWithAccess{
-		Space:               *updated,
-		DefaultCapabilities: preWrapper.DefaultCapabilities,
-		Capabilities:        preWrapper.Capabilities,
+		Space:              *updated,
+		DefaultPermissions: preWrapper.DefaultPermissions,
+		Permissions:        preWrapper.Permissions,
 	}
 	wrapper.Props = maps.Clone(updated.Props)
-	wrapper.EnsureCapabilities()
+	wrapper.EnsurePermissions()
 	writeJSON(w, http.StatusOK, wrapper)
 }
 
@@ -210,8 +210,8 @@ func (p *Plugin) handleGetSpaceMembers(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAddSpaceMember handles POST /api/v1/spaces/{space_id}/members. Adds the target at the
-// space default only; granted_capabilities/capabilities in the body are rejected (400) rather
-// than silently dropped, so a caller cannot believe a new member's capabilities were restricted
+// space default only; granted_permissions/permissions in the body are rejected (400) rather
+// than silently dropped, so a caller cannot believe a new member's permissions were restricted
 // when they were not.
 func (p *Plugin) handleAddSpaceMember(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
@@ -221,15 +221,15 @@ func (p *Plugin) handleAddSpaceMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		UserID              string    `json:"user_id"`
-		GrantedCapabilities *[]string `json:"granted_capabilities"`
-		Capabilities        *[]string `json:"capabilities"`
+		UserID             string    `json:"user_id"`
+		GrantedPermissions *[]string `json:"granted_permissions"`
+		Permissions        *[]string `json:"permissions"`
 	}
 	if !p.decodeJSONBody(w, r, maxSpaceBodyBytes, &req, "handleAddSpaceMember", false) {
 		return
 	}
-	if req.GrantedCapabilities != nil || req.Capabilities != nil {
-		p.writeAppError(w, mmmodel.NewAppError("handleAddSpaceMember", "api.space.add_member.capabilities_not_allowed.app_error", nil, "", http.StatusBadRequest))
+	if req.GrantedPermissions != nil || req.Permissions != nil {
+		p.writeAppError(w, mmmodel.NewAppError("handleAddSpaceMember", "api.space.add_member.permissions_not_allowed.app_error", nil, "", http.StatusBadRequest))
 		return
 	}
 	member, appErr := p.service.AddSpaceMember(space, req.UserID)
@@ -240,8 +240,8 @@ func (p *Plugin) handleAddSpaceMember(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, member)
 }
 
-// handleSetSpaceMemberCapabilities handles PUT /api/v1/spaces/{space_id}/members/{user_id}/capabilities.
-func (p *Plugin) handleSetSpaceMemberCapabilities(w http.ResponseWriter, r *http.Request) {
+// handleSetSpaceMemberPermissions handles PUT /api/v1/spaces/{space_id}/members/{user_id}/permissions.
+func (p *Plugin) handleSetSpaceMemberPermissions(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	vars := mux.Vars(r)
 	spaceID := vars["space_id"]
@@ -255,16 +255,16 @@ func (p *Plugin) handleSetSpaceMemberCapabilities(w http.ResponseWriter, r *http
 	// misspelled field name all to nil — silently clearing every grant the member holds. Only a
 	// present [] clears.
 	var req struct {
-		GrantedCapabilities *[]string `json:"granted_capabilities"`
+		GrantedPermissions *[]string `json:"granted_permissions"`
 	}
-	if !p.decodeJSONBody(w, r, maxCapabilitiesBodyBytes, &req, "handleSetSpaceMemberCapabilities", false) {
+	if !p.decodeJSONBody(w, r, maxPermissionsBodyBytes, &req, "handleSetSpaceMemberPermissions", false) {
 		return
 	}
-	if req.GrantedCapabilities == nil {
-		p.writeAppError(w, mmmodel.NewAppError("handleSetSpaceMemberCapabilities", "api.space.set_member_capabilities.capabilities_required.app_error", nil, "", http.StatusBadRequest))
+	if req.GrantedPermissions == nil {
+		p.writeAppError(w, mmmodel.NewAppError("handleSetSpaceMemberPermissions", "api.space.set_member_permissions.permissions_required.app_error", nil, "", http.StatusBadRequest))
 		return
 	}
-	member, appErr := p.service.SetSpaceMemberCapabilities(space, targetUserID, *req.GrantedCapabilities, userID)
+	member, appErr := p.service.SetSpaceMemberPermissions(space, targetUserID, *req.GrantedPermissions, userID)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return
@@ -272,28 +272,28 @@ func (p *Plugin) handleSetSpaceMemberCapabilities(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, member)
 }
 
-// handleSetSpaceDefaultCapabilities handles PUT /api/v1/spaces/{space_id}/default-capabilities.
-func (p *Plugin) handleSetSpaceDefaultCapabilities(w http.ResponseWriter, r *http.Request) {
+// handleSetSpaceDefaultPermissions handles PUT /api/v1/spaces/{space_id}/default-permissions.
+func (p *Plugin) handleSetSpaceDefaultPermissions(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
 	space, ok := p.requireSpaceAdmin(w, spaceID, userID)
 	if !ok {
 		return
 	}
-	// A pointer, for the same reason as the member-capabilities handler above: this repoints the
+	// A pointer, for the same reason as the member-permissions handler above: this repoints the
 	// whole space, so decoding {}, null, or a misspelled field to nil would drop every space
 	// default to read-only. Only a present [] does that deliberately.
 	var req struct {
-		DefaultCapabilities *[]string `json:"default_capabilities"`
+		DefaultPermissions *[]string `json:"default_permissions"`
 	}
-	if !p.decodeJSONBody(w, r, maxCapabilitiesBodyBytes, &req, "handleSetSpaceDefaultCapabilities", false) {
+	if !p.decodeJSONBody(w, r, maxPermissionsBodyBytes, &req, "handleSetSpaceDefaultPermissions", false) {
 		return
 	}
-	if req.DefaultCapabilities == nil {
-		p.writeAppError(w, mmmodel.NewAppError("handleSetSpaceDefaultCapabilities", "api.space.set_default_capabilities.capabilities_required.app_error", nil, "", http.StatusBadRequest))
+	if req.DefaultPermissions == nil {
+		p.writeAppError(w, mmmodel.NewAppError("handleSetSpaceDefaultPermissions", "api.space.set_default_permissions.permissions_required.app_error", nil, "", http.StatusBadRequest))
 		return
 	}
-	updated, appErr := p.service.SetSpaceDefaultCapabilities(space, *req.DefaultCapabilities, userID)
+	updated, appErr := p.service.SetSpaceDefaultPermissions(space, *req.DefaultPermissions, userID)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return

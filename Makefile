@@ -376,8 +376,8 @@ endif
 ## set (a common local dev convenience), which produces a bundle unusable inside the container. So
 ## this checks the newest bundle for the linux binary matching the Docker daemon's architecture,
 ## not just that a bundle file exists, and forces a full cross-compiled `make dist` otherwise.
-.PHONY: test-e2e
-test-e2e:
+.PHONY: test-e2e-server
+test-e2e-server:
 	@docker_arch=$$(docker info --format '{{.Architecture}}' 2>/dev/null); \
 	case "$$docker_arch" in \
 		aarch64) goarch=arm64 ;; \
@@ -394,6 +394,23 @@ test-e2e:
 		*) ./build/build-core-image.sh ;; \
 	esac
 	$(GO) test -tags e2e -count=1 -v ./server/e2e/...
+
+## Runs the Playwright E2E suite against a throwaway Mattermost container. Requires Docker, plus
+## MM_IMAGE (a core image carrying the paired branch's space-permission work) and a license in
+## MM_LICENSE/MM_LICENSE_FILE — the suite names either as its own failure when unset.
+.PHONY: test-e2e-playwright
+test-e2e-playwright:
+	@# The bundle is installed into a Linux container, so it must carry a Linux
+	@# binary. MM_SERVICESETTINGS_ENABLEDEVELOPER (common in a dev shell) would
+	@# otherwise limit the build to the host platform alone.
+	@# A stale bundle would otherwise be a candidate for installation.
+	rm -rf dist
+	@# Build the same artifact CI does. MM_SERVICESETTINGS_ENABLEDEVELOPER would limit
+	@# the server build to the host platform, leaving no Linux binary for the container;
+	@# MM_DEBUG would produce an unminified webapp bundle too slow to finish loading.
+	env -u MM_SERVICESETTINGS_ENABLEDEVELOPER -u MM_DEBUG $(MAKE) dist
+	@# ci, not install, so a local run resolves the same versions CI does.
+	cd e2e-tests/playwright && $(NPM) ci && $(NPM) run playwright:install && $(NPM) test
 
 ## Creates a coverage report for the server code.
 .PHONY: coverage

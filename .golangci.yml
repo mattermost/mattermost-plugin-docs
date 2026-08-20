@@ -54,6 +54,10 @@ linters:
   exclusions:
     paths:
       - webapp
+      # Some npm packages ship Go sources, and ./... walks into an installed dependency
+      # tree. Only reachable once a suite's deps are installed, so it fails locally
+      # while CI, which lints before npm ci, stays green.
+      - node_modules
     rules:
       - path: server/configuration.go
         linters:

@@ -181,7 +181,7 @@ func StubbedRoleName(roleID string) (string, bool) {
 // is visible here without re-registration.
 //
 // Keyed by mockAPI rather than by channel id alone: a pooled scheme's role names are a digest of
-// its capability set, so two tests asking for the same set generate the same role names under
+// its permission set, so two tests asking for the same set generate the same role names under
 // different scheme ids. A flat registry would let a channel one test attached authorize a role
 // write another test expects to be refused — hiding the very ordering regression the guard in
 // StubPatchRole exists to catch. One mockAPI is one test, and it is also what confines a channel
@@ -210,7 +210,7 @@ func isPooledSchemeName(name string) bool {
 }
 
 // StubPooledSchemeMiss answers the shared-pool lookup with not-found for any pooled scheme name, so
-// a test exercising a non-preset default-capability set reaches the create path. Register it after
+// a test exercising a non-preset default-permission set reaches the create path. Register it after
 // StubPresetSchemes, whose per-name stubs must keep matching first, and before any stub that
 // answers a specific pooled name. Use StubSchemePool instead when the test needs the pool to
 // actually accumulate.
@@ -219,7 +219,7 @@ func StubPooledSchemeMiss(mockAPI *plugintest.API) {
 		Return(nil, &mmmodel.AppError{Id: "app.scheme.get.app_error", StatusCode: http.StatusNotFound}).Maybe()
 }
 
-// StubSchemePool simulates the shared default-capability pool with state: a pooled scheme name
+// StubSchemePool simulates the shared default-permission pool with state: a pooled scheme name
 // resolves to not-found until CreateScheme mints it and to that same scheme afterwards. This is
 // what lets a test assert the property the pool exists for — that two spaces configured alike, or
 // one space returning to a set it used before, resolve to a single scheme instead of minting a
@@ -271,7 +271,7 @@ func StubSchemePool(mockAPI *plugintest.API) {
 // shared *Role on first read so a later PatchRole mutation is visible to a subsequent read.
 //
 // The name-keyed map is per-call rather than package-level: a pooled scheme's name is a digest of
-// its capability set, so two tests asking for the same set generate the same role names, and a
+// its permission set, so two tests asking for the same set generate the same role names, and a
 // shared map would hand the second test the first one's already-patched role.
 func stubPooledRoles(mockAPI *plugintest.API) {
 	var mu sync.Mutex
@@ -352,7 +352,7 @@ func schemeGovernsSpace(mockAPI *plugintest.API, roleName string) bool {
 //
 // The stub also reproduces core's scope guard: adding a space permission is refused unless the
 // role's scheme already governs a space, which is what makes the attach-before-patch ordering in
-// CreateSpace and SetSpaceDefaultCapabilities mandatory rather than stylistic. Without the guard
+// CreateSpace and SetSpaceDefaultPermissions mandatory rather than stylistic. Without the guard
 // here, reversing that order still passes every test that uses this stub.
 func StubPatchRole(mockAPI *plugintest.API) {
 	mockAPI.On("PatchRole", mock.AnythingOfType("string"), mock.AnythingOfType("*model.RolePatch")).
@@ -379,7 +379,7 @@ func StubPatchRole(mockAPI *plugintest.API) {
 // GetSchemeRolesForChannel resolves whichever scheme that channel currently points at — so a test
 // that repoints the channel sees the new scheme's roles without re-stubbing, the way core resolves
 // them. Production sets this up through the real backing channel's SchemeId when
-// CreateSpace/SetSpaceDefaultCapabilities points a space at a scheme.
+// CreateSpace/SetSpaceDefaultPermissions points a space at a scheme.
 //
 // Every matching call returns the same shared *Channel, since a space's scheme-resolving paths may
 // call GetChannelOfType more than once per test; a test that also needs to simulate the channel's

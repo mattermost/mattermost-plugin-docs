@@ -25,8 +25,9 @@ type Props = {
 /**
  * The role/membership menu on a member row.
  *
- * Role items are rendered disabled rather than hidden, so the menu does not change
- * shape when PR #10's capabilities make them real.
+ * Role items are rendered disabled rather than hidden, so the menu keeps its shape if they are
+ * ever wired up. Per-member permissions are edited in the space settings modal's Permissions tab,
+ * not here.
  */
 const MemberRowMenu = ({member, isCurrentUser, disabled, onRemove, onLeave}: Props) => {
     const {formatMessage} = useIntl();

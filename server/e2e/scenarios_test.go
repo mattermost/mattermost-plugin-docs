@@ -108,11 +108,11 @@ func TestScenarios(t *testing.T) {
 		addSpaceMember(t, ctx, spaceAdmin, space.Id, contrib.id)
 
 		var roResp pluginmodel.SpaceWithAccess
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/default-capabilities",
-			map[string][]string{"default_capabilities": {}}, &roResp)
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/default-permissions",
+			map[string][]string{"default_permissions": {}}, &roResp)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "setting read-only default failed: %s", body)
-		require.Empty(t, roResp.DefaultCapabilities)
+		require.Empty(t, roResp.DefaultPermissions)
 
 		var seed pluginmodel.Page
 		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/spaces/"+space.Id+"/pages",
@@ -136,12 +136,12 @@ func TestScenarios(t *testing.T) {
 
 		// The real grant surface: the space admin assigns create_page + edit_page to CONTRIB.
 		var grantResp pluginmodel.SpaceMember
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {mmmodel.PermissionCreatePage.Id, mmmodel.PermissionEditPage.Id}}, &grantResp)
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+contrib.id+"/permissions",
+			map[string][]string{"granted_permissions": {mmmodel.PermissionCreatePage.Id, mmmodel.PermissionEditPage.Id}}, &grantResp)
 		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, status, "granting CONTRIB capabilities: %s", body)
-		require.ElementsMatch(t, []string{mmmodel.PermissionCreatePage.Id, mmmodel.PermissionEditPage.Id}, grantResp.GrantedCapabilities,
-			"grant round-tripped as %v", grantResp.GrantedCapabilities)
+		require.Equal(t, http.StatusOK, status, "granting CONTRIB permissions: %s", body)
+		require.ElementsMatch(t, []string{mmmodel.PermissionCreatePage.Id, mmmodel.PermissionEditPage.Id}, grantResp.GrantedPermissions,
+			"grant round-tripped as %v", grantResp.GrantedPermissions)
 
 		status, body, err = doPluginRequest(ctx, contrib.client, http.MethodPost, "/spaces/"+space.Id+"/pages",
 			createPageReq("Contributed"), nil)
@@ -196,18 +196,18 @@ func TestScenarios(t *testing.T) {
 	t.Run("scenario4_announcement_space", func(t *testing.T) {
 		var space pluginmodel.Space
 		status, body, err := doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/teams/"+team.Id+"/spaces",
-			map[string]any{"title": "Scenario Announcement Space", "default_capabilities": []string{mmmodel.PermissionCommentPage.Id}}, &space)
+			map[string]any{"title": "Scenario Announcement Space", "default_permissions": []string{mmmodel.PermissionCommentPage.Id}}, &space)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusCreated, status, "createSpace failed: %s", body)
 		spacesToClean = append(spacesToClean, space.Id)
 
-		// The create response is the bare Space (no default_capabilities field); GET the space to
+		// The create response is the bare Space (no default_permissions field); GET the space to
 		// confirm the comment default actually landed.
 		var withAccess pluginmodel.SpaceWithAccess
 		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodGet, "/spaces/"+space.Id, nil, &withAccess)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "get space: %s", body)
-		require.ElementsMatch(t, []string{mmmodel.PermissionCommentPage.Id}, withAccess.DefaultCapabilities,
+		require.ElementsMatch(t, []string{mmmodel.PermissionCommentPage.Id}, withAccess.DefaultPermissions,
 			"comment default not set at create: %s", body)
 
 		addSpaceMember(t, ctx, spaceAdmin, space.Id, member.id)
@@ -222,8 +222,8 @@ func TestScenarios(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusForbidden, status, "plain member create (comment default grants no create_page): %s", body)
 
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {mmmodel.PermissionCreatePage.Id}}, nil)
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+contrib.id+"/permissions",
+			map[string][]string{"granted_permissions": {mmmodel.PermissionCreatePage.Id}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "granting CONTRIB create_page: %s", body)
 
@@ -238,7 +238,7 @@ func TestScenarios(t *testing.T) {
 	t.Run("scenario5_mixed_matrix", func(t *testing.T) {
 		var space pluginmodel.Space
 		status, body, err := doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/teams/"+team.Id+"/spaces",
-			map[string]any{"title": "Scenario Mixed Matrix", "default_capabilities": []string{}}, &space)
+			map[string]any{"title": "Scenario Mixed Matrix", "default_permissions": []string{}}, &space)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusCreated, status, "createSpace failed: %s", body)
 		spacesToClean = append(spacesToClean, space.Id)
@@ -252,13 +252,13 @@ func TestScenarios(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusCreated, status, "admin seed page failed: %s", body)
 
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {mmmodel.PermissionCreatePage.Id}}, nil)
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+contrib.id+"/permissions",
+			map[string][]string{"granted_permissions": {mmmodel.PermissionCreatePage.Id}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "granting A create_page: %s", body)
 
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+member.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {mmmodel.PermissionEditPage.Id}}, nil)
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+member.id+"/permissions",
+			map[string][]string{"granted_permissions": {mmmodel.PermissionEditPage.Id}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "granting B edit_page: %s", body)
 
@@ -342,10 +342,10 @@ func TestScenarios(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusForbidden, status, "guest update: %s", body)
 
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+guestCandidate.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {mmmodel.PermissionCreatePage.Id}}, nil)
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+guestCandidate.id+"/permissions",
+			map[string][]string{"granted_permissions": {mmmodel.PermissionCreatePage.Id}}, nil)
 		require.NoError(t, err)
-		require.Equal(t, http.StatusBadRequest, status, "granting a guest capabilities: %s", body)
+		require.Equal(t, http.StatusBadRequest, status, "granting a guest permissions: %s", body)
 		require.Equal(t, "app.space.member.guest_not_assignable.app_error", appErrorID(body))
 	})
 
@@ -371,15 +371,15 @@ func TestScenarios(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusCreated, status, "admin add member: %s", body)
 
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+s7ID+"/members/"+contrib.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {mmmodel.PermissionEditPage.Id}}, nil)
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+s7ID+"/members/"+contrib.id+"/permissions",
+			map[string][]string{"granted_permissions": {mmmodel.PermissionEditPage.Id}}, nil)
 		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, status, "admin set member capabilities: %s", body)
+		require.Equal(t, http.StatusOK, status, "admin set member permissions: %s", body)
 
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+s7ID+"/default-capabilities",
-			map[string][]string{"default_capabilities": {mmmodel.PermissionCommentPage.Id}}, nil)
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+s7ID+"/default-permissions",
+			map[string][]string{"default_permissions": {mmmodel.PermissionCommentPage.Id}}, nil)
 		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, status, "admin set default capabilities: %s", body)
+		require.Equal(t, http.StatusOK, status, "admin set default permissions: %s", body)
 
 		var patched pluginmodel.Space
 		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPatch, "/spaces/"+s7ID,
@@ -407,15 +407,15 @@ func TestScenarios(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusForbidden, status, "control add member")
 
-		status, _, err = doPluginRequest(ctx, member.client, http.MethodPut, "/spaces/"+s7ID+"/members/"+contrib.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {mmmodel.PermissionEditPage.Id}}, nil)
+		status, _, err = doPluginRequest(ctx, member.client, http.MethodPut, "/spaces/"+s7ID+"/members/"+contrib.id+"/permissions",
+			map[string][]string{"granted_permissions": {mmmodel.PermissionEditPage.Id}}, nil)
 		require.NoError(t, err)
-		require.Equal(t, http.StatusForbidden, status, "control set member capabilities")
+		require.Equal(t, http.StatusForbidden, status, "control set member permissions")
 
-		status, _, err = doPluginRequest(ctx, member.client, http.MethodPut, "/spaces/"+s7ID+"/default-capabilities",
-			map[string][]string{"default_capabilities": {mmmodel.PermissionCommentPage.Id}}, nil)
+		status, _, err = doPluginRequest(ctx, member.client, http.MethodPut, "/spaces/"+s7ID+"/default-permissions",
+			map[string][]string{"default_permissions": {mmmodel.PermissionCommentPage.Id}}, nil)
 		require.NoError(t, err)
-		require.Equal(t, http.StatusForbidden, status, "control set default capabilities")
+		require.Equal(t, http.StatusForbidden, status, "control set default permissions")
 
 		status, _, err = doPluginRequest(ctx, member.client, http.MethodPatch, "/spaces/"+s7ID,
 			map[string]any{"view_access": pluginmodel.ViewAccessOpen, "expected_update_at": updateAt}, nil)
@@ -427,18 +427,18 @@ func TestScenarios(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, status, "control delete")
 	})
 
-	// scenario8 exercises the POOLED scheme path — a default-capability set matching no preset —
+	// scenario8 exercises the POOLED scheme path — a default-permission set matching no preset —
 	// which the plugin provisions through core's CreateScheme + PatchRole plugin API. It asserts the
 	// whole write→read chain end-to-end against real core: the custom set round-trips through GET
 	// (proving PatchRole set exactly those role permissions and they project back), a plain member
 	// is enforced against it, and switching back to a preset repoints the channel, leaving the
 	// superseded scheme in place for any other space using it.
-	t.Run("scenario8_custom_capability_scheme", func(t *testing.T) {
+	t.Run("scenario8_custom_permission_scheme", func(t *testing.T) {
 		customCaps := []string{mmmodel.PermissionCreatePage.Id, mmmodel.PermissionEditPage.Id}
 
 		var space pluginmodel.Space
 		status, body, err := doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/teams/"+team.Id+"/spaces",
-			map[string]any{"title": "Scenario Custom Capability Scheme", "default_capabilities": customCaps}, &space)
+			map[string]any{"title": "Scenario Custom Permission Scheme", "default_permissions": customCaps}, &space)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusCreated, status, "createSpace with custom default caps failed: %s", body)
 		spacesToClean = append(spacesToClean, space.Id)
@@ -449,7 +449,7 @@ func TestScenarios(t *testing.T) {
 		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodGet, "/spaces/"+space.Id, nil, &withAccess)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "get space: %s", body)
-		require.ElementsMatch(t, customCaps, withAccess.DefaultCapabilities,
+		require.ElementsMatch(t, customCaps, withAccess.DefaultPermissions,
 			"custom default caps did not round-trip (CreateScheme/PatchRole path): %s", body)
 
 		addSpaceMember(t, ctx, spaceAdmin, space.Id, member.id)
@@ -474,11 +474,11 @@ func TestScenarios(t *testing.T) {
 		// the pooled scheme it leaves behind stays for the next space to request the same set. The
 		// member loses create.
 		var roResp pluginmodel.SpaceWithAccess
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/default-capabilities",
-			map[string][]string{"default_capabilities": {}}, &roResp)
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/default-permissions",
+			map[string][]string{"default_permissions": {}}, &roResp)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "switch custom→preset failed: %s", body)
-		require.Empty(t, roResp.DefaultCapabilities, "default caps not cleared to read-only: %s", body)
+		require.Empty(t, roResp.DefaultPermissions, "default caps not cleared to read-only: %s", body)
 
 		status, body, err = doPluginRequest(ctx, member.client, http.MethodPost, "/spaces/"+space.Id+"/pages",
 			createPageReq("Should be forbidden now"), nil)
@@ -532,11 +532,11 @@ func TestScenarios(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, status, "delete of an unowned page before the grant: %s", body)
 
 		var granted pluginmodel.SpaceMember
-		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+contrib.id+"/capabilities",
-			map[string][]string{"granted_capabilities": {mmmodel.PermissionDeletePage.Id}}, &granted)
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+contrib.id+"/permissions",
+			map[string][]string{"granted_permissions": {mmmodel.PermissionDeletePage.Id}}, &granted)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "granting delete_page: %s", body)
-		require.Contains(t, granted.GrantedCapabilities, mmmodel.PermissionDeletePage.Id,
+		require.Contains(t, granted.GrantedPermissions, mmmodel.PermissionDeletePage.Id,
 			"delete_page did not round-trip through ExplicitRoles: %s", body)
 		require.False(t, granted.IsAdmin, "granting delete_page must not make the member a space admin")
 
@@ -545,7 +545,7 @@ func TestScenarios(t *testing.T) {
 		require.Equal(t, http.StatusOK, status, "delete of an unowned page after the grant: %s", body)
 	})
 
-	// The same capability as a space default rather than a per-member grant, so every member holds
+	// The same permission as a space default rather than a per-member grant, so every member holds
 	// delete-any. delete_page is in no preset, so this drives the pooled-scheme path end to end:
 	// the scheme is minted, the backing channel is attached to it, and only then does the role
 	// patch carrying delete_page become admissible to core.
@@ -554,7 +554,7 @@ func TestScenarios(t *testing.T) {
 
 		var space pluginmodel.Space
 		status, body, err := doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/teams/"+team.Id+"/spaces",
-			map[string]any{"title": "Scenario Delete Any Default", "default_capabilities": defaultCaps}, &space)
+			map[string]any{"title": "Scenario Delete Any Default", "default_permissions": defaultCaps}, &space)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusCreated, status, "createSpace with a delete_page default failed: %s", body)
 		spacesToClean = append(spacesToClean, space.Id)
@@ -563,7 +563,7 @@ func TestScenarios(t *testing.T) {
 		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodGet, "/spaces/"+space.Id, nil, &withAccess)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "get space: %s", body)
-		require.ElementsMatch(t, defaultCaps, withAccess.DefaultCapabilities,
+		require.ElementsMatch(t, defaultCaps, withAccess.DefaultPermissions,
 			"delete_page did not round-trip as a space default: %s", body)
 
 		addSpaceMember(t, ctx, spaceAdmin, space.Id, member.id)
@@ -579,6 +579,165 @@ func TestScenarios(t *testing.T) {
 		require.Equal(t, http.StatusOK, status, "plain member delete of an unowned page: %s", body)
 	})
 
+	// admin_space is the one grantable permission that carries administration itself rather than a
+	// page action, so it is asserted as a triad: refused before the grant, admitted after it, and
+	// refused again after the revoke. scenario7 drives the same routes as the space's creator, who is
+	// an admin by construction — it never grants admin_space to anyone, so the delegation its name
+	// describes is exercised only here.
+	t.Run("admin_space_grant_delegates_administration", func(t *testing.T) {
+		var space pluginmodel.Space
+		status, body, err := doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/teams/"+team.Id+"/spaces",
+			map[string]string{"title": "Scenario Delegated Admin Grant"}, &space)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusCreated, status, "createSpace failed: %s", body)
+		spacesToClean = append(spacesToClean, space.Id)
+
+		addSpaceMember(t, ctx, spaceAdmin, space.Id, member.id)
+
+		// Before the grant: a plain member is refused the two routes that require space
+		// administration, one read and one write, so the grant below is shown to change both.
+		status, body, err = doPluginRequest(ctx, member.client, http.MethodGet, "/spaces/"+space.Id+"/members", nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusForbidden, status, "roster read before the admin_space grant: %s", body)
+
+		status, body, err = doPluginRequest(ctx, member.client, http.MethodPut, "/spaces/"+space.Id+"/default-permissions",
+			map[string][]string{"default_permissions": {mmmodel.PermissionCommentPage.Id}}, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusForbidden, status, "default-permissions write before the admin_space grant: %s", body)
+
+		var granted pluginmodel.SpaceMember
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+member.id+"/permissions",
+			map[string][]string{"granted_permissions": {mmmodel.PermissionAdminSpace.Id}}, &granted)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "granting admin_space: %s", body)
+		// Exact, not Contains: the request granted admin_space alone, so anything else appearing
+		// here is a grant the caller did not ask for. Contains would pass on a union with the
+		// space's own defaults, which is the escalation shape worth pinning.
+		require.Equal(t, []string{mmmodel.PermissionAdminSpace.Id}, granted.GrantedPermissions,
+			"admin_space did not round-trip through the granted set as the only grant: %s", body)
+		require.True(t, granted.IsAdmin,
+			"granting admin_space must set SchemeAdmin, which is what the admin gates read: %s", body)
+		require.ElementsMatch(t, mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions), granted.Permissions,
+			"the effective set of an admin_space grant must be exactly core's space-admin authority: %s", body)
+
+		// After the grant: both refused routes now answer, against real core's role composition.
+		status, body, err = doPluginRequest(ctx, member.client, http.MethodGet, "/spaces/"+space.Id+"/members", nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "roster read after the admin_space grant: %s", body)
+
+		var afterDefaults pluginmodel.SpaceWithAccess
+		status, body, err = doPluginRequest(ctx, member.client, http.MethodPut, "/spaces/"+space.Id+"/default-permissions",
+			map[string][]string{"default_permissions": {mmmodel.PermissionCommentPage.Id}}, &afterDefaults)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "default-permissions write after the admin_space grant: %s", body)
+		require.ElementsMatch(t, []string{mmmodel.PermissionCommentPage.Id}, afterDefaults.DefaultPermissions,
+			"the delegated admin's own default-permissions write did not take effect: %s", body)
+
+		// Revoking is the half a grant-only test cannot cover: the delegated authority must be
+		// withdrawable, and SchemeAdmin must come back down with it.
+		var revoked pluginmodel.SpaceMember
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPut, "/spaces/"+space.Id+"/members/"+member.id+"/permissions",
+			map[string][]string{"granted_permissions": {}}, &revoked)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "revoking admin_space: %s", body)
+		require.NotContains(t, revoked.GrantedPermissions, mmmodel.PermissionAdminSpace.Id,
+			"admin_space survived the revoke in the granted set: %s", body)
+		require.False(t, revoked.IsAdmin, "SchemeAdmin survived the admin_space revoke: %s", body)
+
+		status, body, err = doPluginRequest(ctx, member.client, http.MethodGet, "/spaces/"+space.Id+"/members", nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusForbidden, status, "roster read after the admin_space revoke: %s", body)
+	})
+
+	// The auto-join undo path. scenario1 asserts the forward direction (a default-granted write by a
+	// space non-member joins them); nothing asserted that a write which passes the permission gate
+	// and then fails leaves no membership behind. The positive control at the end is what keeps the
+	// negative from being vacuous: without it, an actor who was never auto-joinable at all would
+	// satisfy the same assertion.
+	t.Run("auto_join_undone_when_the_write_is_rejected", func(t *testing.T) {
+		var space pluginmodel.Space
+		status, body, err := doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/teams/"+team.Id+"/spaces",
+			map[string]string{"title": "Scenario Auto Join Undo"}, &space)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusCreated, status, "createSpace failed: %s", body)
+		require.Equal(t, pluginmodel.ViewAccessOpen, space.ViewAccess, "auto-join requires an open space")
+		spacesToClean = append(spacesToClean, space.Id)
+
+		// A team member who has never touched this space, so the pre-step has something to undo.
+		joiner := createActor(t, ctx, env, team.Id, fmt.Sprintf("scn-undo-%d", time.Now().UnixNano()))
+		require.False(t, spaceHasMember(t, ctx, spaceAdmin, space.Id, joiner.id),
+			"the actor must start as a space non-member")
+
+		// Seed a real page only to derive a syntactically valid id that resolves to nothing, so the
+		// request clears the create_page gate (auto-joining) and then fails inside CreatePage's
+		// parent resolution.
+		var seed pluginmodel.Page
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/spaces/"+space.Id+"/pages",
+			createPageReq("Undo Anchor"), &seed)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusCreated, status, "admin seed page failed: %s", body)
+
+		missingParent := reverseString(seed.Id)
+		require.NotEqual(t, seed.Id, missingParent, "the derived parent id must differ from the real one")
+
+		req := createPageReq("Rejected drive-by page")
+		req["parent_id"] = missingParent
+		status, body, err = doPluginRequest(ctx, joiner.client, http.MethodPost, "/spaces/"+space.Id+"/pages", req, nil)
+		require.NoError(t, err)
+		require.NotEqual(t, http.StatusCreated, status,
+			"a page create naming a nonexistent parent must not succeed: %s", body)
+
+		require.False(t, spaceHasMember(t, ctx, spaceAdmin, space.Id, joiner.id),
+			"the auto-join was not undone after the write it admitted was rejected: %s", body)
+
+		// Positive control: the same actor on the same space, with a valid request, is auto-joined —
+		// so the assertion above reflects the undo, not an actor who could never have joined.
+		status, body, err = doPluginRequest(ctx, joiner.client, http.MethodPost, "/spaces/"+space.Id+"/pages",
+			createPageReq("Accepted drive-by page"), nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusCreated, status, "space non-member create: %s", body)
+		require.True(t, spaceHasMember(t, ctx, spaceAdmin, space.Id, joiner.id),
+			"the control write did not auto-join the actor, so the undo assertion above proves nothing: %s", body)
+	})
+
+	// The pooled-scheme reuse property, against real core. scenario8 provisions a non-preset set but
+	// is always its FIRST user, so getOrCreateSharedScheme only ever takes the create branch and
+	// adoptableSharedScheme never runs. A second space requesting the same set is what exercises
+	// adoption, which is where the plugin compares a role read back from core against the bare
+	// permission set the pooled name implies.
+	t.Run("pooled_scheme_reused_by_a_second_space", func(t *testing.T) {
+		pooledCaps := []string{mmmodel.PermissionEditPage.Id, mmmodel.PermissionDeleteOwnPage.Id}
+
+		var first pluginmodel.Space
+		status, body, err := doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/teams/"+team.Id+"/spaces",
+			map[string]any{"title": "Scenario Pooled First", "default_permissions": pooledCaps}, &first)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusCreated, status, "first space with a pooled set failed: %s", body)
+		spacesToClean = append(spacesToClean, first.Id)
+
+		var second pluginmodel.Space
+		status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodPost, "/teams/"+team.Id+"/spaces",
+			map[string]any{"title": "Scenario Pooled Second", "default_permissions": pooledCaps}, &second)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusCreated, status,
+			"a second space requesting an already-pooled permission set was refused: %s", body)
+		spacesToClean = append(spacesToClean, second.Id)
+
+		// Both spaces must report the set they asked for: adoption that silently produced a
+		// different effective set would be worse than the refusal.
+		for _, s := range []struct {
+			id   string
+			what string
+		}{{first.Id, "first"}, {second.Id, "second"}} {
+			var access pluginmodel.SpaceWithAccess
+			status, body, err = doPluginRequest(ctx, spaceAdmin.client, http.MethodGet, "/spaces/"+s.id, nil, &access)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, status, "%s space read: %s", s.what, body)
+			require.ElementsMatch(t, pooledCaps, access.DefaultPermissions,
+				"%s space did not round-trip the pooled set: %s", s.what, body)
+		}
+	})
+
 	t.Run("gap_anonymous_access_denied_on_open_space", func(t *testing.T) {
 		require.NotEmpty(t, s1ID, "scenario1 must have run first")
 		anon := mmmodel.NewAPIv4Client(env.baseURL)
@@ -588,11 +747,11 @@ func TestScenarios(t *testing.T) {
 			"an unauthenticated read on an open space: %s", body)
 	})
 
-	// The two remaining named parity gaps have no API surface to probe: per-group capability
+	// The two remaining named parity gaps have no API surface to probe: per-group permission
 	// grants beyond member/admin (a synced group's GroupSyncable carries only a binary
-	// SchemeAdmin, so an arbitrary per-group capability set has no route to request it), and the
+	// SchemeAdmin, so an arbitrary per-group permission set has no route to request it), and the
 	// export_space split (Export is mapped onto admin_space in this epic; no separate export
-	// capability exists to grant, deny, or probe).
+	// permission exists to grant, deny, or probe).
 }
 
 // reverseString reverses s — used to derive a syntactically valid but nonexistent id from a real

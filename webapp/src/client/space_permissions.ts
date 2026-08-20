@@ -1,15 +1,11 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {apiUrl, restGet, restPatch, restPut} from 'client/rest';
+import {apiUrl, listAll, restGet, restPatch, restPut} from 'client/rest';
 
-import type {UserProfile} from '@mattermost/types/users';
+import type {Permission, SpaceAccess, SpaceMember, SpaceViewAccess} from 'types/permissions';
 
-import {Client4} from 'mattermost-redux/client';
-
-import type {Capability, Paginated, SpaceAccess, SpaceMember, SpaceViewAccess} from 'types/permissions';
-
-// The space-permissions calls: the space's default capability set and each
+// The space-permissions calls: the space's default permission set and each
 // member's granted set. Kept apart from the Docs data source (spaces, pages),
 // which still reads from a mock fixture; a permission control that wrote to a
 // fixture would be worse than no control.
@@ -23,25 +19,27 @@ const seg = encodeURIComponent;
 export const getSpaceAccess = (spaceId: string): Promise<SpaceAccess> =>
     restGet<SpaceAccess>(`${apiUrl()}/spaces/${seg(spaceId)}`);
 
-// getSpaceMembers reads one page of a space's members. Requires manage authority
+// listAllSpaceMembers reads every page of a space's members. The whole roster, not a
+// page of it: the permissions surface edits a grant per row, so a page boundary would
+// hide members whose grants the caller is there to change. Requires manage authority
 // over the space; a caller without it gets a 403.
-export const getSpaceMembers = (spaceId: string, page: number, perPage: number): Promise<Paginated<SpaceMember>> =>
-    restGet<Paginated<SpaceMember>>(`${apiUrl()}/spaces/${seg(spaceId)}/members?page=${page}&per_page=${perPage}`);
+export const listAllSpaceMembers = (spaceId: string): Promise<SpaceMember[]> =>
+    listAll<SpaceMember>((query) => `${apiUrl()}/spaces/${seg(spaceId)}/members?${query}`);
 
-// setMemberCapabilities replaces a member's granted set. The empty array is the
+// setMemberPermissions replaces a member's granted set. The empty array is the
 // deliberate clear; the field is always sent, since omitting it is a 400.
-export const setMemberCapabilities = (spaceId: string, userId: string, granted: Capability[]): Promise<SpaceMember> =>
+export const setMemberPermissions = (spaceId: string, userId: string, granted: Permission[]): Promise<SpaceMember> =>
     restPut<SpaceMember>(
-        `${apiUrl()}/spaces/${seg(spaceId)}/members/${seg(userId)}/capabilities`,
-        {granted_capabilities: granted},
+        `${apiUrl()}/spaces/${seg(spaceId)}/members/${seg(userId)}/permissions`,
+        {granted_permissions: granted},
     );
 
-// setDefaultCapabilities replaces the space's default capability set — what every
+// setDefaultPermissions replaces the space's default permission set — what every
 // member holds without a per-member grant. Requires space admin.
-export const setDefaultCapabilities = (spaceId: string, capabilities: Capability[]): Promise<SpaceAccess> =>
+export const setDefaultPermissions = (spaceId: string, permissions: Permission[]): Promise<SpaceAccess> =>
     restPut<SpaceAccess>(
-        `${apiUrl()}/spaces/${seg(spaceId)}/default-capabilities`,
-        {default_capabilities: capabilities},
+        `${apiUrl()}/spaces/${seg(spaceId)}/default-permissions`,
+        {default_permissions: permissions},
     );
 
 // setSpaceViewAccess flips the space between open and private. Requires space
@@ -52,12 +50,3 @@ export const setSpaceViewAccess = (spaceId: string, viewAccess: SpaceViewAccess,
         `${apiUrl()}/spaces/${seg(spaceId)}`,
         {view_access: viewAccess, expected_update_at: expectedUpdateAt},
     );
-
-// getMemberProfiles resolves member ids to user profiles for display. A platform
-// read rather than a Docs one, so it goes through Client4's own surface.
-export const getMemberProfiles = (userIds: string[]): Promise<UserProfile[]> => {
-    if (userIds.length === 0) {
-        return Promise.resolve([]);
-    }
-    return Client4.getProfilesByIds(userIds);
-};

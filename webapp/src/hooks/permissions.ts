@@ -3,7 +3,10 @@
 
 import {useAppSelector} from 'hooks/redux';
 
-import {getCanManageSpaceMembers} from 'store/permissions';
+import {getCanCreatePage, getCanManageSpaceMembers} from 'store/permissions';
 
 export const useCanManageSpaceMembers = (spaceId: string): boolean =>
     useAppSelector((state) => getCanManageSpaceMembers(state, spaceId));
+
+export const useCanCreatePage = (spaceId: string): boolean =>
+    useAppSelector((state) => getCanCreatePage(state, spaceId));

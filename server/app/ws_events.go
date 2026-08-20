@@ -22,7 +22,7 @@ import (
 // rather than one payload naming both spaces. A member removal is additionally sent to the removed
 // user directly: they have already left the channel when the channel-scoped broadcast fires, so
 // this is their only signal of the removal. space_member_added and
-// space_member_capabilities_updated are sent to the affected user directly for the mirror-image
+// space_member_permissions_updated are sent to the affected user directly for the mirror-image
 // reason: the channel-scoped broadcast resolves recipients on a space ("S") channel, which may not
 // yet include a member added moments earlier, and that user has no other signal that their access
 // changed.
@@ -47,13 +47,13 @@ const (
 	// follow-up fetch.
 	wsEventPagePresenceUpdated = "page_presence_updated"
 
-	wsEventSpaceCreated                   = "space_created"
-	wsEventSpaceUpdated                   = "space_updated"
-	wsEventSpaceDeleted                   = "space_deleted"
-	wsEventSpaceRestored                  = "space_restored"
-	wsEventSpaceMemberAdded               = "space_member_added"
-	wsEventSpaceMemberRemoved             = "space_member_removed"
-	wsEventSpaceMemberCapabilitiesUpdated = "space_member_capabilities_updated"
+	wsEventSpaceCreated                  = "space_created"
+	wsEventSpaceUpdated                  = "space_updated"
+	wsEventSpaceDeleted                  = "space_deleted"
+	wsEventSpaceRestored                 = "space_restored"
+	wsEventSpaceMemberAdded              = "space_member_added"
+	wsEventSpaceMemberRemoved            = "space_member_removed"
+	wsEventSpaceMemberPermissionsUpdated = "space_member_permissions_updated"
 )
 
 // publishToChannels publishes a WebSocket event broadcast to each non-empty, distinct channel ID.

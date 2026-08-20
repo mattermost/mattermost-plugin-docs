@@ -8,7 +8,7 @@ import {ClientError} from '@mattermost/client';
 import {makePage, makeSpace, makeTeam} from 'store/test_fixtures';
 
 import {SpaceTypes} from './action_types';
-import {addSpaceMember, addSpaceMembers, createSpace, fetchAllSpaces, isLastSpaceMemberError, isNotTeamMemberError, leaveSpace, movePage, removeSpaceMember} from './actions';
+import {addSpaceMember, addSpaceMembers, createSpace, fetchAllSpaces, isLastSpaceAdminError, isLastSpaceMemberError, isNotTeamMemberError, isSpaceLockTimeoutError, leaveSpace, movePage, removeSpaceMember} from './actions';
 
 import {makeTestState} from '../../tests/react_testing_utils';
 
@@ -84,12 +84,31 @@ describe('createSpace', () => {
     });
 });
 
-describe('isLastSpaceMemberError', () => {
-    // The REST layer keeps only {message, status_code}, so 409 is all a caller has
-    // to recognise "a space must keep one member" by.
-    it('recognises the server 409 and nothing else', () => {
-        expect(isLastSpaceMemberError(new ClientError('', {message: 'nope', status_code: 409, url: '/x'}))).toBe(true);
-        expect(isLastSpaceMemberError(new ClientError('', {message: 'nope', status_code: 403, url: '/x'}))).toBe(false);
+const LAST_MEMBER = 'app.space.remove_member.last_member.app_error';
+const LAST_ADMIN = 'app.space.member.last_admin.app_error';
+const LOCK = 'app.space.lock_timeout.app_error';
+
+describe('409 discrimination on the removal routes', () => {
+    const conflict = (id: string) =>
+        new ClientError('', {message: 'nope', status_code: 409, url: '/x', server_error_id: id});
+
+    // Three distinct rules answer 409 on these routes, so each predicate must key on the id. Keying
+    // on the status made all three look like the last-member refusal, which sent a sole admin off to
+    // add an ordinary member and reported a retryable lock timeout as a permanent rule violation.
+    it('tells the three 409 rules apart', () => {
+        expect(isLastSpaceMemberError(conflict(LAST_MEMBER))).toBe(true);
+        expect(isLastSpaceAdminError(conflict(LAST_MEMBER))).toBe(false);
+        expect(isSpaceLockTimeoutError(conflict(LAST_MEMBER))).toBe(false);
+
+        expect(isLastSpaceAdminError(conflict(LAST_ADMIN))).toBe(true);
+        expect(isLastSpaceMemberError(conflict(LAST_ADMIN))).toBe(false);
+
+        expect(isSpaceLockTimeoutError(conflict(LOCK))).toBe(true);
+        expect(isLastSpaceMemberError(conflict(LOCK))).toBe(false);
+    });
+
+    it('claims nothing for a 409 carrying no id, or a non-ClientError', () => {
+        expect(isLastSpaceMemberError(new ClientError('', {message: 'nope', status_code: 409, url: '/x'}))).toBe(false);
         expect(isLastSpaceMemberError(new Error('boom'))).toBe(false);
         expect(isLastSpaceMemberError(undefined)).toBe(false);
     });

@@ -110,6 +110,13 @@ func (s *Store) OtherAuthorizedMembers(channelID, teamID, excludeUserID string) 
 // channel's own team — the rows that survive a team departure. The channel's team is resolved
 // through the Channels row rather than taken as a parameter, so a caller holding only a channel
 // id can use it.
+//
+// Deliberately unpaginated, and it must stay that way. The result is a WebSocket omit list
+// (publishToChannels), so a partial answer does not degrade a listing — it delivers the event to
+// members the read gate rejects, which is the leak the omit list exists to prevent. The row count
+// is bounded by the channel's own membership (the predicate is cm.ChannelId), not by team size, so
+// it is the same order as the broadcast's own fan-out; a space with a very large membership pays a
+// member scan per event, which is a caching question rather than a paging one.
 func (s *Store) InactiveTeamChannelMembers(channelID string) ([]string, error) {
 	if channelID == "" {
 		return nil, &ErrInvalidInput{Entity: "ChannelMember", Field: "channel_id", Value: channelID}
@@ -131,7 +138,9 @@ func (s *Store) InactiveTeamChannelMembers(channelID string) ([]string, error) {
 }
 
 // ActiveTeamChannelMembers returns the members of channelID who are active members of the
-// channel's own team — the audience a space's events may reach.
+// channel's own team — the audience a space's events may reach. Unpaginated for the reason
+// InactiveTeamChannelMembers is: callers need the whole audience or none of it, and the count is
+// bounded by the channel's membership rather than the team's.
 func (s *Store) ActiveTeamChannelMembers(channelID string) ([]string, error) {
 	if channelID == "" {
 		return nil, &ErrInvalidInput{Entity: "ChannelMember", Field: "channel_id", Value: channelID}
@@ -187,7 +196,37 @@ func (s *Store) ClearAutoJoined(spaceID, userID string) error {
 	return nil
 }
 
-// AutoJoinedIDs returns the user ids currently marked auto-joined to spaceID.
+// Auto-join provenance markers record which of a space's members were added by
+// AutoJoinIfDefaultGranted rather than invited/added deliberately, so a membership review (e.g.
+// after an open->private flip) and UndoAutoJoin can tell the two apart. They live in the plugin's
+// own DOCS_SpaceAutoJoin table, read and written on the master DB handle: UndoAutoJoin deletes a
+// membership on the strength of the marker, so it must observe a concurrent legitimization — which
+// clears the marker — the moment it commits, and the space membership lock can only guarantee that
+// when the serialized reads are answered by the primary. Per-membership rows also make every update
+// a single-row write, so no update can overwrite another's outcome.
+
+// IsAutoJoined reports whether userID carries an auto-join marker for spaceID. Answers the
+// single-membership question the undo path asks, so that path does not load the space's whole
+// marker set to test one id; the (SpaceId, UserId) primary key serves this directly.
+func (s *Store) IsAutoJoined(spaceID, userID string) (bool, error) {
+	if spaceID == "" || userID == "" {
+		return false, &ErrInvalidInput{Entity: "SpaceAutoJoin", Field: "id", Value: spaceID + "/" + userID}
+	}
+
+	builder := s.getQueryBuilder().
+		Select("COUNT(*) > 0").
+		From("DOCS_SpaceAutoJoin").
+		Where(sq.Eq{"SpaceId": spaceID, "UserId": userID})
+
+	var autoJoined bool
+	if err := s.getBuilder(s.db, &autoJoined, builder); err != nil {
+		return false, errors.Wrap(err, "unable_to_check_auto_joined")
+	}
+	return autoJoined, nil
+}
+
+// AutoJoinedIDs returns the user ids currently marked auto-joined to spaceID. For a single id use
+// IsAutoJoined; this is for callers projecting the marker onto a set of members they already hold.
 func (s *Store) AutoJoinedIDs(spaceID string) ([]string, error) {
 	if spaceID == "" {
 		return nil, &ErrInvalidInput{Entity: "SpaceAutoJoin", Field: "space_id", Value: spaceID}

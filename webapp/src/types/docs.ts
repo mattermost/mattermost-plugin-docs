@@ -3,6 +3,8 @@
 
 import {defineMessage} from 'react-intl';
 
+import type {Permission} from './permissions';
+
 // Whether a space is visible to the whole team or only invited members. Only
 // 'private' is selectable for now — public (open) spaces wait on view_access.
 export type SpaceVisibility = 'public' | 'private';
@@ -24,9 +26,15 @@ export type Space = {
     delete_at: number;
     sort_order: number;
     visibility?: SpaceVisibility;
+
+    // The caller's own effective permissions in this space, as the server resolved them.
+    // Optional because only the single-space read answers with them: the team listing returns
+    // bare spaces, so a space the client has only seen in a list carries none. Undefined
+    // therefore means "not resolved yet", never "holds nothing" — see getSpacePermissions.
+    permissions?: Permission[];
 };
 
-// A space member. The server exposes only the user id (roles/capabilities are
+// A space member. The server exposes only the user id (roles/permissions are
 // hidden); the user profile is resolved from the host store when needed.
 export type SpaceMember = {
     user_id: string;

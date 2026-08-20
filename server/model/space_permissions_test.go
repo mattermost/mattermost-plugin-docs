@@ -192,6 +192,61 @@ func TestPresetPermissionContents(t *testing.T) {
 	}
 }
 
+// TestAtomicRolesMatchCorePermissions checks the plugin's permission->role mapping against what
+// core's roles actually grant. TestRolesForPermissions_AtomicRoleMapping above pins the mapping
+// against role-name constants, so it catches the plugin mixing two roles up — but it reads only
+// names, so it cannot see core changing which permission a role carries. That change would leave
+// every name matching while a grant silently started conferring a different authority.
+//
+// Core's roles are the authority: each atomic role grants read_page (the baseline every space role
+// carries) plus exactly the one permission it exists to confer. Reading them from
+// MakeDefaultRoles keeps this honest — it is the same table core seeds from.
+func TestAtomicRolesMatchCorePermissions(t *testing.T) {
+	coreRoles := mmmodel.MakeDefaultRoles()
+
+	for _, permission := range grantablePermissions {
+		if permission == mmmodel.PermissionAdminSpace.Id {
+			// admin_space is carried by the SchemeAdmin flag, not an atomic role.
+			continue
+		}
+		t.Run(permission, func(t *testing.T) {
+			explicitRoles, _ := model.RolesForPermissions([]string{permission}, "base_role")
+			tokens := strings.Fields(explicitRoles)
+			require.Len(t, tokens, 2, "expected the base role plus one atomic role, got %q", explicitRoles)
+			roleName := tokens[1]
+
+			coreRole, ok := coreRoles[roleName]
+			require.True(t, ok, "%s maps to role %q, which core does not define", permission, roleName)
+
+			granted := slices.DeleteFunc(slices.Clone(coreRole.Permissions), func(id string) bool {
+				return id == mmmodel.PermissionReadPage.Id
+			})
+			require.Equal(t, []string{permission}, granted,
+				"core's %q grants %v beyond read_page; the plugin maps %s to it, so the grant no longer confers what the caller asked for",
+				roleName, granted, permission)
+		})
+	}
+}
+
+// TestAtomicRoleVocabularyCoversCore checks the plugin's atomic-role vocabulary against core's
+// canonical list. TestAtomicRolesMatchCorePermissions above verifies the roles the plugin already
+// knows about; this catches the other direction — core adding a sixth atomic role that the plugin
+// never maps, so the permission it confers would be ungrantable through this API and a member
+// carrying that role would reverse-project as holding nothing.
+func TestAtomicRoleVocabularyCoversCore(t *testing.T) {
+	mapped := make([]string, 0, len(mmmodel.SpaceCapabilityRoles))
+	for _, permission := range grantablePermissions {
+		if permission == mmmodel.PermissionAdminSpace.Id {
+			continue
+		}
+		explicitRoles, _ := model.RolesForPermissions([]string{permission}, "base_role")
+		mapped = append(mapped, strings.Fields(explicitRoles)[1])
+	}
+
+	require.ElementsMatch(t, mmmodel.SpaceCapabilityRoles, mapped,
+		"the plugin's atomic-role vocabulary must match core's SpaceCapabilityRoles exactly")
+}
+
 // TestSharedSchemeNameForPermissions pins the pooled scheme name's literal shape. Every other
 // caller in the suite builds its expected name by calling this same function, which is tautological
 // — a shortened digest or a dropped prefix would survive all of them. The name must stay inside
@@ -285,7 +340,7 @@ func TestValidateGrantedPermissions(t *testing.T) {
 	t.Run("read_page rejected", func(t *testing.T) {
 		aerr := model.ValidateGrantedPermissions([]string{mmmodel.PermissionReadPage.Id})
 		require.NotNil(t, aerr)
-		require.Equal(t, "model.space_capabilities.read_page_not_grantable.app_error", aerr.Id)
+		require.Equal(t, "model.space_permissions.read_page_not_grantable.app_error", aerr.Id)
 	})
 
 	t.Run("admin_space accepted", func(t *testing.T) {
@@ -295,7 +350,7 @@ func TestValidateGrantedPermissions(t *testing.T) {
 	t.Run("unknown token rejected", func(t *testing.T) {
 		aerr := model.ValidateGrantedPermissions([]string{"not_a_real_permission"})
 		require.NotNil(t, aerr)
-		require.Equal(t, "model.space_capabilities.unknown_capability.app_error", aerr.Id)
+		require.Equal(t, "model.space_permissions.unknown_permission.app_error", aerr.Id)
 	})
 
 	t.Run("every non-admin grantable permission accepted", func(t *testing.T) {
@@ -313,19 +368,19 @@ func TestValidateDefaultPermissions(t *testing.T) {
 	t.Run("read_page rejected", func(t *testing.T) {
 		aerr := model.ValidateDefaultPermissions([]string{mmmodel.PermissionReadPage.Id})
 		require.NotNil(t, aerr)
-		require.Equal(t, "model.space_capabilities.read_page_not_grantable.app_error", aerr.Id)
+		require.Equal(t, "model.space_permissions.read_page_not_grantable.app_error", aerr.Id)
 	})
 
 	t.Run("admin_space rejected", func(t *testing.T) {
 		aerr := model.ValidateDefaultPermissions([]string{mmmodel.PermissionAdminSpace.Id})
 		require.NotNil(t, aerr)
-		require.Equal(t, "model.space_capabilities.admin_not_a_default.app_error", aerr.Id)
+		require.Equal(t, "model.space_permissions.admin_not_a_default.app_error", aerr.Id)
 	})
 
 	t.Run("unknown token rejected", func(t *testing.T) {
 		aerr := model.ValidateDefaultPermissions([]string{"not_a_real_permission"})
 		require.NotNil(t, aerr)
-		require.Equal(t, "model.space_capabilities.unknown_capability.app_error", aerr.Id)
+		require.Equal(t, "model.space_permissions.unknown_permission.app_error", aerr.Id)
 	})
 
 	t.Run("every non-admin grantable permission accepted", func(t *testing.T) {

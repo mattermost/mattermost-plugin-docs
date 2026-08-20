@@ -150,6 +150,9 @@ func schemeAppError(where string, err error) *mmmodel.AppError {
 	if errors.Is(err, errPresetSchemeMissing) {
 		return mmmodel.NewAppError(where, "app.space.preset_scheme_missing.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
+	if errors.Is(err, errPooledSchemeNotConforming) {
+		return mmmodel.NewAppError(where, "app.space.pooled_scheme_conflict.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+	}
 	var appErr *mmmodel.AppError
 	if errors.As(err, &appErr) {
 		return appErr
