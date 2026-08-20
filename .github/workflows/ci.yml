@@ -9,10 +9,13 @@ on:
       - "v*"
   pull_request:
 
-# Superseded pull request runs are cancelled; master and tag runs queue instead, so a
-# push cannot drop the artifact that delivery and release download.
+# Superseded pull request runs are cancelled. Every other run gets a group of its own,
+# because a shared group keeps only the newest pending run: a second push to master
+# would cancel the first one's queued run, and with it the artifact delivery uploads.
+# `queue: max` would hold them all instead, but it cannot be combined with the
+# cancellation above and does not accept an expression.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
