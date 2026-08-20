@@ -35,6 +35,18 @@ func (p *Plugin) initRouter() *mux.Router {
 	api.HandleFunc("/teams/{team_id}/spaces", p.handleGetTeamSpaces).Methods(http.MethodGet)
 	api.HandleFunc("/teams/{team_id}/spaces", p.handleCreateSpace).Methods(http.MethodPost)
 
+	// Confluence bundle import. Job visibility is actor-only: another user's job reads as 404, not
+	// 403, so these routes cannot be used to probe for someone else's import.
+	api.HandleFunc("/imports/preflight", p.handleCreateImport).Methods(http.MethodPost)
+	api.HandleFunc("/imports", p.handleListImports).Methods(http.MethodGet)
+	api.HandleFunc("/imports/{job_id}", p.handleGetImport).Methods(http.MethodGet)
+	api.HandleFunc("/imports/{job_id}/issues", p.handleGetImportIssues).Methods(http.MethodGet)
+	api.HandleFunc("/imports/{job_id}/preflight-results", p.handleGetImportPreflightResults).Methods(http.MethodGet)
+	api.HandleFunc("/imports/{job_id}/report", p.handleGetImportReport).Methods(http.MethodGet)
+	api.HandleFunc("/imports/{job_id}/source", p.handleSelectImportSource).Methods(http.MethodPost)
+	api.HandleFunc("/imports/{job_id}/confirm", p.handleConfirmImport).Methods(http.MethodPost)
+	api.HandleFunc("/imports/{job_id}/cancel", p.handleCancelImport).Methods(http.MethodPost)
+
 	// Space CRUD.
 	api.HandleFunc("/spaces/{space_id}", p.handleGetSpace).Methods(http.MethodGet)
 	api.HandleFunc("/spaces/{space_id}", p.handleUpdateSpace).Methods(http.MethodPatch)

@@ -1,0 +1,213 @@
+// The wizard is a content surface, so it brings its own background and text colour rather than inheriting
+// them. The host's main area deliberately sets neither (see docs_root.module.scss) — every content component
+// establishes its own, as docs_home does — and inheriting instead left every unstyled element taking whatever
+// colour happened to be in scope, which on a dark theme was dark text on a dark panel.
+.wizard {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    justify-content: center;
+    overflow-y: auto;
+    border-radius: 12px;
+    background: var(--center-channel-bg);
+    color: var(--center-channel-color);
+}
+
+// The reading column. Capped because the review step is prose and a table, and full-width lines of either are
+// hard to scan.
+.content {
+    display: flex;
+    width: 100%;
+    max-width: 720px;
+    flex-direction: column;
+    gap: 20px;
+    padding: 24px;
+}
+
+.stepper {
+    display: flex;
+    gap: 16px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.stepperItem,
+.stepperCurrent {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.stepperItem {
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+}
+
+.stepperCurrent {
+    color: var(--button-bg);
+    font-weight: 600;
+}
+
+.step {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.stepTitle {
+    margin: 0;
+    color: var(--center-channel-color);
+    font-size: 18px;
+    font-weight: 600;
+}
+
+.hint {
+    margin: 0;
+    color: rgba(var(--center-channel-color-rgb), 0.75);
+    font-size: 13px;
+}
+
+.error {
+    color: var(--error-text);
+    font-size: 13px;
+}
+
+.errorLine {
+    margin: 0;
+}
+
+// A styled control rather than a bare file input. The native one renders its own "No file chosen" in a colour
+// the page cannot set, which on a dark theme is close to invisible — and it gives no affordance that reads as a
+// button. The real input is still there, visually hidden, so the label, keyboard and screen readers behave.
+.fileField {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    align-self: flex-start;
+    cursor: pointer;
+}
+
+.fileName {
+    color: rgba(var(--center-channel-color-rgb), 0.75);
+    font-size: 13px;
+}
+
+.fileNameEmpty {
+    color: rgba(var(--center-channel-color-rgb), 0.56);
+    font-size: 13px;
+    font-style: italic;
+}
+
+// Fieldset legends. The shared TextInput brings its own label, but a legend naming a group of checkboxes is not
+// a control, so it keeps a rule here.
+.fieldLabel {
+    color: var(--center-channel-color);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.choices {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 0;
+    padding: 0;
+    border: none;
+}
+
+.choice {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    cursor: pointer;
+}
+
+.choiceBody {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.choiceTitle {
+    color: var(--center-channel-color);
+    font-size: 14px;
+}
+
+.choiceMeta {
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+    font-size: 12px;
+}
+
+.counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.count {
+    display: flex;
+    flex-direction: column;
+}
+
+.countValue {
+    color: var(--center-channel-color);
+    font-size: 22px;
+    font-weight: 600;
+}
+
+.countLabel {
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+    font-size: 12px;
+}
+
+.progressTrack {
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(var(--center-channel-color-rgb), 0.12);
+    overflow: hidden;
+}
+
+.progressFill {
+    height: 100%;
+    background: var(--button-bg);
+    transition: width 200ms ease-out;
+}
+
+.reportLinks {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.link {
+    color: var(--link-color);
+    font-size: 13px;
+}
+
+.actions,
+.footer {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.footer {
+    justify-content: flex-end;
+    border-top: 1px solid rgba(var(--center-channel-color-rgb), 0.08);
+    padding-top: 16px;
+}
+
+.srOnly {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
