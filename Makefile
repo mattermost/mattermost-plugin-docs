@@ -227,6 +227,18 @@ else
 endif
 endif
 
+## Builds the server, if it exists, for linux-amd64 only.
+.PHONY: server-linux
+server-linux:
+ifneq ($(HAS_SERVER),)
+ifneq ($(MM_DEBUG),)
+	$(info DEBUG mode is on; to disable, unset MM_DEBUG)
+endif
+	rm -rf server/dist;
+	mkdir -p server/dist;
+	cd server && env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build $(GO_BUILD_FLAGS) $(GO_BUILD_GCFLAGS) -trimpath -o dist/plugin-linux-amd64;
+endif
+
 ## Ensures NPM dependencies are installed without having to run this all the time.
 webapp/node_modules: $(wildcard webapp/package.json)
 ifneq ($(HAS_WEBAPP),)
@@ -281,6 +293,10 @@ ifeq ($(PLUGIN_ID),com.mattermost.plugin-starter-template)
 	$(warning You are building with the default plugin ID "com.mattermost.plugin-starter-template".)
 	$(warning Consider editing plugin.json to configure your project with a unique plugin ID.)
 endif
+
+## Builds and bundles the plugin for Linux only, for test-server installs.
+.PHONY: dist-linux
+dist-linux: apply server-linux webapp bundle
 
 ## Builds and installs the plugin to a server.
 .PHONY: deploy
