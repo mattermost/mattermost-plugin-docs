@@ -9,6 +9,12 @@ on:
       - "v*"
   pull_request:
 
+# Superseded pull request runs are cancelled; master and tag runs queue instead, so a
+# push cannot drop the artifact that delivery and release download.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 

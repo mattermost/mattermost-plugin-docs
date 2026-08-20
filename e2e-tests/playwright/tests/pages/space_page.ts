@@ -42,8 +42,17 @@ export class SpacePage {
         this.shareButton = page.getByRole('button', {name: 'Share', exact: true});
     }
 
+    // The space header's title trigger, exact so the sidebar's "Space options for
+    // <title>" button cannot match it.
+    spaceTitleTrigger(spaceTitle: string): Locator {
+        return this.page.getByRole('button', {name: spaceTitle, exact: true});
+    }
+
+    // Header-scoped, not page-wide text: the sidebar lists the space title whether or
+    // not the navigation landed, so a text match would hold on the spaces home too.
     async expectOpen(spaceTitle: string) {
-        await expect(this.page.getByText(spaceTitle).first()).toBeVisible();
+        await expect(this.page).toHaveURL(/\/spaces\/[^/?#]+/);
+        await expect(this.spaceTitleTrigger(spaceTitle)).toBeVisible();
     }
 
     pageTreeLink(title: string): Locator {
