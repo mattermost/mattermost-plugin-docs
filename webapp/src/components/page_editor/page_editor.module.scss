@@ -1,29 +1,20 @@
 .root {
     display: flex;
-    flex: 1 1 0;
     flex-direction: column;
     min-width: 0;
-
-    min-height: 0;
-    height: 100%;
     background: var(--center-channel-bg);
 }
 
 .scroll {
     flex: 1 1 auto;
     min-height: 320px;
-    overflow-y: auto;
 }
 
 .column {
     max-width: 700px;
     margin: 0 auto;
-    padding: 0 24px 96px;
-}
+    padding: 0 0 96px;
 
-
-
-.column {
     :global {
         .WysiwygEditor .ProseMirror {
             min-height: 60vh;
@@ -40,6 +31,20 @@
     position: relative;
 }
 
+// View mode still mounts a disabled editor so the body cannot be typed in, but
+// the host greys disabled fields. Reading should look like page copy.
+.reading :global {
+    .WysiwygEditor,
+    .WysiwygEditor .ProseMirror,
+    .custom-textarea,
+    .custom-textarea[disabled] {
+        opacity: 1;
+        color: var(--center-channel-color);
+        -webkit-text-fill-color: var(--center-channel-color);
+        cursor: default;
+    }
+}
+
 .pinnedToolbar {
     display: flex;
     flex-shrink: 0;
@@ -51,7 +56,7 @@
     > * {
         width: 100%;
         max-width: 700px;
-        padding-inline: 17px 24px;
+        padding-inline: 0 24px;
     }
 }
 
@@ -122,18 +127,8 @@
     }
 }
 
-.notice {
-    padding: 8px 12px;
-    margin-top: 16px;
-    border-radius: 4px;
-    background: rgba(var(--away-indicator-rgb), 0.08);
-    color: var(--center-channel-color);
-    font-size: 12px;
-}
-
-.error {
-    background: rgba(var(--center-channel-color-rgb), 0.04);
-    color: var(--error-text);
+.banner {
+    margin-bottom: 16px;
 }
 
 .empty {

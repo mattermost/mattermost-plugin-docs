@@ -9,9 +9,9 @@ import LockOutlineIcon from '@mattermost/compass-icons/components/lock-outline';
 import type {Space} from 'types/docs';
 
 // A space's icon: its custom emoji when set, otherwise a glyph for its
-// visibility — a globe for a public space, a lock for a private one. Visibility
-// isn't persisted yet (no view_access on the server until PR #10), so an absent
-// value reads as public, the only state the product supports today.
+// visibility. Spaces are private by default (and visibility isn't persisted
+// yet), so an absent value reads as private. Globe returns when public spaces
+// are allowed and a space is explicitly public.
 //
 // The glyph deliberately differs from a page's (file-text/folder): spaces and
 // pages sit side by side in the sidebar's favorites, so they must not look alike.
@@ -26,8 +26,8 @@ export function SpaceIcon({space, size}: Props): JSX.Element {
     if (space?.icon) {
         return <>{space.icon}</>;
     }
-    if (space?.visibility === 'private') {
-        return <LockOutlineIcon size={size}/>;
+    if (space?.visibility === 'public') {
+        return <GlobeIcon size={size}/>;
     }
-    return <GlobeIcon size={size}/>;
+    return <LockOutlineIcon size={size}/>;
 }

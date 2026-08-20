@@ -140,7 +140,7 @@ type CreateSpaceValues = {
 
 const INITIAL_VALUES: CreateSpaceValues = {
     name: '',
-    visibility: 'public',
+    visibility: 'private',
     description: '',
 };
 

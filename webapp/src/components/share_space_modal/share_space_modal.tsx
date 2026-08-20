@@ -11,7 +11,7 @@ import {copyToClipboard} from 'utils/clipboard';
 
 import ChevronDownIcon from '@mattermost/compass-icons/components/chevron-down';
 import ContentCopyIcon from '@mattermost/compass-icons/components/content-copy';
-import GlobeIcon from '@mattermost/compass-icons/components/globe';
+import LockOutlineIcon from '@mattermost/compass-icons/components/lock-outline';
 
 import {Button, SecondaryButton} from 'components/form_controls/button';
 import GenericModal from 'components/generic_modal/generic_modal';
@@ -53,7 +53,8 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
     const title = (
         <FormattedMessage
             id='docs.share.title'
-            defaultMessage='Share space'
+            defaultMessage="Share ''{name}''"
+            values={{name: space.title}}
         />
     );
 
@@ -74,23 +75,27 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
     const footer = (
         <div className={styles.access}>
             <div className={styles.accessLeft}>
-                <GlobeIcon size={20}/>
-                <Button
+                <button
                     type='button'
-                    emphasis='quaternary'
-                    size='sm'
                     className={styles.accessTrigger}
+                    disabled={true}
+                    aria-haspopup='listbox'
+                    title={formatMessage({
+                        id: 'docs.share.visibility.disabledReason',
+                        defaultMessage: 'Public spaces are coming soon',
+                    })}
                 >
+                    <LockOutlineIcon size={16}/>
                     <FormattedMessage
-                        id='docs.share.visibility.public'
-                        defaultMessage='Public'
+                        id='docs.share.visibility.private'
+                        defaultMessage='Private'
                     />
                     <ChevronDownIcon size={16}/>
-                </Button>
+                </button>
                 <span className={styles.accessHint}>
                     <FormattedMessage
-                        id='docs.share.visibility.publicHint'
-                        defaultMessage='Anyone in Mattermost'
+                        id='docs.share.visibility.privateHint'
+                        defaultMessage='Only invited members'
                     />
                 </span>
             </div>
@@ -114,25 +119,35 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
             className={styles.modal}
             title={title}
             titleActions={titleActions}
-            ariaLabel={formatMessage({id: 'docs.share.title', defaultMessage: 'Share space'})}
+            ariaLabel={formatMessage({id: 'docs.share.title', defaultMessage: "Share ''{name}''"}, {name: space.title})}
             onClose={onClose}
             footer={footer}
+            footerClassName={styles.footer}
+            headerDivider={false}
+            footerDivider={true}
         >
             <div className={styles.body}>
                 {canManageMembers && (
-                    <AddMembersField
-                        excludeIds={memberIds}
-                        onAdd={addMembers}
-                        disabled={busy}
-                    />
+                    <div className={styles.search}>
+                        <AddMembersField
+                            excludeIds={memberIds}
+                            onAdd={addMembers}
+                            disabled={busy}
+                            large={true}
+                            commitOnSelect={true}
+                        />
+                    </div>
                 )}
-                <MemberList
-                    members={members}
-                    avatarSize='md'
-                    showYouBadge={true}
-                    spaceTitle={space.title}
-                    actions={actions}
-                />
+                <div className={styles.members}>
+                    <MemberList
+                        members={members}
+                        avatarSize='md'
+                        showYouBadge={true}
+                        spaceTitle={space.title}
+                        comfortable={true}
+                        actions={actions}
+                    />
+                </div>
             </div>
         </GenericModal>
     );

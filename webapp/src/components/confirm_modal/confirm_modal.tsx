@@ -101,6 +101,7 @@ const ConfirmModal = ({title, children, confirmButtonText, cancelButtonText, isC
 
     return (
         <GenericModal
+            className={styles.modal}
             title={title}
             ariaLabel={typeof title === 'string' ? title : undefined}
             onClose={onCancel}

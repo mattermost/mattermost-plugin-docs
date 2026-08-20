@@ -1,6 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import classNames from 'classnames';
 import {usePublishDraft} from 'hooks/drafts';
 import {useHostEditor} from 'hooks/host_editor';
 import {usePageEditing} from 'hooks/page_editing';
@@ -10,6 +11,8 @@ import {createPortal} from 'react-dom';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {hostCanUseEditor, hostGetEditor} from 'webapp_globals';
 import type {PublishedWysiwygEditorHandle} from 'webapp_globals';
+
+import SectionNotice from 'components/section_notice/section_notice';
 
 import {DOCS_EXTENSIONS} from './docs_extensions';
 import FloatingFormattingBar from './floating_formatting_bar';
@@ -135,47 +138,52 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
                 toolbarSlot,
             )}
 
-            <div
-                className={styles.scroll}
-                data-docs-scroll=''
-            >
+            <div className={styles.scroll}>
                 <div className={styles.column}>
                     {documentMode === false && (
-                        <div className={styles.notice}>
-                            <FormattedMessage
-                                id='docs.editor.legacyHost'
-                                defaultMessage='This server predates structured page content. Formatting beyond basic text may not be saved.'
-                            />
-                        </div>
+                        <SectionNotice
+                            className={styles.banner}
+                            variant='warning'
+                            title={(
+                                <FormattedMessage
+                                    id='docs.editor.legacyHost'
+                                    defaultMessage='This server predates structured page content. Formatting beyond basic text may not be saved.'
+                                />
+                            )}
+                        />
                     )}
 
                     {contentError && (
-                        <div
-                            className={styles.error}
+                        <SectionNotice
+                            className={styles.banner}
+                            variant='error'
                             role='alert'
-                        >
-                            <FormattedMessage
-                                id='docs.editor.contentError'
-                                defaultMessage="This page's content could not be opened. Editing is disabled so the stored version is not overwritten."
-                            />
-                        </div>
+                            title={(
+                                <FormattedMessage
+                                    id='docs.editor.contentError'
+                                    defaultMessage="This page's content could not be opened. Editing is disabled so the stored version is not overwritten."
+                                />
+                            )}
+                        />
                     )}
 
                     {actionError != null && (
-                        <div
-                            className={styles.error}
+                        <SectionNotice
+                            className={styles.banner}
+                            variant='error'
                             role='alert'
-                        >
-                            <FormattedMessage
-                                id='docs.editor.actionFailed'
-                                defaultMessage='That action could not be completed. Your draft is unchanged.'
-                            />
-                        </div>
+                            title={(
+                                <FormattedMessage
+                                    id='docs.editor.actionFailed'
+                                    defaultMessage='That action could not be completed. Your draft is unchanged.'
+                                />
+                            )}
+                        />
                     )}
 
                     <div
                         ref={surfaceRef}
-                        className={styles.surface}
+                        className={classNames(styles.surface, {[styles.reading]: !editing})}
                     >
                         {editing && !pinned && (
                             <FloatingFormattingBar

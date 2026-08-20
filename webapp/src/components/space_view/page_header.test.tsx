@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {fireEvent, screen} from '@testing-library/react';
+import {fireEvent, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 
 import {makeDraft, makePage, makeSpace} from 'store/test_fixtures';
@@ -80,6 +80,33 @@ describe('PageHeader edit control', () => {
         expect(onToggleEdit).toHaveBeenCalledTimes(1);
     });
 
+    it('enters edit mode on e while reading', () => {
+        const onToggleEdit = jest.fn();
+        renderHeader({onToggleEdit});
+
+        fireEvent.keyDown(document, {key: 'e', code: 'KeyE'});
+
+        expect(onToggleEdit).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not enter edit mode on e while already editing', () => {
+        const onToggleEdit = jest.fn();
+        renderHeader({editing: true, onToggleEdit});
+
+        fireEvent.keyDown(document, {key: 'e', code: 'KeyE'});
+
+        expect(onToggleEdit).not.toHaveBeenCalled();
+    });
+
+    it('does not enter edit mode on e on the space home', () => {
+        const onToggleEdit = jest.fn();
+        renderHeader({page: undefined, onToggleEdit});
+
+        fireEvent.keyDown(document, {key: 'e', code: 'KeyE'});
+
+        expect(onToggleEdit).not.toHaveBeenCalled();
+    });
+
     it('offers no edit control on the space home, where no page is routed', () => {
         renderHeader({page: undefined});
 
@@ -128,13 +155,40 @@ describe('PageHeader publish controls', () => {
         expect(screen.queryByRole('button', {name: 'Publish'})).not.toBeInTheDocument();
     });
 
-    it('publishes on click', () => {
+    it('publishes on click', async () => {
         const onPublish = jest.fn();
         renderHeader({page: undefined, draft: DRAFT, editing: true, onPublish});
 
         fireEvent.click(screen.getByRole('button', {name: 'Publish'}));
 
-        expect(onPublish).toHaveBeenCalled();
+        await waitFor(() => expect(onPublish).toHaveBeenCalled());
+    });
+
+    it('publishes on Cmd/Ctrl+Enter while an unpublished page is open', async () => {
+        const onPublish = jest.fn();
+        renderHeader({page: undefined, draft: DRAFT, onPublish});
+
+        fireEvent.keyDown(document, {key: 'Enter', code: 'Enter', metaKey: true, ctrlKey: true});
+
+        await waitFor(() => expect(onPublish).toHaveBeenCalled());
+    });
+
+    it('updates on Cmd/Ctrl+Enter while editing unpublished changes', async () => {
+        const onPublish = jest.fn();
+        renderHeader({draft: DRAFT, editing: true, onPublish});
+
+        fireEvent.keyDown(document, {key: 'Enter', code: 'Enter', metaKey: true, ctrlKey: true});
+
+        await waitFor(() => expect(onPublish).toHaveBeenCalled());
+    });
+
+    it('does not update on Cmd/Ctrl+Enter when there are no unpublished changes', () => {
+        const onPublish = jest.fn();
+        renderHeader({editing: true, onPublish});
+
+        fireEvent.keyDown(document, {key: 'Enter', code: 'Enter', metaKey: true, ctrlKey: true});
+
+        expect(onPublish).not.toHaveBeenCalled();
     });
 });
 
