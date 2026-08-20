@@ -435,12 +435,16 @@ func (s *Store) DeletePage(pageID, spaceID, userID string) (_ string, err error)
 		return "", rowsErr
 	}
 
-	// A draft is unpublished work on the page, so deleting the page ends its life; a new-page
-	// draft parented under this page is a pending child of it, so it is reparented rather than
-	// deleted (see reparentDraftsForPage). Both cascades run inside this transaction.
-	if draftErr := s.deleteDraftsForPage(tx, pageID, spaceID); draftErr != nil {
-		return "", draftErr
-	}
+	// An edit draft on this page is preserved, not destroyed, and hidden meanwhile by
+	// applyDraftLivenessFilter (which documents why). Only a draft whose ParentId is this page is
+	// rewritten: a pending child is reparented to the deleted page's parent rather than left
+	// dangling.
+	//
+	// Two consequences of preserving the row. First, countDraftsForUser is unfiltered, so a hidden
+	// draft still consumes one of its owner's MaxDraftsPerUserPerSpace slots: that bounds total row
+	// growth, but it also lets an owner reach the quota holding drafts no read path will list back
+	// to them. Second, its write-once BaseEditAt falls behind the EditAt bumped by this delete and
+	// by the restore, so publishing it after a restore takes the conflict path unless forced.
 	if draftErr := s.reparentDraftsForPage(tx, pageID, deleted.ParentID, spaceID, now); draftErr != nil {
 		return "", draftErr
 	}

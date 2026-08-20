@@ -212,9 +212,11 @@ func TestPublishStaleBaselineConflicts(t *testing.T) {
 	require.Greater(t, current.EditAt, staleEditAt, "current page must carry the advanced baseline")
 }
 
-// TestPublishAfterPageDeleteReturns404 verifies that deleting a page cascade-deletes its drafts,
-// so a later publish finds no draft (404) rather than writing to a tombstone. The page-deleted 409
-// path in PublishPageDraft guards only the concurrent-delete race, which this flow cannot produce.
+// TestPublishAfterPageDeleteReturns404 verifies that a draft whose page has been soft-deleted is
+// not publishable. The draft itself survives the reversible delete, but the page-liveness
+// filter hides it from the draft read, so PublishPageDraft's idempotency guard finds no visible
+// draft and returns 404 rather than writing to a tombstone. The page-deleted 409 path in
+// PublishPageDraft guards only the concurrent-delete race, which this flow cannot produce.
 func TestPublishAfterPageDeleteReturns404(t *testing.T) {
 	h := openTestService(t)
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
@@ -231,6 +233,50 @@ func TestPublishAfterPageDeleteReturns404(t *testing.T) {
 	_, _, appErr = h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusNotFound, appErr.StatusCode)
+}
+
+// TestPublishAfterPageDeleteRestoreConflictsThenForceSucceeds verifies the publish path reachable
+// only because a draft now survives a page delete: DeletePage and RestorePage each advance the
+// page's EditAt once, so a draft's write-once BaseEditAt — captured before the delete — is two
+// bumps stale by the time the page is restored. A non-force publish must 409 as a concurrent edit
+// (not a 404, since the draft and its page are both visible again); force=true bypasses the stale
+// baseline and publishes the draft's content.
+func TestPublishAfterPageDeleteRestoreConflictsThenForceSucceeds(t *testing.T) {
+	h := openTestService(t)
+	space := mustCreateSpace(t, h.store, mmmodel.NewId())
+	userID := mmmodel.NewId()
+
+	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+
+	// Start an edit session baselined at the current EditAt; the draft persists (it is not consumed
+	// by any publish) through the delete+restore round trip below.
+	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
+		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc", Body: docWith("v2"),
+		BaseEditAt: page.EditAt,
+	}, nil, nil, nil, "")
+	require.Nil(t, appErr)
+
+	requireStoreDeletePage(t, h.store, page.Id, space.Id, userID)
+	_, restoreErr := h.store.RestorePage(page.Id, space.Id, userID, model.MaxPageDepth)
+	require.NoError(t, restoreErr)
+
+	// The draft's baseline is now stale: a non-force publish must 409 as a concurrent edit, not
+	// succeed or 404 (the page and draft are both live again).
+	_, _, appErr = h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusConflict, appErr.StatusCode)
+	require.Equal(t, "app.page_draft.publish.edit_conflict.app_error", appErr.Id)
+
+	// The rejected publish must not have consumed the draft.
+	stillDrafted, appErr := h.svc.GetPageDraft(userID, space.Id, page.Id)
+	require.Nil(t, appErr, "a rejected non-force publish must leave the draft in place")
+	require.Contains(t, stillDrafted.Body, "v2")
+
+	// force=true bypasses the stale baseline and publishes the draft's content.
+	forced, wasCreated, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, true)
+	require.Nil(t, appErr)
+	require.False(t, wasCreated)
+	require.Contains(t, forced.Body, "v2")
 }
 
 func TestDeletePageDraftRejectsWrongSpace(t *testing.T) {
