@@ -1,0 +1,16 @@
+# env, cert, key, license
+.env*
+*.crt
+*.key
+*.license
+
+# node
+node_modules
+playwright-report
+results
+test-results
+.eslintcache
+
+# runtime state written by globalSetup
+.e2e-state.json
+logs

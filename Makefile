@@ -354,13 +354,37 @@ endif
 ## Runs any lints and unit tests defined for the server and webapp, if they exist, optimized
 ## for a CI environment.
 .PHONY: test-ci
-test-ci: apply webapp/node_modules install-go-tools
+test-ci: test-ci-server test-ci-webapp
+
+## Runs the server unit tests, writing a JUnit report. Split from test-ci-webapp so CI can
+## run each independently and still collect the other's report when one suite fails.
+.PHONY: test-ci-server
+test-ci-server: apply install-go-tools
 ifneq ($(HAS_SERVER),)
 	$(GOBIN)/gotestsum --format standard-verbose --junitfile report.xml -- ./...
 endif
+
+## Runs the webapp unit tests, writing a JUnit report.
+.PHONY: test-ci-webapp
+test-ci-webapp: apply webapp/node_modules
 ifneq ($(HAS_WEBAPP),)
 	cd webapp && $(NPM) run test;
 endif
+
+## Runs the Playwright E2E suite against a throwaway Mattermost container. Requires Docker.
+.PHONY: test-e2e
+test-e2e:
+	@# The bundle is installed into a Linux container, so it must carry a Linux
+	@# binary. MM_SERVICESETTINGS_ENABLEDEVELOPER (common in a dev shell) would
+	@# otherwise limit the build to the host platform alone.
+	@# A stale bundle would otherwise be a candidate for installation.
+	rm -rf dist
+	@# Build the same artifact CI does. MM_SERVICESETTINGS_ENABLEDEVELOPER would limit
+	@# the server build to the host platform, leaving no Linux binary for the container;
+	@# MM_DEBUG would produce an unminified webapp bundle too slow to finish loading.
+	env -u MM_SERVICESETTINGS_ENABLEDEVELOPER -u MM_DEBUG $(MAKE) dist
+	@# ci, not install, so a local run resolves the same versions CI does.
+	cd e2e-tests/playwright && $(NPM) ci && $(NPM) run playwright:install && $(NPM) test
 
 ## Creates a coverage report for the server code.
 .PHONY: coverage
