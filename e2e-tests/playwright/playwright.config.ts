@@ -3,6 +3,8 @@
 
 import {defineConfig, devices} from '@playwright/test';
 
+import {spacePermissionsMode} from './tests/helpers/mode';
+
 // Opt-in: videos are much heavier than traces. Takes Playwright's own mode names.
 type VideoMode = 'on' | 'off' | 'retain-on-failure' | 'on-first-retry';
 const video = (process.env.PW_VIDEO as VideoMode) || 'off';
@@ -12,6 +14,13 @@ const video = (process.env.PW_VIDEO as VideoMode) || 'off';
 export default defineConfig({
     testDir: './tests',
     testMatch: '**/*.spec.ts',
+
+    // Collected only under MM_E2E_SPACE_PERMISSIONS: see tests/helpers/mode.ts for what the flag
+    // buys, and e2e-tests/playwright/README.md for how to run them.
+    testIgnore: spacePermissionsMode ? [] : [
+        '**/space_permissions.spec.ts',
+        '**/system_console_space_permissions.spec.ts',
+    ],
     globalSetup: './tests/helpers/bootstrap.ts',
     forbidOnly: Boolean(process.env.CI),
     fullyParallel: false,

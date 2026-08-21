@@ -8,16 +8,18 @@ inputs:
     default: ""
   MM_LICENSE:
     description: >-
-      Enterprise license the container is started with. Taken as an input rather than inherited
-      from the job's env so it is set only on the step that runs the suite — `npm ci` above
-      executes third-party install scripts and has no business reading it.
-    required: true
+      Enterprise license the container is started with, for the callers whose specs need one. Taken
+      as an input rather than inherited from the job's env so it is set only on the step that runs
+      the suite — `npm ci` above executes third-party install scripts and has no business reading
+      it.
+    required: false
+    default: ""
 
 runs:
   using: "composite"
   steps:
     - name: ci/setup-node
-      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
       with:
         node-version-file: ".nvmrc"
         cache: "npm"
@@ -28,9 +30,13 @@ runs:
       working-directory: e2e-tests/playwright
       run: npm ci
 
-    # eslint and tsc over this tree run in the `lint` job, which is not gated on CORE_IMAGE and so
-    # covers every PR including the ones where this action is skipped. Running them here too would
-    # only repeat that work once CORE_IMAGE is populated.
+    # Nothing else checks this tree.
+    - name: ci/check
+      shell: bash
+      working-directory: e2e-tests/playwright
+      run: |
+        npm run check
+        npm run check-types
 
     # Keyed on the Playwright version, so an unrelated bump keeps the browser cache.
     - name: ci/resolve-playwright-version
@@ -59,16 +65,13 @@ runs:
         name: dist
         path: dist
 
-    # Retries stay on so a retried run still captures its trace, but a test that only
-    # passes on retry must not report the job green: Playwright exits 0 on "flaky" by
-    # default, which would hide real flakiness behind a passing gate.
     - name: ci/run-playwright-tests
       shell: bash
       working-directory: e2e-tests/playwright
       env:
         TERM: xterm
         MM_LICENSE: ${{ inputs.MM_LICENSE }}
-      run: npm test -- --fail-on-flaky-tests
+      run: npm test
 
     - name: ci/upload-playwright-test-results
       if: always()

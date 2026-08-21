@@ -10,7 +10,6 @@ import {readJsonOrThrow, requestedWith} from './client';
 //
 // Exported so a spec can probe a route whose refusal is the expected outcome: the helpers
 // here throw on a non-OK response, which is wrong when the assertion is the 403 itself.
-// (Local delta — see README-VENDORED.md.)
 export const apiRoot = '/plugins/com.mattermost.docs/api/v1';
 
 export interface Space {

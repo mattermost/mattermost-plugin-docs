@@ -7,50 +7,51 @@ import {join, resolve} from 'node:path';
 import {GenericContainer, Network, Wait, type StartedNetwork, type StartedTestContainer} from 'testcontainers';
 import {PostgreSqlContainer, type StartedPostgreSqlContainer} from '@testcontainers/postgresql';
 
+import {spacePermissionsMode} from './mode';
 import {assertServerSupportsDocs, pluginId} from './preflight';
 
 // Playwright transpiles to CommonJS, so import.meta is unavailable.
 const projectRoot = resolve(__dirname, '../..');
 const repoRoot = resolve(projectRoot, '../..');
 
-// The space-permission work this suite asserts lives on the paired core branch, not master, so
-// there is no usable default: :master would boot, pass the EnableDocs check, and then fail every
-// permission assertion for a reason no error names. MM_IMAGE is therefore required, and is the
-// same per-commit core image the Go suite consumes as CORE_IMAGE — core CI publishes one per
-// branch commit as mattermostdevelopment/mattermost-team-edition:<7-char-sha>.
-//
-// Reconciliation note: upstream (mattermost-plugin-docs#19) defaults this to
-// mattermostdevelopment/mattermost-enterprise-edition:master and lets MM_IMAGE override it. Restore
-// that default once the core changes ship, and drop requireImage() with it. (Local delta — see
-// README-VENDORED.md.)
-function requireImage(): string {
+const defaultImage = 'mattermostdevelopment/mattermost-enterprise-edition:master';
+
+// The space-permission work lives on the paired core branch, not master, so that default is no use
+// to the permission specs: :master boots, passes the EnableDocs check, and then fails every
+// permission assertion for a reason no error names. Under spacePermissionsMode MM_IMAGE is
+// therefore required, and is the same per-commit core image the Go suite consumes as CORE_IMAGE —
+// core CI publishes one per branch commit as
+// mattermostdevelopment/mattermost-team-edition:<7-char-sha>. Once those core changes ship in a
+// release, the default serves both runs.
+function resolveImage(): string {
     const image = process.env.MM_IMAGE;
 
-    if (!image) {
+    if (image) {
+        return image;
+    }
+
+    if (spacePermissionsMode) {
         throw new Error(
-            'MM_IMAGE is not set. This suite needs a server image carrying the paired core branch\'s ' +
-            'space-permission changes; the plugin\'s own core pin lives in build/core-commit.txt. Set it to ' +
+            'MM_IMAGE is not set. The space-permission specs need a server image carrying the paired core ' +
+            'branch\'s changes; the plugin\'s own core pin lives in build/core-commit.txt. Set it to ' +
             'the image core CI published for that commit, e.g. ' +
             'MM_IMAGE=mattermostdevelopment/mattermost-team-edition:<7-char-sha>.',
         );
     }
 
-    return image;
+    return defaultImage;
 }
 
 // resolveLicense mirrors the Go suite's contract (server/e2e/container_test.go): the pooled
 // custom-scheme paths drive core's CreateScheme, which is gated on the CustomPermissionsSchemes
 // feature, so an unlicensed server answers a permission scenario with a 501 no assertion can make
-// sense of. Absence is a hard error naming both sources rather than a skip, so a run never quietly
-// narrows what it proves.
+// sense of. Under spacePermissionsMode absence is therefore a hard error naming both sources rather
+// than a skip, so a run never quietly narrows what it proves. The authoring specs touch no licensed
+// feature and run unlicensed.
 //
 // The license is never committed: MM_LICENSE carries it directly (how CI supplies it from a
 // secret), MM_LICENSE_FILE names a file holding it (how a developer points at a local copy).
-//
-// Reconciliation note: upstream (mattermost-plugin-docs#19) needs no license, because its authoring
-// spec touches no licensed feature. Keep this while the suite asserts space permissions. (Local
-// delta — see README-VENDORED.md.)
-function resolveLicense(): string {
+function resolveLicense(): string | undefined {
     const direct = (process.env.MM_LICENSE ?? '').trim();
 
     if (direct) {
@@ -69,23 +70,25 @@ function resolveLicense(): string {
         return contents;
     }
 
-    throw new Error(
-        'No Enterprise license found. The space-permission scenarios drive core\'s CreateScheme, which is ' +
-        'gated on CustomPermissionsSchemes, so an unlicensed server cannot answer them. Set MM_LICENSE to ' +
-        'the raw license, or MM_LICENSE_FILE to a path holding it.',
-    );
+    if (spacePermissionsMode) {
+        throw new Error(
+            'No Enterprise license found. The space-permission scenarios drive core\'s CreateScheme, which is ' +
+            'gated on CustomPermissionsSchemes, so an unlicensed server cannot answer them. Set MM_LICENSE to ' +
+            'the raw license, or MM_LICENSE_FILE to a path holding it.',
+        );
+    }
+
+    return undefined;
 }
 
 const postgresImage = 'postgres:15';
 
 // A role the paired core branch seeds as a default. Probed after boot to tell a server that carries
-// the space-permission work from one that merely has the EnableDocs flag. (Local delta — see
-// README-VENDORED.md.)
+// the space-permission work from one that merely has the EnableDocs flag.
 const spacePermissionProbeRole = 'docs_pg_create';
 
 // Matches the Go suite's own budget for the same wait. Generous because the migration job
-// competes with first-boot schema work, and more so on an emulated architecture. (Local delta —
-// see README-VENDORED.md.)
+// competes with first-boot schema work, and more so on an emulated architecture.
 const phase2MigrationTimeoutMs = 120_000;
 
 export const adminUsername = 'sysadmin';
@@ -124,8 +127,7 @@ export class DocsServerContainer {
 
     // displayCommand names the command in a failure without reproducing its arguments.
     // Defaults to the command itself; a caller passing a secret overrides it, since this
-    // message reaches the terminal and the CI job log. (Local delta — see
-    // README-VENDORED.md.)
+    // message reaches the terminal and the CI job log.
     private async exec(command: string[], displayCommand = command.join(' ')): Promise<string> {
         const {output, exitCode} = await this.container.exec(command);
 
@@ -140,12 +142,11 @@ export class DocsServerContainer {
     // and the network, because globalSetup never returns its teardown closure and Ryuk is
     // disabled on some CI images.
     async start(): Promise<DocsServerContainer> {
-        const image = requireImage();
+        const image = resolveImage();
 
         // Resolved here rather than at its point of use: it is a pure environment check with the
-        // same failure semantics as requireImage, and leaving it below meant a CI job with an unset
-        // license secret paid a full image pull and boot to learn it. (Local delta — see
-        // README-VENDORED.md.)
+        // same failure semantics as resolveImage, and leaving it below meant a CI job with an unset
+        // license secret paid a full image pull and boot to learn it.
         const license = resolveLicense();
 
         try {
@@ -153,13 +154,20 @@ export class DocsServerContainer {
 
             await this.exec(['mmctl', '--local', 'config', 'set', 'ServiceSettings.SiteURL', this.url()]);
             await assertServerSupportsDocs(this.url(), 'Pin a newer dev tag via MM_IMAGE.');
-            await this.applyLicense(license);
+
+            if (license) {
+                await this.applyLicense(license);
+            }
 
             await this.createAdmin();
 
-            // After createAdmin: both need a session.
-            await this.waitForPhase2Migration();
-            await this.assertSupportsSpacePermissions();
+            // After createAdmin: both need a session. Both are also specific to the licensed core
+            // branch — the schemes route the migration poll reads answers 501 on an unlicensed
+            // server, which the poll would report as a migration that never finished.
+            if (spacePermissionsMode) {
+                await this.waitForPhase2Migration();
+                await this.assertSupportsSpacePermissions();
+            }
 
             await this.createTeam(defaultTeamName, defaultTeamDisplayName);
             await this.addUserToTeam(adminUsername, defaultTeamName);
@@ -194,8 +202,7 @@ export class DocsServerContainer {
 
                 // The published images are production builds, which default to the production
                 // service environment and reject a test/development license outright. The
-                // licensed permission scenarios therefore need this set. (Local delta — see
-                // README-VENDORED.md.)
+                // licensed permission scenarios therefore need this set.
                 MM_SERVICEENVIRONMENT: 'test',
 
                 // Lets setup drive mmctl over a socket instead of bootstrapping over HTTP.
@@ -231,7 +238,6 @@ export class DocsServerContainer {
             start();
     }
 
-    // (Local delta — see README-VENDORED.md.)
     private async applyLicense(license: string) {
         // upload-string rather than upload: the license arrives as an environment value, so there is
         // no file to copy into the container. The command is named without its argument, so a
@@ -262,8 +268,7 @@ export class DocsServerContainer {
     // scheme-backed route answers 501 until it finishes — so the first CreateSpace fails
     // with app.space.create.admin_role_failed wrapping
     // app.schemes.is_phase_2_migration_completed.not_completed. Mirrors the Go suite's
-    // waitForPhase2Migration (server/e2e/container_test.go). (Local delta — see
-    // README-VENDORED.md.)
+    // waitForPhase2Migration (server/e2e/container_test.go).
     private async waitForPhase2Migration() {
         const token = await this.adminToken();
         const deadline = Date.now() + phase2MigrationTimeoutMs;
@@ -300,7 +305,7 @@ export class DocsServerContainer {
 
     // An image that predates the paired core branch boots cleanly, reports EnableDocs on, and then
     // fails permission assertions as unexplained 403s. Probing a role that branch seeds as a default
-    // turns that into one named failure at setup. (Local delta — see README-VENDORED.md.)
+    // turns that into one named failure at setup.
     private async assertSupportsSpacePermissions() {
         const token = await this.adminToken();
 
@@ -348,9 +353,7 @@ export class DocsServerContainer {
     }
 
     // "plugin enable" reports success even when activation then fails, which otherwise
-    // surfaces only as the Docs UI never rendering. The remedy names this repo's target,
-    // which is a rename of upstream's "make test-e2e". (Local delta — see
-    // README-VENDORED.md.)
+    // surfaces only as the Docs UI never rendering.
     private async assertPluginRunning() {
         const output = await this.exec(['mmctl', '--local', 'plugin', 'list', '--json']);
 
@@ -360,7 +363,7 @@ export class DocsServerContainer {
         if (!active.some((plugin) => plugin.id === pluginId)) {
             throw new Error(
                 `Plugin ${pluginId} installed but did not activate. See logs/server-logs.log. ` +
-                'If activation failed on a missing linux-amd64 binary, rebuild via "make test-e2e-playwright" (or ' +
+                'If activation failed on a missing linux-amd64 binary, rebuild via "make test-e2e" (or ' +
                 'unset MM_SERVICESETTINGS_ENABLEDEVELOPER before "make dist") so the bundle includes it.',
             );
         }

@@ -32,26 +32,29 @@ make check-style
 ### End-to-end tests
 
 ```bash
-make test-e2e-server
-make test-e2e-playwright
+make test-e2e
 ```
 
-Two suites, both against a real Mattermost server built from the paired core branch and started in Docker. `test-e2e-server` runs the API-level Go suite in `server/e2e/`; `test-e2e-playwright` runs the browser-level suite in `e2e-tests/playwright/`. Both need the pinned core image and an Enterprise license — see `server/e2e/README.md` for the image and license prerequisites, and `e2e-tests/playwright/README-VENDORED.md` for what the browser suite carries on top of upstream's harness.
+Runs the Playwright suite in `e2e-tests/playwright/`. **Requires Docker**: the suite starts
+its own throwaway Mattermost and Postgres via testcontainers, installs the freshly built
+plugin into it, and tears everything down afterwards. Nothing touches your local dev server.
 
-**Both require Docker**: each suite starts its own throwaway Mattermost and Postgres via
-testcontainers, installs the freshly built plugin into it, and tears everything down
-afterwards. Nothing touches your local dev server.
+The Docs plugin needs a server built with Docs core support — the `EnableDocs` feature flag
+and the Space channel type — which stock releases do not yet ship. The suite therefore runs
+against the `mattermostdevelopment/mattermost-enterprise-edition:master` development image,
+and checks on startup that the server is new enough and has the flag, so an image that
+cannot run Docs fails with a message saying so.
 
-The space-permission work these suites assert lives on the paired core branch, not on any
-published release, so there is no usable default image: name the image core CI published
-for the commit in `build/core-commit.txt`.
+Pin a specific build to reproduce a run or bisect a server-side regression:
 
 ```bash
-MM_IMAGE=mattermostdevelopment/mattermost-team-edition:<7-char-sha> make test-e2e-playwright
+MM_IMAGE=mattermostdevelopment/mattermost-enterprise-edition:<tag> make test-e2e
 ```
 
-The browser suite can also run against a Mattermost server you are already running instead
-of a container:
+If no published image carries Docs core support, build one locally from the `mattermost`
+repository and point `MM_IMAGE` at that.
+
+To run against a Mattermost server you are already running instead of a container:
 
 ```bash
 cd e2e-tests/playwright && \
@@ -61,6 +64,24 @@ cd e2e-tests/playwright && \
 This seeds real teams and users into that server, so it is opt-in through
 `MM_E2E_USE_EXISTING_SERVER` alone — exporting `MM_SERVICESETTINGS_SITEURL`, as most
 Mattermost dev shells do, is not enough to trigger it.
+
+The Go suite in `server/e2e/` is separate and always needs a paired-core image plus a license:
+
+```bash
+make test-e2e-server
+```
+
+The browser suite's space-permission specs need the same two things, and are excluded from the
+default run without them:
+
+```bash
+MM_E2E_SPACE_PERMISSIONS=true \
+MM_IMAGE=mattermostdevelopment/mattermost-team-edition:<7-char-sha> \
+MM_LICENSE_FILE=/path/to/license \
+make test-e2e
+```
+
+See `server/e2e/README.md` and `e2e-tests/playwright/README.md` for the image pin and the license.
 
 Other useful scripts, run from `e2e-tests/playwright/`:
 

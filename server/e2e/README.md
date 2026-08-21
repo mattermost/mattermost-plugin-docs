@@ -36,7 +36,7 @@ The browser suite under `e2e-tests/playwright/` boots its **own** Testcontainers
 same pinned core image this script builds (it reads `MM_IMAGE`; CI passes the same `CORE_IMAGE` both
 suites consume, so the two can never assert against different servers). It therefore needs an image
 that serves the webapp, which the API-only image above does not — see
-`e2e-tests/playwright/README-VENDORED.md` for how that suite is run.
+`e2e-tests/playwright/README.md` for how that suite is run.
 
 A bare tag (no `/`) is treated as locally built: if it is absent the suite fails immediately and
 names the build script, rather than letting Testcontainers fail mid-boot. A namespaced tag is
