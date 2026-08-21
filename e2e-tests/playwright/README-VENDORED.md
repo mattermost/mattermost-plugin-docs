@@ -51,14 +51,12 @@ assumed a space was already present in the sidebar, so nothing of value was lost
 | 11 | `tests/helpers/guest.ts` | New: `demoteToGuest()` and `setGuestAccountsEnabled()` | A guest is the one principal that must never hold a per-member grant, so the permission specs need one. `setGuestAccountsEnabled` mutates a **server-wide** setting, which is why this suite is not parallel-safe (see `playwright.config.ts`'s `workers`). |
 | 12 | `tests/pages/space_settings_modal_page.ts` | New page object: the Space Settings dialog and its Permissions tab | The surface the permission specs drive. Upstream has no equivalent because it never opens this dialog. |
 | 13 | `tests/pages/space_page.ts` | `expectOpen()` matches the space header's own button inside `main`, not text anywhere on the page | The sidebar row, the just-clicked switcher result and a toast all carry the space title, so upstream's unscoped `.first()` can resolve before the space view mounts. The permission specs navigate far more than the authoring spec, which is what made the ambiguity bite. Not a spaces requirement — worth sending upstream instead of holding here. |
-| 14 | `tests/pages/share_space_modal_page.ts` | Fixed `'Share space'` dialog name and an explicit `Add` button, vs upstream's title-prefix match and commit-on-select | **Not a spaces delta — branch staleness.** `master` reworked this modal (`0436350`, "UI polish: private-by-default spaces, Share modal…") and upstream tracks that rework; this branch has not merged that commit. Merge master, then take upstream's page object verbatim and delete this row. |
 
 Deltas 4–7 are properties of running against an unreleased core branch under a license, not of this
 epic, so they are the ones most likely to survive reconciliation — 4, 5 and 7 until the core changes
 ship, and 6 indefinitely, since it is a straight bug fix worth sending upstream.
 
-Deltas 13 and 14 should not outlive reconciliation at all: 13 belongs upstream, and 14 disappears the
-moment this branch merges master.
+Delta 13 should not outlive reconciliation at all: it belongs upstream.
 
 ## Specs added here (not vendored)
 

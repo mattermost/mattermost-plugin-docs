@@ -9,6 +9,15 @@ on:
       - "v*"
   pull_request:
 
+# Superseded pull request runs are cancelled. Every other run gets a group of its own,
+# because a shared group keeps only the newest pending run: a second push to master
+# would cancel the first one's queued run, and with it the artifact delivery uploads.
+# `queue: max` would hold them all instead, but it cannot be combined with the
+# cancellation above and does not accept an expression.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -84,8 +93,25 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: ci/test
-        uses: mattermost/actions/plugin-ci/test@0256d363493a1e6b9e361ea788c62a0a73bc00be
+      # test-ci, not the shared plugin-ci/test action: only it emits JUnit for Go. Two
+      # steps so a failing server suite still lets the webapp write its report.
+      - name: ci/test-server
+        run: make test-ci-server
+
+      - name: ci/test-webapp
+        if: always()
+        run: make test-ci-webapp
+
+      - name: ci/upload-unit-test-results
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: unit-test-results
+          path: |
+            report.xml
+            webapp/junit.xml
+          if-no-files-found: warn
+          retention-days: 14
 
   build:
     if: ${{ github.repository_owner == 'mattermost' || github.event_name != 'schedule' }}

@@ -355,10 +355,19 @@ endif
 ## Runs any lints and unit tests defined for the server and webapp, if they exist, optimized
 ## for a CI environment.
 .PHONY: test-ci
-test-ci: apply webapp/node_modules install-go-tools
+test-ci: test-ci-server test-ci-webapp
+
+## Runs the server unit tests, writing a JUnit report. Split from test-ci-webapp so CI can
+## run each independently and still collect the other's report when one suite fails.
+.PHONY: test-ci-server
+test-ci-server: apply install-go-tools
 ifneq ($(HAS_SERVER),)
 	$(GOBIN)/gotestsum --format standard-verbose --junitfile report.xml -- ./...
 endif
+
+## Runs the webapp unit tests, writing a JUnit report.
+.PHONY: test-ci-webapp
+test-ci-webapp: apply webapp/node_modules
 ifneq ($(HAS_WEBAPP),)
 	cd webapp && $(NPM) run test;
 endif

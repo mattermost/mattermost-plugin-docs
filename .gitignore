@@ -15,6 +15,9 @@ node_modules/
 .env
 .env.*
 
+# JUnit report from `make test-ci` (the webapp's own is covered by webapp/.gitignore)
+report.xml
+
 # Mac
 .DS_Store
 

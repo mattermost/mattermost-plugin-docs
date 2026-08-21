@@ -7,19 +7,12 @@ export class ShareSpaceModalPage {
     readonly page: Page;
     readonly dialog: Locator;
     readonly peopleInput: Locator;
-    readonly addButton: Locator;
 
     constructor(page: Page) {
         this.page = page;
-
-        // Matches this branch's Share modal, which still has the fixed title and a separate Add
-        // button. Master reworked it to carry the space title in the accessible name and to commit
-        // each pick on select, and upstream tracks that; this branch has not merged that commit yet.
-        // Revert to upstream's prefix match and commit-on-select once it has.
-        // (Local delta — see README-VENDORED.md.)
-        this.dialog = page.getByRole('dialog', {name: 'Share space'});
+        // By prefix: the accessible name carries the space title.
+        this.dialog = page.getByRole('dialog', {name: /^Share /});
         this.peopleInput = this.dialog.getByLabel('Add people or groups');
-        this.addButton = this.dialog.getByRole('button', {name: 'Add', exact: true});
     }
 
     async expectOpen() {
@@ -29,11 +22,8 @@ export class ShareSpaceModalPage {
     async addMember(username: string) {
         await this.peopleInput.fill(username);
 
-        // The picker searches asynchronously; selecting the option turns it into a
-        // pending chip, which is what enables Add.
+        // This modal commits each pick immediately; there is no Add button to press.
         await this.page.getByRole('option', {name: new RegExp(username)}).first().click();
-        await expect(this.addButton).toBeEnabled();
-        await this.addButton.click();
     }
 
     async expectMemberListed(username: string) {

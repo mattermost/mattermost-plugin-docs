@@ -42,15 +42,17 @@ export class SpacePage {
         this.shareButton = page.getByRole('button', {name: 'Share', exact: true});
     }
 
-    // Scoped to main and matched as the space header's own button, not as text anywhere on the
-    // page: the sidebar row, the switcher result just clicked and a toast all carry the same title,
-    // and an unscoped .first() resolves to whichever paints first — so it could report the space as
-    // open before the space view had mounted, leaving every later action racing an unready page.
-    // The permission specs navigate far more than the authoring spec does, which is what made the
-    // ambiguity worth removing. Worth sending upstream rather than keeping.
-    // (Local delta — see README-VENDORED.md.)
+    // The space header's title trigger, scoped to main and matched exactly: the sidebar row, the
+    // switcher result just clicked and a toast all carry the same title, so an unscoped match
+    // resolves to whichever paints first — reporting the space as open before the space view had
+    // mounted and leaving every later action racing an unready page.
+    spaceTitleTrigger(spaceTitle: string): Locator {
+        return this.page.getByRole('main').getByRole('button', {name: spaceTitle, exact: true});
+    }
+
     async expectOpen(spaceTitle: string) {
-        await expect(this.page.getByRole('main').getByRole('button', {name: spaceTitle, exact: true})).toBeVisible();
+        await expect(this.page).toHaveURL(/\/spaces\/[^/?#]+/);
+        await expect(this.spaceTitleTrigger(spaceTitle)).toBeVisible();
     }
 
     pageTreeLink(title: string): Locator {
