@@ -43,7 +43,25 @@ const caretRect = (): DOMRect | null => {
     if (rect.height > 0) {
         return rect;
     }
-    return range.startContainer.parentElement?.getBoundingClientRect() ?? null;
+
+    const start = range.startContainer;
+    const candidates: Array<Node | null> = start.nodeType === globalThis.Node.ELEMENT_NODE ? [
+        start.childNodes[range.startOffset],
+        start.childNodes[range.startOffset - 1],
+        start,
+    ] : [start.parentElement];
+
+    for (const node of candidates) {
+        if (node?.nodeType !== globalThis.Node.ELEMENT_NODE) {
+            continue;
+        }
+        const box = (node as Element).getBoundingClientRect();
+        if (box.height > 0) {
+            return box;
+        }
+    }
+
+    return null;
 };
 
 type Options = {
