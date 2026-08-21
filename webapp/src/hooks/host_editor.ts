@@ -11,6 +11,11 @@ import {useCaretAnchoredSuggestions} from './caret_anchored_suggestions';
 
 export type EditorRef = React.MutableRefObject<PublishedWysiwygEditorHandle | null>;
 
+export type HostEditorState = {
+    editing: boolean;
+    loaded: boolean;
+};
+
 export type HostEditor = {
     formattingBarRef: React.MutableRefObject<PublishedFormattingBarHandle | null>;
     surfaceRef: React.RefObject<HTMLDivElement>;
@@ -21,13 +26,17 @@ export type HostEditor = {
     documentMode: boolean | null;
 };
 
-export function useHostEditor(editorRef: EditorRef, ready: boolean): HostEditor {
+export function useHostEditor(editorRef: EditorRef, {editing, loaded}: HostEditorState): HostEditor {
     const formattingBarRef = useRef<PublishedFormattingBarHandle | null>(null);
     const surfaceRef = useRef<HTMLDivElement>(null);
 
     const [documentMode, setDocumentMode] = useState<boolean | null>(null);
 
-    useCaretAnchoredSuggestions(surfaceRef, ready);
+    const ready = editing && loaded;
+
+    const getEditor = useCallback(() => editorRef.current?.getEditor?.() ?? null, [editorRef]);
+
+    useCaretAnchoredSuggestions(surfaceRef, {editing, loaded, getEditor});
 
     useEffect(() => {
         if (!ready) {
@@ -35,8 +44,6 @@ export function useHostEditor(editorRef: EditorRef, ready: boolean): HostEditor 
         }
         setDocumentMode(hostSupportsDocumentEditor(editorRef.current));
     }, [editorRef, ready]);
-
-    const getEditor = useCallback(() => editorRef.current?.getEditor?.() ?? null, [editorRef]);
 
     const applyFormatting = useCallback((mode: PublishedMarkdownMode) => {
         const editor = getEditor() as Parameters<typeof applyWysiwygFormatting>[0] | null;
