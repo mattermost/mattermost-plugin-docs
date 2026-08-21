@@ -42,7 +42,7 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
     });
 
     const {formattingBarRef, surfaceRef, getEditor, applyFormatting, documentMode} =
-        useHostEditor(editorRef, editing && !load.loading && !load.error);
+        useHostEditor(editorRef, {editing, loaded: !load.loading && !load.error});
 
     const publish = usePublishDraft(spaceId);
     const onSubmit = useCallback(() => {

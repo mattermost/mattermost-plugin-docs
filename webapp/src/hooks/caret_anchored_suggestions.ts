@@ -4,12 +4,61 @@
 import {useEffect} from 'react';
 
 const GAP = 4;
-const ESTIMATED_HEIGHT = 240;
-const SELECTOR = '.suggestion-list';
+const MARGIN = 8;
+const MAX_HEIGHT = 320;
+const LIST = '.suggestion-list';
+const CONTENT = '.suggestion-list__content';
 
-export const useCaretAnchoredSuggestions = (surfaceRef: React.RefObject<HTMLElement>, enabled: boolean) => {
+type PretextEditor = {
+    isDestroyed?: boolean;
+    state?: {
+        selection?: {from: number; $from: {start: () => number}};
+        doc?: {textBetween: (from: number, to: number, sep: string) => string};
+    };
+};
+
+const startsCommand = (getEditor: () => unknown): boolean => {
+    const editor = getEditor() as PretextEditor | null;
+    const selection = editor?.state?.selection;
+    const doc = editor?.state?.doc;
+    if (!editor || editor.isDestroyed || !selection || !doc) {
+        return false;
+    }
+
+    try {
+        return doc.textBetween(selection.$from.start(), selection.from, '\n').startsWith('/');
+    } catch {
+        return false;
+    }
+};
+
+const caretRect = (): DOMRect | null => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+        return null;
+    }
+
+    const range = selection.getRangeAt(0);
+    const rect = range.getBoundingClientRect();
+    if (rect.height > 0) {
+        return rect;
+    }
+    return range.startContainer.parentElement?.getBoundingClientRect() ?? null;
+};
+
+type Options = {
+    editing: boolean;
+    loaded: boolean;
+
+    getEditor: () => unknown;
+};
+
+export const useCaretAnchoredSuggestions = (
+    surfaceRef: React.RefObject<HTMLElement>,
+    {editing, loaded, getEditor}: Options,
+) => {
     useEffect(() => {
-        const surface = enabled ? surfaceRef.current : null;
+        const surface = loaded ? surfaceRef.current : null;
         if (!surface) {
             return undefined;
         }
@@ -18,27 +67,38 @@ export const useCaretAnchoredSuggestions = (surfaceRef: React.RefObject<HTMLElem
         let frame = 0;
 
         const position = () => {
-            const selection = window.getSelection();
-            if (!list || !selection || selection.rangeCount === 0) {
+            if (!list) {
                 return;
             }
 
-            const range = selection.getRangeAt(0);
-            const rect = range.getBoundingClientRect();
-            const caret = rect.height === 0 ? (range.startContainer.parentElement?.getBoundingClientRect() ?? rect) : rect;
+            if (!editing || startsCommand(getEditor)) {
+                list.style.display = 'none';
+                return;
+            }
+            list.style.display = '';
 
-            const surfaceRect = surface.getBoundingClientRect();
-            const height = list.offsetHeight || ESTIMATED_HEIGHT;
-            const flipAbove = window.innerHeight - caret.bottom < height && caret.top > height;
-            const above = caret.top - surfaceRect.top - (height + GAP);
-            const below = (caret.bottom - surfaceRect.top) + GAP;
+            const content = list.querySelector<HTMLElement>(CONTENT);
+            const caret = caretRect();
+            if (!content || !caret) {
+                return;
+            }
 
-            const maxLeft = Math.max(0, surface.clientWidth - list.offsetWidth);
-            const left = Math.min(Math.max(0, caret.left - surfaceRect.left), maxLeft);
+            const below = window.innerHeight - caret.bottom - GAP - MARGIN;
+            const above = caret.top - GAP - MARGIN;
+            const wanted = Math.min(MAX_HEIGHT, content.scrollHeight);
+            const flip = below < wanted && above > below;
 
-            list.style.bottom = 'auto';
-            list.style.top = `${Math.round(flipAbove ? above : below)}px`;
-            list.style.left = `${Math.round(left)}px`;
+            content.style.position = 'fixed';
+            content.style.maxHeight = `${Math.max(0, Math.min(MAX_HEIGHT, flip ? above : below))}px`;
+            content.style.left = `${Math.round(Math.max(MARGIN, Math.min(caret.left, window.innerWidth - content.offsetWidth - MARGIN)))}px`;
+
+            if (flip) {
+                content.style.top = 'auto';
+                content.style.bottom = `${Math.round((window.innerHeight - caret.top) + GAP)}px`;
+            } else {
+                content.style.bottom = 'auto';
+                content.style.top = `${Math.round(caret.bottom + GAP)}px`;
+            }
         };
 
         const schedule = () => {
@@ -51,18 +111,20 @@ export const useCaretAnchoredSuggestions = (surfaceRef: React.RefObject<HTMLElem
             });
         };
 
+        const scroller = surface.closest('[data-docs-scroll]');
+
         const sync = () => {
-            const found = surface.querySelector<HTMLElement>(SELECTOR);
+            const found = surface.querySelector<HTMLElement>(LIST);
             if (found !== list) {
                 list = found;
                 if (list) {
                     document.addEventListener('selectionchange', schedule);
                     window.addEventListener('resize', schedule);
-                    surface.closest('[data-docs-scroll]')?.addEventListener('scroll', schedule);
+                    scroller?.addEventListener('scroll', schedule);
                 } else {
                     document.removeEventListener('selectionchange', schedule);
                     window.removeEventListener('resize', schedule);
-                    surface.closest('[data-docs-scroll]')?.removeEventListener('scroll', schedule);
+                    scroller?.removeEventListener('scroll', schedule);
                 }
             }
 
@@ -72,24 +134,14 @@ export const useCaretAnchoredSuggestions = (surfaceRef: React.RefObject<HTMLElem
         };
 
         const onMutation = (records: MutationRecord[]) => {
-            let touched = false;
             for (const record of records) {
                 for (const node of [...record.addedNodes, ...record.removedNodes]) {
                     if (node.nodeType === globalThis.Node.ELEMENT_NODE) {
-                        touched = true;
-                        break;
+                        sync();
+                        return;
                     }
                 }
-                if (touched) {
-                    break;
-                }
             }
-
-            if (!touched) {
-                return;
-            }
-
-            sync();
         };
 
         const observer = new MutationObserver(onMutation);
@@ -100,10 +152,10 @@ export const useCaretAnchoredSuggestions = (surfaceRef: React.RefObject<HTMLElem
             observer.disconnect();
             document.removeEventListener('selectionchange', schedule);
             window.removeEventListener('resize', schedule);
-            surface.closest('[data-docs-scroll]')?.removeEventListener('scroll', schedule);
+            scroller?.removeEventListener('scroll', schedule);
             if (frame) {
                 cancelAnimationFrame(frame);
             }
         };
-    }, [surfaceRef, enabled]);
+    }, [surfaceRef, editing, loaded, getEditor]);
 };
