@@ -185,6 +185,26 @@ func (s *Store) finalizeTransaction(tx *sqlx.Tx, perr *error) {
 	}
 }
 
+// beginBoundedTx starts a transaction bounded by defaultQueryTimeout, and must be used by any
+// transaction that can run while its caller already holds WithSpaceMembershipLock's dedicated
+// connection. Such a caller needs a second pooled connection while holding one, so an unbounded
+// acquisition can wait forever on a saturated pool while itself holding a connection that pool
+// needs in order to drain.
+//
+// The timeout spans the whole transaction, not just connection acquisition: the context is handed
+// to BeginTxx, so database/sql rolls the transaction back if it expires mid-flight. Callers must
+// therefore finish inside defaultQueryTimeout, not merely start inside it. The returned cancel must
+// be deferred, and runs after the commit or rollback that the caller's own defer performs.
+func (s *Store) beginBoundedTx() (*sqlx.Tx, context.CancelFunc, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return tx, cancel, nil
+}
+
 // get executes a query and scans one row into dest.
 func (s *Store) get(e sqlx.ExtContext, dest any, query string, args ...any) error {
 	query = e.Rebind(query)
@@ -330,6 +350,7 @@ const (
 	ReasonMaxDepthExceeded          = "max_depth_exceeded"
 	ReasonSubtreeMaxDepthExceeded   = "subtree_max_depth_exceeded"
 	ReasonParentNotLive             = "parent_not_live"
+	ReasonSubtreeNotOwned           = "subtree_not_owned"
 	ReasonDraftCycle                = "draft_cycle"
 	ReasonDraftTooDeep              = "draft_too_deep"
 	ReasonDraftQuotaExceeded        = "draft_quota_exceeded"
@@ -392,6 +413,17 @@ func (e *ErrConflict) Error() string {
 func IsErrConflict(err error) bool {
 	var e *ErrConflict
 	return errors.As(err, &e)
+}
+
+// ReasonLockTimeout marks an ErrConflict raised by a WithSpaceMembershipLock acquisition timeout,
+// distinct from the default CAS/unique-constraint conflict.
+const ReasonLockTimeout = "lock_timeout"
+
+// IsErrLockTimeout reports whether err is an ErrConflict raised by a space-membership advisory
+// lock acquisition timeout.
+func IsErrLockTimeout(err error) bool {
+	var e *ErrConflict
+	return errors.As(err, &e) && e.Reason == ReasonLockTimeout
 }
 
 // ConflictReason returns the Reason of the ErrConflict in err's chain, or "" if err is not an

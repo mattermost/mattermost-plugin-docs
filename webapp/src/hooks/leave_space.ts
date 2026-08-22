@@ -4,7 +4,7 @@
 import {useCallback} from 'react';
 import {useIntl} from 'react-intl';
 
-import {isLastSpaceMemberError, leaveSpace} from 'store/actions';
+import {isLastSpaceAdminError, isLastSpaceMemberError, isSpaceLockTimeoutError, leaveSpace} from 'store/actions';
 
 import {toast} from 'components/toast';
 
@@ -34,13 +34,30 @@ export function useLeaveSpace(space: Space): () => Promise<boolean> {
             }
             return true;
         } catch (error) {
-            const description = isLastSpaceMemberError(error) ? formatMessage({
-                id: 'docs.leaveSpace.error.lastMember',
-                defaultMessage: 'A space must keep at least one member with access. Add another member before you leave.',
-            }) : formatMessage({
-                id: 'docs.leaveSpace.error.generic',
-                defaultMessage: 'Something went wrong. Please try again.',
-            });
+            let description;
+            if (isLastSpaceMemberError(error)) {
+                description = formatMessage({
+                    id: 'docs.leaveSpace.error.lastMember',
+                    defaultMessage: 'A space must keep at least one member with access. Add another member before you leave.',
+                });
+            } else if (isLastSpaceAdminError(error)) {
+                // Naming the administrator requirement matters: the last-member wording sent a sole
+                // admin off to add an ordinary member, which does not lift the refusal.
+                description = formatMessage({
+                    id: 'docs.leaveSpace.error.lastAdmin',
+                    defaultMessage: 'A space must keep at least one administrator. Make another member an administrator before you leave.',
+                });
+            } else if (isSpaceLockTimeoutError(error)) {
+                description = formatMessage({
+                    id: 'docs.leaveSpace.error.busy',
+                    defaultMessage: 'This space is being changed right now. Try again in a moment.',
+                });
+            } else {
+                description = formatMessage({
+                    id: 'docs.leaveSpace.error.generic',
+                    defaultMessage: 'Something went wrong. Please try again.',
+                });
+            }
 
             toast.error(
                 formatMessage({

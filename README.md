@@ -65,6 +65,32 @@ This seeds real teams and users into that server, so it is opt-in through
 `MM_E2E_USE_EXISTING_SERVER` alone — exporting `MM_SERVICESETTINGS_SITEURL`, as most
 Mattermost dev shells do, is not enough to trigger it.
 
+The Go suite in `server/e2e/` is separate and always needs a paired-core image plus a license:
+
+```bash
+make test-e2e-server
+```
+
+It builds that image itself, from your local `mattermost` checkout on the paired core branch, so no
+published image is needed. Set `CORE_IMAGE` to a namespaced tag — the per-commit CI image — to skip
+the local build and pull instead:
+
+```bash
+CORE_IMAGE=mattermostdevelopment/mattermost-team-edition:<7-char-sha> make test-e2e-server
+```
+
+The browser suite's space-permission specs need the same two things, and are excluded from the
+default run without them:
+
+```bash
+MM_E2E_SPACE_PERMISSIONS=true \
+MM_IMAGE=mattermostdevelopment/mattermost-team-edition:<7-char-sha> \
+MM_LICENSE_FILE=/path/to/license \
+make test-e2e
+```
+
+See `server/e2e/README.md` and `e2e-tests/playwright/README.md` for the image pin and the license.
+
 Other useful scripts, run from `e2e-tests/playwright/`:
 
 ```bash

@@ -6,6 +6,7 @@ import {useAutosaveStatus} from 'hooks/autosave_status';
 import {useFullscreen} from 'hooks/fullscreen';
 import {usePagePresence} from 'hooks/page_presence';
 import {useCreateRootPage} from 'hooks/pages';
+import {useCanCreatePage, useCanEditPage} from 'hooks/permissions';
 import {useSidebarWidth} from 'hooks/sidebar_width';
 import {useCurrentUserId} from 'hooks/user';
 import React, {useCallback, useEffect, useState} from 'react';
@@ -91,6 +92,15 @@ type Props = {
 const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogglePages, onToggleComments, onToggleEdit, onPublish}: Props) => {
     const {formatMessage} = useIntl();
     const createRootPage = useCreateRootPage(space.id);
+
+    // Withheld rather than disabled, as the space's other unauthorized actions are
+    // (Space settings, Archive space): an action the server will refuse is not offered.
+    const canCreatePage = useCanCreatePage(space.id);
+
+    // Editing an already-published page commits through edit_page, which a space default can
+    // withhold independently of create_page (see PublishPageDraft's split gate). Withheld the same
+    // way page creation is, rather than disabled: an action the server will refuse is not offered.
+    const canEditPage = useCanEditPage(space.id);
     const autosaveStatus = useAutosaveStatus();
 
     // Read here rather than passed in: the sidebar it hides belongs to the product
@@ -132,8 +142,13 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
     // them).
     const unpublished = !page && Boolean(draft);
     const hasUnpublishedEdits = Boolean(page) && Boolean(draft);
-    const canEnterEdit = Boolean(subject) && !editing;
-    const canCommit = unpublished || (editing && hasUnpublishedEdits);
+
+    // An unpublished page is the caller's own draft, and publishing it for the first time is gated
+    // on create_page rather than edit_page — so it stays editable and publishable for an author who
+    // holds only the former.
+    const canAuthor = unpublished || canEditPage;
+    const canEnterEdit = Boolean(subject) && !editing && canAuthor;
+    const canCommit = unpublished || (editing && hasUnpublishedEdits && canEditPage);
     const commitShortcut = isMac() ? 'Meta+Enter' : 'Control+Enter';
 
     // Capture so Cmd/Ctrl+Enter wins over the editor inserting a newline, and
@@ -238,7 +253,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                     </span>
                 </Button>
                 {treeOpen && <Spacer/>}
-                {treeOpen && (
+                {treeOpen && canCreatePage && (
                     <Button
                         emphasis='quaternary'
                         size='sm'
@@ -306,7 +321,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                             defaultMessage='Publish'
                         />
                     </Button>
-                ) : (editing && subject && (
+                ) : (editing && subject && canEditPage && (
                     <Button
                         emphasis='primary'
                         size='sm'
@@ -331,7 +346,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                     </Button>
                 ))}
 
-                {subject && (
+                {subject && (editing || canAuthor) && (
                     <Button
                         emphasis='quaternary'
                         size='sm'

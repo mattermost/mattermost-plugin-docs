@@ -7,7 +7,10 @@ import {readJsonOrThrow, requestedWith} from './client';
 
 // Seeding seam for specs whose subject is not authoring itself; the authoring spec
 // drives that journey through the UI instead.
-const apiRoot = '/plugins/com.mattermost.docs/api/v1';
+//
+// Exported so a spec can probe a route whose refusal is the expected outcome: the helpers
+// here throw on a non-OK response, which is wrong when the assertion is the 403 itself.
+export const apiRoot = '/plugins/com.mattermost.docs/api/v1';
 
 export interface Space {
     id: string;

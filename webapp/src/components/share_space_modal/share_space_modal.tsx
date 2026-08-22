@@ -27,8 +27,9 @@ type Props = {
     onClose: () => void;
 };
 
-// Members, add and remove are real. The visibility and role dropdowns are
-// scaffolding for PR #10's view_access and capabilities.
+// Members, add and remove are real. The visibility and role dropdowns are inert placeholders:
+// view_access and per-member permissions are editable in the space settings modal's Permissions
+// tab, and this modal has not been wired to them.
 const ShareSpaceModal = ({space, onClose}: Props) => {
     const {formatMessage} = useIntl();
     const {paths: absolutePaths} = useDocsNavigation({absolute: true});

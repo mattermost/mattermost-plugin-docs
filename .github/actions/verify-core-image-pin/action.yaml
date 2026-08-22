@@ -1,0 +1,83 @@
+name: "verify-core-image-pin"
+description: Verifies CORE_IMAGE is sha-pinned and matches the core commit build/core-commit.txt names
+
+# Both e2e suites run against the paired core branch's image, so both need this check. It lives here
+# rather than inline so the two jobs cannot drift apart on what "correctly pinned" means.
+
+inputs:
+  CORE_IMAGE:
+    description: The fully-qualified core image, tagged with a commit sha
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    # The pin is checked, not just documented: a floating tag (:master, :latest) would silently
+    # re-point the suites at whatever core published most recently, so an unrelated upstream change
+    # would surface as a test failure with no corresponding commit in this repo.
+    - name: ci/verify-core-image-pin
+      shell: bash
+      env:
+        CORE_IMAGE: ${{ inputs.CORE_IMAGE }}
+      run: |
+        if [[ ! "$CORE_IMAGE" =~ :[0-9a-f]{7,40}$ ]]; then
+          echo "CORE_IMAGE must be pinned to a commit sha; got '$CORE_IMAGE'." >&2
+          echo "Core CI publishes one image per commit as <repo>:<7-char-sha>." >&2
+          exit 1
+        fi
+        image_tag="${CORE_IMAGE##*:}"
+
+        # The shape check above cannot catch the drift that matters. build/core-commit.txt records
+        # the core commit these suites are meant to run against; CORE_IMAGE is a separate repository
+        # variable a human sets. Nothing ties them together, so bumping one without the other leaves
+        # the suites green against a core image that predates the very changes under test.
+        #
+        # The comparison is against that file rather than the go.mod server/public pin, because most
+        # of the RBAC implementation lives outside the public module: a core commit can change the
+        # scheme guards and role composition these suites assert on without moving the pin.
+        # Wrapped so a missing or comment-only pin file cannot abort the step under this shell's
+        # `-eo pipefail` (grep's no-match exit 1, or its SIGPIPE when head closes the pipe first),
+        # which would skip the named diagnostic below. Same guard as build/build-core-image.sh.
+        pinned_commit="$( { grep -vE '^\s*(#|$)' build/core-commit.txt || true; } | head -1 | tr -d '[:space:]')"
+        if [[ ! "$pinned_commit" =~ ^[0-9a-f]{7,40}$ ]]; then
+          echo "build/core-commit.txt must hold one core commit sha; got '${pinned_commit}'." >&2
+          exit 1
+        fi
+        # Core CI tags images with a 7-char sha while the pin carries the full 40, so compare on the
+        # shorter.
+        prefix_len=${#image_tag}
+        if (( ${#pinned_commit} < prefix_len )); then
+          prefix_len=${#pinned_commit}
+        fi
+        if [[ "${image_tag:0:$prefix_len}" != "${pinned_commit:0:$prefix_len}" ]]; then
+          echo "CORE_IMAGE sha '${image_tag}' does not match the core commit build/core-commit.txt pins (${pinned_commit})." >&2
+          echo "Set CORE_IMAGE to the image core CI published for ${pinned_commit}, or bump the pin." >&2
+          exit 1
+        fi
+        echo "CORE_IMAGE ${image_tag} matches the core pin ${pinned_commit}."
+
+        # Consistency is not existence. Everything above only proves a human kept CORE_IMAGE and the
+        # pin file in step; it says nothing about whether the image they name still exists. Core CI
+        # does not retain per-commit images indefinitely, so the pin's usual failure is that its tag
+        # has been reaped — and without this check that surfaces several steps later as a pull error
+        # in the e2e job, with nothing connecting it back to a stale pin.
+        #
+        # A registry lookup can fail for reasons that are not the pin's fault (rate limit, outage),
+        # so only a definite 404 fails the step; anything else is reported and passes. The guard is
+        # here to name a stale pin, not to make CI depend on Docker Hub being reachable.
+        tags_url="https://hub.docker.com/v2/repositories/${CORE_IMAGE%%:*}/tags/${image_tag}/"
+        registry_status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$tags_url" || echo 000)"
+        case "$registry_status" in
+          404)
+            echo "The image ${CORE_IMAGE} is no longer published: ${tags_url} answered 404." >&2
+            echo "Core CI's per-commit images are not retained indefinitely. Bump build/core-commit.txt" >&2
+            echo "and CORE_IMAGE together to a commit whose image still resolves." >&2
+            exit 1
+            ;;
+          200)
+            echo "The image ${CORE_IMAGE} is still published."
+            ;;
+          *)
+            echo "::warning::Could not confirm ${CORE_IMAGE} is published (${tags_url} answered ${registry_status}); continuing."
+            ;;
+        esac

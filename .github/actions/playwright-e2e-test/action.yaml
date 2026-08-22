@@ -6,6 +6,14 @@ inputs:
     description: Optional suffix for artifact names to avoid conflicts
     required: false
     default: ""
+  MM_LICENSE:
+    description: >-
+      Enterprise license the container is started with, for the callers whose specs need one. Taken
+      as an input rather than inherited from the job's env so it is set only on the step that runs
+      the suite — `npm ci` above executes third-party install scripts and has no business reading
+      it.
+    required: false
+    default: ""
 
 runs:
   using: "composite"
@@ -62,6 +70,7 @@ runs:
       working-directory: e2e-tests/playwright
       env:
         TERM: xterm
+        MM_LICENSE: ${{ inputs.MM_LICENSE }}
       run: npm test
 
     - name: ci/upload-playwright-test-results

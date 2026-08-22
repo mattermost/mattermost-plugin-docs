@@ -118,7 +118,12 @@ function spaces(state: Record<string, Space> = {}, action: UnknownAction): Recor
         }
         const next = {...state};
         for (const space of received) {
-            next[space.id] = space;
+            // The team listing answers with bare spaces, so it must not erase permissions a
+            // single-space read already resolved: without this, opening a space and then any
+            // later listing would drop the caller's own permissions back to unresolved, and
+            // every permission-gated affordance would reappear.
+            const resolved = next[space.id]?.permissions;
+            next[space.id] = space.permissions === undefined && resolved ? {...space, permissions: resolved} : space;
         }
         return next;
     }
@@ -292,7 +297,7 @@ function pagesInSpace(state: Record<string, Set<string>> = {}, action: UnknownAc
     }
 }
 
-// Space member user ids, keyed by space id. Roles/capabilities are hidden by
+// Space member user ids, keyed by space id. Roles/permissions are hidden by
 // the server, so this is just membership (count today, avatars later).
 function spaceMembers(state: Record<string, string[]> = {}, action: UnknownAction): Record<string, string[]> {
     switch (action.type) {
@@ -352,9 +357,7 @@ function drafts(state: Record<string, StoredDraft> = {}, action: UnknownAction):
         const next = {...state};
         for (const draft of received) {
             const current = next[draft.page_id];
-            next[draft.page_id] = current && isFullDraft(current) && !isFullDraft(draft) ?
-                {...current, ...draft} :
-                draft;
+            next[draft.page_id] = current && isFullDraft(current) && !isFullDraft(draft) ? {...current, ...draft} : draft;
         }
         return next;
     }

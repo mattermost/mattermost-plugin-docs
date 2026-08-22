@@ -66,6 +66,11 @@ export function makeTestState({docs, currentTeam, teams, currentUser, preference
                 profiles: currentUser ? {[userId]: currentUser} : {},
             },
 
+            // Empty but present: host selectors a Docs component may reach for
+            // (the teammate name-display preference, say) index into these
+            // without guarding, so omitting them throws rather than defaulting.
+            general: {config: {}, license: {}},
+
             // Keyed `category--name`, as mattermost-redux's preference selectors expect.
             preferences: {
                 myPreferences: Object.fromEntries((preferences ?? []).map((preference) => [

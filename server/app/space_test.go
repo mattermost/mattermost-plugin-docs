@@ -30,6 +30,8 @@ import (
 func openTestServiceWithAPI(t *testing.T, mockAPI *plugintest.API) *testHarness {
 	t.Helper()
 	h := openTestService(t)
+	testutil.StubDefaultSpacePermissions(mockAPI)
+	testutil.StubPresetSchemes(mockAPI)
 	mockAPI.On("GetConfig").Return(&mmmodel.Config{}).Maybe()
 	// Mutations publish best-effort WS events through the client; tests that assert event
 	// content override this with exact-argument expectations.
@@ -48,17 +50,27 @@ func openTestServiceWithAPI(t *testing.T, mockAPI *plugintest.API) *testHarness 
 	// stub. TestServiceCreateSpace_NotTeamMember overrides this to exercise the rejection path.
 	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
 		Return(&mmmodel.TeamMember{}, nil).Maybe()
+	// The page-write gate reads the acting user to hold guests to read_page. Defaults to an
+	// ordinary (non-guest) user; a test exercising the guest refusal registers its own stub first.
+	mockAPI.On("GetUser", mock.Anything).Return(&mmmodel.User{}, nil).Maybe()
 	// plugintest flattens a log call's variadic pairs into the mock's argument list, so a stub only
 	// matches calls with exactly that many arguments. Cover each shape the service emits: LogWarn
-	// with message plus two key/value pairs (CheckSpaceMembership/GetSpacesForTeam client-not-wired
-	// denials), LogWarn with message plus three pairs (DeleteSpace, restoreSpaceChannel), and
-	// LogError with message plus four (archiveOrphanChannel).
+	// with message plus two key/value pairs (ResolveSpaceRead/GetSpacesForTeam client-not-wired
+	// denials), LogWarn with message plus three pairs (DeleteSpace, restoreSpaceChannel), LogWarn
+	// with message plus five (adoptableSharedScheme's refusal, which names both permission sets),
+	// and LogError with message plus four (archiveOrphanChannel).
 	mockAPI.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	mockAPI.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
-	// LogError shapes: message plus three pairs (UpdateSpace's channel-metadata sync failure)
-	// and message plus four pairs (archiveOrphanChannel).
+	mockAPI.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	// LogError shapes: message plus two pairs (the custom-scheme retire failures), plus three
+	// pairs (UpdateSpace's channel-metadata sync failure) and plus four (archiveOrphanChannel).
+	mockAPI.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	mockAPI.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	mockAPI.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	// CreateSpace assigns the creator SchemeAdmin via the scheme's resolved role-name string; no
+	// test asserts the exact roles argument, so a wildcard catch-all covers every create.
+	mockAPI.On("UpdateChannelMemberRoles", mock.Anything, mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
 	client := pluginapi.NewClient(mockAPI, nil)
 	h.svc = app.New(h.store, &client.Log, client)
 	return h
@@ -74,6 +86,7 @@ func TestServiceCreateSpace_BackingChannel(t *testing.T) {
 	userID := mmmodel.NewId()
 	backingChannelID := mmmodel.NewId()
 
+	testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("CreateChannel", mock.MatchedBy(func(ch *mmmodel.Channel) bool {
 		return ch.Type == mmmodel.ChannelTypeSpace && ch.TeamId == teamID
 	})).Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
@@ -81,7 +94,7 @@ func TestServiceCreateSpace_BackingChannel(t *testing.T) {
 
 	space := &model.Space{TeamId: teamID, Title: "Test Space"}
 
-	saved, appErr := h.svc.CreateSpace(space, userID)
+	saved, appErr := h.svc.CreateSpace(space, userID, nil, nil)
 	require.Nil(t, appErr)
 	require.Equal(t, backingChannelID, saved.ChannelId)
 	require.Equal(t, userID, saved.CreatorId)
@@ -93,6 +106,48 @@ func TestServiceCreateSpace_BackingChannel(t *testing.T) {
 	mockAPI.AssertExpectations(t)
 }
 
+// TestServiceCreateSpace_PresetSchemeMissing verifies an unseeded server is reported as a server
+// fault rather than as a missing space. Core seeds the preset schemes; a space create that cannot
+// find one says nothing about what the caller asked for, so it must not share the not-found key
+// every ordinary row lookup returns.
+func TestServiceCreateSpace_PresetSchemeMissing(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	// Registered ahead of the harness, whose StubPresetSchemes would otherwise match first.
+	mockAPI.On("GetSchemeByName", mmmodel.SchemeNameSpaceContribute).
+		Return((*mmmodel.Scheme)(nil), &mmmodel.AppError{StatusCode: http.StatusNotFound})
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: mmmodel.NewId(), Title: "Unseeded"}, mmmodel.NewId(), nil, nil)
+
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
+	require.Equal(t, "app.space.preset_scheme_missing.app_error", appErr.Id)
+	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
+}
+
+// TestServiceCreateSpace_SchemeDenialKeepsStatus verifies a refusal core issues against the scheme
+// API — a license gate, or the permissions migration still running — reaches the caller with the
+// status core chose. Reporting it as a 500 would hide a condition the operator can act on.
+func TestServiceCreateSpace_SchemeDenialKeepsStatus(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	mockAPI.On("GetSchemeByName", mock.AnythingOfType("string")).
+		Return((*mmmodel.Scheme)(nil), &mmmodel.AppError{StatusCode: http.StatusNotFound})
+	// The status and id core's own gate returns: minting a custom scheme without the licence for it
+	// is reported as not-implemented, not as a permission denial.
+	mockAPI.On("CreateScheme", mock.AnythingOfType("*model.Scheme")).
+		Return((*mmmodel.Scheme)(nil), &mmmodel.AppError{StatusCode: http.StatusNotImplemented, Id: "api.scheme.create_scheme.license.error"})
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	// A single permission matches no preset, so the create resolves through the shared pool.
+	permissions := []string{mmmodel.PermissionCreatePage.Id}
+	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: mmmodel.NewId(), Title: "Unlicensed"}, mmmodel.NewId(), &permissions, nil)
+
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusNotImplemented, appErr.StatusCode)
+	require.Equal(t, "api.scheme.create_scheme.license.error", appErr.Id)
+	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
+}
+
 // TestServiceCreateSpace_ChannelIdRejected verifies a caller-supplied ChannelId is rejected
 // before any backing-channel side effect.
 func TestServiceCreateSpace_ChannelIdRejected(t *testing.T) {
@@ -101,10 +156,10 @@ func TestServiceCreateSpace_ChannelIdRejected(t *testing.T) {
 
 	space := &model.Space{ChannelId: mmmodel.NewId(), TeamId: mmmodel.NewId(), Title: "Bad Space"}
 
-	_, appErr := h.svc.CreateSpace(space, mmmodel.NewId())
+	_, appErr := h.svc.CreateSpace(space, mmmodel.NewId(), nil, nil)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
-	mockAPI.AssertNotCalled(t, "CreateChannel")
+	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 }
 
 // TestServiceCreateSpace_ChannelCreationFails verifies that when the backing-channel create fails,
@@ -117,11 +172,11 @@ func TestServiceCreateSpace_ChannelCreationFails(t *testing.T) {
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Return(nil, &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
 
-	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: mmmodel.NewId(), Title: "Doomed"}, mmmodel.NewId())
+	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: mmmodel.NewId(), Title: "Doomed"}, mmmodel.NewId(), nil, nil)
 	require.NotNil(t, appErr)
 	require.Equal(t, "app.space.create.backing_channel_failed.app_error", appErr.Id)
-	mockAPI.AssertNotCalled(t, "AddChannelMember")
-	mockAPI.AssertNotCalled(t, "DeleteChannel")
+	mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
+	mockAPI.AssertNotCalled(t, "DeleteChannel", mock.Anything)
 }
 
 // TestServiceCreateSpace_ReplicaConfiguredSucceeds exercises space creation on a host with SQL
@@ -133,6 +188,8 @@ func TestServiceCreateSpace_ReplicaConfiguredSucceeds(t *testing.T) {
 	// expectations cannot be overridden, so this test wires its mocks from scratch.
 	mockAPI := &plugintest.API{}
 	h := openTestService(t)
+	testutil.StubDefaultSpacePermissions(mockAPI)
+	testutil.StubPresetSchemes(mockAPI)
 	mockAPI.On("GetConfig").
 		Return(&mmmodel.Config{SqlSettings: mmmodel.SqlSettings{DataSourceReplicas: []string{"replica"}}}).Maybe()
 	mockAPI.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
@@ -142,18 +199,21 @@ func TestServiceCreateSpace_ReplicaConfiguredSucceeds(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Return(&mmmodel.Channel{Id: channelID, Type: mmmodel.ChannelTypeSpace}, nil)
 	mockAPI.On("AddChannelMember", channelID, userID).Return(&mmmodel.ChannelMember{}, nil)
+	mockAPI.On("UpdateChannelMemberRoles", channelID, userID, mock.Anything).Return(&mmmodel.ChannelMember{}, nil)
 
 	client := pluginapi.NewClient(mockAPI, nil)
 	h.svc = app.New(h.store, &client.Log, client)
 
-	saved, appErr := h.svc.CreateSpace(&model.Space{TeamId: mmmodel.NewId(), Title: "Replicated"}, userID)
+	saved, appErr := h.svc.CreateSpace(&model.Space{TeamId: mmmodel.NewId(), Title: "Replicated"}, userID, nil, nil)
 	require.Nil(t, appErr)
 	require.Equal(t, channelID, saved.ChannelId)
 	mockAPI.AssertNotCalled(t, "GetChannel", channelID)
 	mockAPI.AssertNotCalled(t, "DeleteChannel", channelID)
+	mockAPI.AssertExpectations(t)
 }
 
 // TestServiceCreateSpace_InvalidInput verifies the up-front validations reject before any
@@ -169,10 +229,10 @@ func TestServiceCreateSpace_InvalidInput(t *testing.T) {
 			mockAPI := &plugintest.API{}
 			h := openTestServiceWithAPI(t, mockAPI)
 
-			_, appErr := h.svc.CreateSpace(space, mmmodel.NewId())
+			_, appErr := h.svc.CreateSpace(space, mmmodel.NewId(), nil, nil)
 			require.NotNil(t, appErr)
 			require.Equal(t, 400, appErr.StatusCode)
-			mockAPI.AssertNotCalled(t, "CreateChannel")
+			mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 		})
 	}
 
@@ -180,10 +240,10 @@ func TestServiceCreateSpace_InvalidInput(t *testing.T) {
 		mockAPI := &plugintest.API{}
 		h := openTestServiceWithAPI(t, mockAPI)
 
-		_, appErr := h.svc.CreateSpace(nil, mmmodel.NewId())
+		_, appErr := h.svc.CreateSpace(nil, mmmodel.NewId(), nil, nil)
 		require.NotNil(t, appErr)
 		require.Equal(t, 400, appErr.StatusCode)
-		mockAPI.AssertNotCalled(t, "CreateChannel")
+		mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 	})
 }
 
@@ -202,11 +262,11 @@ func TestServiceCreateSpace_NotTeamMember(t *testing.T) {
 	mockAPI.On("GetTeamMember", teamID, userID).
 		Return(nil, &mmmodel.AppError{Message: "not a member", StatusCode: http.StatusNotFound})
 
-	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Not Allowed"}, userID)
+	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Not Allowed"}, userID, nil, nil)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
 	require.Equal(t, "app.space.create.not_team_member.app_error", appErr.Id)
-	mockAPI.AssertNotCalled(t, "CreateChannel")
+	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 }
 
 // TestServiceCreateSpace_FormerTeamMemberBlocked verifies that a user who left the team is
@@ -224,38 +284,79 @@ func TestServiceCreateSpace_FormerTeamMemberBlocked(t *testing.T) {
 	mockAPI.On("GetTeamMember", teamID, userID).
 		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: userID, DeleteAt: 1}, nil)
 
-	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Not Allowed"}, userID)
+	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Not Allowed"}, userID, nil, nil)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
 	require.Equal(t, "app.space.create.not_team_member.app_error", appErr.Id)
-	mockAPI.AssertNotCalled(t, "CreateChannel")
+	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 }
 
-// TestCheckSpaceMembership_FormerTeamMemberBlocked verifies that access to a team's space ends
-// with team membership: leaving a team does not remove the user from the space's backing
-// channel, so a former team member still holds a ChannelMember row — the team gate (which must
-// read DeleteAt, since core returns removed memberships without error) is what blocks them.
-func TestCheckSpaceMembership_FormerTeamMemberBlocked(t *testing.T) {
-	h := openTestService(t)
-	mockAPI := &plugintest.API{}
-	mockAPI.On("GetConfig").Return(&mmmodel.Config{}).Maybe()
-	client := pluginapi.NewClient(mockAPI, nil)
-	h.svc = app.New(h.store, &client.Log, client)
+// TestServiceCreateSpace_CreateSpaceGate pins the create_space authorization gate, which team
+// membership alone does not satisfy. Both directions are covered because they fail to different
+// mutants: the denial catches the gate being dropped, and the sysadmin override catches the two
+// conjuncts being swapped for a disjunction — under which a sysadmin lacking create_space would be
+// wrongly refused.
+func TestServiceCreateSpace_CreateSpaceGate(t *testing.T) {
+	t.Run("active team member without create_space is refused", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		teamID := mmmodel.NewId()
+		userID := mmmodel.NewId()
+		// Registered before the harness, whose catch-all grants create_space to every non-guest:
+		// mock.Mock matches expectations in registration order.
+		mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionCreateSpace).Return(false).Maybe()
+		h := openTestServiceWithAPI(t, mockAPI)
 
+		_, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Not Allowed"}, userID, nil, nil)
+		require.NotNil(t, appErr)
+		require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+		require.Equal(t, "app.space.create.forbidden.app_error", appErr.Id)
+		// Refused before a real, visible channel is stood up in the target team.
+		mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
+	})
+
+	t.Run("sysadmin without create_space is allowed", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		teamID := mmmodel.NewId()
+		userID := mmmodel.NewId()
+		backingChannelID := mmmodel.NewId()
+		mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionCreateSpace).Return(false).Maybe()
+		mockAPI.On("HasPermissionTo", userID, mmmodel.PermissionManageSystem).Return(true).Maybe()
+		h := openTestServiceWithAPI(t, mockAPI)
+
+		testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
+		mockAPI.On("CreateChannel", mock.MatchedBy(func(ch *mmmodel.Channel) bool {
+			return ch.Type == mmmodel.ChannelTypeSpace && ch.TeamId == teamID
+		})).Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
+		mockAPI.On("AddChannelMember", backingChannelID, userID).Return(&mmmodel.ChannelMember{}, nil)
+
+		saved, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Allowed"}, userID, nil, nil)
+		require.Nil(t, appErr)
+		require.Equal(t, backingChannelID, saved.ChannelId)
+	})
+}
+
+// TestResolveSpaceRead_FormerTeamMemberDenied verifies that access to a team's space ends with
+// team membership: leaving a team does not remove the user from the space's backing channel, so a
+// former team member still holds a ChannelMember row — the team gate (which must read DeleteAt,
+// since core returns removed memberships without error) is what blocks them.
+func TestResolveSpaceRead_FormerTeamMemberDenied(t *testing.T) {
+	mockAPI := &plugintest.API{}
 	teamID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
-
+	// Registered before the harness, whose GetTeamMember catch-all returns an active membership:
+	// mock.Mock matches expectations in registration order.
 	mockAPI.On("GetTeamMember", teamID, userID).
 		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: userID, DeleteAt: 1}, nil)
+	h := openTestServiceWithAPI(t, mockAPI)
 
-	_, appErr := h.svc.CheckSpaceMembership(space.Id, userID, false)
-	require.NotNil(t, appErr)
-	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
-	require.Equal(t, "app.space.access.forbidden.app_error", appErr.Id)
-	// The team gate blocks before the channel membership is ever consulted, so the lingering
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
+
+	resolution, appErr := h.svc.ResolveSpaceRead("test", space, userID)
+	require.Nil(t, appErr)
+	require.Equal(t, app.ReadDenied, resolution)
+	// The team gate blocks before any channel-scoped permission is consulted, so the lingering
 	// ChannelMember row is irrelevant.
-	mockAPI.AssertNotCalled(t, "GetChannelMember", mock.Anything, mock.Anything)
+	mockAPI.AssertNotCalled(t, "HasPermissionToChannel", mock.Anything, mock.Anything, mock.Anything)
 }
 
 // TestServiceDeleteSpace_ArchivesBackingChannel verifies DeleteSpace archives the space's
@@ -268,16 +369,17 @@ func TestServiceDeleteSpace_ArchivesBackingChannel(t *testing.T) {
 	userID := mmmodel.NewId()
 	backingChannelID := mmmodel.NewId()
 
+	testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
 	mockAPI.On("AddChannelMember", backingChannelID, userID).Return(&mmmodel.ChannelMember{}, nil)
 	mockAPI.On("DeleteChannel", backingChannelID).Return(nil)
 	mockAPI.On("GetChannelMembers", backingChannelID, 0, app.PerPageMaximum).Return(mmmodel.ChannelMembers{}, nil)
 
-	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Doomed"}, userID)
+	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Doomed"}, userID, nil, nil)
 	require.Nil(t, appErr)
 
-	require.Nil(t, h.svc.DeleteSpace(space))
+	require.Nil(t, h.svc.DeleteSpace(&space.Space))
 	mockAPI.AssertCalled(t, "DeleteChannel", backingChannelID)
 
 	// The space is soft-deleted: a live read no longer finds it.
@@ -297,6 +399,7 @@ func TestServiceDeleteSpace_ArchiveFailureTolerated(t *testing.T) {
 	userID := mmmodel.NewId()
 	backingChannelID := mmmodel.NewId()
 
+	testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
 	mockAPI.On("AddChannelMember", backingChannelID, userID).Return(&mmmodel.ChannelMember{}, nil)
@@ -305,10 +408,10 @@ func TestServiceDeleteSpace_ArchiveFailureTolerated(t *testing.T) {
 	mockAPI.On("GetChannelMembers", backingChannelID, 0, app.PerPageMaximum).Return(mmmodel.ChannelMembers{}, nil)
 	mockAPI.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 
-	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Doomed"}, userID)
+	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Doomed"}, userID, nil, nil)
 	require.Nil(t, appErr)
 
-	require.Nil(t, h.svc.DeleteSpace(space), "DeleteSpace must succeed even though the channel archive fails")
+	require.Nil(t, h.svc.DeleteSpace(&space.Space), "DeleteSpace must succeed even though the channel archive fails")
 	mockAPI.AssertCalled(t, "DeleteChannel", backingChannelID)
 
 	// The space is soft-deleted regardless of the channel-archive failure.
@@ -330,6 +433,12 @@ func TestServiceRestoreSpace_ChannelRestoreFailurePropagates(t *testing.T) {
 	userID := mmmodel.NewId()
 	backingChannelID := mmmodel.NewId()
 
+	channel := testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
+	// The channel is still archived, so the un-archive genuinely failed and must propagate.
+	// Set on the shared channel MustSeedChannelScheme's GetChannelOfType stub returns, rather than
+	// a second competing stub: DeleteAt is irrelevant to CreateSpace's own scheme-resolution read
+	// of the same channel, so it can be set from the start.
+	channel.DeleteAt = 100
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
 	mockAPI.On("AddChannelMember", backingChannelID, userID).Return(&mmmodel.ChannelMember{}, nil)
@@ -337,13 +446,10 @@ func TestServiceRestoreSpace_ChannelRestoreFailurePropagates(t *testing.T) {
 	mockAPI.On("GetChannelMembers", backingChannelID, 0, app.PerPageMaximum).Return(mmmodel.ChannelMembers{}, nil)
 	mockAPI.On("RestoreChannel", backingChannelID).
 		Return(&mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
-	// The channel is still archived, so the un-archive genuinely failed and must propagate.
-	mockAPI.On("GetChannelOfType", backingChannelID, mmmodel.ChannelTypeSpace).
-		Return(&mmmodel.Channel{Id: backingChannelID, Type: mmmodel.ChannelTypeSpace, DeleteAt: 100}, nil)
 
-	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Round Trip"}, userID)
+	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Round Trip"}, userID, nil, nil)
 	require.Nil(t, appErr)
-	require.Nil(t, h.svc.DeleteSpace(space))
+	require.Nil(t, h.svc.DeleteSpace(&space.Space))
 
 	_, appErr = h.svc.RestoreSpace(space.Id)
 	require.NotNil(t, appErr, "RestoreSpace must fail when the channel un-archive fails")
@@ -369,6 +475,11 @@ func TestServiceRestoreSpace_RetriesStuckChannelRestore(t *testing.T) {
 	userID := mmmodel.NewId()
 	backingChannelID := mmmodel.NewId()
 
+	channel := testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
+	// The channel stays archived throughout, so both the failure check and the retry see it as
+	// genuinely needing an un-archive. Set on the shared channel MustSeedChannelScheme's
+	// GetChannelOfType stub returns, rather than a second competing stub.
+	channel.DeleteAt = 100
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
 	mockAPI.On("AddChannelMember", backingChannelID, userID).Return(&mmmodel.ChannelMember{}, nil)
@@ -378,14 +489,10 @@ func TestServiceRestoreSpace_RetriesStuckChannelRestore(t *testing.T) {
 	mockAPI.On("RestoreChannel", backingChannelID).
 		Return(&mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError}).Once()
 	mockAPI.On("RestoreChannel", backingChannelID).Return(nil).Once()
-	// The channel stays archived throughout, so both the failure check and the retry see it as
-	// genuinely needing an un-archive.
-	mockAPI.On("GetChannelOfType", backingChannelID, mmmodel.ChannelTypeSpace).
-		Return(&mmmodel.Channel{Id: backingChannelID, Type: mmmodel.ChannelTypeSpace, DeleteAt: 100}, nil)
 
-	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Stuck Restore"}, userID)
+	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Stuck Restore"}, userID, nil, nil)
 	require.Nil(t, appErr)
-	require.Nil(t, h.svc.DeleteSpace(space))
+	require.Nil(t, h.svc.DeleteSpace(&space.Space))
 
 	_, appErr = h.svc.RestoreSpace(space.Id)
 	require.NotNil(t, appErr, "the first RestoreSpace must fail on the channel un-archive")
@@ -412,6 +519,9 @@ func TestServiceRestoreSpace_ChannelNeverArchived(t *testing.T) {
 	userID := mmmodel.NewId()
 	backingChannelID := mmmodel.NewId()
 
+	// MustSeedChannelScheme's shared channel defaults to DeleteAt 0 (live), matching this test's
+	// "the channel stays live" intent — no separate GetChannelOfType stub needed.
+	testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
 	mockAPI.On("AddChannelMember", backingChannelID, userID).Return(&mmmodel.ChannelMember{}, nil)
@@ -422,12 +532,10 @@ func TestServiceRestoreSpace_ChannelNeverArchived(t *testing.T) {
 	// Core rejects un-archiving a channel that was never archived.
 	mockAPI.On("RestoreChannel", backingChannelID).
 		Return(&mmmodel.AppError{Message: "channel is not archived", StatusCode: http.StatusBadRequest})
-	mockAPI.On("GetChannelOfType", backingChannelID, mmmodel.ChannelTypeSpace).
-		Return(&mmmodel.Channel{Id: backingChannelID, Type: mmmodel.ChannelTypeSpace, DeleteAt: 0}, nil)
 
-	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Never Archived"}, userID)
+	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Never Archived"}, userID, nil, nil)
 	require.Nil(t, appErr)
-	require.Nil(t, h.svc.DeleteSpace(space))
+	require.Nil(t, h.svc.DeleteSpace(&space.Space))
 
 	restored, appErr := h.svc.RestoreSpace(space.Id)
 	require.Nil(t, appErr, "RestoreSpace must succeed when the backing channel was never archived")
@@ -452,6 +560,7 @@ func TestServiceCreateSpace_CompensatingDelete(t *testing.T) {
 	// trips the unique channel-id constraint and the row save fails.
 	mustCreateSpace(t, h.store, collisionChannelID)
 
+	testutil.MustSeedChannelScheme(t, mockAPI, collisionChannelID, mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Return(&mmmodel.Channel{Id: collisionChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
 	mockAPI.On("AddChannelMember", collisionChannelID, userID).Return(&mmmodel.ChannelMember{}, nil)
@@ -459,7 +568,7 @@ func TestServiceCreateSpace_CompensatingDelete(t *testing.T) {
 
 	space := &model.Space{TeamId: teamID, Title: "Doomed Space"}
 
-	_, appErr := h.svc.CreateSpace(space, userID)
+	_, appErr := h.svc.CreateSpace(space, userID, nil, nil)
 	require.NotNil(t, appErr)
 	require.Equal(t, 409, appErr.StatusCode)
 	mockAPI.AssertCalled(t, "DeleteChannel", collisionChannelID)
@@ -480,6 +589,7 @@ func TestServiceCreateSpace_CompensatingDeleteAlsoFails(t *testing.T) {
 	// trips the unique channel-id constraint and the row save fails.
 	mustCreateSpace(t, h.store, collisionChannelID)
 
+	testutil.MustSeedChannelScheme(t, mockAPI, collisionChannelID, mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Return(&mmmodel.Channel{Id: collisionChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
 	mockAPI.On("AddChannelMember", collisionChannelID, userID).Return(&mmmodel.ChannelMember{}, nil)
@@ -488,7 +598,7 @@ func TestServiceCreateSpace_CompensatingDeleteAlsoFails(t *testing.T) {
 
 	space := &model.Space{TeamId: teamID, Title: "Doomed Space"}
 
-	_, appErr := h.svc.CreateSpace(space, userID)
+	_, appErr := h.svc.CreateSpace(space, userID, nil, nil)
 	require.NotNil(t, appErr)
 	require.Equal(t, 409, appErr.StatusCode, "the original row-save conflict must surface even though the compensating archive also failed")
 	mockAPI.AssertCalled(t, "DeleteChannel", collisionChannelID)
@@ -504,13 +614,14 @@ func TestServiceCreateSpace_AddMemberFailedCompensates(t *testing.T) {
 	userID := mmmodel.NewId()
 	backingChannelID := mmmodel.NewId()
 
+	testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
 	mockAPI.On("AddChannelMember", backingChannelID, userID).
 		Return(nil, &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
 	mockAPI.On("DeleteChannel", backingChannelID).Return(nil)
 
-	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Doomed"}, userID)
+	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Doomed"}, userID, nil, nil)
 	require.NotNil(t, appErr)
 	require.Equal(t, "app.space.create.add_member_failed.app_error", appErr.Id)
 	// The orphan channel is removed; no space row is persisted for the team.
@@ -524,6 +635,524 @@ func TestServiceCreateSpace_AddMemberFailedCompensates(t *testing.T) {
 	require.Empty(t, spaces)
 }
 
+// stubSchemeCreate wires the mock calls a non-preset default-permission set needs: a CreateScheme
+// returning a scheme with three roles named off rolePrefix, those roles registered so a channel
+// repointed at the scheme resolves them, and a PatchRole. When patchErr is non-nil every role
+// patch fails with it, so the configure step a freshly created scheme needs cannot complete.
+// Returns the new scheme's id.
+func stubSchemeCreate(t *testing.T, mockAPI *plugintest.API, rolePrefix string, patchErr *mmmodel.AppError) string {
+	t.Helper()
+	testutil.StubPooledSchemeMiss(mockAPI)
+	schemeID := mmmodel.NewId()
+	userRole := rolePrefix + "_user_role"
+	adminRole := rolePrefix + "_admin_role"
+	guestRole := rolePrefix + "_guest_role"
+	mockAPI.On("CreateScheme", mock.AnythingOfType("*model.Scheme")).Return(&mmmodel.Scheme{
+		Id:                      schemeID,
+		Name:                    model.SharedSchemeNamePrefix + mmmodel.NewId(),
+		Scope:                   mmmodel.SchemeScopeChannel,
+		DefaultChannelUserRole:  userRole,
+		DefaultChannelAdminRole: adminRole,
+		DefaultChannelGuestRole: guestRole,
+	}, nil)
+	testutil.RegisterSchemeRoles(schemeID, guestRole, userRole, adminRole)
+	testutil.StubRole(mockAPI, userRole, nil)
+	testutil.StubRole(mockAPI, adminRole, nil)
+	testutil.StubRole(mockAPI, guestRole, nil)
+	if patchErr != nil {
+		mockAPI.On("PatchRole", mock.AnythingOfType("string"), mock.AnythingOfType("*model.RolePatch")).
+			Return(nil, patchErr)
+	} else {
+		testutil.StubPatchRole(mockAPI)
+	}
+	return schemeID
+}
+
+// TestServiceCreateSpace_PooledSchemeSurvivesAbandon covers the compensating path a non-preset
+// default-permission set takes when a later create step fails: the doomed backing channel is
+// archived, but the pooled scheme it pointed at is left alone. The pool is keyed by the permission
+// set, so that scheme is not this space's to delete — another space may already be resolving to it,
+// and deleting it would strip their members' permissions.
+func TestServiceCreateSpace_PooledSchemeSurvivesAbandon(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	backingChannelID := mmmodel.NewId()
+
+	channel := testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
+	pooledSchemeID := stubSchemeCreate(t, mockAPI, "custom", nil)
+	// CreateChannel attaches the pooled scheme, which is what lets core admit the role writes.
+	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
+		Run(func(args mock.Arguments) {
+			created, ok := args.Get(0).(*mmmodel.Channel)
+			require.True(t, ok)
+			require.NotNil(t, created.SchemeId)
+			channel.SchemeId = created.SchemeId
+		}).
+		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
+	mockAPI.On("AddChannelMember", backingChannelID, userID).
+		Return(nil, &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
+	mockAPI.On("DeleteChannel", backingChannelID).Return(nil)
+
+	_, appErr := h.svc.CreateSpace(
+		&model.Space{TeamId: teamID, Title: "Doomed Pooled"}, userID, &[]string{"create_page"}, nil)
+	require.NotNil(t, appErr)
+	require.Equal(t, "app.space.create.add_member_failed.app_error", appErr.Id)
+
+	mockAPI.AssertCalled(t, "DeleteChannel", backingChannelID)
+	mockAPI.AssertNotCalled(t, "DeleteScheme", mock.Anything)
+	require.NotNil(t, channel.SchemeId, "the doomed channel must have carried the pooled scheme")
+	require.Equal(t, pooledSchemeID, *channel.SchemeId)
+}
+
+// TestServiceCreateSpace_PresetSchemeSurvivesAbandon is the negative half of the case above: a
+// preset scheme is shared by every space using it, so a failed create must archive the channel
+// without ever deleting the scheme.
+func TestServiceCreateSpace_PresetSchemeSurvivesAbandon(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	backingChannelID := mmmodel.NewId()
+
+	testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
+	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
+		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
+	mockAPI.On("AddChannelMember", backingChannelID, userID).
+		Return(nil, &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
+	mockAPI.On("DeleteChannel", backingChannelID).Return(nil)
+
+	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Doomed Preset"}, userID, nil, nil)
+	require.NotNil(t, appErr)
+	mockAPI.AssertCalled(t, "DeleteChannel", backingChannelID)
+	mockAPI.AssertNotCalled(t, "DeleteScheme", mock.Anything)
+}
+
+// TestServiceCreateSpace_CustomSchemeConfiguredAfterChannelAttach verifies the ordering core
+// requires: the role writes carrying space permissions land only after the backing channel already
+// points at the scheme, since a caller-chosen scheme name is not accepted as proof of space scope.
+func TestServiceCreateSpace_CustomSchemeConfiguredAfterChannelAttach(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	backingChannelID := mmmodel.NewId()
+
+	channel := testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
+
+	// Registered before stubSchemeCreate's own catch-all PatchRole so this one matches first
+	// (mock.Mock matches in registration order) and can record the permission set per role.
+	channelAttached := false
+	patched := map[string][]string{}
+	mockAPI.On("PatchRole", mock.AnythingOfType("string"), mock.AnythingOfType("*model.RolePatch")).
+		Run(func(args mock.Arguments) {
+			require.True(t, channelAttached, "roles must be patched only after the channel attaches the scheme")
+			roleID, ok := args.Get(0).(string)
+			require.True(t, ok)
+			roleName, ok := testutil.StubbedRoleName(roleID)
+			require.True(t, ok, "PatchRole called with an unregistered role id %q", roleID)
+			patch, ok := args.Get(1).(*mmmodel.RolePatch)
+			require.True(t, ok)
+			require.NotNil(t, patch.Permissions)
+			patched[roleName] = *patch.Permissions
+		}).
+		Return(&mmmodel.Role{}, nil)
+
+	customSchemeID := stubSchemeCreate(t, mockAPI, "custom", nil)
+	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
+		Run(func(args mock.Arguments) {
+			created, ok := args.Get(0).(*mmmodel.Channel)
+			require.True(t, ok)
+			require.NotNil(t, created.SchemeId)
+			require.Equal(t, customSchemeID, *created.SchemeId)
+			channel.SchemeId = created.SchemeId
+			channelAttached = true
+		}).
+		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
+	mockAPI.On("AddChannelMember", backingChannelID, userID).Return(&mmmodel.ChannelMember{}, nil)
+
+	space, appErr := h.svc.CreateSpace(
+		&model.Space{TeamId: teamID, Title: "Custom Caps"}, userID, &[]string{"create_page"}, nil)
+	require.Nil(t, appErr)
+	require.NotNil(t, space)
+
+	// Each generated role gets its own set: the user role the requested permissions plus the
+	// baseline read, the guest role read alone, and the admin role the full space-admin set.
+	require.ElementsMatch(t, []string{"read_page", "create_page"}, patched["custom_user_role"])
+	require.ElementsMatch(t, []string{"read_page"}, patched["custom_guest_role"])
+	require.ElementsMatch(t, mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions), patched["custom_admin_role"])
+}
+
+// TestServiceCreateSpace_PooledSchemeConfigureFailureAbandons covers the CreateSpace branch that
+// runs when the role writes fail after the backing channel already carries the pooled scheme: the
+// create fails and the channel is archived, while the pooled scheme stays — it is shared, so a
+// later space resolving to the same permission set reconfigures it. The creator is never added,
+// since configuration precedes that.
+func TestServiceCreateSpace_PooledSchemeConfigureFailureAbandons(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	backingChannelID := mmmodel.NewId()
+
+	channel := testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
+	customSchemeID := stubSchemeCreate(t, mockAPI, "unconfigurable", &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
+	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
+		Run(func(args mock.Arguments) {
+			created, ok := args.Get(0).(*mmmodel.Channel)
+			require.True(t, ok)
+			require.NotNil(t, created.SchemeId)
+			channel.SchemeId = created.SchemeId
+		}).
+		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
+	mockAPI.On("DeleteChannel", backingChannelID).Return(nil)
+
+	_, appErr := h.svc.CreateSpace(
+		&model.Space{TeamId: teamID, Title: "Unconfigurable Pooled"}, userID, &[]string{"create_page"}, nil)
+	require.NotNil(t, appErr)
+	require.Equal(t, "app.space.create.scheme_configure_failed.app_error", appErr.Id)
+
+	mockAPI.AssertCalled(t, "DeleteChannel", backingChannelID)
+	mockAPI.AssertNotCalled(t, "DeleteScheme", mock.Anything)
+	require.NotEmpty(t, customSchemeID)
+	mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
+
+	spaces, err := h.store.GetSpacesForTeam(teamID, userID, false, 0, 10)
+	require.NoError(t, err)
+	require.Empty(t, spaces)
+}
+
+// TestServiceSetSpaceDefaultPermissions_ConfigureFailureRollsBack covers the repoint-then-configure
+// failure branch: a space whose newly pooled scheme cannot be configured must be put back on its
+// previous scheme rather than left on one whose roles may still carry core's default channel
+// baseline. The pooled scheme itself is never deleted — it is shared, not this space's to retire.
+func TestServiceSetSpaceDefaultPermissions_ConfigureFailureRollsBack(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	channelID := mmmodel.NewId()
+
+	// The write re-authorizes inside the lock, so the actor has to hold admin_space to reach
+	// the configure branch this test is about. Registered before the harness: testify matches
+	// the first expectation registered, and StubDefaultSpacePermissions denies admin_space.
+	actingUserID := mmmodel.NewId()
+	mockAPI.On("HasPermissionToChannel", actingUserID, channelID, mmmodel.PermissionAdminSpace).Return(true).Maybe()
+
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	// That in-lock re-authorization reads SchemeAdmin from the master rather than through the
+	// cached permission composition, so the grant above is not sufficient on its own.
+	testutil.MustAddChannelAdmin(t, h.db, channelID, actingUserID)
+
+	channel := testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
+	pooledSchemeID := stubSchemeCreate(t, mockAPI, "unconfigurable", &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
+
+	space := mustCreateSpace(t, h.store, channelID)
+	_, appErr := h.svc.SetSpaceDefaultPermissions(space, []string{"create_page"}, actingUserID)
+
+	require.NotNil(t, appErr)
+	require.Equal(t, "app.space.default_permissions.scheme_configure_failed.app_error", appErr.Id)
+	require.NotNil(t, channel.SchemeId)
+	require.Equal(t, testutil.PresetSchemeID(mmmodel.SchemeNameSpaceContribute), *channel.SchemeId,
+		"the channel must be repointed back at the scheme it started on")
+	require.NotEqual(t, pooledSchemeID, *channel.SchemeId)
+	mockAPI.AssertNotCalled(t, "DeleteScheme", mock.Anything)
+}
+
+// TestServiceSetSpaceDefaultPermissions_SameSchemeStillConfiguresRoles covers the recovery path for
+// a space already pointing at the scheme its requested set resolves to, whose roles were never
+// written — the state an earlier run interrupted between the channel repoint and the role write
+// leaves behind. There is no repoint to perform, so the operation could return having done nothing,
+// and every later submission of the intended set would do the same, leaving the space permanently on
+// core's default channel baseline with no way to move off it. Resubmitting must write the roles.
+func TestServiceSetSpaceDefaultPermissions_SameSchemeStillConfiguresRoles(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	sysadminID := mmmodel.NewId()
+	// Registered before the harness so the response's own-permission projection resolves via
+	// sysadmin, sidestepping the ReadViaMember channel-member lookup this test does not stub.
+	// mock.Mock matches expectations in registration order.
+	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true)
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	permissions := []string{mmmodel.PermissionCreatePage.Id}
+	pooledName := model.SharedSchemeNameForPermissions(permissions)
+	schemeID := mmmodel.NewId()
+	userRole, adminRole, guestRole := pooledName+"_user", pooledName+"_admin", pooledName+"_guest"
+	mockAPI.On("GetSchemeByName", pooledName).Return(&mmmodel.Scheme{
+		Id:                      schemeID,
+		Name:                    pooledName,
+		DisplayName:             model.SharedSchemeDisplayNameForPermissions(permissions),
+		Scope:                   mmmodel.SchemeScopeChannel,
+		DefaultChannelUserRole:  userRole,
+		DefaultChannelAdminRole: adminRole,
+		DefaultChannelGuestRole: guestRole,
+	}, nil)
+	testutil.RegisterSchemeRoles(schemeID, guestRole, userRole, adminRole)
+	// Empty permission sets stand in for an unconfigured role — one core generated alongside the
+	// scheme and configureSharedScheme has not yet written. Core does not literally leave them
+	// empty (it seeds the moderated subset of the built-in role, and a read merges more in), but
+	// every comparison here goes through the space-permission filter, and an unconfigured role
+	// carries no space permission whatever core put on it. Empty is therefore the same input.
+	unconfiguredUserRole := testutil.StubRole(mockAPI, userRole, nil)
+	testutil.StubRole(mockAPI, adminRole, nil)
+	testutil.StubRole(mockAPI, guestRole, nil)
+	testutil.StubPatchRole(mockAPI)
+
+	// The channel already points at that scheme, so the repoint branch is skipped entirely.
+	channelID := mmmodel.NewId()
+	testutil.StubChannelScheme(mockAPI, channelID, &mmmodel.Channel{
+		Id: channelID, Type: mmmodel.ChannelTypeSpace, SchemeId: &schemeID,
+	})
+	space := mustCreateSpace(t, h.store, channelID)
+
+	updated, appErr := h.svc.SetSpaceDefaultPermissions(space, permissions, sysadminID)
+
+	require.Nil(t, appErr)
+	require.Equal(t, permissions, updated.DefaultPermissions)
+	require.ElementsMatch(t, []string{mmmodel.PermissionReadPage.Id, mmmodel.PermissionCreatePage.Id},
+		unconfiguredUserRole.Permissions,
+		"resubmitting the set a space already resolves to must write the roles it was left without")
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_updated",
+		map[string]any{"space_id": space.Id}, &mmmodel.WebsocketBroadcast{ChannelId: channelID})
+}
+
+// TestServiceSetSpaceDefaultPermissions_UserRoleAloneUnconfiguredStillWritesIt models the residual
+// state a User-role-only mid-loop failure leaves under configureSharedScheme's Admin/Guest-before-
+// User write order: Admin and Guest already hold their correct permissions, User is still at core's
+// unconfigured baseline. The no-op shortcut's projection (User role alone) must read this as
+// incorrect and fall through to the recovery branch, which reaches configureSharedScheme and writes
+// the User role — the shortcut must not report the space as already configured.
+func TestServiceSetSpaceDefaultPermissions_UserRoleAloneUnconfiguredStillWritesIt(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	sysadminID := mmmodel.NewId()
+	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true)
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	permissions := []string{mmmodel.PermissionCreatePage.Id}
+	pooledName := model.SharedSchemeNameForPermissions(permissions)
+	schemeID := mmmodel.NewId()
+	userRoleName, adminRoleName, guestRoleName := pooledName+"_user", pooledName+"_admin", pooledName+"_guest"
+	mockAPI.On("GetSchemeByName", pooledName).Return(&mmmodel.Scheme{
+		Id:                      schemeID,
+		Name:                    pooledName,
+		DisplayName:             model.SharedSchemeDisplayNameForPermissions(permissions),
+		Scope:                   mmmodel.SchemeScopeChannel,
+		DefaultChannelUserRole:  userRoleName,
+		DefaultChannelAdminRole: adminRoleName,
+		DefaultChannelGuestRole: guestRoleName,
+	}, nil)
+	testutil.RegisterSchemeRoles(schemeID, guestRoleName, userRoleName, adminRoleName)
+
+	unconfiguredUserRole := testutil.StubRole(mockAPI, userRoleName, nil)
+	testutil.StubRole(mockAPI, adminRoleName, mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions))
+	testutil.StubRole(mockAPI, guestRoleName, []string{mmmodel.PermissionReadPage.Id})
+	testutil.StubPatchRole(mockAPI)
+
+	channelID := mmmodel.NewId()
+	testutil.StubChannelScheme(mockAPI, channelID, &mmmodel.Channel{
+		Id: channelID, Type: mmmodel.ChannelTypeSpace, SchemeId: &schemeID,
+	})
+	space := mustCreateSpace(t, h.store, channelID)
+
+	updated, appErr := h.svc.SetSpaceDefaultPermissions(space, permissions, sysadminID)
+
+	require.Nil(t, appErr)
+	require.Equal(t, permissions, updated.DefaultPermissions)
+	require.ElementsMatch(t, []string{mmmodel.PermissionReadPage.Id, mmmodel.PermissionCreatePage.Id},
+		unconfiguredUserRole.Permissions,
+		"the recovery branch must be reached and write the still-unconfigured user role")
+	mockAPI.AssertCalled(t, "PatchRole", unconfiguredUserRole.Id, mock.AnythingOfType("*model.RolePatch"))
+}
+
+// TestServiceBuildSpaceWithAccess_TeamManagerGetsManageTier covers the caller whose authority over a
+// space arrives from outside it.
+//
+// The caller holds team manage_space but is not a member of the space's backing channel, so the read
+// resolves through the open-space fall-through and their page authority is read_page alone. The
+// routes that read and write the member roster admit exactly this caller, so an effective set
+// reporting page permissions only would hide the roster from someone the server would serve —
+// manage_space in that set is what carries the tier across.
+func TestServiceBuildSpaceWithAccess_TeamManagerGetsManageTier(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	// Registered before the harness so these beat StubDefaultSpacePermissions' catch-all: no
+	// backing-channel page permission at all, which is what forces the fall-through rather than a
+	// member read.
+	for _, p := range []*mmmodel.Permission{
+		mmmodel.PermissionReadPage, mmmodel.PermissionCreatePage, mmmodel.PermissionCommentPage,
+		mmmodel.PermissionEditPage, mmmodel.PermissionDeleteOwnPage, mmmodel.PermissionDeletePage,
+		mmmodel.PermissionAdminSpace,
+	} {
+		mockAPI.On("HasPermissionToChannel", userID, mock.Anything, p).Return(false).Maybe()
+	}
+	teamID := mmmodel.NewId()
+	// Also registered ahead of the harness: StubDefaultSpacePermissions denies team manage_space to
+	// everyone, and mock.Mock answers with the first matching expectation.
+	mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionReadPublicChannel).Return(true).Maybe()
+	mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionManageSpace).Return(true).Maybe()
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
+	space := testutil.MustCreateSpace(t, h.store, channelID, teamID)
+	open := model.ViewAccessOpen
+	space, err := h.store.UpdateSpace(space.Id, &model.SpacePatch{ViewAccess: &open}, space.UpdateAt, false)
+	require.NoError(t, err)
+
+	wrapper, appErr := h.svc.BuildSpaceWithAccess(space, userID)
+
+	require.Nil(t, appErr)
+	require.ElementsMatch(t,
+		[]string{mmmodel.PermissionReadPage.Id, mmmodel.PermissionManageSpace.Id},
+		wrapper.Permissions,
+		"the caller effectively holds read_page on pages and the manage tier over the space, and the "+
+			"effective set must state both — page authority alone would lock them out of the roster")
+	require.NotContains(t, wrapper.Permissions, mmmodel.PermissionAdminSpace.Id,
+		"the manage tier must not imply the administer tier: the space-wide knobs stay refused")
+}
+
+// TestServiceBuildSpaceWithAccess_PlainMemberHasNoManageTier is the negative counterpart: an
+// ordinary member with neither space-admin nor team manage_space must not be told they can manage
+// members, or the client would offer a roster the server refuses. Membership alone is not the
+// manage tier.
+func TestServiceBuildSpaceWithAccess_PlainMemberHasNoManageTier(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionAdminSpace).Return(false).Maybe()
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	teamID := mmmodel.NewId()
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
+	space := testutil.MustCreateSpace(t, h.store, channelID, teamID)
+
+	mockAPI.On("HasPermissionTo", userID, mmmodel.PermissionManageSystem).Return(false).Maybe()
+	mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionManageSpace).Return(false).Maybe()
+	mockAPI.On("GetChannelMember", channelID, userID).
+		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: userID, SchemeUser: true}, nil).Maybe()
+
+	wrapper, appErr := h.svc.BuildSpaceWithAccess(space, userID)
+
+	require.Nil(t, appErr)
+	require.NotContains(t, wrapper.Permissions, mmmodel.PermissionManageSpace.Id,
+		"an ordinary member holds no manage tier; being in the space is not authority over it")
+}
+
+// TestServiceSetSpaceDefaultPermissions_OverPrivilegedUserRoleRefused is the over-configured
+// counterpart of the test above, and it takes two guards to pass.
+//
+// The pooled scheme's User role holds a permission the pooled name does not imply — admin_space,
+// standing in for a System Console edit — so every member of every space sharing that scheme
+// silently holds space-admin authority. Resubmitting the intended set must not report success:
+//
+//   - the no-op shortcut has to notice. It compares the User role against the whole set the writer
+//     lands, so the extra token makes it differ; comparing the read_page-free wire projection
+//     instead would strip admin_space, read as unchanged, and return early having fixed nothing.
+//   - adoption then has to refuse. The scheme's roles do not match its name, so the pool cannot
+//     prove the scheme is its own, and rewriting the roles of a scheme it does not own could
+//     change authority on channels outside this space.
+//
+// The net behaviour is a 500 naming a server-state conflict, which an admin resolves by correcting
+// or deleting the scheme where they edited it. That is deliberately not a silent self-repair: the
+// pool cannot tell a tampered scheme of its own from an unrelated channel scheme occupying the
+// name, and guessing wrong rewrites permissions on channels that have nothing to do with Docs.
+func TestServiceSetSpaceDefaultPermissions_OverPrivilegedUserRoleRefused(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	sysadminID := mmmodel.NewId()
+	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true)
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	// create_page alone is deliberately not one of the three seeded presets, so this resolves
+	// through the pool rather than a preset scheme — the pool is what adoption guards.
+	permissions := []string{mmmodel.PermissionCreatePage.Id}
+	pooledName := model.SharedSchemeNameForPermissions(permissions)
+	schemeID := mmmodel.NewId()
+	userRoleName, adminRoleName, guestRoleName := pooledName+"_user", pooledName+"_admin", pooledName+"_guest"
+	mockAPI.On("GetSchemeByName", pooledName).Return(&mmmodel.Scheme{
+		Id:                      schemeID,
+		Name:                    pooledName,
+		DisplayName:             model.SharedSchemeDisplayNameForPermissions(permissions),
+		Scope:                   mmmodel.SchemeScopeChannel,
+		DefaultChannelUserRole:  userRoleName,
+		DefaultChannelAdminRole: adminRoleName,
+		DefaultChannelGuestRole: guestRoleName,
+	}, nil)
+	testutil.RegisterSchemeRoles(schemeID, guestRoleName, userRoleName, adminRoleName)
+
+	// The tampered role: the pooled name implies read_page + create_page, and this grants
+	// admin_space on top. The wire projection drops admin_space, so a projection-based comparison
+	// reads this as already correct.
+	tamperedUserRole := testutil.StubRole(mockAPI, userRoleName, []string{
+		mmmodel.PermissionReadPage.Id, mmmodel.PermissionCreatePage.Id, mmmodel.PermissionAdminSpace.Id,
+	})
+	testutil.StubRole(mockAPI, adminRoleName, mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions))
+	testutil.StubRole(mockAPI, guestRoleName, []string{mmmodel.PermissionReadPage.Id})
+	testutil.StubPatchRole(mockAPI)
+
+	channelID := mmmodel.NewId()
+	testutil.StubChannelScheme(mockAPI, channelID, &mmmodel.Channel{
+		Id: channelID, Type: mmmodel.ChannelTypeSpace, SchemeId: &schemeID,
+	})
+	space := mustCreateSpace(t, h.store, channelID)
+
+	_, appErr := h.svc.SetSpaceDefaultPermissions(space, permissions, sysadminID)
+
+	require.NotNil(t, appErr, "a scheme granting more than its pooled name implies must not report success")
+	require.Equal(t, "app.space.pooled_scheme_conflict.app_error", appErr.Id)
+	require.Contains(t, tamperedUserRole.Permissions, mmmodel.PermissionAdminSpace.Id,
+		"the refusal must leave the scheme untouched rather than rewriting roles the pool does not own")
+}
+
+// TestServiceSetSpaceDefaultPermissions_ResponseReflectsRequestedNotStaleReadback covers the
+// projection guard: the response is built from the permission set written under the lock, not
+// from a fresh read of the roles that write just committed. GetRoleByName here always answers with
+// a role frozen on a pre-update permission set, standing in for a lagging-replica read of the
+// caller's own committed change; the response must still report the requested set.
+func TestServiceSetSpaceDefaultPermissions_ResponseReflectsRequestedNotStaleReadback(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	sysadminID := mmmodel.NewId()
+	// Registered before the harness so the response's own-permission projection resolves via
+	// sysadmin (AdminEffectivePermissions), sidestepping the ReadViaMember channel-member lookup
+	// this test does not otherwise stub. mock.Mock matches expectations in registration order.
+	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true)
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
+
+	testutil.StubPooledSchemeMiss(mockAPI)
+	schemeID := mmmodel.NewId()
+	userRole, adminRole, guestRole := "stale_readback_user_role", "stale_readback_admin_role", "stale_readback_guest_role"
+	mockAPI.On("CreateScheme", mock.AnythingOfType("*model.Scheme")).Return(&mmmodel.Scheme{
+		Id:                      schemeID,
+		Name:                    model.SharedSchemeNamePrefix + mmmodel.NewId(),
+		Scope:                   mmmodel.SchemeScopeChannel,
+		DefaultChannelUserRole:  userRole,
+		DefaultChannelAdminRole: adminRole,
+		DefaultChannelGuestRole: guestRole,
+	}, nil)
+	testutil.RegisterSchemeRoles(schemeID, guestRole, userRole, adminRole)
+	// Frozen on a permission set that does not match the request below, and never updated by the
+	// PatchRole stub: a caller that re-read this role after the write would see the wrong set.
+	mockAPI.On("GetRoleByName", userRole).
+		Return(&mmmodel.Role{Id: mmmodel.NewId(), Name: userRole, Permissions: []string{mmmodel.PermissionCommentPage.Id}}, nil)
+	mockAPI.On("GetRoleByName", adminRole).Return(&mmmodel.Role{Id: mmmodel.NewId(), Name: adminRole}, nil)
+	mockAPI.On("GetRoleByName", guestRole).Return(&mmmodel.Role{Id: mmmodel.NewId(), Name: guestRole}, nil)
+	mockAPI.On("PatchRole", mock.AnythingOfType("string"), mock.AnythingOfType("*model.RolePatch")).
+		Return(&mmmodel.Role{}, nil)
+
+	space := mustCreateSpace(t, h.store, channelID)
+
+	updated, appErr := h.svc.SetSpaceDefaultPermissions(space, []string{"create_page"}, sysadminID)
+	require.Nil(t, appErr)
+	require.NotNil(t, updated)
+	require.ElementsMatch(t, []string{"create_page"}, updated.DefaultPermissions,
+		"the response must report the requested set, not a stale role read-back")
+}
+
 // TestServiceRestoreSpace_UnarchivesBackingChannel verifies a create→delete→restore round trip
 // un-archives the backing channel and brings the space back live.
 func TestServiceRestoreSpace_UnarchivesBackingChannel(t *testing.T) {
@@ -534,6 +1163,7 @@ func TestServiceRestoreSpace_UnarchivesBackingChannel(t *testing.T) {
 	userID := mmmodel.NewId()
 	backingChannelID := mmmodel.NewId()
 
+	testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
 	mockAPI.On("AddChannelMember", backingChannelID, userID).Return(&mmmodel.ChannelMember{}, nil)
@@ -541,9 +1171,9 @@ func TestServiceRestoreSpace_UnarchivesBackingChannel(t *testing.T) {
 	mockAPI.On("GetChannelMembers", backingChannelID, 0, app.PerPageMaximum).Return(mmmodel.ChannelMembers{}, nil)
 	mockAPI.On("RestoreChannel", backingChannelID).Return(nil)
 
-	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Round Trip"}, userID)
+	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Round Trip"}, userID, nil, nil)
 	require.Nil(t, appErr)
-	require.Nil(t, h.svc.DeleteSpace(space))
+	require.Nil(t, h.svc.DeleteSpace(&space.Space))
 	got, appErr := h.svc.RestoreSpace(space.Id)
 	require.Nil(t, appErr)
 
@@ -558,7 +1188,7 @@ func TestServiceUpdateSpace(t *testing.T) {
 	h := openTestService(t)
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 
-	patched, appErr := h.svc.UpdateSpace(space, &model.SpacePatch{Title: mmmodel.NewPointer("New Title"), Description: mmmodel.NewPointer("New Desc")}, new(space.UpdateAt), false)
+	patched, appErr := h.svc.UpdateSpace(space, &model.SpacePatch{Title: mmmodel.NewPointer("New Title"), Description: mmmodel.NewPointer("New Desc")}, new(space.UpdateAt), false, "")
 	require.Nil(t, appErr)
 	require.Equal(t, "New Title", patched.Title)
 	require.Equal(t, "New Desc", patched.Description)
@@ -566,50 +1196,50 @@ func TestServiceUpdateSpace(t *testing.T) {
 	// A patch with only Icon leaves the previously-set Title/Description intact. The caller
 	// passes its latest fetched record, mirroring the handler flow (membership gate re-fetches
 	// the space on every request).
-	patched2, appErr := h.svc.UpdateSpace(patched, &model.SpacePatch{Icon: mmmodel.NewPointer("icon-data")}, new(patched.UpdateAt), false)
+	patched2, appErr := h.svc.UpdateSpace(patched, &model.SpacePatch{Icon: mmmodel.NewPointer("icon-data")}, new(patched.UpdateAt), false, "")
 	require.Nil(t, appErr)
 	require.Equal(t, "New Title", patched2.Title, "unspecified fields are preserved")
 	require.Equal(t, "New Desc", patched2.Description)
 	require.Equal(t, "icon-data", patched2.Icon)
 
 	// An explicit empty string clears a field (a nil field would leave it unchanged).
-	patched3, appErr := h.svc.UpdateSpace(patched2, &model.SpacePatch{Description: mmmodel.NewPointer("")}, new(patched2.UpdateAt), false)
+	patched3, appErr := h.svc.UpdateSpace(patched2, &model.SpacePatch{Description: mmmodel.NewPointer("")}, new(patched2.UpdateAt), false, "")
 	require.Nil(t, appErr)
 	require.Equal(t, "", patched3.Description, "an explicit empty string clears the field")
 	require.Equal(t, "New Title", patched3.Title)
 
 	// A stale baseline is rejected as a conflict unless force is set.
-	_, appErr = h.svc.UpdateSpace(patched3, &model.SpacePatch{Title: mmmodel.NewPointer("Stale")}, new(space.UpdateAt), false)
+	_, appErr = h.svc.UpdateSpace(patched3, &model.SpacePatch{Title: mmmodel.NewPointer("Stale")}, new(space.UpdateAt), false, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusConflict, appErr.StatusCode)
 
-	forced, appErr := h.svc.UpdateSpace(patched3, &model.SpacePatch{Title: mmmodel.NewPointer("Forced")}, new(space.UpdateAt), true)
+	forced, appErr := h.svc.UpdateSpace(patched3, &model.SpacePatch{Title: mmmodel.NewPointer("Forced")}, new(space.UpdateAt), true, "")
 	require.Nil(t, appErr)
 	require.Equal(t, "Forced", forced.Title)
 
 	// A whitespace-only title is rejected.
-	_, appErr = h.svc.UpdateSpace(space, &model.SpacePatch{Title: mmmodel.NewPointer("   ")}, new(int64(0)), true)
+	_, appErr = h.svc.UpdateSpace(space, &model.SpacePatch{Title: mmmodel.NewPointer("   ")}, new(int64(0)), true, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 	require.Equal(t, "app.shared.title_required.app_error", appErr.Id)
 
 	// A title that exceeds SpaceTitleMaxRunes is rejected.
 	longTitle := strings.Repeat("x", model.SpaceTitleMaxRunes+1)
-	_, appErr = h.svc.UpdateSpace(space, &model.SpacePatch{Title: mmmodel.NewPointer(longTitle)}, new(int64(0)), true)
+	_, appErr = h.svc.UpdateSpace(space, &model.SpacePatch{Title: mmmodel.NewPointer(longTitle)}, new(int64(0)), true, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 	require.Equal(t, "app.shared.title_too_long.app_error", appErr.Id)
 
 	// A description that exceeds SpaceDescriptionMaxRunes is rejected with the documented error ID.
 	longDesc := strings.Repeat("x", model.SpaceDescriptionMaxRunes+1)
-	_, appErr = h.svc.UpdateSpace(space, &model.SpacePatch{Description: mmmodel.NewPointer(longDesc)}, new(int64(0)), true)
+	_, appErr = h.svc.UpdateSpace(space, &model.SpacePatch{Description: mmmodel.NewPointer(longDesc)}, new(int64(0)), true, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 	require.Equal(t, "app.shared.description_too_long.app_error", appErr.Id)
 
 	// An icon that exceeds SpaceIconMaxBytes is rejected with the documented error ID.
 	largeIcon := strings.Repeat("i", model.SpaceIconMaxBytes+1)
-	_, appErr = h.svc.UpdateSpace(space, &model.SpacePatch{Icon: mmmodel.NewPointer(largeIcon)}, new(int64(0)), true)
+	_, appErr = h.svc.UpdateSpace(space, &model.SpacePatch{Icon: mmmodel.NewPointer(largeIcon)}, new(int64(0)), true, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 	require.Equal(t, "app.shared.icon_too_large.app_error", appErr.Id)
@@ -621,7 +1251,7 @@ func TestServiceUpdateSpace_NoChangesRejected(t *testing.T) {
 	h := openTestService(t)
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 
-	_, appErr := h.svc.UpdateSpace(space, &model.SpacePatch{}, new(space.UpdateAt), false)
+	_, appErr := h.svc.UpdateSpace(space, &model.SpacePatch{}, new(space.UpdateAt), false, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 	require.Equal(t, "model.space.patch.nothing_to_update.app_error", appErr.Id)
@@ -630,6 +1260,61 @@ func TestServiceUpdateSpace_NoChangesRejected(t *testing.T) {
 	got, getErr := h.svc.GetSpace(space.Id)
 	require.Nil(t, getErr)
 	require.Equal(t, space.UpdateAt, got.UpdateAt)
+}
+
+// TestServiceUpdateSpace_ViewAccessGuards pins the two guards a ViewAccess change carries, neither
+// of which the other UpdateSpace tests reach — they all patch through the store directly or omit
+// ViewAccess entirely. A change is admin-only (holding manage on the space is not enough to flip it
+// private), and it cannot ride a forced update, whose purpose is to override a stale optimistic-lock
+// baseline rather than an authorization check.
+func TestServiceUpdateSpace_ViewAccessGuards(t *testing.T) {
+	privatePatch := func() *model.SpacePatch {
+		return &model.SpacePatch{ViewAccess: mmmodel.NewPointer(model.ViewAccessPrivate)}
+	}
+
+	t.Run("force is rejected", func(t *testing.T) {
+		h := openTestService(t)
+		space := mustCreateSpace(t, h.store, mmmodel.NewId())
+
+		_, appErr := h.svc.UpdateSpace(space, privatePatch(), nil, true, mmmodel.NewId())
+		require.NotNil(t, appErr)
+		require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
+		require.Equal(t, "app.space.update.view_access_force.app_error", appErr.Id)
+	})
+
+	t.Run("a non-admin member is refused", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		h := openTestServiceWithAPI(t, mockAPI)
+		space := mustCreateSpace(t, h.store, mmmodel.NewId())
+
+		// The harness grants an ordinary member's permissions and withholds admin_space.
+		_, appErr := h.svc.UpdateSpace(space, privatePatch(), new(space.UpdateAt), false, mmmodel.NewId())
+		require.NotNil(t, appErr)
+		require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+
+		// The row is untouched: the escalation check runs before the write.
+		got, getErr := h.svc.GetSpace(space.Id)
+		require.Nil(t, getErr)
+		require.Equal(t, model.ViewAccessOpen, got.ViewAccess)
+	})
+
+	t.Run("a space admin succeeds", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		userID := mmmodel.NewId()
+		channelID := mmmodel.NewId()
+		mockAPI.On("HasPermissionToChannel", userID, channelID, mmmodel.PermissionAdminSpace).Return(true).Maybe()
+		h := openTestServiceWithAPI(t, mockAPI)
+		// The ViewAccess gate reads SchemeAdmin from the master, so the grant above is not enough.
+		testutil.MustAddChannelAdmin(t, h.db, channelID, userID)
+		// A nil channel makes the backing-channel metadata sync a no-op.
+		mockAPI.On("GetChannelOfType", mock.Anything, mock.Anything).Return((*mmmodel.Channel)(nil), nil).Maybe()
+		mockAPI.On("GetChannelStats", channelID).Return(&mmmodel.ChannelStats{MemberCount: 3}, nil).Maybe()
+		space := mustCreateSpace(t, h.store, channelID)
+
+		updated, appErr := h.svc.UpdateSpace(space, privatePatch(), new(space.UpdateAt), false, userID)
+		require.Nil(t, appErr)
+		require.Equal(t, model.ViewAccessPrivate, updated.ViewAccess)
+	})
 }
 
 // TestGetSpaceWithDeleted verifies that GetSpaceWithDeleted returns both live and soft-deleted
@@ -642,15 +1327,16 @@ func TestGetSpaceWithDeleted(t *testing.T) {
 	userID := mmmodel.NewId()
 	channelID := mmmodel.NewId()
 
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Return(&mmmodel.Channel{Id: channelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
 	mockAPI.On("AddChannelMember", channelID, userID).Return(&mmmodel.ChannelMember{}, nil)
 	mockAPI.On("DeleteChannel", channelID).Return(nil)
 	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).Return(mmmodel.ChannelMembers{}, nil)
 
-	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Test"}, userID)
+	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Test"}, userID, nil, nil)
 	require.Nil(t, appErr)
-	require.Nil(t, h.svc.DeleteSpace(space))
+	require.Nil(t, h.svc.DeleteSpace(&space.Space))
 
 	// GetSpace excludes deleted rows.
 	_, appErr = h.svc.GetSpace(space.Id)
@@ -664,136 +1350,41 @@ func TestGetSpaceWithDeleted(t *testing.T) {
 	require.NotZero(t, got.DeleteAt)
 }
 
-// TestCheckSpaceMembership_MemberAllowed verifies that a user who is a member of the
-// space's backing channel is allowed through.
-func TestCheckSpaceMembership_MemberAllowed(t *testing.T) {
+// TestResolveSpaceRead_MemberAdmitted verifies that a user who holds read_page on the space's
+// backing channel is admitted as a member rather than via the open-space fall-through.
+func TestResolveSpaceRead_MemberAdmitted(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
 
+	// The harness stubs GetTeamMember to an active membership and read_page to true.
 	teamID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	channelID := mmmodel.NewId()
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
 
-	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
-		Return(&mmmodel.Channel{Id: channelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
-	mockAPI.On("AddChannelMember", channelID, userID).Return(&mmmodel.ChannelMember{}, nil)
-
-	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Test"}, userID)
+	resolution, appErr := h.svc.ResolveSpaceRead("test", space, userID)
 	require.Nil(t, appErr)
-
-	mockAPI.On("GetChannelMember", space.ChannelId, userID).Return(&mmmodel.ChannelMember{}, nil)
-
-	_, appErr = h.svc.CheckSpaceMembership(space.Id, userID, false)
-	require.Nil(t, appErr)
+	require.Equal(t, app.ReadViaMember, resolution)
 }
 
-// TestCheckSpaceMembership_NonMemberBlocked verifies that a user who is not a member of the
-// space's backing channel receives a 403 Forbidden.
-func TestCheckSpaceMembership_NonMemberBlocked(t *testing.T) {
+// TestResolveSpaceRead_NonMemberDeniedOnPrivateSpace verifies that an active team member who holds
+// no channel-scoped read_page is denied on a private space — the open-space fall-through is the
+// only non-member admission, and it does not apply here.
+func TestResolveSpaceRead_NonMemberDeniedOnPrivateSpace(t *testing.T) {
 	mockAPI := &plugintest.API{}
-	h := openTestServiceWithAPI(t, mockAPI)
-
-	teamID := mmmodel.NewId()
-	userID := mmmodel.NewId()
-	channelID := mmmodel.NewId()
-
-	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
-		Return(&mmmodel.Channel{Id: channelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
-	mockAPI.On("AddChannelMember", channelID, userID).Return(&mmmodel.ChannelMember{}, nil)
-
-	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Test"}, userID)
-	require.Nil(t, appErr)
-
 	strangerID := mmmodel.NewId()
-	mockAPI.On("GetChannelMember", space.ChannelId, strangerID).
-		Return(nil, &mmmodel.AppError{StatusCode: http.StatusNotFound})
-
-	_, appErr = h.svc.CheckSpaceMembership(space.Id, strangerID, false)
-	require.NotNil(t, appErr)
-	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
-	require.Equal(t, "app.space.access.forbidden.app_error", appErr.Id)
-}
-
-// TestCheckSpaceMembership_EmptyUserIDRejected verifies that an empty userID is rejected rather
-// than treated as a trusted system caller, so a caller that loses its user id fails closed.
-func TestCheckSpaceMembership_EmptyUserIDRejected(t *testing.T) {
-	mockAPI := &plugintest.API{}
+	// Registered before the harness so it takes precedence over StubDefaultSpacePermissions'
+	// permissive catch-all: mock.Mock matches expectations in registration order.
+	mockAPI.On("HasPermissionToChannel", strangerID, mock.Anything, mmmodel.PermissionReadPage).Return(false)
 	h := openTestServiceWithAPI(t, mockAPI)
 
-	teamID := mmmodel.NewId()
-	userID := mmmodel.NewId()
-	channelID := mmmodel.NewId()
+	// The harness stubs GetTeamMember to an active membership, so the stranger clears the team
+	// gate and is denied purely on the channel-scoped check.
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), mmmodel.NewId())
+	space.ViewAccess = model.ViewAccessPrivate
 
-	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
-		Return(&mmmodel.Channel{Id: channelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
-	mockAPI.On("AddChannelMember", channelID, userID).Return(&mmmodel.ChannelMember{}, nil)
-
-	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Test"}, userID)
+	resolution, appErr := h.svc.ResolveSpaceRead("test", space, strangerID)
 	require.Nil(t, appErr)
-
-	returnedSpace, appErr := h.svc.CheckSpaceMembership(space.Id, "", false)
-	require.Nil(t, returnedSpace)
-	require.NotNil(t, appErr)
-	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
-	require.Equal(t, "app.space.access.invalid_user_id.app_error", appErr.Id)
-}
-
-// TestCheckSpaceMembership_IncludeDeleted verifies that includeDeleted=true reaches a
-// soft-deleted space for the membership check, while includeDeleted=false returns 404.
-func TestCheckSpaceMembership_IncludeDeleted(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	h := openTestServiceWithAPI(t, mockAPI)
-
-	teamID := mmmodel.NewId()
-	userID := mmmodel.NewId()
-	channelID := mmmodel.NewId()
-
-	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
-		Return(&mmmodel.Channel{Id: channelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
-	mockAPI.On("AddChannelMember", channelID, userID).Return(&mmmodel.ChannelMember{}, nil)
-	mockAPI.On("DeleteChannel", channelID).Return(nil)
-	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).Return(mmmodel.ChannelMembers{}, nil)
-
-	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Test"}, userID)
-	require.Nil(t, appErr)
-	require.Nil(t, h.svc.DeleteSpace(space))
-
-	// includeDeleted=false → GetSpace returns 404, which CheckSpaceMembership converts to 403
-	// to prevent existence probing by non-members.
-	_, appErr = h.svc.CheckSpaceMembership(space.Id, userID, false)
-	require.NotNil(t, appErr)
-	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
-
-	// includeDeleted=true → GetSpaceWithDeleted finds the space; membership check proceeds.
-	mockAPI.On("GetChannelMember", space.ChannelId, userID).Return(&mmmodel.ChannelMember{}, nil)
-	_, appErr = h.svc.CheckSpaceMembership(space.Id, userID, true)
-	require.Nil(t, appErr)
-}
-
-// TestCheckSpaceMembership_ChannelLookupFailed verifies that a non-404 error from
-// GetChannelMember propagates as a 500 with the channel_lookup_failed error key.
-func TestCheckSpaceMembership_ChannelLookupFailed(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	h := openTestServiceWithAPI(t, mockAPI)
-
-	teamID := mmmodel.NewId()
-	userID := mmmodel.NewId()
-	channelID := mmmodel.NewId()
-
-	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
-		Return(&mmmodel.Channel{Id: channelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
-	mockAPI.On("AddChannelMember", channelID, userID).Return(&mmmodel.ChannelMember{}, nil)
-
-	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Test"}, userID)
-	require.Nil(t, appErr)
-
-	mockAPI.On("GetChannelMember", space.ChannelId, userID).
-		Return(nil, &mmmodel.AppError{Id: "store.sql_channel.get_member.missing.app_error", StatusCode: http.StatusInternalServerError})
-
-	_, appErr = h.svc.CheckSpaceMembership(space.Id, userID, false)
-	require.NotNil(t, appErr)
-	require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
-	require.Equal(t, "app.space.access.channel_lookup_failed.app_error", appErr.Id)
+	require.Equal(t, app.ReadDenied, resolution)
 }
 
 // createSpaceForMemberTests stands up a space with a mocked backing channel so the member-management
@@ -804,18 +1395,19 @@ func createSpaceForMemberTests(t *testing.T, h *testHarness, mockAPI *plugintest
 	creatorID := mmmodel.NewId()
 	channelID := mmmodel.NewId()
 
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Return(&mmmodel.Channel{Id: channelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
 	mockAPI.On("AddChannelMember", channelID, creatorID).Return(&mmmodel.ChannelMember{}, nil)
 
-	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Test"}, creatorID)
+	space, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Test"}, creatorID, nil, nil)
 	require.Nil(t, appErr)
-	return space, creatorID
+	return &space.Space, creatorID
 }
 
-// TestServiceListSpaceMembers_ListFails verifies that a failed member listing on the backing
-// channel propagates as a 500 with the list_members error key.
-func TestServiceListSpaceMembers_ListFails(t *testing.T) {
+// TestServiceGetSpaceMembers_ListFails verifies that a failed member listing on the backing
+// channel propagates as a 500 with the get_members error key.
+func TestServiceGetSpaceMembers_ListFails(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
 	space, _ := createSpaceForMemberTests(t, h, mockAPI)
@@ -823,10 +1415,30 @@ func TestServiceListSpaceMembers_ListFails(t *testing.T) {
 	mockAPI.On("GetChannelMembers", space.ChannelId, 0, 60).
 		Return(nil, &mmmodel.AppError{Id: "app.channel.get_members.app_error", StatusCode: http.StatusInternalServerError})
 
-	_, _, appErr := h.svc.ListSpaceMembers(space, 0, 60)
+	_, _, appErr := h.svc.GetSpaceMembers(space, 0, 60, true)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
-	require.Equal(t, "app.space.list_members.failed.app_error", appErr.Id)
+	require.Equal(t, "app.space.get_members.failed.app_error", appErr.Id)
+}
+
+// TestServiceDefaultRolesGrantPermission_ChannelWithoutScheme covers schemeRolesFromChannel's
+// fail-closed branch: a backing channel carrying no scheme (a space that lost its scheme) resolves
+// to not-found, which DefaultRolesGrantPermission maps to "not granted" — never a silent
+// fall-through to the team scheme's channel roles, and never a wrong-role grant. The lookup must
+// short-circuit before reaching GetSchemeRolesForChannel.
+func TestServiceDefaultRolesGrantPermission_ChannelWithoutScheme(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	// The mock never sets a SchemeId, standing in for a space whose backing channel carries none.
+	mockAPI.On("GetChannelOfType", channelID, mmmodel.ChannelTypeSpace).
+		Return(&mmmodel.Channel{Id: channelID, Type: mmmodel.ChannelTypeSpace}, nil)
+
+	granted, err := h.svc.DefaultRolesGrantPermission(&model.Space{ChannelId: channelID}, mmmodel.PermissionCreatePage)
+	require.NoError(t, err)
+	require.False(t, granted)
+	mockAPI.AssertNotCalled(t, "GetSchemeRolesForChannel", mock.Anything)
 }
 
 // TestServiceAddSpaceMember_AddFails verifies that a failed channel-member add propagates as a 500
@@ -854,18 +1466,60 @@ func TestServiceRemoveSpaceMember_RemoveFails(t *testing.T) {
 	space, _ := createSpaceForMemberTests(t, h, mockAPI)
 
 	targetID := mmmodel.NewId()
-	// The last-member guard scans the member list before removing; report another (active,
-	// via the default GetTeamMember stub) member so the removal proceeds to the failing
-	// DeleteChannelMember call.
-	mockAPI.On("GetChannelMembers", space.ChannelId, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{{ChannelId: space.ChannelId, UserId: targetID}, {ChannelId: space.ChannelId, UserId: mmmodel.NewId()}}, nil)
+	// The target-existence resolve and the last-member guard both read membership from the master
+	// DB; seed the target's own row plus another active member so the removal proceeds to the
+	// failing DeleteChannelMember call.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, targetID)
+	otherID := mmmodel.NewId()
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, otherID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, otherID, 0)
 	mockAPI.On("DeleteChannelMember", space.ChannelId, targetID).
 		Return(&mmmodel.AppError{Id: "app.channel.remove_member.app_error", StatusCode: http.StatusInternalServerError})
 
-	appErr := h.svc.RemoveSpaceMember(space, targetID)
+	appErr := h.svc.RemoveSpaceMember(space, targetID, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
 	require.Equal(t, "app.space.remove_member.failed.app_error", appErr.Id)
+}
+
+// TestServiceRemoveSpaceMember_SelfNonMemberOnOpenSpaceIs404 covers a non-member's self-removal
+// from an open space. The read gate admits non-members to an open space by design, so the caller
+// can already see it exists and there is nothing left to hide: the absent membership reports as a
+// plain 404 rather than the existence-hiding 403, which would misreport a no-op as an
+// authorization failure.
+func TestServiceRemoveSpaceMember_SelfNonMemberOnOpenSpaceIs404(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+	space, _ := createSpaceForMemberTests(t, h, mockAPI)
+	require.Equal(t, model.ViewAccessOpen, space.ViewAccess, "fixture must be open for this case")
+
+	selfID := mmmodel.NewId()
+
+	appErr := h.svc.RemoveSpaceMember(space, selfID, selfID)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusNotFound, appErr.StatusCode)
+	require.Equal(t, "app.space.member.user_not_found.app_error", appErr.Id)
+}
+
+// TestServiceRemoveSpaceMember_SelfNonMemberOnPrivateSpaceIs403 is the other half of the split: on
+// a private space the same caller is a non-member the read gate denies, so reporting the absent
+// membership as 404 would confirm the space exists to someone who cannot read it. They get the
+// shared existence-hiding 403 instead.
+func TestServiceRemoveSpaceMember_SelfNonMemberOnPrivateSpaceIs403(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+	space, _ := createSpaceForMemberTests(t, h, mockAPI)
+
+	private := model.ViewAccessPrivate
+	updated, err := h.store.UpdateSpace(space.Id, &model.SpacePatch{ViewAccess: &private}, space.UpdateAt, false)
+	require.NoError(t, err)
+
+	selfID := mmmodel.NewId()
+
+	appErr := h.svc.RemoveSpaceMember(updated, selfID, selfID)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+	require.Equal(t, "app.space.access.forbidden.app_error", appErr.Id)
 }
 
 // TestServiceRemoveSpaceMember_LastMemberRejected verifies the sole remaining member cannot be
@@ -877,10 +1531,11 @@ func TestServiceRemoveSpaceMember_LastMemberRejected(t *testing.T) {
 	space, _ := createSpaceForMemberTests(t, h, mockAPI)
 
 	soleID := mmmodel.NewId()
-	mockAPI.On("GetChannelMembers", space.ChannelId, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{{ChannelId: space.ChannelId, UserId: soleID}}, nil)
+	// The sole membership lives on the master DB; no other authorized member exists.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, soleID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, soleID, 0)
 
-	appErr := h.svc.RemoveSpaceMember(space, soleID)
+	appErr := h.svc.RemoveSpaceMember(space, soleID, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusConflict, appErr.StatusCode)
 	require.Equal(t, "app.space.remove_member.last_member.app_error", appErr.Id)
@@ -895,18 +1550,16 @@ func TestServiceRemoveSpaceMember_LastActiveMemberRejected(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	activeID := mmmodel.NewId()
 	formerID := mmmodel.NewId()
-	// testify matches expectations first-registered-first, so the former-member stub must be
-	// registered before the harness's catch-all active-member GetTeamMember stub; keying it on
-	// formerID keeps every other user (the creator, activeID) on the catch-all.
-	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), formerID).
-		Return(&mmmodel.TeamMember{UserId: formerID, DeleteAt: 1}, nil)
 	h := openTestServiceWithAPI(t, mockAPI)
 	space, _ := createSpaceForMemberTests(t, h, mockAPI)
 
-	mockAPI.On("GetChannelMembers", space.ChannelId, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{{ChannelId: space.ChannelId, UserId: activeID}, {ChannelId: space.ChannelId, UserId: formerID}}, nil)
+	// Master-DB membership: the only other row belongs to a member who already left the team.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, activeID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, activeID, 0)
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, formerID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, formerID, 1)
 
-	appErr := h.svc.RemoveSpaceMember(space, activeID)
+	appErr := h.svc.RemoveSpaceMember(space, activeID, "")
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusConflict, appErr.StatusCode)
 	require.Equal(t, "app.space.remove_member.last_member.app_error", appErr.Id)
@@ -922,11 +1575,14 @@ func TestServiceRemoveSpaceMember_FormerTeamMemberRemovable(t *testing.T) {
 
 	activeID := mmmodel.NewId()
 	formerID := mmmodel.NewId()
-	mockAPI.On("GetChannelMembers", space.ChannelId, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{{ChannelId: space.ChannelId, UserId: activeID}, {ChannelId: space.ChannelId, UserId: formerID}}, nil)
+	// Master-DB membership: an active member remains, and the target already left the team.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, activeID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, activeID, 0)
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, formerID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, formerID, 1)
 	mockAPI.On("DeleteChannelMember", space.ChannelId, formerID).Return(nil)
 
-	appErr := h.svc.RemoveSpaceMember(space, formerID)
+	appErr := h.svc.RemoveSpaceMember(space, formerID, "")
 	require.Nil(t, appErr)
 	mockAPI.AssertCalled(t, "DeleteChannelMember", space.ChannelId, formerID)
 }

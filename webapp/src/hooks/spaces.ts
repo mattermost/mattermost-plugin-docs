@@ -4,7 +4,7 @@
 import {useForm} from '@tanstack/react-form';
 import {getSpaceViews, recordSpaceView} from 'data/recent_spaces';
 import {useAppDispatch, useAppSelector} from 'hooks/redux';
-import {useCallback, useEffect, useMemo, useState} from 'react';
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useIntl} from 'react-intl';
 import {createSpaceFormSchema} from 'validation/space_schema';
 
@@ -75,6 +75,47 @@ export function useRoutedSpace(spaceId?: string): RoutedSpace {
     // No routed id is nothing to resolve, so it must not read as answered — the
     // caller redirects on an answered id with no space.
     return {space, resolved: Boolean(spaceId) && (Boolean(space) || checkedId === spaceId)};
+}
+
+/**
+ * Resolves the caller's own permissions for the space being viewed.
+ *
+ * Separate from useRoutedSpace, which fetches only while the space is absent: the team
+ * listing puts every space in the store without permissions (it answers with bare spaces),
+ * so by the time a space is opened from the sidebar it is present-but-unresolved and that
+ * effect correctly does nothing. Permission-gated affordances would then never see a
+ * resolved set.
+ *
+ * Runs once per SUCCESSFUL resolution rather than once per attempt, and re-reads on a change of id
+ * so switching spaces cannot carry the previous space's permissions.
+ *
+ * The success condition matters: fetchSpace answers any failure — a network blip, or the 403 a
+ * private space gives a non-member — by resolving to undefined rather than rejecting. Marking the
+ * id resolved before knowing the outcome therefore made one transient failure permanent for the
+ * mounted view, and the two selectors reading that field fail in opposite directions: page creation
+ * is offered on an unresolved set and member management is withheld from one. Neither recovers
+ * without a remount.
+ */
+export function useResolveSpacePermissions(spaceId?: string): void {
+    const dispatch = useAppDispatch();
+    const resolvedFor = useRef<string>();
+
+    useEffect(() => {
+        let cancelled = false;
+        if (spaceId && resolvedFor.current !== spaceId) {
+            resolvedFor.current = spaceId;
+            dispatch(fetchSpace(spaceId)).then((space) => {
+                // Clearing the marker on failure is what lets a later render try again. Guarded on
+                // the id so a resolution that lost a space switch cannot reopen the current space's.
+                if (!cancelled && !space && resolvedFor.current === spaceId) {
+                    resolvedFor.current = undefined;
+                }
+            });
+        }
+        return () => {
+            cancelled = true;
+        };
+    }, [dispatch, spaceId]);
 }
 
 // Recently-viewed spaces in the current team (Home). Recency is client-side

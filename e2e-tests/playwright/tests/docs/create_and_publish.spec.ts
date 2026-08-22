@@ -6,7 +6,7 @@
 // - [*] indicates an assertion (e.g. * Check the title)
 // ***************************************************************
 
-import {expect, test} from '../fixtures';
+import {expect, newContext, test} from '../fixtures';
 import {loginAs} from '../helpers/auth';
 import {uniqueSuffix} from '../helpers/client';
 import {getPageDraft} from '../helpers/docs';
@@ -18,7 +18,6 @@ import {DocsSwitcherPage} from '../pages/docs_switcher_page';
 import {ShareSpaceModalPage} from '../pages/share_space_modal_page';
 import {SpacePage} from '../pages/space_page';
 import {SpacesSidebarPage} from '../pages/spaces_sidebar_page';
-test.use({video: 'on'})
 
 // Serial: the second test opens the page the first publishes, and a plain describe
 // would retry it alone against a freshly seeded team.
@@ -32,7 +31,7 @@ test.describe.serial('docs authoring', () => {
 
 
     test.beforeAll(async ({browser, server}) => {
-        const context = await browser.newContext({baseURL: server.baseURL});
+        const context = await newContext(browser, {baseURL: server.baseURL});
         const page = await context.newPage();
 
         await loginAs(page, server.adminUsername, server.adminPassword);

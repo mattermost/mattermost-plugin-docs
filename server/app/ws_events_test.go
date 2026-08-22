@@ -8,6 +8,8 @@
 package app_test
 
 import (
+	"database/sql"
+	"net/http"
 	"slices"
 	"testing"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/app"
+	"github.com/mattermost/mattermost-plugin-docs/server/internal/testutil"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
@@ -77,6 +80,32 @@ func TestServiceDeletePage_FailurePublishesNothing(t *testing.T) {
 	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "page_deleted", mock.Anything, mock.Anything)
 }
 
+// TestServicePublishToChannels_OmitListFailureDropsEvent verifies the omit-list resolution is
+// fail-closed: when the lookup itself errors the event is dropped for that channel rather than
+// delivered unfiltered. An unfiltered broadcast would reach exactly the former team members the
+// omit list exists to exclude, so a missed refresh signal is the safer failure. The mutation still
+// succeeds — WS delivery is best-effort and must never fail the write it announces.
+func TestServicePublishToChannels_OmitListFailureDropsEvent(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	space := mustCreateSpace(t, h.store, channelID)
+	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
+
+	// Break the omit-list lookup by removing the table it reads. The test database is per-test, so
+	// dropping the stand-in is invisible to other tests.
+	_, dbErr := h.db.Exec(`DROP TABLE TeamMembers`)
+	require.NoError(t, dbErr)
+
+	title := "Renamed"
+	_, appErr := h.svc.UpdatePage(page.Id, space.Id, &model.PagePatch{Title: &title}, new(page.EditAt), false, userID)
+	require.Nil(t, appErr, "a failed omit-list lookup must not fail the mutation")
+
+	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "page_updated", mock.Anything, mock.Anything)
+}
+
 // TestServiceRestorePage_PublishesRestoredEvent pins page_restored: page/space payload, broadcast
 // to the restored page's backing channel.
 func TestServiceRestorePage_PublishesRestoredEvent(t *testing.T) {
@@ -134,7 +163,7 @@ func TestServiceMovePageToSpace_PublishesEventToBothChannels(t *testing.T) {
 	spaceB := seedSpaceForTeam(t, h.store, chB, teamID)
 	page := mustCreatePage(t, h.store, spaceA.Id, chA, userID, "")
 
-	moved, appErr := h.svc.MovePageToSpace(page.Id, spaceA, spaceB, nil, new(page.UpdateAt), false, userID)
+	moved, appErr := h.svc.MovePageToSpace(page.Id, spaceA, spaceB, nil, new(page.UpdateAt), false, userID, "")
 	require.Nil(t, appErr)
 
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_moved_to_space",
@@ -167,7 +196,7 @@ func TestServiceMovePageToSpace_NoOpPublishesNothing(t *testing.T) {
 	space := mustCreateSpace(t, h.store, channelID)
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
-	same, appErr := h.svc.MovePageToSpace(page.Id, space, space, nil, new(page.UpdateAt), false, userID)
+	same, appErr := h.svc.MovePageToSpace(page.Id, space, space, nil, new(page.UpdateAt), false, userID, "")
 	require.Nil(t, appErr)
 	require.Equal(t, page.Id, same.Id)
 
@@ -187,7 +216,7 @@ func TestServiceUpdatePageDraft_PublishesPresenceEvent(t *testing.T) {
 	space := mustCreateSpace(t, h.store, channelID)
 
 	// Use a published page so UpdatePageDraft takes the channel-broadcast path.
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+	page := publishNewPage(t, h, space, userID, "Doc", "v1")
 
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc",
@@ -219,7 +248,7 @@ func TestServiceUpdatePageDraft_PresenceBroadcastThrottled(t *testing.T) {
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, channelID)
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+	page := publishNewPage(t, h, space, userID, "Doc", "v1")
 
 	presenceBroadcasts := func() int {
 		n := 0
@@ -256,7 +285,7 @@ func TestServicePublishPageDraft_PublishesCreatedEvent(t *testing.T) {
 	userID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, channelID)
 
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "hello")
+	page := publishNewPage(t, h, space, userID, "Doc", "hello")
 
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_created",
 		map[string]any{"page_id": page.Id, "space_id": space.Id, "parent_id": page.ParentId},
@@ -285,7 +314,7 @@ func TestServicePublishPageDraft_PublishesUpdatedEvent(t *testing.T) {
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, channelID)
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "original")
+	page := publishNewPage(t, h, space, userID, "Doc", "original")
 
 	// Start an edit session against the live page's baseline, then publish it.
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
@@ -294,7 +323,7 @@ func TestServicePublishPageDraft_PublishesUpdatedEvent(t *testing.T) {
 	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
-	republished, wasCreated, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
+	republished, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, page.Id, false, app.ReadViaMember)
 	require.Nil(t, appErr)
 	require.False(t, wasCreated, "publishing an edit to an existing page must report wasCreated=false")
 
@@ -328,7 +357,7 @@ func TestServiceDeletePageDraft_PublishesPresenceEvent(t *testing.T) {
 	space := mustCreateSpace(t, h.store, channelID)
 
 	// Use a published page so the edit-draft delete takes the channel-broadcast path.
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+	page := publishNewPage(t, h, space, userID, "Doc", "v1")
 
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doc",
@@ -437,7 +466,7 @@ func TestServiceUpdatePageDraft_PresenceRateLimitSuppressesSecondBroadcast(t *te
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, channelID)
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+	page := publishNewPage(t, h, space, userID, "Doc", "v1")
 
 	// Reset call log so only the two autosaves below are counted.
 	mockAPI.Calls = nil
@@ -494,7 +523,7 @@ func TestServiceUpdateSpace_PublishesUpdatedEvent(t *testing.T) {
 	mockAPI.On("GetChannelOfType", mock.Anything, mock.Anything).Return((*mmmodel.Channel)(nil), nil)
 
 	title := "Renamed Space"
-	updated, appErr := h.svc.UpdateSpace(space, &model.SpacePatch{Title: &title}, new(space.UpdateAt), false)
+	updated, appErr := h.svc.UpdateSpace(space, &model.SpacePatch{Title: &title}, new(space.UpdateAt), false, "")
 	require.Nil(t, appErr)
 
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_updated",
@@ -511,15 +540,16 @@ func TestServiceDeleteSpace_PublishesDeletedEvent(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
 
+	teamID := mmmodel.NewId()
 	channelID := mmmodel.NewId()
-	space := mustCreateSpace(t, h.store, channelID)
+	testutil.MustAddChannel(t, h.db, channelID, teamID)
+	space := seedSpaceForTeam(t, h.store, channelID, teamID)
 	memberA := mmmodel.NewId()
 	memberB := mmmodel.NewId()
-	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{
-			{ChannelId: channelID, UserId: memberA},
-			{ChannelId: channelID, UserId: memberB},
-		}, nil)
+	testutil.MustAddChannelMember(t, h.db, channelID, memberA)
+	testutil.MustAddTeamMember(t, h.db, teamID, memberA, 0)
+	testutil.MustAddChannelMember(t, h.db, channelID, memberB)
+	testutil.MustAddTeamMember(t, h.db, teamID, memberB, 0)
 	mockAPI.On("DeleteChannel", channelID).Return(nil)
 
 	require.Nil(t, h.svc.DeleteSpace(space))
@@ -540,12 +570,32 @@ func TestServiceDeleteSpace_PublishesDeletedEvent(t *testing.T) {
 // channel-scoped broadcast to an archived channel resolves zero recipients.
 func TestServiceDeleteSpace_SnapshotFailureFallsBackToChannelBroadcast(t *testing.T) {
 	mockAPI := &plugintest.API{}
+	// The member snapshot and the fallback broadcast's omit list both read the TeamMembers
+	// stand-in, so failing the snapshot by dropping the table (below) would break the fallback
+	// too. Recreate the table from the snapshot-failure warning, which the service logs after the
+	// snapshot has failed and before the fallback publish resolves its omit list. Registered
+	// before openTestServiceWithAPI's catch-all LogWarn stubs so testify matches it first; the db
+	// handle is captured by reference because the harness doesn't exist yet.
+	var db *sql.DB
+	mockAPI.On("LogWarn", "DeleteSpace: failed to snapshot backing-channel members for space_deleted delivery",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Run(func(mock.Arguments) {
+			_, err := db.Exec(`CREATE TABLE TeamMembers (
+				TeamId varchar(26) NOT NULL,
+				UserId varchar(26) NOT NULL,
+				DeleteAt bigint NOT NULL DEFAULT 0,
+				PRIMARY KEY (TeamId, UserId)
+			)`)
+			require.NoError(t, err)
+		}).Return()
 	h := openTestServiceWithAPI(t, mockAPI)
+	db = h.db
 
 	channelID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, channelID)
-	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).
-		Return(nil, &mmmodel.AppError{Message: "boom", StatusCode: 500})
+	// The test database is per-test, so dropping the stand-in is invisible to other tests.
+	_, dbErr := h.db.Exec(`DROP TABLE TeamMembers`)
+	require.NoError(t, dbErr)
 	mockAPI.On("DeleteChannel", channelID).Return(nil)
 
 	require.Nil(t, h.svc.DeleteSpace(space))
@@ -579,7 +629,6 @@ func TestServiceRestoreSpace_PublishesRestoredEvent(t *testing.T) {
 
 	channelID := mmmodel.NewId()
 	space := mustCreateSpace(t, h.store, channelID)
-	mockAPI.On("GetChannelMembers", channelID, 0, app.PerPageMaximum).Return(mmmodel.ChannelMembers{}, nil)
 	mockAPI.On("DeleteChannel", channelID).Return(nil)
 	mockAPI.On("RestoreChannel", channelID).Return(nil)
 
@@ -592,9 +641,10 @@ func TestServiceRestoreSpace_PublishesRestoredEvent(t *testing.T) {
 		&mmmodel.WebsocketBroadcast{ChannelId: restored.ChannelId})
 }
 
-// TestServiceAddSpaceMember_PublishesMemberAddedEvent pins space_member_added on add:
-// space/user payload, broadcast scoped to the backing channel (matching the membership-gated
-// reads, like every other space and page event).
+// TestServiceAddSpaceMember_PublishesMemberAddedEvent pins space_member_added on add: its
+// space/user payload and its two delivery targets — the channel-scoped broadcast for observers
+// (matching the membership-gated reads, like every other space and page event), and the direct
+// publish that reaches the added user, whom the channel-scoped resolution may not yet include.
 func TestServiceAddSpaceMember_PublishesMemberAddedEvent(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
@@ -607,9 +657,11 @@ func TestServiceAddSpaceMember_PublishesMemberAddedEvent(t *testing.T) {
 	member, appErr := h.svc.AddSpaceMember(space, newUserID)
 	require.Nil(t, appErr)
 
-	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_added",
-		map[string]any{"space_id": space.Id, "user_id": member.UserId},
+	payload := map[string]any{"space_id": space.Id, "user_id": member.UserId}
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_added", payload,
 		&mmmodel.WebsocketBroadcast{ChannelId: space.ChannelId})
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_added", payload,
+		&mmmodel.WebsocketBroadcast{UserId: member.UserId})
 }
 
 // TestServiceRemoveSpaceMember_PublishesMemberRemovedEvent pins space_member_removed on remove:
@@ -621,14 +673,15 @@ func TestServiceRemoveSpaceMember_PublishesMemberRemovedEvent(t *testing.T) {
 	space, creatorID := createSpaceForMemberTests(t, h, mockAPI)
 
 	targetID := mmmodel.NewId()
-	mockAPI.On("GetChannelMembers", space.ChannelId, 0, app.PerPageMaximum).
-		Return(mmmodel.ChannelMembers{
-			{ChannelId: space.ChannelId, UserId: creatorID},
-			{ChannelId: space.ChannelId, UserId: targetID},
-		}, nil)
+	// The target-existence resolve and the last-member guard both read membership from the master
+	// DB; seed the target's own row plus the creator, who remains so the removal passes the
+	// last-member guard.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, targetID)
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, creatorID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, creatorID, 0)
 	mockAPI.On("DeleteChannelMember", space.ChannelId, targetID).Return(nil)
 
-	require.Nil(t, h.svc.RemoveSpaceMember(space, targetID))
+	require.Nil(t, h.svc.RemoveSpaceMember(space, targetID, ""))
 
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_removed",
 		map[string]any{"space_id": space.Id, "user_id": targetID},
@@ -636,4 +689,56 @@ func TestServiceRemoveSpaceMember_PublishesMemberRemovedEvent(t *testing.T) {
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_removed",
 		map[string]any{"space_id": space.Id, "user_id": targetID},
 		&mmmodel.WebsocketBroadcast{UserId: targetID})
+}
+
+// TestServiceSetSpaceMemberPermissions_DefaultPermissionsFailureAbortsBeforeCommit covers the
+// ordering fix: resolving the space's default permissions (defaultPermissionsForRoles) now runs
+// inside the lock, before the role write, rather than after it. A failure there must abort before
+// UpdateChannelMemberRoles ever runs — not surface a write that already committed as an error while
+// silently skipping its WS event.
+func TestServiceSetSpaceMemberPermissions_DefaultPermissionsFailureAbortsBeforeCommit(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	targetUserID := mmmodel.NewId()
+	// Registered before the harness so it wins over StubPresetSchemes' GetRoleByName stub for the
+	// same role name: mock.Mock matches expectations in registration order.
+	mockAPI.On("GetRoleByName", "space_contribute_user_role").
+		Return((*mmmodel.Role)(nil), &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
+	h := openTestServiceWithAPI(t, mockAPI)
+	space, actingUserID := createSpaceForMemberTests(t, h, mockAPI)
+
+	_, appErr := h.svc.SetSpaceMemberPermissions(space, targetUserID, []string{mmmodel.PermissionEditPage.Id}, actingUserID)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
+	// space.ChannelId's creator-role assignment during createSpaceForMemberTests' CreateSpace call
+	// already exercised UpdateChannelMemberRoles once, so the assertion is scoped to targetUserID —
+	// the only call SetSpaceMemberPermissions itself would make.
+	mockAPI.AssertNotCalled(t, "UpdateChannelMemberRoles", space.ChannelId, targetUserID, mock.Anything)
+	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "space_member_permissions_updated", mock.Anything, mock.Anything)
+}
+
+// TestServiceSetSpaceMemberPermissions_PublishesToChannelAndUser pins
+// space_member_permissions_updated's two delivery targets. The direct publish is what guarantees
+// the target learns its own permissions changed, so a regression to channel-only delivery would
+// leave exactly the affected user uninformed.
+func TestServiceSetSpaceMemberPermissions_PublishesToChannelAndUser(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+	space, actingUserID := createSpaceForMemberTests(t, h, mockAPI)
+	targetUserID := mmmodel.NewId()
+
+	// A non-admin permission granted to another non-admin member reaches neither the
+	// admin-affecting nor the self-targeted arm of the escalation guard, so no space-admin
+	// permission is read here. The target's flags come from the master-backed store read, so seed
+	// its row directly.
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, targetUserID)
+
+	_, appErr := h.svc.SetSpaceMemberPermissions(space, targetUserID,
+		[]string{mmmodel.PermissionEditPage.Id}, actingUserID)
+	require.Nil(t, appErr)
+
+	payload := map[string]any{"space_id": space.Id, "user_id": targetUserID}
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_permissions_updated", payload,
+		&mmmodel.WebsocketBroadcast{UserId: targetUserID})
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_permissions_updated", payload,
+		&mmmodel.WebsocketBroadcast{ChannelId: space.ChannelId})
 }

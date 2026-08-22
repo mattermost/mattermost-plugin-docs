@@ -203,6 +203,7 @@ endif
 ifneq ($(HAS_SERVER),)
 	@echo Running golangci-lint
 	$(GO) vet ./...
+	$(GO) vet -tags e2e ./server/e2e/...
 	$(GOBIN)/golangci-lint run ./...
 endif
 
@@ -371,7 +372,43 @@ ifneq ($(HAS_WEBAPP),)
 	cd webapp && $(NPM) run test;
 endif
 
+## Runs the official RBAC end-to-end suite (Go + Testcontainers): boots a real Mattermost server
+## built from the paired core branch (build/build-core-image.sh), installs the plugin bundle
+## into it, and drives the seven Confluence permission scenarios plus their named parity gaps
+## through the real HTTP API. Requires Docker. See server/e2e/README.md.
+##
+## A namespaced CORE_IMAGE (one containing a `/`) names a pullable image, so the local build is
+## skipped and Testcontainers fetches it — the path the CI e2e job takes.
+##
+## The bundle must contain a linux-$(arch) plugin binary for the Docker container to load it —
+## `make server` alone only builds for the host OS/arch when MM_SERVICESETTINGS_ENABLEDEVELOPER is
+## set (a common local dev convenience), which produces a bundle unusable inside the container. So
+## this checks the newest bundle for the linux binary matching the Docker daemon's architecture,
+## not just that a bundle file exists, and forces a full cross-compiled `make dist` otherwise.
+.PHONY: test-e2e-server
+test-e2e-server:
+	@docker_arch=$$(docker info --format '{{.Architecture}}' 2>/dev/null); \
+	case "$$docker_arch" in \
+		aarch64) goarch=arm64 ;; \
+		x86_64) goarch=amd64 ;; \
+		*) echo "ERROR: could not determine Docker daemon architecture (got '$$docker_arch'). Is Docker running?" >&2; exit 1 ;; \
+	esac; \
+	bundle=$$(ls -t dist/$(PLUGIN_ID)-*.tar.gz 2>/dev/null | head -1); \
+	if [ -z "$$bundle" ] || ! tar tzf "$$bundle" | grep -q "plugin-linux-$$goarch$$"; then \
+		echo "No plugin bundle with a linux-$$goarch binary found — running 'make dist' (forcing an all-architecture build)..."; \
+		MM_SERVICESETTINGS_ENABLEDEVELOPER= $(MAKE) dist; \
+	fi
+	@case "$${CORE_IMAGE:-}" in \
+		*/*) echo "CORE_IMAGE=$$CORE_IMAGE is namespaced — leaving it to Testcontainers to pull; skipping the local core-image build." ;; \
+		*) ./build/build-core-image.sh ;; \
+	esac
+	$(GO) test -tags e2e -count=1 -v ./server/e2e/...
+
 ## Runs the Playwright E2E suite against a throwaway Mattermost container. Requires Docker.
+##
+## Set MM_E2E_SPACE_PERMISSIONS=true to add the space-permission specs; they also need MM_IMAGE (a
+## core image carrying the paired branch's work) and a license in MM_LICENSE/MM_LICENSE_FILE, and
+## the suite names either as its own failure when unset. See e2e-tests/playwright/README.md.
 .PHONY: test-e2e
 test-e2e:
 	@# The bundle is installed into a Linux container, so it must carry a Linux
@@ -401,7 +438,7 @@ i18n-extract: i18n-extract-webapp i18n-extract-server
 .PHONY: i18n-extract-webapp
 i18n-extract-webapp:
 ifneq ($(HAS_WEBAPP),)
-	cd webapp && $(NPM) run extract
+	cd webapp && $(NPM) run i18n-extract
 endif
 
 .PHONY: i18n-extract-server

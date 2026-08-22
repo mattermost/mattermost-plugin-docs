@@ -10,6 +10,7 @@ import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
 import type {CreatePageInput, CreateSpaceInput, Page, Space, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
 import type {Draft, DraftPatch} from 'types/drafts';
+import {LAST_SPACE_ADMIN_ERROR_ID, LAST_SPACE_MEMBER_ERROR_ID, SPACE_LOCK_TIMEOUT_ERROR_ID} from 'types/server_errors';
 import type {DocsThunkAction} from 'types/store';
 
 import {DraftTypes, PageTypes, SpaceTypes} from './action_types';
@@ -380,17 +381,33 @@ export function deleteSpace(spaceId: string): DocsThunkAction<Promise<void>> {
     };
 }
 
-// The server rejects removing a space's last authorized member with
-// `app.space.remove_member.last_member.app_error` (409). The REST layer keeps
-// only {message, status_code} from the AppError, so the status is all a caller
-// has to recognize it by.
+// The removal routes answer 409 for three different rules, so the id is what tells them apart —
+// the status no longer does. The REST layer lifts the AppError id into server_error_id (see
+// client/rest.ts), which is what makes this possible; matching on the status alone reported a
+// sole-admin refusal and a retryable lock timeout as "the space needs another member".
+
+const spaceErrorId = (error: unknown): string | undefined =>
+    (error instanceof ClientError ? error.server_error_id : undefined);
+
+// The space would be left with no member holding access.
 export function isLastSpaceMemberError(error: unknown): boolean {
-    return error instanceof ClientError && error.status_code === 409;
+    return spaceErrorId(error) === LAST_SPACE_MEMBER_ERROR_ID;
+}
+
+// The space would be left with members but no administrator. Distinct from the above because the
+// remedy is different: another *admin* is required, not another member.
+export function isLastSpaceAdminError(error: unknown): boolean {
+    return spaceErrorId(error) === LAST_SPACE_ADMIN_ERROR_ID;
+}
+
+// A space-keyed lock timeout. Retryable as-is, so it must not be reported as a rule violation.
+export function isSpaceLockTimeoutError(error: unknown): boolean {
+    return spaceErrorId(error) === SPACE_LOCK_TIMEOUT_ERROR_ID;
 }
 
 // The add route answers 403 when the target isn't an active member of the space's
-// team. That is the one add failure a user can act on, so it gets its own message;
-// like isLastSpaceMemberError, the status is all the REST layer preserves.
+// team. That is the one add failure a user can act on, so it gets its own message.
+// Still keyed on the status: 403 is the only one this route emits.
 export function isNotTeamMemberError(error: unknown): boolean {
     return error instanceof ClientError && error.status_code === 403;
 }

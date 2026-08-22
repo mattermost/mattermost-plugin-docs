@@ -117,6 +117,103 @@ jobs:
       - name: ci/build
         uses: mattermost/actions/plugin-ci/build@0256d363493a1e6b9e361ea788c62a0a73bc00be
 
+  # End-to-end suite: boots a real Mattermost via Testcontainers, installs this plugin, and drives
+  # the space-permission scenarios through the real API with nothing mocked.
+  #
+  # It needs a server image carrying the paired core branch's space-permission changes. Core CI
+  # publishes one per commit as mattermostdevelopment/mattermost-team-edition:<7-char-sha>, so set
+  # the CORE_IMAGE repository variable to that tag. That stays the shape even after the core
+  # changes ship in a release: the pin below compares against build/core-commit.txt, which only
+  # ever names a commit sha, so CORE_IMAGE is always a per-commit sha tag.
+  # While CORE_IMAGE is unset this job does not run: no available image could satisfy it, and a
+  # silent pass would be worse than an absent one.
+  #
+  # DO NOT add this job to the repository's required status checks until CORE_IMAGE is set and the
+  # suite is observed passing. A job skipped by a top-level `if:` reports as "skipped", and branch
+  # protection counts a skipped required check as satisfied — so listing it early would admit every
+  # PR as though the suite had run, which is the outcome the condition above exists to avoid.
+  # For the same reason it is not in delivery/release `needs:` yet: a skipped dependency skips the
+  # dependent job. Add it to both once CORE_IMAGE is populated, so a permission regression blocks
+  # publishing.
+  #
+  # Fork PRs are excluded: repository variables (CORE_IMAGE) are visible to fork runs, but secrets
+  # (the Enterprise test license below) are not, so the licensed scenarios would fail on every
+  # fork PR. When this job becomes a required check that exclusion needs its own answer — a
+  # skipped required check passes branch protection, so fork PRs would bypass the suite.
+  e2e:
+    if: ${{ vars.CORE_IMAGE != '' && (github.repository_owner == 'mattermost' || github.event_name != 'schedule') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      CORE_IMAGE: ${{ vars.CORE_IMAGE }}
+      # Lifted to env because the secrets context is not available in a step-level `if`, and the
+      # login below has to be skippable: the repository defines no Docker Hub credentials today.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: ci/verify-core-image-pin
+        uses: ./.github/actions/verify-core-image-pin
+        with:
+          CORE_IMAGE: ${{ env.CORE_IMAGE }}
+
+      - name: ci/setup
+        uses: mattermost/actions/plugin-ci/setup@0256d363493a1e6b9e361ea788c62a0a73bc00be
+        with:
+          go-version-file: go.mod
+
+      # Reuses the bundle the build job already produced rather than rebuilding it here; the
+      # suite globs dist/ for it.
+      - name: ci/download-artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: dist
+          path: dist
+
+      # Authenticated so the core image pull is billed to the org's Docker Hub quota rather than the
+      # shared anonymous per-IP limit, which GitHub-hosted runners exhaust as a pull failure that
+      # reads like a test failure. Skipped when no credentials are configured: the pull still works
+      # anonymously, just against the lower limit, so a missing secret must not fail the suite.
+      # Both halves of the credential are required: a username with no token would make the
+      # login action itself fail, which is exactly the suite-killing outcome being avoided.
+      - name: ci/docker-login
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # The scheme-backed scenarios drive core's CreateScheme, which is gated on the
+      # CustomPermissionsSchemes feature, so the suite boots the server with an Enterprise license.
+      # The secret is defined once at the organization and granted to selected repositories; the
+      # name matches the one the server and the other plugin repos already use.
+      - name: ci/e2e
+        run: |
+          if [[ -z "$MM_LICENSE" ]]; then
+            echo "MM_E2E_TEST_LICENSE_ONPREM_ENT is not available to this repository." >&2
+            echo "The scheme-backed scenarios require an Enterprise license; grant the org secret to this repo." >&2
+            exit 1
+          fi
+          go test -tags e2e -count=1 -v ./server/e2e/...
+        env:
+          MM_LICENSE: ${{ secrets.MM_E2E_TEST_LICENSE_ONPREM_ENT }}
+
+      # On an ordinary test failure the suite prints the container log itself (TestMain), because
+      # it tears the container down before the process exits and no later step could read it. This
+      # fallback covers only the paths that skip that teardown — a test-binary panic or crash —
+      # where the container is still running.
+      - name: ci/e2e-logs
+        if: failure()
+        run: docker ps -aq | xargs -r -I{} sh -c 'echo "===== {} ====="; docker logs {} 2>&1 | tail -400'
+
   e2e-playwright-tests:
     if: ${{ github.repository_owner == 'mattermost' || github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
@@ -125,10 +222,14 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-    # Declared here so the server under test shows up in a workflow diff; `vars` lets it
-    # be changed from repository settings.
     env:
-      MM_IMAGE: ${{ vars.MM_IMAGE || 'mattermostdevelopment/mattermost-enterprise-edition:master' }}
+      # Left to the container helper, which derives the image from build/core-commit.txt: the
+      # specs create a space, and CreateSpace resolves a preset scheme only the paired core branch
+      # seeds, so :master fails them all. `vars` still overrides it from repository settings.
+      MM_IMAGE: ${{ vars.MM_IMAGE }}
+      # Lifted to env because the secrets context is not available in a step-level `if`.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     # No `services:` block: testcontainers provisions the server, so CI and local runs
     # take the same path.
     steps:
@@ -137,8 +238,83 @@ jobs:
         with:
           persist-credentials: false
 
+      # See the `e2e` job: authenticated so the core image pull is billed to the org's Docker Hub
+      # quota rather than the shared anonymous per-IP limit, and skipped when no credentials exist
+      # — a fork PR has none, and must still be able to pull anonymously.
+      - name: ci/docker-login
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: ci/playwright-e2e-test
         uses: ./.github/actions/playwright-e2e-test
+
+
+  # The space-permission specs, which the job above deliberately does not collect: they need the
+  # Enterprise license secret, which fork runs cannot see, on top of the core image both jobs run
+  # against. Kept as its own job so the authoring suite above keeps running on every PR, license or
+  # not.
+  #
+  # DO NOT add to required status checks while CORE_IMAGE is unset: a job skipped by a top-level
+  # `if:` reports as "skipped", and branch protection counts that as satisfied.
+  e2e-playwright-space-permissions:
+    if: ${{ vars.CORE_IMAGE != '' && (github.repository_owner == 'mattermost' || github.event_name != 'schedule') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    needs: [build]
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      # The container helper reads MM_IMAGE; CI supplies the same pinned core image the Go suite
+      # consumes, so the two suites can never assert against different servers.
+      MM_IMAGE: ${{ vars.CORE_IMAGE }}
+      CORE_IMAGE: ${{ vars.CORE_IMAGE }}
+      # Selects both the specs and the licensed container setup they need; see tests/helpers/mode.ts.
+      MM_E2E_SPACE_PERMISSIONS: "true"
+      # Lifted to env because the secrets context is not available in a step-level `if`.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: ci/verify-core-image-pin
+        uses: ./.github/actions/verify-core-image-pin
+        with:
+          CORE_IMAGE: ${{ env.CORE_IMAGE }}
+
+      # Fails here, by name, rather than inside a spec: the suite's own error would otherwise arrive
+      # only after a container boot and a browser install.
+      - name: ci/verify-license-available
+        run: |
+          if [[ -z "$MM_LICENSE" ]]; then
+            echo "MM_E2E_TEST_LICENSE_ONPREM_ENT is not available to this repository." >&2
+            echo "The space-permission specs drive core's CreateScheme, which is gated on the" >&2
+            echo "CustomPermissionsSchemes feature; grant the org secret to this repo." >&2
+            exit 1
+          fi
+        env:
+          MM_LICENSE: ${{ secrets.MM_E2E_TEST_LICENSE_ONPREM_ENT }}
+
+      # See the `e2e` job: authenticated so the core image pull is billed to the org's Docker Hub
+      # quota rather than the shared anonymous per-IP limit, and skipped when no credentials exist.
+      - name: ci/docker-login
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: ci/playwright-e2e-test
+        uses: ./.github/actions/playwright-e2e-test
+        with:
+          # Distinct from the authoring job's, which uploads under the same names.
+          ARTIFACT_SUFFIX: "-space-permissions"
+          MM_LICENSE: ${{ secrets.MM_E2E_TEST_LICENSE_ONPREM_ENT }}
 
   delivery:
     if: ${{ github.repository_owner == 'mattermost' && github.event_name != 'schedule' && github.ref_name == 'master' }}
