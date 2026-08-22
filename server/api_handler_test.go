@@ -538,9 +538,9 @@ func TestHandler_PageCollectionsReturnMetadataOnly(t *testing.T) {
 	require.Contains(t, detail, "props")
 }
 
-// TestHandler_GetSpaceMembers lists a space's members through the backing channel. The members
-// list is manage-gated — deliberately stricter than MM channels, since the projection
-// carries the per-member permission matrix.
+// TestHandler_GetSpaceMembers lists a space's members through the backing channel. The route is
+// read-gated; a manage-tier caller additionally receives the per-member permission matrix, which
+// TestHandler_GetSpaceMembers_NonManageMemberRedacted covers from the other side.
 func TestHandler_GetSpaceMembers(t *testing.T) {
 	channelID := mmmodel.NewId()
 	memberUserID := mmmodel.NewId()
@@ -603,17 +603,36 @@ func TestHandler_GetSpaceMembers_HasMore(t *testing.T) {
 	require.True(t, resp.HasMore)
 }
 
-// TestHandler_GetSpaceMembers_NonManageMemberForbidden verifies an ordinary member without a
-// manage grant cannot list the members. The projection carries every member's granted-permission
-// set, so relaxing this gate to plain membership would expose the whole matrix to any member.
-func TestHandler_GetSpaceMembers_NonManageMemberForbidden(t *testing.T) {
+// TestHandler_GetSpaceMembers_NonManageMemberRedacted verifies an ordinary member without a manage
+// grant is served the roster — the space view renders its member count and avatars from it — but
+// without the per-member permission matrix or the auto-join provenance, which are management state.
+func TestHandler_GetSpaceMembers_NonManageMemberRedacted(t *testing.T) {
 	channelID := mmmodel.NewId()
+	callerID := mmmodel.NewId()
+	memberUserID := mmmodel.NewId()
 
-	h := openTestPlugin(t, nil)
+	mockAPI := newEnabledMockAPI()
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("GetChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.ChannelMember{}, nil).Maybe()
+	mockAPI.On("GetChannelMembers", channelID, mock.AnythingOfType("int"), mock.AnythingOfType("int")).
+		Return(mmmodel.ChannelMembers{{ChannelId: channelID, UserId: memberUserID, SchemeAdmin: true}}, nil)
+	h := openTestPlugin(t, mockAPI)
+
 	space := seedSpace(t, h.store, channelID)
 
-	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/members", mmmodel.NewId(), nil)
-	require.Equal(t, http.StatusForbidden, rec.Code)
+	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id+"/members", callerID, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp paginatedResponse[*model.SpaceMember]
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp.Items, 1)
+	require.Equal(t, memberUserID, resp.Items[0].UserId)
+	require.True(t, resp.Items[0].IsAdmin, "who administers the space stays visible")
+	require.Empty(t, resp.Items[0].Permissions)
+	require.Empty(t, resp.Items[0].GrantedPermissions)
+	require.False(t, resp.Items[0].AutoJoined)
 }
 
 // TestHandler_AddSpaceMember adds a member to a space; the caller needs requireSpaceManage
@@ -1968,7 +1987,7 @@ func TestHandler_CreateSpace_RequiresCreateSpacePermission(t *testing.T) {
 		"title": "Nope",
 	})
 	require.Equal(t, http.StatusForbidden, rec.Code)
-	mockAPI.AssertNotCalled(t, "CreateChannel")
+	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 }
 
 // TestHandler_GetTeamSpaces_RequiresReadSpacePermission verifies that team membership alone does

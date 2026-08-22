@@ -18,4 +18,4 @@
 #     https://hub.docker.com/v2/repositories/mattermostdevelopment/mattermost-team-edition/tags/<7-char-sha>/
 #
 # One sha, comments and blank lines ignored.
-56b239719d191e156bc55326a5fefc25174139db
+35b7e01bec798bae88fb65a02b745c936359dcfa

@@ -10,7 +10,7 @@ import {getSpace} from './selectors';
 
 // Whether to offer member management in a space, as the server resolved it.
 //
-// Read from the server's answer rather than inferred from membership: the roster routes admit a
+// Read from the server's answer rather than inferred from membership: the roster mutations admit a
 // sysadmin, a space admin, or a team manage_space holder, and none of those is "appears in the
 // member list". Inferring it from membership was wrong in both directions — it offered the roster
 // to every ordinary member, whom the server refuses, and withheld it from a team admin and a
@@ -36,4 +36,18 @@ export const getSpacePermissions = (state: GlobalState, spaceId: string): Permis
 export const getCanCreatePage = (state: GlobalState, spaceId: string): boolean => {
     const permissions = getSpacePermissions(state, spaceId);
     return permissions === undefined || permissions.includes(Permissions.CREATE_PAGE);
+};
+
+// Whether to offer editing an already-published page in a space.
+//
+// Separate from getCanCreatePage because the server separates them: publishing a page that does not
+// exist yet is gated on create_page, and publishing over a live one on edit_page (see
+// PublishPageDraft). A space default can carry either without the other.
+//
+// Unresolved permissions are treated as create-page is — the affordance is offered, and the server
+// remains the authority — so a listing that never carried the field cannot withhold editing from a
+// legitimate author.
+export const getCanEditPage = (state: GlobalState, spaceId: string): boolean => {
+    const permissions = getSpacePermissions(state, spaceId);
+    return permissions === undefined || permissions.includes(Permissions.EDIT_PAGE);
 };

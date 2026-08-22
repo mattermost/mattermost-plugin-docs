@@ -71,7 +71,7 @@ fi
 # Wrapped so a missing or comment-only pin file cannot abort the build under `set -euo pipefail`
 # (grep's no-match exit 1, or its SIGPIPE when head closes the pipe first): this block only
 # reports drift, so an unreadable pin degrades to the note below rather than a silent death.
-PINNED_COMMIT="$( { grep -vE '^\s*(#|$)' "$REPO_ROOT/build/core-commit.txt" || true; } | head -1 | tr -d '[:space:]')"
+PINNED_COMMIT="$( { grep -vE '^[[:space:]]*(#|$)' "$REPO_ROOT/build/core-commit.txt" || true; } | head -1 | tr -d '[:space:]')"
 CORE_HEAD="$(git -C "$MM_SERVER_REPO" rev-parse HEAD)"
 if [[ -z "$PINNED_COMMIT" ]]; then
     echo "NOTE: build/core-commit.txt holds no pinned commit; skipping the drift check." >&2

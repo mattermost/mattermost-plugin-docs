@@ -193,15 +193,29 @@ func (p *Plugin) handleGetSpacePages(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetSpaceMembers handles GET /api/v1/spaces/{space_id}/members.
+//
+// Gated on read_page, the same permission the page listing takes, rather than on the manage tier
+// the membership writes below take: the roster is what the space view renders member counts and
+// avatars from, so gating the read on manage left every ordinary member looking at a space whose
+// membership it could not see. Core takes the same position on the backing channel — a channel
+// member may list its members and their roles.
 func (p *Plugin) handleGetSpaceMembers(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
-	space, ok := p.requireSpaceManage(w, spaceID, userID)
+	space, ok := p.requireSpacePagePerm(w, spaceID, userID, mmmodel.PermissionReadPage)
 	if !ok {
 		return
 	}
+	// Resolved separately from the route gate, and a denial is not one: it selects the projection
+	// rather than admitting the caller. Only a failure of the check itself aborts — reporting a
+	// backend outage as "no manage tier" would silently redact a roster the caller may see in full.
+	manageErr := p.service.RequireSpaceAdminOrTeamPerm("api.space.manage", space, userID, mmmodel.PermissionManageSpace)
+	if manageErr != nil && manageErr.StatusCode != http.StatusForbidden {
+		p.writeAppError(w, manageErr)
+		return
+	}
 	page, perPage := pageParam(r), perPageParam(r)
-	members, hasMore, appErr := p.service.GetSpaceMembers(space, page, perPage)
+	members, hasMore, appErr := p.service.GetSpaceMembers(space, page, perPage, manageErr == nil)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return

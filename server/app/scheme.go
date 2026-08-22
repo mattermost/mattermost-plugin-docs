@@ -15,12 +15,20 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
-// errPooledSchemeNotConforming tags a scheme found under a pooled name whose generated roles grant
-// something the name does not imply — an ordinary channel scheme occupying the name, or a pooled
-// scheme edited outside this plugin. The pool refuses it rather than rewriting roles that govern
+// errPooledSchemeNotConforming tags a scheme found under a pooled name that the pool cannot adopt:
+// a non-channel scope, or generated roles granting something the name does not imply — an ordinary
+// channel scheme occupying the name, or a pooled scheme edited outside this plugin. The pool
+// refuses it rather than rewriting roles that govern
 // channels beyond the caller's space, so this surfaces as a server-state condition an admin must
 // resolve, not as a caller error.
 var errPooledSchemeNotConforming = errors.New("scheme under a pooled space name does not carry the pool's permission sets")
+
+// errUnsupportedSchemeAPI tags a scheme or role plugin-API call that answered with neither a value
+// nor an error. The generated plugin RPC client logs a transport failure and returns the zero
+// values, so a server whose plugin API does not implement the call is indistinguishable from a
+// successful read of nothing. Dereferencing that nil crashes the plugin process for every request,
+// not just this one, so each call site turns it into this error instead.
+var errUnsupportedSchemeAPI = errors.New("the server's plugin API did not answer a scheme or role call; it does not carry the space permission support this plugin requires")
 
 // spacePermissionSetsEqual reports whether two sets carry the same SPACE permissions, ignoring the
 // channel permissions a role read carries beyond them. Every comparison against a role read has to
@@ -128,6 +136,9 @@ func (s *Service) getSchemeByName(name string) (*mmmodel.Scheme, error) {
 		}
 		return nil, err
 	}
+	if scheme == nil {
+		return nil, errUnsupportedSchemeAPI
+	}
 	return scheme, nil
 }
 
@@ -139,6 +150,9 @@ func (s *Service) getRolePermissionsByName(roleName string) ([]string, error) {
 			return nil, &store.ErrNotFound{EntityName: "Role", ID: roleName}
 		}
 		return nil, err
+	}
+	if role == nil {
+		return nil, errUnsupportedSchemeAPI
 	}
 	return role.Permissions, nil
 }
@@ -156,7 +170,7 @@ func (s *Service) getRolePermissionsByName(roleName string) ([]string, error) {
 // an already-correct permission set is idempotent.
 func (s *Service) getOrCreateSharedScheme(permissions []string) (string, *schemeRoles, error) {
 	name := model.SharedSchemeNameForPermissions(permissions)
-	if scheme, err := s.client.Scheme.GetByName(name); err == nil {
+	if scheme, err := s.getSchemeByName(name); err == nil {
 		if scopeErr := s.adoptableSharedScheme(scheme, permissions); scopeErr != nil {
 			return "", nil, scopeErr
 		}
@@ -166,7 +180,7 @@ func (s *Service) getOrCreateSharedScheme(permissions []string) (string, *scheme
 		// already sharing it.
 		s.log.Debug("resolved an existing pooled space scheme", "scheme_id", scheme.Id, "scheme_name", name)
 		return scheme.Id, rolesFromScheme(scheme), nil
-	} else if !errors.Is(err, pluginapi.ErrNotFound) {
+	} else if !store.IsErrNotFound(err) {
 		return "", nil, err
 	}
 
@@ -178,13 +192,16 @@ func (s *Service) getOrCreateSharedScheme(permissions []string) (string, *scheme
 	if err != nil {
 		// The name is unique, so a concurrent first use of the same permission set loses this
 		// create and adopts the winner's scheme rather than failing the caller.
-		if existing, getErr := s.client.Scheme.GetByName(name); getErr == nil {
+		if existing, getErr := s.getSchemeByName(name); getErr == nil {
 			if scopeErr := s.adoptableSharedScheme(existing, permissions); scopeErr != nil {
 				return "", nil, scopeErr
 			}
 			return existing.Id, rolesFromScheme(existing), nil
 		}
 		return "", nil, err
+	}
+	if scheme == nil {
+		return "", nil, errUnsupportedSchemeAPI
 	}
 	return scheme.Id, rolesFromScheme(scheme), nil
 }
@@ -235,7 +252,7 @@ func (s *Service) getOrCreateSharedScheme(permissions []string) (string, *scheme
 // the actors it would exclude.
 func (s *Service) adoptableSharedScheme(scheme *mmmodel.Scheme, permissions []string) error {
 	if scheme.Scope != mmmodel.SchemeScopeChannel {
-		return errors.New("scheme " + scheme.Name + " under the pooled name has scope " + scheme.Scope + "; the pool only adopts channel-scoped schemes")
+		return fmt.Errorf("%w: scheme %s under the pooled name has scope %s; the pool only adopts channel-scoped schemes", errPooledSchemeNotConforming, scheme.Name, scheme.Scope)
 	}
 	if expected := model.SharedSchemeDisplayNameForPermissions(permissions); scheme.DisplayName != expected {
 		s.log.Warn("a scheme under a pooled space name does not carry the pool's display name",

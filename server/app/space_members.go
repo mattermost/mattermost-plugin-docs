@@ -16,12 +16,17 @@ import (
 )
 
 // GetSpaceMembers returns one page of space's members plus whether more members exist beyond
-// it, each projected to their effective/granted permissions. page/perPage are normalized
-// like every other paginated method (page and perPage both clamped). The pluginapi member
+// it. page/perPage are normalized like every other paginated method (page and perPage both
+// clamped). The pluginapi member
 // listing is page-indexed rather than offset-based, so when the requested page comes back full a
 // one-row probe at the next page's first slot decides has-more. space is the caller's
-// already-fetched record, from its manage gate.
-func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int) ([]*model.SpaceMember, bool, *mmmodel.AppError) {
+// already-fetched record, from its read gate.
+//
+// withPermissions selects the projection. The route admits anyone who can read the space, so that
+// its member count and avatars render for an ordinary member, but the per-member permission matrix
+// is management state: it is emitted only to a caller who holds the manage tier the membership
+// writes require, and redacted for everyone else (see redactSpaceMember).
+func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int, withPermissions bool) ([]*model.SpaceMember, bool, *mmmodel.AppError) {
 	if space == nil {
 		return nil, false, mmmodel.NewAppError("GetSpaceMembers", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -47,7 +52,11 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int) ([]*mod
 	}
 	members := make([]*model.SpaceMember, 0, len(channelMembers))
 	for _, cm := range channelMembers {
-		members = append(members, toSpaceMember(cm, defaultPermissions, slices.Contains(autoJoined, cm.UserId)))
+		member := toSpaceMember(cm, defaultPermissions, slices.Contains(autoJoined, cm.UserId))
+		if !withPermissions {
+			redactSpaceMember(member)
+		}
+		members = append(members, member)
 	}
 	hasMore := false
 	if len(channelMembers) == perPage {
@@ -61,6 +70,16 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int) ([]*mod
 		hasMore = len(probe) > 0
 	}
 	return members, hasMore, nil
+}
+
+// redactSpaceMember strips the management state from a roster entry: the permission matrix, and the
+// auto-join provenance a membership review reads. What survives is who is in the space and which of
+// them administer it, which is what the space view renders and what core lets any channel member
+// see of an ordinary channel.
+func redactSpaceMember(member *model.SpaceMember) {
+	member.Permissions = []string{}
+	member.GrantedPermissions = []string{}
+	member.AutoJoined = false
 }
 
 // toSpaceMember builds the wire representation of a channel member's permission state.
@@ -104,10 +123,6 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 	if !active {
 		return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.member.not_team_member.app_error", nil, "", http.StatusForbidden)
 	}
-	defaultPermissions, err := s.spaceDefaultPermissions(space)
-	if err != nil {
-		return nil, schemeAppError("AddSpaceMember", err)
-	}
 	// Adding an already-existing member is a no-op for core, which returns their membership
 	// unchanged rather than erroring — so this also covers a deliberate re-add of a member the
 	// auto-join pre-step joined earlier. Either way it is a deliberate admin act on this membership,
@@ -132,7 +147,20 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 	// roles, which this path did not change — and the alternative ordering trades this for deleting
 	// a membership that was legitimized, which is the worse direction.
 	var member *mmmodel.ChannelMember
+	var defaultPermissions []string
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
+		// Resolved inside the lock, and first, for the two reasons SetSpaceMemberPermissions
+		// resolves it inside its own: a concurrent SetSpaceDefaultPermissions repoints the backing
+		// channel's scheme behind this same lock, so a read taken before it could describe a
+		// default set the space no longer carries by the time the response is projected from it;
+		// and resolving before the add means a resolution failure is caught before anything
+		// commits.
+		defaults, defErr := s.spaceDefaultPermissions(space)
+		if defErr != nil {
+			return schemeAppError("AddSpaceMember", defErr)
+		}
+		defaultPermissions = defaults
+
 		if clearErr := s.store.ClearAutoJoined(space.Id, userID); clearErr != nil {
 			return mmmodel.NewAppError("AddSpaceMember", "app.space.member.clear_auto_join_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(clearErr)
 		}

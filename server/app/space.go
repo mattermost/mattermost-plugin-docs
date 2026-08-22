@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/pluginapi"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
@@ -885,8 +886,9 @@ func (s *Service) retryStuckChannelRestore(spaceID string) (*model.Space, *mmmod
 func (s *Service) backingChannelArchived(channelID string) (bool, error) {
 	channel, err := s.client.Channel.GetChannelOfType(channelID, mmmodel.ChannelTypeSpace)
 	if err != nil {
-		var appErr *mmmodel.AppError
-		if errors.As(err, &appErr) && appErr.StatusCode == http.StatusNotFound {
+		// The pluginapi client normalizes a 404 to its own sentinel rather than passing the
+		// AppError through, so the status code is not readable from the returned error.
+		if errors.Is(err, pluginapi.ErrNotFound) {
 			return false, nil
 		}
 		return false, err

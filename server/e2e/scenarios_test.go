@@ -397,10 +397,12 @@ func TestScenarios(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, status, "admin restore: %s", body)
 
-		// A plain member (no elevation) is denied on each of the same routes.
-		status, _, err = doPluginRequest(ctx, member.client, http.MethodGet, "/spaces/"+s7ID+"/members", nil, nil)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusForbidden, status, "control list members")
+		// A plain member (no elevation) is denied on each of the same write routes. The roster read
+		// is the one exception: it serves every reader of the space so a space view can render its
+		// membership, and withholds authority by redacting the permission matrix rather than by
+		// refusing. CONTRIB holds a real edit_page grant in this space, so there is something for
+		// that redaction to hide.
+		requireRedactedRoster(t, ctx, member, s7ID, "control list members")
 
 		status, _, err = doPluginRequest(ctx, member.client, http.MethodPost, "/spaces/"+s7ID+"/members",
 			map[string]string{"user_id": outsider.id}, nil)
@@ -594,11 +596,10 @@ func TestScenarios(t *testing.T) {
 
 		addSpaceMember(t, ctx, spaceAdmin, space.Id, member.id)
 
-		// Before the grant: a plain member is refused the two routes that require space
-		// administration, one read and one write, so the grant below is shown to change both.
-		status, body, err = doPluginRequest(ctx, member.client, http.MethodGet, "/spaces/"+space.Id+"/members", nil, nil)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusForbidden, status, "roster read before the admin_space grant: %s", body)
+		// Before the grant: a plain member is refused the write route that requires space
+		// administration, and reads the roster in its redacted projection, so the grant below is
+		// shown to change both.
+		requireRedactedRoster(t, ctx, member, space.Id, "roster read before the admin_space grant")
 
 		status, body, err = doPluginRequest(ctx, member.client, http.MethodPut, "/spaces/"+space.Id+"/default-permissions",
 			map[string][]string{"default_permissions": {mmmodel.PermissionCommentPage.Id}}, nil)
@@ -620,10 +621,20 @@ func TestScenarios(t *testing.T) {
 		require.ElementsMatch(t, mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions), granted.Permissions,
 			"the effective set of an admin_space grant must be exactly core's space-admin authority: %s", body)
 
-		// After the grant: both refused routes now answer, against real core's role composition.
-		status, body, err = doPluginRequest(ctx, member.client, http.MethodGet, "/spaces/"+space.Id+"/members", nil, nil)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, status, "roster read after the admin_space grant: %s", body)
+		// After the grant: the write route answers, and the roster arrives unredacted, against real
+		// core's role composition. The status alone would not show the change — the read answered
+		// 200 before the grant too — so this asserts the matrix the redaction was withholding.
+		afterGrant := listSpaceMembersAs(t, ctx, member, space.Id, "roster read after the admin_space grant")
+		var own *spaceMemberJSON
+		for _, m := range afterGrant.Items {
+			if m.UserId == member.id {
+				own = m
+			}
+		}
+		require.NotNil(t, own, "the delegated admin does not appear in the roster it can now read")
+		require.Equal(t, []string{mmmodel.PermissionAdminSpace.Id}, own.GrantedPermissions,
+			"the unredacted roster does not report the admin_space grant this test just made")
+		require.True(t, own.IsAdmin, "the unredacted roster does not report the delegated admin as an admin")
 
 		var afterDefaults pluginmodel.SpaceWithAccess
 		status, body, err = doPluginRequest(ctx, member.client, http.MethodPut, "/spaces/"+space.Id+"/default-permissions",
@@ -644,9 +655,7 @@ func TestScenarios(t *testing.T) {
 			"admin_space survived the revoke in the granted set: %s", body)
 		require.False(t, revoked.IsAdmin, "SchemeAdmin survived the admin_space revoke: %s", body)
 
-		status, body, err = doPluginRequest(ctx, member.client, http.MethodGet, "/spaces/"+space.Id+"/members", nil, nil)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusForbidden, status, "roster read after the admin_space revoke: %s", body)
+		requireRedactedRoster(t, ctx, member, space.Id, "roster read after the admin_space revoke")
 	})
 
 	// The auto-join undo path. scenario1 asserts the forward direction (a default-granted write by a

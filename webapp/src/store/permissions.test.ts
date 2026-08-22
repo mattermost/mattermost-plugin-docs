@@ -3,7 +3,7 @@
 
 import type {Permission} from 'types/permissions';
 
-import {getCanCreatePage, getCanManageSpaceMembers} from './permissions';
+import {getCanCreatePage, getCanEditPage, getCanManageSpaceMembers} from './permissions';
 import {makeSpace} from './test_fixtures';
 
 import {makeTestState} from '../../tests/react_testing_utils';
@@ -81,5 +81,33 @@ describe('getCanCreatePage', () => {
 
         expect(getCanCreatePage(state, 'space-1')).toBe(true);
         expect(getCanCreatePage(state, 'never-loaded')).toBe(true);
+    });
+});
+
+describe('getCanEditPage', () => {
+    const spaceWith = (permissions?: Permission[]) => ({
+        ...makeSpace('space-1', 'Engineering'),
+        ...(permissions === undefined ? {} : {permissions}),
+    });
+
+    it('offers editing when the resolved set grants edit_page', () => {
+        const state = makeTestState({docs: {spaces: {'space-1': spaceWith(['read_page', 'edit_page'])}}});
+
+        expect(getCanEditPage(state, 'space-1')).toBe(true);
+    });
+
+    // The server splits the two: publishing a new page takes create_page, publishing over a live
+    // one takes edit_page. An author who may only create must not be offered the edit entry.
+    it('withholds it when the set grants create_page but not edit_page', () => {
+        const state = makeTestState({docs: {spaces: {'space-1': spaceWith(['read_page', 'create_page'])}}});
+
+        expect(getCanEditPage(state, 'space-1')).toBe(false);
+    });
+
+    it('offers it when permissions have not been resolved', () => {
+        const state = makeTestState({docs: {spaces: {'space-1': spaceWith(undefined)}}});
+
+        expect(getCanEditPage(state, 'space-1')).toBe(true);
+        expect(getCanEditPage(state, 'never-loaded')).toBe(true);
     });
 });

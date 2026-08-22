@@ -122,7 +122,7 @@ func TestServiceCreateSpace_PresetSchemeMissing(t *testing.T) {
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
 	require.Equal(t, "app.space.preset_scheme_missing.app_error", appErr.Id)
-	mockAPI.AssertNotCalled(t, "CreateChannel")
+	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 }
 
 // TestServiceCreateSpace_SchemeDenialKeepsStatus verifies a refusal core issues against the scheme
@@ -145,7 +145,7 @@ func TestServiceCreateSpace_SchemeDenialKeepsStatus(t *testing.T) {
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusNotImplemented, appErr.StatusCode)
 	require.Equal(t, "api.scheme.create_scheme.license.error", appErr.Id)
-	mockAPI.AssertNotCalled(t, "CreateChannel")
+	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 }
 
 // TestServiceCreateSpace_ChannelIdRejected verifies a caller-supplied ChannelId is rejected
@@ -159,7 +159,7 @@ func TestServiceCreateSpace_ChannelIdRejected(t *testing.T) {
 	_, appErr := h.svc.CreateSpace(space, mmmodel.NewId(), nil, nil)
 	require.NotNil(t, appErr)
 	require.Equal(t, 400, appErr.StatusCode)
-	mockAPI.AssertNotCalled(t, "CreateChannel")
+	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 }
 
 // TestServiceCreateSpace_ChannelCreationFails verifies that when the backing-channel create fails,
@@ -175,8 +175,8 @@ func TestServiceCreateSpace_ChannelCreationFails(t *testing.T) {
 	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: mmmodel.NewId(), Title: "Doomed"}, mmmodel.NewId(), nil, nil)
 	require.NotNil(t, appErr)
 	require.Equal(t, "app.space.create.backing_channel_failed.app_error", appErr.Id)
-	mockAPI.AssertNotCalled(t, "AddChannelMember")
-	mockAPI.AssertNotCalled(t, "DeleteChannel")
+	mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
+	mockAPI.AssertNotCalled(t, "DeleteChannel", mock.Anything)
 }
 
 // TestServiceCreateSpace_ReplicaConfiguredSucceeds exercises space creation on a host with SQL
@@ -232,7 +232,7 @@ func TestServiceCreateSpace_InvalidInput(t *testing.T) {
 			_, appErr := h.svc.CreateSpace(space, mmmodel.NewId(), nil, nil)
 			require.NotNil(t, appErr)
 			require.Equal(t, 400, appErr.StatusCode)
-			mockAPI.AssertNotCalled(t, "CreateChannel")
+			mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 		})
 	}
 
@@ -243,7 +243,7 @@ func TestServiceCreateSpace_InvalidInput(t *testing.T) {
 		_, appErr := h.svc.CreateSpace(nil, mmmodel.NewId(), nil, nil)
 		require.NotNil(t, appErr)
 		require.Equal(t, 400, appErr.StatusCode)
-		mockAPI.AssertNotCalled(t, "CreateChannel")
+		mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 	})
 }
 
@@ -266,7 +266,7 @@ func TestServiceCreateSpace_NotTeamMember(t *testing.T) {
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
 	require.Equal(t, "app.space.create.not_team_member.app_error", appErr.Id)
-	mockAPI.AssertNotCalled(t, "CreateChannel")
+	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 }
 
 // TestServiceCreateSpace_FormerTeamMemberBlocked verifies that a user who left the team is
@@ -288,7 +288,7 @@ func TestServiceCreateSpace_FormerTeamMemberBlocked(t *testing.T) {
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
 	require.Equal(t, "app.space.create.not_team_member.app_error", appErr.Id)
-	mockAPI.AssertNotCalled(t, "CreateChannel")
+	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 }
 
 // TestServiceCreateSpace_CreateSpaceGate pins the create_space authorization gate, which team
@@ -311,7 +311,7 @@ func TestServiceCreateSpace_CreateSpaceGate(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, appErr.StatusCode)
 		require.Equal(t, "app.space.create.forbidden.app_error", appErr.Id)
 		// Refused before a real, visible channel is stood up in the target team.
-		mockAPI.AssertNotCalled(t, "CreateChannel")
+		mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 	})
 
 	t.Run("sysadmin without create_space is allowed", func(t *testing.T) {
@@ -1415,7 +1415,7 @@ func TestServiceGetSpaceMembers_ListFails(t *testing.T) {
 	mockAPI.On("GetChannelMembers", space.ChannelId, 0, 60).
 		Return(nil, &mmmodel.AppError{Id: "app.channel.get_members.app_error", StatusCode: http.StatusInternalServerError})
 
-	_, _, appErr := h.svc.GetSpaceMembers(space, 0, 60)
+	_, _, appErr := h.svc.GetSpaceMembers(space, 0, 60, true)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
 	require.Equal(t, "app.space.get_members.failed.app_error", appErr.Id)

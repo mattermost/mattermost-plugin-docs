@@ -21,8 +21,9 @@ export const getSpaceAccess = (spaceId: string): Promise<SpaceAccess> =>
 
 // listAllSpaceMembers reads every page of a space's members. The whole roster, not a
 // page of it: the permissions surface edits a grant per row, so a page boundary would
-// hide members whose grants the caller is there to change. Requires manage authority
-// over the space; a caller without it gets a 403.
+// hide members whose grants the caller is there to change. The route serves every reader,
+// but emits each member's permission set only to a caller holding manage authority over
+// the space — so only call this behind that tier.
 export const listAllSpaceMembers = (spaceId: string): Promise<SpaceMember[]> =>
     listAll<SpaceMember>((query) => `${apiUrl()}/spaces/${seg(spaceId)}/members?${query}`);
 

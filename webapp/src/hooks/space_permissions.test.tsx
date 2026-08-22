@@ -100,7 +100,10 @@ const renderSwitchable = async () => {
 describe('useSpacePermissions', () => {
     beforeEach(() => {
         jest.clearAllMocks();
-        mockGetSpaceAccess.mockResolvedValue(access([]));
+
+        // manage_space by default: this surface is only reached behind the manage tier, and the
+        // roster read is now gated on it (see the redacted-roster describe below).
+        mockGetSpaceAccess.mockResolvedValue(access(['manage_space']));
         mockListAllSpaceMembers.mockResolvedValue([]);
     });
 
@@ -109,7 +112,7 @@ describe('useSpacePermissions', () => {
         // holding a channel-member row, so deriving this from the roster locks them out of
         // a space they can in fact administer.
         it('is true from the caller\'s own permissions even when absent from the roster', async () => {
-            mockGetSpaceAccess.mockResolvedValue(access(['read_page', 'admin_space']));
+            mockGetSpaceAccess.mockResolvedValue(access(['read_page', 'admin_space', 'manage_space']));
             mockListAllSpaceMembers.mockResolvedValue([member('someone-else', true)]);
 
             const hook = await renderLoaded();
@@ -119,7 +122,7 @@ describe('useSpacePermissions', () => {
         });
 
         it('is false when the caller\'s permissions omit admin_space', async () => {
-            mockGetSpaceAccess.mockResolvedValue(access(['read_page', 'create_page']));
+            mockGetSpaceAccess.mockResolvedValue(access(['read_page', 'create_page', 'manage_space']));
             mockListAllSpaceMembers.mockResolvedValue([member('me')]);
 
             const hook = await renderLoaded();
@@ -157,7 +160,7 @@ describe('useSpacePermissions', () => {
             const {result, reloadWith} = await renderSwitchable();
             expect(result.current.loadFailed).toBe(true);
 
-            mockGetSpaceAccess.mockResolvedValue(access(['admin_space']));
+            mockGetSpaceAccess.mockResolvedValue(access(['admin_space', 'manage_space']));
             await reloadWith(makeSpace('space-2', 'Design'));
 
             expect(result.current.loadFailed).toBe(false);
@@ -167,7 +170,7 @@ describe('useSpacePermissions', () => {
         // The mirror of the above: an administrator switching to a space whose read fails
         // must not keep the authority the previous space resolved for them.
         it('drops a previously resolved authority when a later space fails to load', async () => {
-            mockGetSpaceAccess.mockResolvedValue(access(['admin_space']));
+            mockGetSpaceAccess.mockResolvedValue(access(['admin_space', 'manage_space']));
             const {result, reloadWith} = await renderSwitchable();
             expect(result.current.canAdminister).toBe(true);
 
@@ -176,6 +179,32 @@ describe('useSpacePermissions', () => {
 
             expect(result.current.canAdminister).toBe(false);
             expect(result.current.loadFailed).toBe(true);
+        });
+    });
+
+    // The roster route serves every reader so a space view can render its member count, but it
+    // redacts the per-member permission matrix below the manage tier. This surface edits that
+    // matrix, so it must not read a roster it would have to display as an answer.
+    describe('a caller without the manage tier', () => {
+        it('does not read the roster at all', async () => {
+            mockGetSpaceAccess.mockResolvedValue(access(['read_page', 'create_page']));
+
+            await renderLoaded();
+
+            expect(mockListAllSpaceMembers).not.toHaveBeenCalled();
+        });
+
+        // Reported the way a failed read is, rather than as an empty roster: an all-empty grid
+        // would state that every member holds nothing.
+        it('reports it as a failed read rather than an empty roster', async () => {
+            mockGetSpaceAccess.mockResolvedValue(access(['read_page', 'create_page']));
+
+            const hook = await renderLoaded();
+
+            expect(hook.current.loadFailed).toBe(true);
+            expect(hook.current.members.size).toBe(0);
+            expect(hook.current.canManageMembers).toBe(false);
+            expect(hook.current.canAdminister).toBe(false);
         });
     });
 

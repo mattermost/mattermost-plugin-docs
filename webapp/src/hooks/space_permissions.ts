@@ -138,23 +138,40 @@ export function useSpacePermissions(space: Space): SpacePermissions {
             setLoading(true);
             setLoadFailed(false);
             try {
-                const [access, roster] = await Promise.all([
-                    getSpaceAccess(space.id),
-                    listAllSpaceMembers(space.id),
-                ]);
+                const access = await getSpaceAccess(space.id);
                 if (cancelled) {
                     return;
                 }
+
+                // The caller's own effective set, which the server resolves the same way the
+                // write gate does — so a system administrator, who holds admin_space without
+                // appearing in the roster at all, resolves here as able to administer.
+                const canManage = access.permissions.includes(Permissions.MANAGE_SPACE);
+
+                // Read after the tier, not alongside it: the roster route serves every reader so a
+                // space view can render its member count, but it redacts the per-member permission
+                // matrix for a caller without the manage tier. This surface edits that matrix, so a
+                // redacted roster is not an answer it can show — an all-empty grid would state that
+                // every member holds nothing. Treated as the read failure a 403 used to be.
+                const roster = canManage ? await listAllSpaceMembers(space.id) : null;
+                if (cancelled) {
+                    return;
+                }
+                if (!roster) {
+                    setMembers(new Map());
+                    setCanAdminister(false);
+                    setCanManageMembers(false);
+                    setLoadFailed(true);
+                    return;
+                }
+
                 setDefaultsState(access.default_permissions);
                 setViewAccessState(access.view_access);
                 updateAtRef.current = access.update_at;
                 setMembers(new Map(roster.map((member) => [member.user_id, member])));
 
-                // The caller's own effective set, which the server resolves the same way the
-                // write gate does — so a system administrator, who holds admin_space without
-                // appearing in the roster at all, resolves here as able to administer.
                 setCanAdminister(access.permissions.includes(Permissions.ADMIN_SPACE));
-                setCanManageMembers(access.permissions.includes(Permissions.MANAGE_SPACE));
+                setCanManageMembers(canManage);
             } catch {
                 if (!cancelled) {
                     // No toast: a failed read leaves the controls disabled and empty, which is

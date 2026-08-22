@@ -66,6 +66,11 @@ export class SystemSchemePermissionsPage {
     }
 
     async togglePermission(permission: string) {
+        // isVisible() does not retry, and expandSpacesGroup only proves the read_space row rendered,
+        // so this row can still be absent when the read runs. A premature false inverts the
+        // assertion below, which then fails on a click that succeeded.
+        await this.permissionRow(permission).waitFor();
+
         const wasChecked = await this.checkedMarker(permission).isVisible();
 
         await this.permissionRow(permission).click();

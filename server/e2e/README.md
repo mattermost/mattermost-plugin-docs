@@ -30,13 +30,15 @@ assert on without moving that version at all. Bump the pin in the same PR that d
 core behaviour.
 
 The image this script builds is **API-only**: server binary plus i18n, templates and fonts, and an
-empty `client/`. That is all the suites here need — every assertion is an HTTP call.
+empty `client/`. That is all this Go suite needs — every assertion here is an HTTP call.
 
-The browser suite under `e2e-tests/playwright/` boots its **own** Testcontainers server from the
-same pinned core image this script builds (it reads `MM_IMAGE`; CI passes the same `CORE_IMAGE` both
-suites consume, so the two can never assert against different servers). It therefore needs an image
-that serves the webapp, which the API-only image above does not — see
-`e2e-tests/playwright/README.md` for how that suite is run.
+The browser suite under `e2e-tests/playwright/` boots its **own** Testcontainers server, from
+whatever `MM_IMAGE` names, and it drives the webapp — so it needs an image that serves `client/`,
+which this API-only build does not. Point it at the per-commit CI image
+(`mattermostdevelopment/mattermost-team-edition:<7-char-sha>`) rather than at a local build. The two
+suites run against the same server only when `CORE_IMAGE` names that CI tag, which is how the `e2e`
+job in `.github/workflows/ci.yml` runs both. See `e2e-tests/playwright/README.md` for how that suite
+is run.
 
 A bare tag (no `/`) is treated as locally built: if it is absent the suite fails immediately and
 names the build script, rather than letting Testcontainers fail mid-boot. A namespaced tag is

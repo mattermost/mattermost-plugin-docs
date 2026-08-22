@@ -8,7 +8,7 @@
 
 import type {Browser} from '@playwright/test';
 
-import {expect, test} from '../fixtures';
+import {expect, newContext, test} from '../fixtures';
 import {loginAs} from '../helpers/auth';
 import {requestedWith, uniqueSuffix} from '../helpers/client';
 import {apiRoot} from '../helpers/docs';
@@ -48,7 +48,7 @@ test.describe('system console space permissions', () => {
     let member: SeededUser;
 
     test.beforeEach(async ({browser, server}) => {
-        const context = await browser.newContext({baseURL: server.baseURL});
+        const context = await newContext(browser, {baseURL: server.baseURL});
         const page = await context.newPage();
 
         await loginAs(page, server.adminUsername, server.adminPassword);
@@ -70,7 +70,7 @@ test.describe('system console space permissions', () => {
     // Its own context rather than the `page` fixture: this runs after a test that may have
     // failed mid-navigation, so it cannot inherit that page's state.
     const restoreCreateSpace = async (baseURL: string, browser: Browser, adminUsername: string, adminPassword: string) => {
-        const context = await browser.newContext({baseURL});
+        const context = await newContext(browser, {baseURL});
         try {
             const page = await context.newPage();
             await loginAs(page, adminUsername, adminPassword);
@@ -92,7 +92,7 @@ test.describe('system console space permissions', () => {
     // The team-level probe: whether this user may create a space at all, which is what
     // create_space governs. Not createSpace(): a refusal is the expected outcome half the time.
     const memberCanCreateSpace = async (baseURL: string, browser: Browser): Promise<number> => {
-        const context = await browser.newContext({baseURL});
+        const context = await newContext(browser, {baseURL});
         try {
             const page = await context.newPage();
             await loginAs(page, member.username, member.password);

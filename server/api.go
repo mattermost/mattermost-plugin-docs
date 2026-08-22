@@ -23,9 +23,10 @@ import (
 //
 // Authorization: every route requires an authenticated user via MattermostAuthorizationRequired.
 // Every space- and page-scoped handler additionally gates on the permission-based RBAC model:
-// requireSpaceRead/requireSpacePagePerm for reads, requirePageWrite/requireDeleteOwnOrAnyFrom for
-// page writes (with the open-space auto-join pre-step), requireSpaceManage for membership
-// management and general space-field updates, and requireSpaceAdmin/requireSpaceDelete for the
+// requireSpaceRead/requireSpacePagePerm for reads (the member roster included), requirePageWrite/
+// requireDeleteOwnOrAnyFrom for page writes (with the open-space auto-join pre-step),
+// requireSpaceManage for membership mutations and general space-field updates, and
+// requireSpaceAdmin/requireSpaceDelete for the
 // space-wide exposure-policy and delete/restore operations. A helper taking a space id resolves
 // the record and then gates it; one taking a *model.Space gates a record the caller already
 // holds, and a From suffix means the caller supplies the ReadResolution too. See

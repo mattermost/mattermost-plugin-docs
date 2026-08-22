@@ -71,6 +71,14 @@ The Go suite in `server/e2e/` is separate and always needs a paired-core image p
 make test-e2e-server
 ```
 
+It builds that image itself, from your local `mattermost` checkout on the paired core branch, so no
+published image is needed. Set `CORE_IMAGE` to a namespaced tag — the per-commit CI image — to skip
+the local build and pull instead:
+
+```bash
+CORE_IMAGE=mattermostdevelopment/mattermost-team-edition:<7-char-sha> make test-e2e-server
+```
+
 The browser suite's space-permission specs need the same two things, and are excluded from the
 default run without them:
 

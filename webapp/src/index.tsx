@@ -37,10 +37,14 @@ const PAGE_PRESENCE_EVENT = `custom_${manifest.id}_page_presence_updated`;
 // member's effective permissions without any member row changing. Omitting it left the two halves
 // of one feature disagreeing — a per-member grant refreshed live, a space-default change did not.
 const SPACE_ACCESS_EVENTS = [
-    `custom_${manifest.id}_space_member_added`,
     `custom_${manifest.id}_space_member_permissions_updated`,
     `custom_${manifest.id}_space_updated`,
 ];
+
+// Handled apart from the re-resolve set: an addition changes the roster, and the roster is a
+// separate slice that nothing else refetches once the surface has mounted — the same reason the
+// removal below re-reads it.
+const SPACE_MEMBER_ADDED_EVENT = `custom_${manifest.id}_space_member_added`;
 
 // Handled apart from the re-resolve set: see the handler for why a removal cannot be one.
 const SPACE_MEMBER_REMOVED_EVENT = `custom_${manifest.id}_space_member_removed`;
@@ -83,13 +87,21 @@ export default class Plugin {
             });
         }
 
+        registry.registerWebSocketEventHandler<SpaceAccessEvent>(SPACE_MEMBER_ADDED_EVENT, (msg) => {
+            const spaceId = msg.data?.space_id;
+            if (!spaceId) {
+                return;
+            }
+            store.dispatch(fetchSpace(spaceId) as never);
+            store.dispatch(fetchSpaceMembers(spaceId) as never);
+        });
+
         // The caller's own removal is the one event a re-resolve cannot express. On a private space
         // the caller's GET now answers 403, and fetchSpace turns a denial into undefined without
         // dispatching, so the space and its pages would stay in the store and on screen. Evict
         // directly instead, which is what leaveSpace already does for a self-initiated leave.
-        // Another member's removal changes the roster, so it re-reads that as well as the space:
-        // fetchSpace only refreshes the space entity, and the member list is a separate slice that
-        // nothing else refetches once the surface has mounted.
+        // Another member's removal changes the roster, so it re-reads that as well as the space,
+        // exactly as the addition above does.
         registry.registerWebSocketEventHandler<SpaceAccessEvent>(SPACE_MEMBER_REMOVED_EVENT, (msg) => {
             const spaceId = msg.data?.space_id;
             if (!spaceId) {

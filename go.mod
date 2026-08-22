@@ -1,6 +1,6 @@
 module github.com/mattermost/mattermost-plugin-docs
 
-go 1.26.4
+go 1.26.7
 
 // Dev-only pins: server/public is pinned to the master commit that merged the Space
 // backing-channel type — ChannelTypeSpace ("S"), pluginapi Channel.GetChannelOfType, and
@@ -14,7 +14,7 @@ require (
 	github.com/gorilla/mux v1.8.1
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.12.3
-	github.com/mattermost/mattermost/server/public v0.4.4-0.20260804125319-416829fe8ff3
+	github.com/mattermost/mattermost/server/public v0.4.4-0.20260821134021-35b7e01bec79
 	github.com/mattermost/mattermost/server/v8 v8.0.0-20260623200446-ba033eae4704
 	github.com/mattermost/morph v1.1.0
 	github.com/mattermost/squirrel v0.5.0

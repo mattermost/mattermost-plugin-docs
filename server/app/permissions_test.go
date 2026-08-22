@@ -107,7 +107,7 @@ func TestAutoJoin_ProvenanceMarkerLifecycle(t *testing.T) {
 	mockAPI.On("GetChannelMembers", space.ChannelId, 0, 60).
 		Return(mmmodel.ChannelMembers{{ChannelId: space.ChannelId, UserId: userID}}, nil)
 
-	members, _, appErr := h.svc.GetSpaceMembers(space, 0, 60)
+	members, _, appErr := h.svc.GetSpaceMembers(space, 0, 60, true)
 	require.Nil(t, appErr)
 	require.Len(t, members, 1)
 	require.True(t, members[0].AutoJoined, "a member added by the auto-join pre-step must be marked auto-joined")
@@ -121,7 +121,7 @@ func TestAutoJoin_ProvenanceMarkerLifecycle(t *testing.T) {
 	_, appErr = h.svc.SetSpaceMemberPermissions(space, userID, []string{mmmodel.PermissionCommentPage.Id}, mmmodel.NewId())
 	require.Nil(t, appErr)
 
-	members, _, appErr = h.svc.GetSpaceMembers(space, 0, 60)
+	members, _, appErr = h.svc.GetSpaceMembers(space, 0, 60, true)
 	require.Nil(t, appErr)
 	require.Len(t, members, 1)
 	require.False(t, members[0].AutoJoined, "a deliberate admin permission change must clear the auto-join marker")
@@ -233,7 +233,7 @@ func TestUndoAutoJoin_ClearsProvenanceMarker(t *testing.T) {
 
 	mockAPI.On("GetChannelMembers", space.ChannelId, 0, 60).
 		Return(mmmodel.ChannelMembers{{ChannelId: space.ChannelId, UserId: userID}}, nil)
-	members, _, appErr := h.svc.GetSpaceMembers(space, 0, 60)
+	members, _, appErr := h.svc.GetSpaceMembers(space, 0, 60, true)
 	require.Nil(t, appErr)
 	require.Len(t, members, 1)
 	require.False(t, members[0].AutoJoined,
@@ -278,7 +278,7 @@ func TestRemoveSpaceMember_ClearsProvenanceMarker(t *testing.T) {
 
 	mockAPI.On("GetChannelMembers", space.ChannelId, 0, 60).
 		Return(mmmodel.ChannelMembers{{ChannelId: space.ChannelId, UserId: userID}}, nil)
-	members, _, appErr := h.svc.GetSpaceMembers(space, 0, 60)
+	members, _, appErr := h.svc.GetSpaceMembers(space, 0, 60, true)
 	require.Nil(t, appErr)
 	require.Len(t, members, 1)
 	require.False(t, members[0].AutoJoined,

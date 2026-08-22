@@ -8,7 +8,7 @@
 
 import type {Browser} from '@playwright/test';
 
-import {expect, test} from '../fixtures';
+import {expect, newContext, test} from '../fixtures';
 import {loginAs} from '../helpers/auth';
 import {requestedWith, uniqueSuffix} from '../helpers/client';
 import {addSpaceMember, apiRoot, createPage, createSpace} from '../helpers/docs';
@@ -43,7 +43,7 @@ test.describe('space permissions', () => {
     // Per-test, not shared: each test mutates the space's permission state, and a shared
     // space would make them order-dependent.
     test.beforeEach(async ({browser, server}) => {
-        const context = await browser.newContext({baseURL: server.baseURL});
+        const context = await newContext(browser, {baseURL: server.baseURL});
         const page = await context.newPage();
 
         await loginAs(page, server.adminUsername, server.adminPassword);
@@ -74,7 +74,7 @@ test.describe('space permissions', () => {
     // Probes the member's authority directly. Not createPage(): that throws on a refusal,
     // and a refusal is the expected outcome half the time here.
     const memberCanCreatePage = async (baseURL: string, browser: Browser): Promise<number> => {
-        const context = await browser.newContext({baseURL});
+        const context = await newContext(browser, {baseURL});
         try {
             const page = await context.newPage();
             await loginAs(page, member.username, member.password);
@@ -94,7 +94,7 @@ test.describe('space permissions', () => {
     // delete_own_page. Probed directly for the same reason memberCanCreatePage is: a refusal
     // is the expected answer half the time.
     const memberCanDeletePage = async (baseURL: string, browser: Browser, pageId: string): Promise<number> => {
-        const context = await browser.newContext({baseURL});
+        const context = await newContext(browser, {baseURL});
         try {
             const probePage = await context.newPage();
             await loginAs(probePage, member.username, member.password);
@@ -249,7 +249,7 @@ test.describe('space permissions', () => {
 
         // # Seed a page the member did not author, so the probe below needs delete_page
         //   rather than delete_own_page
-        const adminContext = await browser.newContext({baseURL: server.baseURL});
+        const adminContext = await newContext(browser, {baseURL: server.baseURL});
         let seededPageId: string;
         try {
             const adminPage = await adminContext.newPage();
@@ -312,7 +312,7 @@ test.describe('space permissions', () => {
         let guestAccountsWereEnabled: boolean | null = null;
 
         test.beforeEach(async ({browser, server}) => {
-            const context = await browser.newContext({baseURL: server.baseURL});
+            const context = await newContext(browser, {baseURL: server.baseURL});
             try {
                 const page = await context.newPage();
                 await loginAs(page, server.adminUsername, server.adminPassword);
@@ -333,7 +333,7 @@ test.describe('space permissions', () => {
                 return;
             }
 
-            const context = await browser.newContext({baseURL: server.baseURL});
+            const context = await newContext(browser, {baseURL: server.baseURL});
             try {
                 const page = await context.newPage();
                 await loginAs(page, server.adminUsername, server.adminPassword);
@@ -410,7 +410,7 @@ test.describe('space permissions', () => {
             // * Verify the member IS offered it on this same space, so the guest's absence
             //   below is the gate discriminating rather than the control being gone for
             //   everyone — which a guest-only assertion cannot tell apart.
-            const memberContext = await browser.newContext({baseURL: server.baseURL});
+            const memberContext = await newContext(browser, {baseURL: server.baseURL});
             try {
                 const memberPage = await memberContext.newPage();
                 await loginAs(memberPage, member.username, member.password);
@@ -448,7 +448,7 @@ test.describe('space permissions', () => {
             // * Verify the space default does grant page creation to an ordinary member
             expect(await memberCanCreatePage(server.baseURL, browser)).toBe(201);
 
-            const context = await browser.newContext({baseURL: server.baseURL});
+            const context = await newContext(browser, {baseURL: server.baseURL});
             try {
                 const page = await context.newPage();
                 await loginAs(page, guest.username, guest.password);

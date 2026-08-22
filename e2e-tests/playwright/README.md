@@ -10,18 +10,20 @@ the team, and installs the bundle before the first spec runs.
 make test-e2e
 ```
 
-That runs the authoring specs against `mattermostdevelopment/mattermost-enterprise-edition:master`,
-unlicensed — the default the CI `e2e-playwright-tests` job takes.
+That runs the authoring specs unlicensed against the core image named by the commit in
+`build/core-commit.txt` — `mattermostdevelopment/mattermost-team-edition:<7-char-sha>`, derived by
+`resolveImage()` and overridable with `MM_IMAGE`. It is the paired core branch's image rather than
+a release tag because `CreateSpace` resolves a preset space scheme core seeds only there. This is
+the run the CI `e2e-playwright-tests` job takes.
 
 ### The space-permission specs
 
-They are excluded from that run (`testIgnore` in `playwright.config.ts`) because they need a core
-image carrying the paired branch's RBAC work and an Enterprise license. `MM_E2E_SPACE_PERMISSIONS`
-selects both the specs and the container setup they require — see `tests/helpers/mode.ts`:
+They are excluded from that run (`testIgnore` in `playwright.config.ts`) because they additionally
+need an Enterprise license. `MM_E2E_SPACE_PERMISSIONS` selects both the specs and the container
+setup they require — see `tests/helpers/mode.ts`:
 
 ```bash
 MM_E2E_SPACE_PERMISSIONS=true \
-MM_IMAGE=mattermostdevelopment/mattermost-team-edition:<7-char-sha> \
 MM_LICENSE_FILE=/path/to/license \
 make test-e2e
 ```
@@ -33,13 +35,15 @@ image pin. This seeds real data into that server:
 MM_E2E_SPACE_PERMISSIONS=true MM_E2E_USE_EXISTING_SERVER=true make test-e2e
 ```
 
-On an arm64 machine add `DOCKER_DEFAULT_PLATFORM=linux/amd64` to the container form: core CI
-publishes these images for amd64 only, so the pull otherwise fails with `no matching manifest for
-linux/arm64/v8`. CI runners are amd64 and need nothing. Expect the emulated server to boot slowly —
-the migration wait has room for it.
+On an arm64 machine the container form runs the server emulated: core CI publishes these images for
+amd64 only, so a native pull fails with `no matching manifest for linux/arm64/v8`. The container
+helper detects that and requests `linux/amd64` itself, so nothing needs setting — override with
+`MM_E2E_PLATFORM` (or `DOCKER_DEFAULT_PLATFORM`, which it honors) once an arm64 image exists. CI
+runners are amd64 and take the native path. Expect the emulated server to boot slowly — the
+migration wait has room for it.
 
-The sha is the commit in `build/core-commit.txt`. Core CI's per-commit images are **not retained
-indefinitely** — if the pull 404s, bump the pin to a commit whose image is still published:
+Core CI's per-commit images are **not retained indefinitely** — if the pull 404s, bump the pin in
+`build/core-commit.txt` to a commit whose image is still published:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}' \
@@ -51,22 +55,23 @@ repository variable and the license secret — so the authoring job above keeps 
 regardless. The suite is **not parallel-safe**: `setGuestAccountsEnabled` (`tests/helpers/guest.ts`)
 mutates a server-wide setting. See `workers` in `playwright.config.ts`.
 
-## What the permission run adds to the harness
+## What the harness carries for the paired core branch
 
-Each of these applies only under `MM_E2E_SPACE_PERMISSIONS`, and should be revisited once the core
-changes ship in a release.
+All of it should be revisited once the core changes ship in a release.
+
+What the permission run adds, under `MM_E2E_SPACE_PERMISSIONS` alone:
 
 | Where | What | Why |
 |---|---|---|
-| `tests/helpers/mmcontainer.ts` | `MM_IMAGE` required (`resolveImage()`), instead of the `:master` default | The space-permission work lives on the paired core branch. `:master` boots, passes the `EnableDocs` check, then fails every permission assertion for a reason nothing names. |
 | `tests/helpers/mmcontainer.ts` | `resolveLicense()` + `applyLicense()` (`mmctl license upload-string`) | The pooled custom-scheme paths drive core's `CreateScheme`, gated on `CustomPermissionsSchemes`. Unlicensed, permission routes answer 501. Mirrors `server/e2e/container_test.go`'s `MM_LICENSE` / `MM_LICENSE_FILE` contract. |
-| `tests/helpers/mmcontainer.ts` | `assertSupportsSpacePermissions()` probes the `docs_pg_create` role | Neither the version check nor the `EnableDocs` check can tell a core image that predates the RBAC work — the flag exists on master. Turns unexplained 403s into one named setup failure. |
-| `tests/helpers/mmcontainer.ts` | `waitForPhase2Migration()` before the first spec runs | The advanced-permissions phase-2 migration runs as a post-boot job, and every scheme-backed route answers 501 until it finishes — the first `CreateSpace` fails with `app.schemes.is_phase_2_migration_completed.not_completed`. Mirrors `server/e2e/container_test.go`. |
 
-Three more changes apply to every run, permission specs or not:
+These apply to every run, permission specs or not:
 
 | Where | What | Why |
 |---|---|---|
+| `tests/helpers/mmcontainer.ts` | The image is derived from `build/core-commit.txt` (`resolveImage()`), not a release tag | `CreateSpace` resolves a preset space scheme seeded only on the paired core branch. A stock image boots, passes the `EnableDocs` check, then fails the first space for a reason nothing names. |
+| `tests/helpers/mmcontainer.ts` | `assertSupportsSpacePermissions()` probes the `docs_pg_create` role | Neither the version check nor the `EnableDocs` check can tell a core image that predates the RBAC work — the flag exists on master. Turns unexplained 403s into one named setup failure. |
+| `tests/helpers/mmcontainer.ts` | `waitForPhase2Migration()` before the first spec runs | The advanced-permissions phase-2 migration runs as a post-boot job, and core reads a scheme through that gate whichever route asks — until it finishes, the first `CreateSpace` fails with `app.schemes.is_phase_2_migration_completed.not_completed`. Mirrors `server/e2e/container_test.go`. |
 | `tests/helpers/mmcontainer.ts` | `MM_SERVICEENVIRONMENT: 'test'` in the container env | The published core images are production builds, which default to the production service environment and reject a test/development license outright. Without this the license step fails, not a spec. |
 | `tests/helpers/mmcontainer.ts` | `exec()` takes a `displayCommand` override; `applyLicense` passes a redacted form | The failure message is built from the whole command, so a rejected license would otherwise print itself into the terminal and into the CI job log. |
 | `tests/helpers/docs.ts` | `apiRoot` exported | The helpers throw on a non-OK response, which is wrong when the assertion *is* the 403. The permission specs probe the route directly. |

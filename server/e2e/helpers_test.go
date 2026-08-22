@@ -118,10 +118,41 @@ type spaceMembersResponse struct {
 	HasMore bool               `json:"has_more"`
 }
 
-// spaceMemberJSON is a minimal decode target for the member-list response; only user_id is needed
-// here.
+// spaceMemberJSON is a minimal decode target for the member-list response: the identity, plus the
+// three fields the route's two projections differ on.
 type spaceMemberJSON struct {
-	UserId string `json:"user_id"`
+	UserId             string   `json:"user_id"`
+	Permissions        []string `json:"permissions"`
+	GrantedPermissions []string `json:"granted_permissions"`
+	IsAdmin            bool     `json:"is_admin"`
+}
+
+// listSpaceMembersAs reads spaceID's roster as who, requiring the 200 the route answers every
+// reader of the space with, and returns the decoded page. what names the call site in a failure.
+func listSpaceMembersAs(t *testing.T, ctx context.Context, who actor, spaceID, what string) spaceMembersResponse {
+	t.Helper()
+	var resp spaceMembersResponse
+	status, body, err := doPluginRequest(ctx, who.client, http.MethodGet, "/spaces/"+spaceID+"/members", nil, &resp)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status, "%s: %s", what, body)
+	require.False(t, resp.HasMore, "%s: the roster runs past one page, so this read is partial", what)
+	return resp
+}
+
+// requireRedactedRoster asserts the projection a caller without the manage tier receives: the
+// roster itself, with every per-member permission field emptied. A 403 used to carry that
+// authority boundary; the redaction carries it now, so asserting only the 200 would leave the
+// permission matrix — the part worth protecting — untested.
+func requireRedactedRoster(t *testing.T, ctx context.Context, who actor, spaceID, what string) {
+	t.Helper()
+	resp := listSpaceMembersAs(t, ctx, who, spaceID, what)
+	// Without this the loop below passes vacuously on a roster that came back empty for an
+	// unrelated reason, which is the one way this assertion could silently stop testing anything.
+	require.NotEmpty(t, resp.Items, "%s: the roster came back empty, so the redaction below proves nothing", what)
+	for _, m := range resp.Items {
+		require.Empty(t, m.Permissions, "%s: member %s's effective permissions reached a caller without the manage tier", what, m.UserId)
+		require.Empty(t, m.GrantedPermissions, "%s: member %s's granted permissions reached a caller without the manage tier", what, m.UserId)
+	}
 }
 
 // spaceHasMember reports whether userID currently appears in spaceID's member list, as resolved

@@ -14,15 +14,16 @@ import {assertServerSupportsDocs, pluginId} from './preflight';
 const projectRoot = resolve(__dirname, '../..');
 const repoRoot = resolve(projectRoot, '../..');
 
-const defaultImage = 'mattermostdevelopment/mattermost-enterprise-edition:master';
+// Core CI publishes one image per commit of the paired branch, tagged with the commit's first
+// seven characters.
+const coreImageRepo = 'mattermostdevelopment/mattermost-team-edition';
+const corePinFile = join(repoRoot, 'build/core-commit.txt');
 
-// The space-permission work lives on the paired core branch, not master, so that default is no use
-// to the permission specs: :master boots, passes the EnableDocs check, and then fails every
-// permission assertion for a reason no error names. Under spacePermissionsMode MM_IMAGE is
-// therefore required, and is the same per-commit core image the Go suite consumes as CORE_IMAGE —
-// core CI publishes one per branch commit as
-// mattermostdevelopment/mattermost-team-edition:<7-char-sha>. Once those core changes ship in a
-// release, the default serves both runs.
+// Every spec needs a server carrying the paired core branch's work, not only the permission ones:
+// CreateSpace resolves a preset space scheme that core seeds there, so on :master even the
+// authoring specs fail at the first space. The image is therefore derived from the same pin the Go
+// suite verifies CORE_IMAGE against, which keeps one commit naming the server both suites run
+// against. Once those core changes ship in a release, this can go back to a release tag.
 function resolveImage(): string {
     const image = process.env.MM_IMAGE;
 
@@ -30,16 +31,34 @@ function resolveImage(): string {
         return image;
     }
 
-    if (spacePermissionsMode) {
-        throw new Error(
-            'MM_IMAGE is not set. The space-permission specs need a server image carrying the paired core ' +
-            'branch\'s changes; the plugin\'s own core pin lives in build/core-commit.txt. Set it to ' +
-            'the image core CI published for that commit, e.g. ' +
-            'MM_IMAGE=mattermostdevelopment/mattermost-team-edition:<7-char-sha>.',
-        );
+    const pinned = readFileSync(corePinFile, 'utf8').
+        split('\n').
+        map((line) => line.trim()).
+        find((line) => line !== '' && !line.startsWith('#'));
+
+    if (!pinned || !(/^[0-9a-f]{7,40}$/).test(pinned)) {
+        throw new Error(`${corePinFile} must hold one core commit sha; got '${pinned ?? ''}'.`);
     }
 
-    return defaultImage;
+    return `${coreImageRepo}:${pinned.slice(0, 7)}`;
+}
+
+// The images core CI publishes are built for amd64 only, so on an arm64 host the pull fails with
+// "no matching manifest for linux/arm64/v8" before a single spec runs. testcontainers does not read
+// DOCKER_DEFAULT_PLATFORM, so the platform has to be passed to the container explicitly; the env
+// var is honored here so the setting a developer already exports for `docker` still applies.
+// Emulated, the server boots slowly — the migration wait below has room for it.
+//
+// Only the Mattermost image needs this. The Postgres image publishes an arm64 manifest, and
+// pinning it to amd64 would make it emulate for nothing.
+function resolvePlatform(): string | undefined {
+    const explicit = (process.env.MM_E2E_PLATFORM ?? process.env.DOCKER_DEFAULT_PLATFORM ?? '').trim();
+
+    if (explicit) {
+        return explicit;
+    }
+
+    return process.arch === 'arm64' ? 'linux/amd64' : undefined;
 }
 
 // resolveLicense mirrors the Go suite's contract (server/e2e/container_test.go): the pooled
@@ -161,13 +180,12 @@ export class DocsServerContainer {
 
             await this.createAdmin();
 
-            // After createAdmin: both need a session. Both are also specific to the licensed core
-            // branch — the schemes route the migration poll reads answers 501 on an unlicensed
-            // server, which the poll would report as a migration that never finished.
-            if (spacePermissionsMode) {
-                await this.waitForPhase2Migration();
-                await this.assertSupportsSpacePermissions();
-            }
+            // After createAdmin: both need a session. Both run for every spec, not only the
+            // permission ones — core reads a scheme through the same phase-2 gate whichever route
+            // asks, and CreateSpace resolves a preset scheme, so an authoring run that skipped
+            // these would fail at its first space with the migration error or a nil scheme.
+            await this.waitForPhase2Migration();
+            await this.assertSupportsSpacePermissions();
 
             await this.createTeam(defaultTeamName, defaultTeamDisplayName);
             await this.addUserToTeam(adminUsername, defaultTeamName);
@@ -192,7 +210,16 @@ export class DocsServerContainer {
             withStartupTimeout(startupTimeoutMs).
             start();
 
-        this.container = await new GenericContainer(image).
+        // Assigned before the chain rather than inside it: withPlatform must not be called at all
+        // when no platform applies, and the fluent chain has no way to skip a link.
+        const platform = resolvePlatform();
+        let server = new GenericContainer(image);
+
+        if (platform) {
+            server = server.withPlatform(platform);
+        }
+
+        this.container = await server.
             withEnvironment({
                 MM_SQLSETTINGS_DRIVERNAME: 'postgres',
                 MM_SQLSETTINGS_DATASOURCE: 'postgres://mmuser:mostest@db:5432/mattermost_test?sslmode=disable',
