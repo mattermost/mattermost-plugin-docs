@@ -9,6 +9,8 @@ import {useIntl} from 'react-intl';
 
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
+import {getSpaceMemberIds} from 'store/selectors';
+
 import {toast} from 'components/toast';
 
 import type {Space} from 'types/docs';
@@ -77,6 +79,13 @@ export function useSpacePermissions(space: Space): SpacePermissions {
     const {formatMessage} = useIntl();
     const currentUserId = useAppSelector(getCurrentUserId);
 
+    // The roster this hook reads is its own snapshot, taken once per load. Membership changes
+    // elsewhere — the tab's own add/remove field, or another administrator's change arriving over
+    // the websocket — land in the store, so the store's member list is what says the snapshot is
+    // stale. Without it a member added while this surface is open renders with no permission row,
+    // because the grant matrix has no record of them.
+    const memberIds = useAppSelector((state) => getSpaceMemberIds(state, space.id));
+
     const [defaults, setDefaultsState] = useState<Permission[]>([]);
     const [viewAccess, setViewAccessState] = useState<SpaceViewAccess>('open');
     const [members, setMembers] = useState<Map<string, SpaceMember>>(new Map());
@@ -134,6 +143,18 @@ export function useSpacePermissions(space: Space): SpacePermissions {
     useEffect(() => {
         let cancelled = false;
 
+        // A failed read must not leave the previous space's answer standing, so the resolved values
+        // clear together — the optimistic-lock baseline included, which a later write would
+        // otherwise send against a space it was never read from.
+        const clearResolved = () => {
+            setDefaultsState([]);
+            setViewAccessState('open');
+            setMembers(new Map());
+            setCanAdminister(false);
+            setCanManageMembers(false);
+            updateAtRef.current = 0;
+        };
+
         const load = async () => {
             setLoading(true);
             setLoadFailed(false);
@@ -158,9 +179,7 @@ export function useSpacePermissions(space: Space): SpacePermissions {
                     return;
                 }
                 if (!roster) {
-                    setMembers(new Map());
-                    setCanAdminister(false);
-                    setCanManageMembers(false);
+                    clearResolved();
                     setLoadFailed(true);
                     return;
                 }
@@ -177,9 +196,7 @@ export function useSpacePermissions(space: Space): SpacePermissions {
                     // No toast: a failed read leaves the controls disabled and empty, which is
                     // already visible. A toast here would fire on every mount behind a 403.
                     // loadFailed is what keeps that emptiness from being read as an answer.
-                    setMembers(new Map());
-                    setCanAdminister(false);
-                    setCanManageMembers(false);
+                    clearResolved();
                     setLoadFailed(true);
                 }
             } finally {
@@ -193,7 +210,7 @@ export function useSpacePermissions(space: Space): SpacePermissions {
         return () => {
             cancelled = true;
         };
-    }, [space.id]);
+    }, [space.id, memberIds]);
 
     const setDefaults = useCallback(async (next: Permission[]) => {
         beginWrite();

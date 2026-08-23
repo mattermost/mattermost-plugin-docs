@@ -3,11 +3,19 @@
 
 import {act, renderHook, waitFor} from '@testing-library/react';
 import {RestError} from 'client/rest';
+import manifest from 'manifest';
 import React from 'react';
 import {IntlProvider} from 'react-intl';
 import {Provider} from 'react-redux';
+import {legacy_createStore as createStore} from 'redux';
+import type {UnknownAction} from 'redux';
 
+import type {GlobalState} from '@mattermost/types/store';
+
+import {SpaceTypes} from 'store/action_types';
+import docsReducer from 'store/reducer';
 import {makeSpace} from 'store/test_fixtures';
+import type {DocsPluginState} from 'store/types';
 
 import {toast} from 'components/toast';
 
@@ -16,7 +24,7 @@ import type {Permission, SpaceAccess, SpaceMember} from 'types/permissions';
 
 import {useSpacePermissions} from './space_permissions';
 
-import {makeTestStore} from '../../tests/react_testing_utils';
+import {makeTestState, makeTestStore} from '../../tests/react_testing_utils';
 
 const mockGetSpaceAccess = jest.fn();
 const mockListAllSpaceMembers = jest.fn();
@@ -70,6 +78,19 @@ const wrapper = ({children}: {children: React.ReactNode}) => (
 );
 
 const render = () => renderHook(() => useSpacePermissions(space), {wrapper}).result;
+
+// The shared wrapper's store holds a fixed state, so nothing dispatched to it can change what the
+// roster selector returns. This one runs the real Docs reducer under the plugin subtree, which is
+// the seam the hook's reload watches.
+const makeRosterStore = () => {
+    const pluginKey = 'plugins-' + manifest.id;
+    const initial = makeTestState({currentUser: {id: 'me'}, docs: {spaceMembers: {'space-1': ['me']}}});
+
+    return createStore((state: GlobalState = initial, action: UnknownAction): GlobalState => ({
+        ...state,
+        [pluginKey]: docsReducer((state as unknown as Record<string, DocsPluginState>)[pluginKey], action),
+    } as unknown as GlobalState));
+};
 
 // Renders and waits for the initial load to resolve, so an assertion cannot pass
 // against the pre-load defaults.
@@ -167,6 +188,24 @@ describe('useSpacePermissions', () => {
             expect(result.current.canAdminister).toBe(true);
         });
 
+        // The policy values go with the authority: left standing, the surface would attribute the
+        // previous space's default set and view access to a space it never read.
+        it('drops the previously resolved policy when a later space fails to load', async () => {
+            mockGetSpaceAccess.mockResolvedValue({
+                ...access(['admin_space', 'manage_space'], ['create_page']),
+                view_access: 'private',
+            });
+            const {result, reloadWith} = await renderSwitchable();
+            expect(result.current.defaults).toEqual(['create_page']);
+            expect(result.current.viewAccess).toBe('private');
+
+            mockGetSpaceAccess.mockRejectedValue(restError(500));
+            await reloadWith(makeSpace('space-2', 'Design'));
+
+            expect(result.current.defaults).toEqual([]);
+            expect(result.current.viewAccess).toBe('open');
+        });
+
         // The mirror of the above: an administrator switching to a space whose read fails
         // must not keep the authority the previous space resolved for them.
         it('drops a previously resolved authority when a later space fails to load', async () => {
@@ -205,6 +244,35 @@ describe('useSpacePermissions', () => {
             expect(hook.current.members.size).toBe(0);
             expect(hook.current.canManageMembers).toBe(false);
             expect(hook.current.canAdminister).toBe(false);
+        });
+    });
+
+    // The tab's own add/remove field and the websocket membership handlers both write the roster
+    // to the store, and neither touches this hook's snapshot of the grant matrix.
+    describe('a membership change in the store', () => {
+        it('re-reads the roster, so a newly added member has a permission row', async () => {
+            const store = makeRosterStore();
+            const rosterWrapper = ({children}: {children: React.ReactNode}) => (
+                <Provider store={store}>
+                    <IntlProvider
+                        locale='en'
+                        messages={{}}
+                    >
+                        {children}
+                    </IntlProvider>
+                </Provider>
+            );
+
+            const {result} = renderHook(() => useSpacePermissions(space), {wrapper: rosterWrapper});
+            await waitFor(() => expect(result.current.loading).toBe(false));
+            expect(result.current.members.get('u2')).toBeUndefined();
+
+            mockListAllSpaceMembers.mockResolvedValue([member('u2')]);
+            act(() => {
+                store.dispatch({type: SpaceTypes.ADDED_SPACE_MEMBER, spaceId: space.id, userId: 'u2'});
+            });
+
+            await waitFor(() => expect(result.current.members.get('u2')).toBeDefined());
         });
     });
 

@@ -146,9 +146,9 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
     // An unpublished page is the caller's own draft, and publishing it for the first time is gated
     // on create_page rather than edit_page — so it stays editable and publishable for an author who
     // holds only the former.
-    const canAuthor = unpublished || canEditPage;
+    const canAuthor = unpublished ? canCreatePage : canEditPage;
     const canEnterEdit = Boolean(subject) && !editing && canAuthor;
-    const canCommit = unpublished || (editing && hasUnpublishedEdits && canEditPage);
+    const canCommit = (unpublished && canCreatePage) || (editing && hasUnpublishedEdits && canEditPage);
     const commitShortcut = isMac() ? 'Meta+Enter' : 'Control+Enter';
 
     // Capture so Cmd/Ctrl+Enter wins over the editor inserting a newline, and
@@ -308,7 +308,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                     everyone else until it lands, so that stays offered while reading
                     it. Update is an editing action: with the page already published
                     there is nothing urgent to offer a reader. */}
-                {unpublished ? (
+                {unpublished ? (canCreatePage && (
                     <Button
                         emphasis='primary'
                         size='sm'
@@ -321,7 +321,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                             defaultMessage='Publish'
                         />
                     </Button>
-                ) : (editing && subject && canEditPage && (
+                )) : (editing && subject && canEditPage && (
                     <Button
                         emphasis='primary'
                         size='sm'
