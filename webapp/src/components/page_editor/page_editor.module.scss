@@ -40,7 +40,7 @@
     .custom-textarea[disabled] {
         opacity: 1;
         color: var(--center-channel-color);
-        -webkit-text-fill-color: var(--center-channel-color);
+        -webkit-text-fill-color: currentcolor;
         cursor: default;
     }
 }
