@@ -126,6 +126,38 @@ export function useSpacePermissions(space: Space): SpacePermissions {
         defaultMessage: 'Something went wrong. Please try again.',
     }), [formatMessage]);
 
+    // All three permission writes share the same concurrency contract. Keeping the mapping here
+    // prevents one surface from turning a retryable lock timeout or an optimistic-lock conflict
+    // into the generic message while preserving the member-only refusals.
+    const permissionWriteError = useCallback((error: unknown) => {
+        const id = serverErrorId(error);
+        if (id === SPACE_LOCK_TIMEOUT_ERROR_ID) {
+            return formatMessage({
+                id: 'docs.spacePermissions.error.busy',
+                defaultMessage: 'This space is being changed right now. Try again in a moment.',
+            });
+        }
+        if (id === LAST_SPACE_ADMIN_ERROR_ID) {
+            return formatMessage({
+                id: 'docs.spacePermissions.error.lastAdmin',
+                defaultMessage: 'A space must keep at least one administrator.',
+            });
+        }
+        if (id === GUEST_NOT_ASSIGNABLE_ERROR_ID) {
+            return formatMessage({
+                id: 'docs.spacePermissions.error.guest',
+                defaultMessage: 'Guests are read-only and cannot be granted permissions.',
+            });
+        }
+        if (error instanceof RestError && error.status === 409) {
+            return formatMessage({
+                id: 'docs.spacePermissions.error.conflict',
+                defaultMessage: 'Someone else changed this space. Reopen settings and try again.',
+            });
+        }
+        return genericError();
+    }, [formatMessage, genericError]);
+
     // Re-reads the caller's own authority from the server and puts it in the store. Used after a
     // write that can change it — editing your own row — rather than reconstructing the new tiers
     // locally: which tier granted the roster (admin_space, a team grant, or sysadmin) is not
@@ -208,12 +240,12 @@ export function useSpacePermissions(space: Space): SpacePermissions {
         try {
             dispatch(receivedSpaceAccess(await setDefaultPermissions(space.id, next)));
         } catch (error) {
-            toast.error(genericError());
+            toast.error(permissionWriteError(error));
             throw error;
         } finally {
             setBusy(false);
         }
-    }, [dispatch, space.id, genericError]);
+    }, [dispatch, space.id, permissionWriteError]);
 
     const setMemberGrants = useCallback(async (userId: string, next: Permission[]) => {
         setBusy(true);
@@ -231,50 +263,24 @@ export function useSpacePermissions(space: Space): SpacePermissions {
                 await reloadTiers();
             }
         } catch (error) {
-            const id = serverErrorId(error);
-            if (id === LAST_SPACE_ADMIN_ERROR_ID) {
-                toast.error(formatMessage({
-                    id: 'docs.spacePermissions.error.lastAdmin',
-                    defaultMessage: 'A space must keep at least one administrator.',
-                }));
-            } else if (id === GUEST_NOT_ASSIGNABLE_ERROR_ID) {
-                toast.error(formatMessage({
-                    id: 'docs.spacePermissions.error.guest',
-                    defaultMessage: 'Guests are read-only and cannot be granted permissions.',
-                }));
-            } else {
-                toast.error(genericError());
-            }
+            toast.error(permissionWriteError(error));
             throw error;
         } finally {
             setBusy(false);
         }
-    }, [space.id, currentUserId, reloadTiers, formatMessage, genericError]);
+    }, [space.id, currentUserId, reloadTiers, permissionWriteError]);
 
     const setViewAccess = useCallback(async (next: SpaceViewAccess) => {
         setBusy(true);
         try {
             dispatch(receivedSpaceAccess(await setSpaceViewAccess(space.id, next, stored.update_at)));
         } catch (error) {
-            const id = serverErrorId(error);
-            if (id === SPACE_LOCK_TIMEOUT_ERROR_ID) {
-                toast.error(formatMessage({
-                    id: 'docs.spacePermissions.error.busy',
-                    defaultMessage: 'This space is being changed right now. Try again in a moment.',
-                }));
-            } else if (error instanceof RestError && error.status === 409) {
-                toast.error(formatMessage({
-                    id: 'docs.spacePermissions.error.conflict',
-                    defaultMessage: 'Someone else changed this space. Reopen settings and try again.',
-                }));
-            } else {
-                toast.error(genericError());
-            }
+            toast.error(permissionWriteError(error));
             throw error;
         } finally {
             setBusy(false);
         }
-    }, [dispatch, space.id, stored.update_at, formatMessage, genericError]);
+    }, [dispatch, space.id, stored.update_at, permissionWriteError]);
 
     // Both tiers are additionally gated on this surface's own read having landed. The tier itself is
     // the store's answer, but a surface whose read failed holds nothing to administer — leaving the

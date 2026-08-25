@@ -154,32 +154,42 @@ export async function assertSpacePermissionsSupported(baseURL: string, username:
     }
     const team = await teamResponse.json() as {id: string};
 
-    const spaceResponse = await fetch(`${baseURL}/plugins/${pluginId}/api/v1/teams/${team.id}/spaces`, {
-        method: 'POST',
-        headers: authed(token),
-        body: JSON.stringify({title: `Preflight ${suffix}`, default_permissions: NON_PRESET_DEFAULTS}),
-        signal: AbortSignal.timeout(requestTimeoutMs),
-    });
+    try {
+        const spaceResponse = await fetch(`${baseURL}/plugins/${pluginId}/api/v1/teams/${team.id}/spaces`, {
+            method: 'POST',
+            headers: authed(token),
+            body: JSON.stringify({title: `Preflight ${suffix}`, default_permissions: NON_PRESET_DEFAULTS}),
+            signal: AbortSignal.timeout(requestTimeoutMs),
+        });
 
-    if (!spaceResponse.ok) {
-        const body = await spaceResponse.text();
-        throw new Error(
-            `This server cannot resolve an arbitrary space-default permission set (${spaceResponse.status}), so every ` +
-            'space-permission spec that changes a default would fail as though the product were broken.\n' +
-            'The plugin scheme API (GetOrCreatePluginChannelScheme) is missing from this server build.\n' +
-            `Server said: ${body.slice(0, 400)}\n` +
-            `${remedy}`.trimEnd(),
-        );
+        if (!spaceResponse.ok) {
+            const body = await spaceResponse.text();
+            throw new Error(
+                `This server cannot resolve an arbitrary space-default permission set (${spaceResponse.status}), so every ` +
+                'space-permission spec that changes a default would fail as though the product were broken.\n' +
+                'The plugin scheme API (GetOrCreatePluginChannelScheme) is missing from this server build.\n' +
+                `Server said: ${body.slice(0, 400)}\n` +
+                `${remedy}`.trimEnd(),
+            );
+        }
+
+        // Best-effort: the probe space is disposable, and a server that answered the create is
+        // already proven. Failing here would turn a successful probe into a setup failure.
+        const space = await spaceResponse.json() as {id: string};
+        await fetch(`${baseURL}/plugins/${pluginId}/api/v1/spaces/${space.id}`, {
+            method: 'DELETE',
+            headers: authed(token),
+            signal: AbortSignal.timeout(requestTimeoutMs),
+        }).catch(() => undefined);
+    } finally {
+        // Runs against long-lived existing servers too, so every probe must remove its team even
+        // when space creation fails. Cleanup remains best-effort to preserve the diagnostic above.
+        await fetch(`${baseURL}/api/v4/teams/${team.id}?permanent=true`, {
+            method: 'DELETE',
+            headers: authed(token),
+            signal: AbortSignal.timeout(requestTimeoutMs),
+        }).catch(() => undefined);
     }
-
-    // Best-effort: the probe space is disposable, and a server that answered the create is already
-    // proven. Failing here would turn a successful probe into a setup failure.
-    const space = await spaceResponse.json() as {id: string};
-    await fetch(`${baseURL}/plugins/${pluginId}/api/v1/spaces/${space.id}`, {
-        method: 'DELETE',
-        headers: authed(token),
-        signal: AbortSignal.timeout(requestTimeoutMs),
-    }).catch(() => undefined);
 }
 
 // The team-role permissions the suite itself changes in the System Console. A killed or timed-out

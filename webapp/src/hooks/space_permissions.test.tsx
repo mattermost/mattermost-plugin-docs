@@ -384,6 +384,20 @@ describe('useSpacePermissions', () => {
 
             expect(toast.error).toHaveBeenCalledWith('Something went wrong. Please try again.');
         });
+
+        it.each([
+            ['a lock timeout', restError(409, 'app.space.lock_timeout.app_error'), 'This space is being changed right now. Try again in a moment.'],
+            ['a concurrent edit', restError(409, 'app.store.conflict.app_error'), 'Someone else changed this space. Reopen settings and try again.'],
+        ])('names %s', async (_case, error, message) => {
+            mockSetDefaultPermissions.mockRejectedValue(error);
+            const hook = await renderLoaded();
+
+            await act(async () => {
+                await expect(hook.current.setDefaults(['create_page'])).rejects.toThrow();
+            });
+
+            expect(toast.error).toHaveBeenCalledWith(message);
+        });
     });
 
     describe('setMemberGrants', () => {
@@ -420,6 +434,20 @@ describe('useSpacePermissions', () => {
             });
 
             expect(toast.error).toHaveBeenCalledWith('Something went wrong. Please try again.');
+        });
+
+        it.each([
+            ['a lock timeout', restError(409, 'app.space.lock_timeout.app_error'), 'This space is being changed right now. Try again in a moment.'],
+            ['a concurrent edit', restError(409, 'app.store.conflict.app_error'), 'Someone else changed this space. Reopen settings and try again.'],
+        ])('names %s', async (_case, error, message) => {
+            mockSetMemberPermissions.mockRejectedValue(error);
+            const hook = await renderLoaded();
+
+            await act(async () => {
+                await expect(hook.current.setMemberGrants('u1', ['edit_page'])).rejects.toThrow();
+            });
+
+            expect(toast.error).toHaveBeenCalledWith(message);
         });
     });
 
@@ -465,6 +493,17 @@ describe('useSpacePermissions', () => {
             });
 
             expect(toast.error).toHaveBeenCalledWith('Someone else changed this space. Reopen settings and try again.');
+        });
+
+        it('names a lock timeout separately from a conflict', async () => {
+            mockSetSpaceViewAccess.mockRejectedValue(restError(409, 'app.space.lock_timeout.app_error'));
+            const hook = await renderLoaded();
+
+            await act(async () => {
+                await expect(hook.current.setViewAccess('private')).rejects.toThrow();
+            });
+
+            expect(toast.error).toHaveBeenCalledWith('This space is being changed right now. Try again in a moment.');
         });
     });
 });

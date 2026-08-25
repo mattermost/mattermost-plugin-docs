@@ -293,7 +293,7 @@ export class DocsServerContainer {
         });
         const token = login.headers.get('token');
 
-        if (!token) {
+        if (!login.ok || !token) {
             throw new Error(`Could not log in as ${adminUsername} (HTTP ${login.status}).`);
         }
 

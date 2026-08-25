@@ -3,6 +3,13 @@
 
 import {expect, type Locator, type Page} from '@playwright/test';
 
+const accessOptionNames = {
+    Public: 'Public Anyone in the team can find and view this space.',
+    Private: 'Private Only invited members can view. People who joined by authoring while public lose access.',
+} as const;
+
+type AccessOption = keyof typeof accessOptionNames;
+
 // The space's exposure controls live behind Space settings → Permissions: who can find
 // the space (view access) and what its members can do (the default permission set).
 // Both are admin-only, and both are rendered for a non-admin in a locked state, so the
@@ -171,8 +178,10 @@ export class SpaceSettingsModalPage {
         }
     }
 
-    accessOption(name: 'Public' | 'Private'): Locator {
-        return this.dialog.getByRole('radio', {name: new RegExp(name)});
+    accessOption(name: AccessOption): Locator {
+        // Match the full accessible name exactly: the Private description itself contains the
+        // word "public", so Playwright's default substring matching makes "Public" ambiguous.
+        return this.dialog.getByRole('radio', {name: accessOptionNames[name], exact: true});
     }
 
     // Waits for the checkbox to settle rather than asserting immediately: the set is
@@ -200,16 +209,16 @@ export class SpaceSettingsModalPage {
         await expect(box).toBeChecked({checked: !wasChecked});
     }
 
-    async chooseAccess(name: 'Public' | 'Private') {
+    async chooseAccess(name: AccessOption) {
         await this.accessOption(name).click();
         await expect(this.accessOption(name)).toHaveAttribute('aria-checked', 'true');
     }
 
-    async expectAccess(name: 'Public' | 'Private') {
+    async expectAccess(name: AccessOption) {
         await expect(this.accessOption(name)).toHaveAttribute('aria-checked', 'true');
     }
 
-    async expectAccessEnabled(name: 'Public' | 'Private', enabled: boolean) {
+    async expectAccessEnabled(name: AccessOption, enabled: boolean) {
         if (enabled) {
             await expect(this.accessOption(name)).toBeEnabled();
         } else {

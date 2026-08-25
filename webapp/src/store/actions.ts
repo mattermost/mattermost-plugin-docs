@@ -333,12 +333,6 @@ export function removeSpaceMember(spaceId: string, userId: string): DocsThunkAct
 }
 
 /**
- * Puts a space read that already resolved the caller's own permissions and the space's default
- * permission set into the spaces slice, so every permission-gated affordance reads one answer
- * rather than each surface keeping its own. Plain action, not a thunk: the caller has the
- * response already.
- */
-/**
  * Joins the caller to a space when the server has said they may join it, before a write of theirs
  * is sent.
  *
@@ -367,6 +361,12 @@ export function ensureSpaceMembership(spaceId: string): DocsThunkAction<Promise<
     };
 }
 
+/**
+ * Puts a space read that already resolved the caller's own permissions and the space's default
+ * permission set into the spaces slice, so every permission-gated affordance reads one answer
+ * rather than each surface keeping its own. Plain action, not a thunk: the caller has the
+ * response already.
+ */
 export function receivedSpaceAccess(space: SpaceAccess) {
     return {type: SpaceTypes.RECEIVED_SPACES, spaces: [space]};
 }
