@@ -93,12 +93,16 @@ const CreateSpaceModal = ({onClose, onCreated}: Props) => {
                                 value={field.state.value}
                                 onChange={changeName}
                                 leading={(
-                                    <span aria-hidden='true'>
-                                        <SpaceIcon
-                                            size={20}
-                                            space={{view_access: 'private'}}
-                                        />
-                                    </span>
+                                    <form.Subscribe selector={(state) => state.values.view_access}>
+                                        {(viewAccess) => (
+                                            <span aria-hidden='true'>
+                                                <SpaceIcon
+                                                    size={20}
+                                                    space={{view_access: viewAccess}}
+                                                />
+                                            </span>
+                                        )}
+                                    </form.Subscribe>
                                 )}
                                 error={firstSpaceValidationError(field.state.meta.errors, formatMessage)}
                                 maxLength={SPACE_NAME_MAX_LENGTH}

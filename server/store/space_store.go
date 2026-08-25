@@ -83,9 +83,10 @@ func (s *Store) GetSpace(spaceID string, includeDeleted bool) (*model.Space, err
 
 // GetSpacesForTeam returns one page of the given team's live spaces visible to userID, ordered by
 // SortOrder ascending with CreateAt then Id as stable tie-breakers. A space is visible when the
-// caller is a member of its backing channel (a read-only EXISTS against core's ChannelMembers
-// table: space ("S") channels are excluded from the generic channel-listing plugin APIs, so the
-// caller cannot supply its visible-channel set), or when the space is ViewAccess='open' and
+// caller is an active member of its team and a member of its backing channel (a read-only EXISTS
+// against core's TeamMembers and ChannelMembers tables: space ("S") channels are excluded from the
+// generic channel-listing plugin APIs, so the caller cannot supply its visible-channel set), or when
+// the space is ViewAccess='open' and
 // callerHasOpenFallthrough is true — a single app-layer-computed boolean carrying the caller's
 // team-active/read_public_channel/compliance-mode conjunct (see the app-layer read resolver);
 // the store never evaluates permissions itself. There is deliberately no unfiltered variant, so a
@@ -101,7 +102,16 @@ func (s *Store) GetSpacesForTeam(teamID, userID string, callerHasOpenFallthrough
 		return nil, err
 	}
 
-	visible := sq.Or{sq.Expr("EXISTS (SELECT 1 FROM ChannelMembers cm WHERE cm.ChannelId = sp.ChannelId AND cm.UserId = ?)", userID)}
+	visible := sq.Or{sq.Expr(`
+		EXISTS (
+			SELECT 1
+			FROM ChannelMembers cm
+			INNER JOIN TeamMembers tm
+				ON tm.UserId = cm.UserId
+				AND tm.TeamId = sp.TeamId
+				AND tm.DeleteAt = 0
+			WHERE cm.ChannelId = sp.ChannelId AND cm.UserId = ?
+		)`, userID)}
 	if callerHasOpenFallthrough {
 		visible = append(visible, sq.Eq{"sp.ViewAccess": model.ViewAccessOpen})
 	}

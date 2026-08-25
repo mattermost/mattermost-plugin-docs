@@ -13,6 +13,10 @@ import CreateSpaceModal from './create_space_modal';
 
 import {renderWithContext} from '../../../tests/react_testing_utils';
 
+jest.mock('utils/space_icon', () => ({
+    SpaceIcon: ({space}: {space: {view_access: string}}) => <span data-testid='space-name-icon'>{space.view_access}</span>,
+}));
+
 const team = makeTeam('team1', 'myteam');
 let createSpaceSpy: jest.SpyInstance;
 let toastErrorSpy: jest.SpyInstance;
@@ -81,6 +85,16 @@ describe('CreateSpaceModal', () => {
 
         await waitFor(() => expect(createSpaceSpy).toHaveBeenCalledTimes(1));
         expect(createSpaceSpy.mock.calls[0][1]).toMatchObject({view_access: 'open'});
+    });
+
+    it('updates the name-field icon when the visibility changes', () => {
+        renderWithContext(<CreateSpaceModal onClose={jest.fn()}/>, {state: {currentTeam: team}});
+
+        expect(screen.getByTestId('space-name-icon')).toHaveTextContent('private');
+
+        fireEvent.click(screen.getByRole('radio', {name: /Public Space/}));
+
+        expect(screen.getByTestId('space-name-icon')).toHaveTextContent('open');
     });
 
     it('reports a failed create and keeps the modal open', async () => {

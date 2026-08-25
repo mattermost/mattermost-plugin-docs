@@ -407,6 +407,7 @@ func TestServiceGetTeamSpaces(t *testing.T) {
 
 	teamID := mmmodel.NewId()
 	userID := mmmodel.NewId()
+	testutil.MustAddTeamMember(t, h.db, teamID, userID, 0)
 	for range 2 {
 		sp := &model.Space{ChannelId: mmmodel.NewId(), TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "Test Space", ViewAccess: model.ViewAccessPrivate}
 		_, err := h.store.CreateSpace(sp)

@@ -100,4 +100,32 @@ describe('useResolveSpacePermissions', () => {
 
         expect(mockFetchSpace).toHaveBeenNthCalledWith(4, 'space-2');
     });
+
+    it('starts a new request when returning to a space before its previous request settles', async () => {
+        let settleFirst: (space: {id: string}) => void = () => {};
+        mockFetchSpace.mockImplementationOnce(() => new Promise((resolve) => {
+            settleFirst = resolve;
+        }));
+        mockFetchSpace.mockResolvedValueOnce({id: 'space-1'});
+
+        const {rerender} = renderHook(({id}: {id?: string}) => useResolveSpacePermissions(id), {
+            wrapper,
+            initialProps: {id: 'space-1'} as {id?: string},
+        });
+        expect(mockFetchSpace).toHaveBeenCalledTimes(1);
+
+        rerender({id: undefined});
+        rerender({id: 'space-1'});
+
+        expect(mockFetchSpace).toHaveBeenCalledTimes(2);
+        expect(mockFetchSpace).toHaveBeenNthCalledWith(2, 'space-1');
+
+        await act(async () => {
+            settleFirst({id: 'space-1'});
+            await Promise.resolve();
+            jest.runAllTimers();
+        });
+
+        expect(mockFetchSpace).toHaveBeenCalledTimes(2);
+    });
 });

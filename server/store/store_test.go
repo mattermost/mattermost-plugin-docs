@@ -872,8 +872,10 @@ func TestGetSpacesForTeam(t *testing.T) {
 	for _, ch := range []string{chVisible, chHidden, otherChannel} {
 		testutil.MustAddChannelMember(t, db, ch, memberOfAll)
 	}
+	testutil.MustAddTeamMember(t, db, teamID, memberOfAll, 0)
 	memberOfOne := mmmodel.NewId()
 	testutil.MustAddChannelMember(t, db, chVisible, memberOfOne)
+	testutil.MustAddTeamMember(t, db, teamID, memberOfOne, 0)
 
 	t.Run("returns every team space whose backing channel the user belongs to", func(t *testing.T) {
 		spaces, err := s.GetSpacesForTeam(teamID, memberOfAll, false, 0, 100)
@@ -890,6 +892,16 @@ func TestGetSpacesForTeam(t *testing.T) {
 
 	t.Run("user with no memberships gets an empty result", func(t *testing.T) {
 		spaces, err := s.GetSpacesForTeam(teamID, mmmodel.NewId(), false, 0, 100)
+		require.NoError(t, err)
+		require.Empty(t, spaces)
+	})
+
+	t.Run("former team member with a stale channel membership gets an empty result", func(t *testing.T) {
+		formerMember := mmmodel.NewId()
+		testutil.MustAddChannelMember(t, db, chVisible, formerMember)
+		testutil.MustAddTeamMember(t, db, teamID, formerMember, 12345)
+
+		spaces, err := s.GetSpacesForTeam(teamID, formerMember, false, 0, 100)
 		require.NoError(t, err)
 		require.Empty(t, spaces)
 	})

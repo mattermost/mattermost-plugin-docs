@@ -140,6 +140,9 @@ export function useResolveSpacePermissions(spaceId?: string): void {
         return () => {
             cancelled = true;
             clearTimeout(timer);
+            if (resolvedFor.current === spaceId) {
+                resolvedFor.current = undefined;
+            }
         };
     }, [dispatch, spaceId, retry]);
 }

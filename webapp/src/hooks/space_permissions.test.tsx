@@ -200,8 +200,6 @@ describe('useSpacePermissions', () => {
             expect(result.current.canAdminister).toBe(true);
         });
 
-        // The policy values go with the authority: left standing, the surface would attribute the
-        // previous space's default set and view access to a space it never read.
         // The default set goes with the authority: left standing, the surface would attribute the
         // previous space's defaults to a space it never read. View access is not in that set — it
         // rides on the space record itself, so a space whose read failed shows its own stored value

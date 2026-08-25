@@ -58,19 +58,24 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
 
     const server = await new DocsServerContainer().start();
 
-    // The image is pinned by build/core-commit.txt, so a pin that predates a core capability this
-    // suite needs is a setup problem, not a product one — and it is the reader's first question.
-    await assertReadyForSpecs(server.url(), adminUsername, adminPassword,
-        'The core image is pinned by build/core-commit.txt. Bump it to a commit whose published image ' +
-        'carries the plugin scheme API (core PR mattermost/mattermost#37685), or run against a dev server ' +
-        'built from the paired core branch: ./scripts/run-tests.sh e2e-ui-local');
+    try {
+        // The image is pinned by build/core-commit.txt, so a pin that predates a core capability this
+        // suite needs is a setup problem, not a product one — and it is the reader's first question.
+        await assertReadyForSpecs(server.url(), adminUsername, adminPassword,
+            'The core image is pinned by build/core-commit.txt. Bump it to a commit whose published image ' +
+            'carries the plugin scheme API (core PR mattermost/mattermost#37685), or run against a dev server ' +
+            'built from the paired core branch: ./scripts/run-tests.sh e2e-ui-local');
 
-    writeState({
-        baseURL: server.url(),
-        adminUsername,
-        adminPassword,
-        teamName: defaultTeamName,
-    });
+        writeState({
+            baseURL: server.url(),
+            adminUsername,
+            adminPassword,
+            teamName: defaultTeamName,
+        });
+    } catch (error) {
+        await server.stop();
+        throw error;
+    }
 
     return async () => {
         clearState();

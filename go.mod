@@ -87,3 +87,5 @@ require (
 )
 
 // Repin server/public to a released version once mattermost/mattermost#37685 merges.
+
+replace github.com/mattermost/mattermost/server/public => /Users/catalintomai/mattermost/MM-69269-core/server/public
