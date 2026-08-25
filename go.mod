@@ -2,9 +2,10 @@ module github.com/mattermost/mattermost-plugin-docs
 
 go 1.26.7
 
-// Dev-only pins: server/public is pinned to the master commit that merged the Space
-// backing-channel type — ChannelTypeSpace ("S"), pluginapi Channel.GetChannelOfType, and
-// pluginapi Channel.Restore — which is not yet in a released server/public.
+// Pre-release pins: server/public is pinned to the exact commit from the paired core PR:
+// https://github.com/mattermost/mattermost/pull/37685. That commit supplies the Space
+// backing-channel and plugin-scheme APIs this plugin uses. Keep this pin CI-resolvable; local
+// paired-core development may add an uncommitted absolute-path replace directive.
 // server/v8 is the test harness only (storetest helpers); it does not contribute any runtime
 // symbols and is pinned independently to an older commit. The two modules live in the same
 // monorepo but are versioned independently, so their pseudo-version timestamps will always
@@ -14,7 +15,7 @@ require (
 	github.com/gorilla/mux v1.8.1
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.12.3
-	github.com/mattermost/mattermost/server/public v0.4.4-0.20260821134021-35b7e01bec79
+	github.com/mattermost/mattermost/server/public v0.4.4-0.20260825124147-203593b78f56
 	github.com/mattermost/mattermost/server/v8 v8.0.0-20260623200446-ba033eae4704
 	github.com/mattermost/morph v1.1.0
 	github.com/mattermost/squirrel v0.5.0
@@ -85,11 +86,4 @@ require (
 	modernc.org/sqlite v1.50.1 // indirect
 )
 
-// server/public is pinned to the head of the paired core PR (mattermost/mattermost#37685), which
-// carries the scheme/role plugin-API additions this plugin calls. Repin to a released version once
-// that PR merges. The go.sum entries for it were recorded directly from the module, since the
-// checksum database has no record of a commit that is not yet on a released branch.
-
-// LOCAL DEV ONLY - remove before commit. Points at the unpushed paired core
-// branch so the plugin can build against GetOrCreatePluginChannelScheme.
-replace github.com/mattermost/mattermost/server/public => /Users/catalintomai/mattermost/MM-69269-core/server/public
+// Repin server/public to a released version once mattermost/mattermost#37685 merges.
