@@ -4,8 +4,6 @@
 package model
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"maps"
 	"net/http"
 	"slices"
@@ -29,14 +27,12 @@ var grantableMemberPermissions = map[string]bool{
 	mmmodel.PermissionAdminSpace.Id:    true,
 }
 
-// grantableDefaultPermissions is the wire vocabulary a space-default permission set may hold:
-// the five atomic per-page permissions. admin_space is member-grant-only, never a space default.
-var grantableDefaultPermissions = map[string]bool{
-	mmmodel.PermissionCreatePage.Id:    true,
-	mmmodel.PermissionCommentPage.Id:   true,
-	mmmodel.PermissionEditPage.Id:      true,
-	mmmodel.PermissionDeleteOwnPage.Id: true,
-	mmmodel.PermissionDeletePage.Id:    true,
+// isGrantableDefault reports whether p may appear in a space-default permission set: the member
+// vocabulary less admin_space, which is member-grant-only and never a space default. Derived from
+// the member vocabulary rather than spelled out a second time, so a permission added there cannot
+// be silently absent here.
+func isGrantableDefault(p string) bool {
+	return p != mmmodel.PermissionAdminSpace.Id && grantableMemberPermissions[p]
 }
 
 // permissionAtomicRole maps each non-admin grantable permission to the core atomic role
@@ -110,9 +106,10 @@ func ValidateGrantedPermissions(permissions []string) *mmmodel.AppError {
 
 // ValidateDefaultPermissions validates a space-default permission set: same rule as
 // ValidateGrantedPermissions, plus admin_space is also rejected — a space default is never
-// admin-granting.
+// admin-granting. rejectAdmin does that rejection, and does it with its own message, so the
+// allowlist passed here is still the member vocabulary.
 func ValidateDefaultPermissions(permissions []string) *mmmodel.AppError {
-	return validatePermissions("ValidateDefaultPermissions", permissions, grantableDefaultPermissions, true)
+	return validatePermissions("ValidateDefaultPermissions", permissions, grantableMemberPermissions, true)
 }
 
 // RolesForPermissions maps the requested non-admin permissions to their atomic role names for
@@ -209,7 +206,7 @@ func AdminEffectivePermissions() []string {
 func DefaultPermissionsFrom(permissions []string) []string {
 	out := make([]string, 0, len(permissions))
 	for _, p := range permissions {
-		if grantableDefaultPermissions[p] {
+		if isGrantableDefault(p) {
 			out = append(out, p)
 		}
 	}
@@ -228,42 +225,6 @@ func DefaultPermissionsForSchemeName(name string) ([]string, bool) {
 	return slices.Clone(permissions), true
 }
 
-// SharedSchemeNamePrefix labels every scheme in the shared default-permission pool. The suffix is
-// derived from the permission set, so one scheme serves every space configured that way. Exported
-// so a caller matching pooled scheme names resolves the prefix from here rather than restating it.
-const SharedSchemeNamePrefix = "docs_space_default_"
-
-// sharedSchemeDisplayNamePrefix opens the operator-facing name of a pooled scheme, which then lists
-// the permission set the scheme grants.
-const sharedSchemeDisplayNamePrefix = "Space defaults: "
-
-// sharedSchemeNameDigestLength is how much of the digest the pool scheme name carries. Together
-// with SharedSchemeNamePrefix it fits core's 64-character limit with room to spare, and 64 bits is
-// far more than a vocabulary of a few tokens can collide within.
-const sharedSchemeNameDigestLength = 16
-
-// SharedSchemeNameForPermissions returns the pool scheme name expressing permissions: a
-// deterministic function of the permission set, so two spaces configured the same way resolve to
-// one shared scheme rather than each owning an identical private copy. The suffix is a digest
-// rather than the tokens themselves, which keeps the name inside core's 64-character
-// [a-z0-9_] limit and — unlike a positional encoding — leaves existing names meaning what they
-// always meant when the permission vocabulary grows.
-func SharedSchemeNameForPermissions(permissions []string) string {
-	sum := sha256.Sum256([]byte(strings.Join(NormalizePermissions(permissions), " ")))
-	return SharedSchemeNamePrefix + hex.EncodeToString(sum[:])[:sharedSchemeNameDigestLength]
-}
-
-// SharedSchemeDisplayNameForPermissions returns the operator-facing name of the pooled scheme for
-// permissions, listing the set so the digest in the scheme name is legible in the System Console.
-// Truncated to core's DisplayName limit, which the current vocabulary is far short of.
-func SharedSchemeDisplayNameForPermissions(permissions []string) string {
-	name := sharedSchemeDisplayNamePrefix + strings.Join(NormalizePermissions(permissions), ", ")
-	if len(name) > mmmodel.SchemeDisplayNameMaxLength {
-		name = name[:mmmodel.SchemeDisplayNameMaxLength]
-	}
-	return name
-}
-
 // SchemeNameForDefaultPermissions returns the seeded preset scheme name matching permissions, or false
 // if permissions does not match any preset. Recognition is set equality — order-insensitive, deduplicated
 // — never a raw array comparison.
@@ -275,27 +236,6 @@ func SchemeNameForDefaultPermissions(permissions []string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// SpacePermissionsOnly returns the space channel-scoped permissions among permissions, normalized.
-//
-// A role read back from core carries more than a space permission set. Core seeds a new channel
-// scheme's User and Guest roles with the moderated subset of the corresponding built-in role, and
-// on every read it merges into any scheme-managed role each non-moderated channel permission the
-// higher-scoped built-in role holds — read_channel, upload_file, edit_post and the rest. Comparing
-// a raw role read against a space permission set therefore never matches, whatever the role grants.
-//
-// Filtering to the space permissions is what makes such a comparison well-defined, and it is the
-// comparison core's merge supports: the merge carries a role's own space permissions through
-// unchanged, precisely so a space scheme's grants survive it.
-func SpacePermissionsOnly(permissions []string) []string {
-	out := make([]string, 0, len(permissions))
-	for _, p := range permissions {
-		if mmmodel.IsSpaceChannelScopedPermissionID(p) {
-			out = append(out, p)
-		}
-	}
-	return NormalizePermissions(out)
 }
 
 // NormalizePermissions dedupes and sorts permissions into a deterministic, non-nil slice.

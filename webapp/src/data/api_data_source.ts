@@ -38,6 +38,10 @@ export const apiDataSource: DocsDataSource = {
         title: input.title.trim(),
         description: input.description?.trim() || undefined,
         icon: input.icon || undefined,
+
+        // Sent on every create: the server defaults an absent view_access to
+        // 'open', so omitting it would discard a 'private' selection.
+        view_access: input.view_access,
     }),
 
     updateSpace: (spaceId, patch: UpdateSpacePatch, expectedUpdateAt) => restPatch<Space>(`${apiUrl()}/spaces/${seg(spaceId)}`, {

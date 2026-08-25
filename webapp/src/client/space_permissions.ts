@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {apiUrl, listAll, restGet, restPatch, restPut} from 'client/rest';
+import {apiUrl, listAll, restGet, restPatch, restPost, restPut} from 'client/rest';
 
 import type {Permission, SpaceAccess, SpaceMember, SpaceViewAccess} from 'types/permissions';
 
@@ -26,6 +26,13 @@ export const getSpaceAccess = (spaceId: string): Promise<SpaceAccess> =>
 // the space — so only call this behind that tier.
 export const listAllSpaceMembers = (spaceId: string): Promise<SpaceMember[]> =>
     listAll<SpaceMember>((query) => `${apiUrl()}/spaces/${seg(spaceId)}/members?${query}`);
+
+// joinSpace joins the caller to an open space they can read but are not yet a member of, and
+// answers the same wrapper the single-space read does. Idempotent: a caller who is already a member
+// is answered with their current access rather than an error, so it is safe to call whenever the
+// store's answer might be stale.
+export const joinSpace = (spaceId: string): Promise<SpaceAccess> =>
+    restPost<SpaceAccess>(`${apiUrl()}/spaces/${seg(spaceId)}/members/me`, {});
 
 // setMemberPermissions replaces a member's granted set. The empty array is the
 // deliberate clear; the field is always sent, since omitting it is a 400.

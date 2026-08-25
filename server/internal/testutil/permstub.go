@@ -5,6 +5,7 @@ package testutil
 
 import (
 	"sync"
+	"testing"
 
 	"github.com/stretchr/testify/mock"
 
@@ -20,13 +21,20 @@ var stubbedGuests = struct {
 	byAPI map[*plugintest.API]map[string]bool
 }{byAPI: map[*plugintest.API]map[string]bool{}}
 
-func registerStubbedGuest(mockAPI *plugintest.API, userID string) {
+func registerStubbedGuest(t *testing.T, mockAPI *plugintest.API, userID string) {
 	stubbedGuests.Lock()
 	defer stubbedGuests.Unlock()
 	users, ok := stubbedGuests.byAPI[mockAPI]
 	if !ok {
 		users = map[string]bool{}
 		stubbedGuests.byAPI[mockAPI] = users
+		// Registered on the insert that creates the entry, so one cleanup covers every guest
+		// later added under the same API.
+		t.Cleanup(func() {
+			stubbedGuests.Lock()
+			defer stubbedGuests.Unlock()
+			delete(stubbedGuests.byAPI, mockAPI)
+		})
 	}
 	users[userID] = true
 }
@@ -76,28 +84,15 @@ func StubDefaultSpacePermissions(mockAPI *plugintest.API) {
 		mockAPI.On("HasPermissionToTeam", mock.Anything, mock.Anything, p).Return(false).Maybe()
 	}
 	mockAPI.On("HasPermissionTo", mock.Anything, mmmodel.PermissionManageSystem).Return(false).Maybe()
-	// teamPermGranted consults the resolved team roles before falling back to HasPermissionToTeam.
-	// The stubbed team memberships carry no roles, so this arm decides nothing and the
-	// HasPermissionToTeam expectations above remain the ones that express a test's team grants.
-	//
-	// Scoped to the team permissions rather than registered as a catch-all: RolesGrantPermission is
-	// also how DefaultRolesGrantPermission resolves a space's *page* defaults, and a catch-all here
-	// would match those first and shadow the per-test expectations that drive the auto-join paths.
-	for _, p := range []*mmmodel.Permission{
-		mmmodel.PermissionReadSpace, mmmodel.PermissionCreateSpace, mmmodel.PermissionReadPublicChannel,
-		mmmodel.PermissionManageSpace, mmmodel.PermissionDeleteSpace,
-	} {
-		mockAPI.On("RolesGrantPermission", mock.Anything, p.Id).Return(false).Maybe()
-	}
 }
 
 // StubGuestTeamDefaults narrows guestUserID's team grants to what core's team_guest actually holds:
 // read_space, but neither create_space nor read_public_channel — the latter being what admits the
 // open-space non-member read fall-through a guest must not receive. It may be called before or
 // after StubDefaultSpacePermissions, whose grants for those two permissions exclude every user
-// named here.
-func StubGuestTeamDefaults(mockAPI *plugintest.API, guestUserID string) {
-	registerStubbedGuest(mockAPI, guestUserID)
+// named here. The guest marking it records against mockAPI is dropped when t finishes.
+func StubGuestTeamDefaults(t *testing.T, mockAPI *plugintest.API, guestUserID string) {
+	registerStubbedGuest(t, mockAPI, guestUserID)
 	for _, p := range []*mmmodel.Permission{mmmodel.PermissionCreateSpace, mmmodel.PermissionReadPublicChannel} {
 		mockAPI.On("HasPermissionToTeam", guestUserID, mock.Anything, p).Return(false).Maybe()
 	}

@@ -11,28 +11,22 @@ import (
 // can refresh the affected space list and page tree without a full reload. The platform prepends
 // "custom_<pluginid>_" to each name on the wire, so the names carry no redundant plugin prefix.
 //
-// Every event is scoped to the space's backing channel. Reads are not purely
-// membership-gated (an open space also allows non-member reads via the team read_public_channel
-// fall-through, and the team space list includes open spaces the caller hasn't joined), but WS
-// delivery deliberately stays channel-scoped: a non-member reader of an open space receives no
-// live updates until a write auto-joins them. This is narrower than the read set — an accepted
-// UX consequence, not a leak, since the same caller can always re-fetch. For the same reason a
-// cross-space move publishes a separate payload to each side — the source channel learns only the
-// source space's half (source space and old parent), the target channel only the target's half —
-// rather than one payload naming both spaces. A member removal is additionally sent to the removed
-// user directly: they have already left the channel when the channel-scoped broadcast fires, so
-// this is their only signal of the removal. space_member_added and
-// space_member_permissions_updated are sent to the affected user directly for the mirror-image
-// reason: the channel-scoped broadcast resolves recipients on a space ("S") channel, which may not
-// yet include a member added moments earlier, and that user has no other signal that their access
-// changed.
-// space_deleted is likewise delivered to each member
-// directly, from a snapshot taken before the backing channel is archived — channel-scoped
-// delivery resolves recipients from live channels only, so a broadcast to the just-archived
-// channel would reach nobody. A space delete or restore cascades to every live page in
-// the space but deliberately publishes only the single space-level event — clients must treat
-// space_deleted/space_restored as an invalidation of the space's entire page tree rather than
-// expect per-page tombstone events (an unbounded per-page fan-out is not published).
+// Every event is scoped to the space's backing channel. That is narrower than the read set — an
+// open space is also readable by non-members through the team read_public_channel fall-through,
+// and they receive no live updates until a write auto-joins them. Accepted: the same caller can
+// always re-fetch. For the same reason a cross-space move publishes a separate payload to each
+// side — the source channel learns only the source space's half (source space and old parent), the
+// target channel only the target's half — rather than one payload naming both spaces.
+//
+// Three cases are additionally delivered to the affected user directly, because the channel-scoped
+// broadcast cannot reach them: a removed user has already left the channel; a just-added or
+// just-repermissioned member may not yet resolve as a recipient on the space ("S") channel; and
+// space_deleted goes to a member snapshot taken before the backing channel is archived, since
+// channel-scoped delivery resolves recipients from live channels only.
+//
+// A space delete or restore cascades to every live page in the space but publishes only the single
+// space-level event — clients must treat space_deleted/space_restored as an invalidation of the
+// space's entire page tree rather than expect per-page tombstones.
 const (
 	wsEventPageCreated      = "page_created"
 	wsEventPageUpdated      = "page_updated"
@@ -62,10 +56,9 @@ const (
 //
 // Core's hub delivers a channel broadcast to every raw ChannelMembers row with no team check, and
 // former team members keep their backing-channel rows after leaving the team — so each broadcast
-// carries an omit list of the members who fail the team half of the access gate, mirroring the
-// predicate the REST surface enforces. When the omit list cannot be resolved the event is dropped
-// for that channel rather than delivered unfiltered: a missed refresh signal degrades liveness
-// only, while unfiltered delivery leaks space activity to users the read gate already rejects.
+// carries an omit list of the members failing the team half of the access gate. When that list
+// cannot be resolved the event is dropped for the channel rather than delivered unfiltered: a
+// missed refresh signal only degrades liveness, while unfiltered delivery leaks space activity.
 func (s *Service) publishToChannels(event string, payload map[string]any, channelIDs ...string) {
 	if s.client == nil {
 		return

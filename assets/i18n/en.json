@@ -472,10 +472,6 @@
     "translation": "You must be a member of the team to create a space in it."
   },
   {
-    "id": "app.space.create.scheme_configure_failed.app_error",
-    "translation": "Failed to configure the space's permission scheme."
-  },
-  {
     "id": "app.space.create.team_lookup_failed.app_error",
     "translation": "Unable to verify team membership."
   },
@@ -486,14 +482,6 @@
   {
     "id": "app.space.default_permissions.repoint_failed.app_error",
     "translation": "Failed to apply the new default permissions."
-  },
-  {
-    "id": "app.space.default_permissions.scheme_configure_failed.app_error",
-    "translation": "Failed to configure the space's new permission scheme."
-  },
-  {
-    "id": "app.space.default_permissions.scheme_configure_rollback_failed.app_error",
-    "translation": "Failed to configure the space's new permission scheme, and the space could not be returned to its previous one. Contact your system administrator."
   },
   {
     "id": "app.space.delete.invalid_id.app_error",
@@ -532,16 +520,16 @@
     "translation": "Invalid space ID."
   },
   {
+    "id": "app.space.join.nothing_to_grant.app_error",
+    "translation": "Joining this space would grant you nothing beyond the access you already have."
+  },
+  {
     "id": "app.space.lock_timeout.app_error",
     "translation": "Another change to this space is in progress. Try again."
   },
   {
     "id": "app.space.member.admin_count_failed.app_error",
     "translation": "Failed to count the space's administrators."
-  },
-  {
-    "id": "app.space.member.clear_auto_join_failed.app_error",
-    "translation": "Failed to update how this membership was created. Please try again."
   },
   {
     "id": "app.space.member.guest_not_assignable.app_error",
@@ -572,12 +560,12 @@
     "translation": "The specified user could not be found."
   },
   {
-    "id": "app.space.pooled_scheme_conflict.app_error",
-    "translation": "This space's permissions could not be applied because another permission scheme on this server conflicts with them. Contact your system administrator."
-  },
-  {
     "id": "app.space.preset_scheme_missing.app_error",
     "translation": "The built-in space permission schemes are not available on this server."
+  },
+  {
+    "id": "app.space.prune_self_joined.failed.app_error",
+    "translation": "The self-joined members of this space could not be resolved."
   },
   {
     "id": "app.space.remove_member.failed.app_error",

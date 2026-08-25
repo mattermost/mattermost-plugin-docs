@@ -25,9 +25,7 @@ export interface DocsDataSource {
     getSpace(spaceId: string): Promise<Space | undefined>;
 
     // Creates a space in the team and returns it (with its server-assigned id
-    // and team_id). Only server-supported fields are sent; the client-only
-    // visibility is dropped by the API source until the server models it (see
-    // PR #10's view_access).
+    // and team_id).
     createSpace(teamId: string, input: CreateSpaceInput): Promise<Space>;
 
     // Patches a space's editable fields (name/description/icon) and returns the

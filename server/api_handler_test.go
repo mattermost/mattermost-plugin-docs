@@ -17,7 +17,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 
@@ -224,12 +223,14 @@ func TestHandler_CreateSpace(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, contribute, created.DefaultPermissions)
 	// The creator is made a space admin, so their effective set is the admin page permissions plus
-	// the manage tier — the roster routes admit them, and the set says so.
+	// both space-wide tiers — admin_space satisfies the roster gate and the archive gate alike, and
+	// the set says so for each.
 	require.Equal(t,
-		model.NormalizePermissions(append(model.AdminEffectivePermissions(), mmmodel.PermissionManageSpace.Id)),
+		model.NormalizePermissions(append(model.AdminEffectivePermissions(), mmmodel.PermissionManageSpace.Id, mmmodel.PermissionDeleteSpace.Id)),
 		created.Permissions)
 	require.Contains(t, created.Permissions, mmmodel.PermissionAdminSpace.Id)
 	require.Contains(t, created.Permissions, mmmodel.PermissionManageSpace.Id)
+	require.Contains(t, created.Permissions, mmmodel.PermissionDeleteSpace.Id)
 }
 
 // TestHandler_CreateSpace_IgnoresServerOwnedFields ensures the create handler does not trust
@@ -1816,74 +1817,69 @@ func TestHandler_DeletePage_OtherOwnerForbidden(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, "the page must still exist since the delete was denied")
 }
 
-// TestHandler_DeletePage_NonMemberAutoJoinsViaDeletePageDefault verifies requireDeleteOwnOrAnyFrom
-// attempts the auto-join pre-step against delete_page (any) first, unconditionally: a non-member
-// of an open space whose default permission set grants delete_page is auto-joined and can delete a
-// page it does not own, rather than being denied because only the narrower delete_own_page
-// attempt was tried.
-func TestHandler_DeletePage_NonMemberAutoJoinsViaDeletePageDefault(t *testing.T) {
+// TestHandler_DeletePage_NonMemberIsRefusedNotJoined pins the delete route against the behaviour it
+// used to have: a non-member of an open space whose default permission set grants delete_page is
+// refused, not silently made a member so the gate can then pass. Deleting is a question the gate
+// answers; the membership comes from the self-join route, which the caller asks for.
+func TestHandler_DeletePage_NonMemberIsRefusedNotJoined(t *testing.T) {
 	mockAPI := newEnabledMockAPI()
 	stranger := mmmodel.NewId()
 	channelID := mmmodel.NewId()
 
-	// The stranger is not yet a member: read_page is withheld so the read gate admits them only
-	// through the open-space fall-through, which is what the auto-join pre-step keys on. delete_page
-	// reflects what their post-join role would grant, standing in for the space's default
-	// permission set — the same way TestAutoJoin_JoinsWhenDefaultGrants' RolesGrantPermission stub
-	// does. Registered before openTestPlugin: mock.Mock matches expectations in registration order,
-	// and StubDefaultSpacePermissions' catch-all would otherwise grant read_page first.
-	mockAPI.On("HasPermissionToChannel", stranger, channelID, mmmodel.PermissionReadPage).Return(false)
-	mockAPI.On("HasPermissionToChannel", stranger, channelID, mmmodel.PermissionDeletePage).Return(true)
-	mockAPI.On("RolesGrantPermission", mock.Anything, mmmodel.PermissionDeletePage.Id).Return(true)
-	// Not yet a member: no ChannelMembers row is seeded, so the master-side membership probe
-	// misses and the join path runs.
-	mockAPI.On("AddChannelMember", channelID, stranger).
-		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: stranger}, nil)
+	// Every backing-channel permission is withheld, which is what a non-member actually resolves to:
+	// the read gate then admits them only through the open-space fall-through. The space default is
+	// the delete-granting one, so under the pre-step this request would have joined them and
+	// succeeded. Registered before openTestPlugin: mock.Mock matches expectations in registration
+	// order, and StubDefaultSpacePermissions' catch-all would otherwise grant read_page first.
+	for _, perm := range []*mmmodel.Permission{mmmodel.PermissionReadPage, mmmodel.PermissionDeletePage, mmmodel.PermissionDeleteOwnPage} {
+		// Maybe: the delete_page denial short-circuits before the own-scoped attempt, which a
+		// non-owner never reaches.
+		mockAPI.On("HasPermissionToChannel", stranger, channelID, perm).Return(false).Maybe()
+	}
 
 	h := openTestPlugin(t, mockAPI)
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
 	space := seedSpace(t, h.store, channelID)
-	// Owned by someone else: only the delete_page (any) grant, not delete_own_page, can admit this.
+	// Owned by someone else, so only a delete_page (any) grant could admit this.
 	page := testutil.MustCreatePage(t, h.store, space.Id, channelID, mmmodel.NewId(), "")
 
 	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, stranger, nil)
-	require.Equal(t, http.StatusOK, rec.Code)
-	mockAPI.AssertCalled(t, "AddChannelMember", channelID, stranger)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
 }
 
-// TestHandler_UpdatePage_NonMemberAutoJoinUndoneOnInvalidBody verifies the rollback half of the
-// auto-join pre-step: a non-member admitted through the open-space fall-through is joined before
-// the write is attempted, and a malformed request body then rejects the write in
-// handleUpdatePage's decode step — before the service is ever called. The membership the pre-step
-// created must not survive that rejection.
-func TestHandler_UpdatePage_NonMemberAutoJoinUndoneOnInvalidBody(t *testing.T) {
+// TestHandler_JoinSpace_NonMemberJoinsOpenSpace covers the route that replaced the pre-step: the
+// self-join a non-member of an open space asks for, which is the only path that turns a space's
+// view access into a membership. It answers the same wrapper the read routes do, so the caller
+// refreshes what it already holds rather than following up with a read.
+func TestHandler_JoinSpace_NonMemberJoinsOpenSpace(t *testing.T) {
 	mockAPI := newEnabledMockAPI()
 	stranger := mmmodel.NewId()
 	channelID := mmmodel.NewId()
 
-	// Same shape as TestHandler_DeletePage_NonMemberAutoJoinsViaDeletePageDefault: read_page is
-	// withheld so the read gate admits the stranger only through the open-space fall-through, and
-	// edit_page stands in for what their post-join role would grant.
+	// Withheld so the read resolves through the open-space fall-through, the only admission the
+	// join accepts. Registered before openTestPlugin for the ordering reason above.
 	mockAPI.On("HasPermissionToChannel", stranger, channelID, mmmodel.PermissionReadPage).Return(false)
-	mockAPI.On("HasPermissionToChannel", stranger, channelID, mmmodel.PermissionEditPage).Return(true)
-	mockAPI.On("RolesGrantPermission", mock.Anything, mmmodel.PermissionEditPage.Id).Return(true)
 	mockAPI.On("AddChannelMember", channelID, stranger).
 		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: stranger}, nil)
-	// The rollback this test pins: without it, the membership the pre-step created would survive
-	// the rejected write.
-	mockAPI.On("DeleteChannelMember", channelID, stranger).Return(nil)
 
 	h := openTestPlugin(t, mockAPI)
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
 	space := seedSpace(t, h.store, channelID)
-	page := seedPage(t, h.store, space.Id, channelID, "")
 
-	req := httptest.NewRequest(http.MethodPatch, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id, bytes.NewReader([]byte("{not json")))
-	req.Header.Set("Mattermost-User-ID", stranger)
-	rec := httptest.NewRecorder()
-	h.plugin.ServeHTTP(&plugin.Context{}, rec, req)
-	require.Equal(t, http.StatusBadRequest, rec.Code)
-
+	rec := h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/members/me", stranger, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
 	mockAPI.AssertCalled(t, "AddChannelMember", channelID, stranger)
-	mockAPI.AssertCalled(t, "DeleteChannelMember", channelID, stranger)
+
+	var access model.SpaceWithAccess
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &access))
+	require.Equal(t, space.Id, access.Id)
+
+	// The membership is recorded as one the caller made for themselves, which is what a later
+	// membership review — notably after an open->private flip — reads to tell it from an invitation.
+	marked, err := h.store.AutoJoinedIDs(space.Id)
+	require.NoError(t, err)
+	require.Contains(t, marked, stranger)
 }
 
 // TestHandler_GetSpacePagesHasMoreBoundary pins the has_more transition exactly at the page-size
@@ -2421,60 +2417,24 @@ func stubSpaceSchemeRepoint(t *testing.T, mockAPI *plugintest.API, channelID str
 	return testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
 }
 
-// stubSpaceCustomSchemeCreate wires the mock calls the custom-scheme path needs for a non-preset
-// default-permission set: CreateScheme returning a scheme whose Name carries the custom prefix,
-// plus GetRoleByName and PatchRole for each of its three generated roles. The new scheme's role
-// names are registered with testutil so a channel repointed at it resolves them through
-// GetSchemeRolesForChannel, the way core does.
-//
-// Returns the scheme id CreateScheme resolves to, so the caller can assert against it (e.g. the
-// channel's post-repoint SchemeId, or a later DeleteScheme call retiring it).
-func stubSpaceCustomSchemeCreate(t *testing.T, mockAPI *plugintest.API) string {
+// stubSpaceMintedScheme wires the mock calls a non-preset default-permission set needs and returns
+// the pool's recorder, so a caller can read back which scheme the set resolved to and what tier
+// model the plugin asked core to mint. The scheme id is not known up front: the pool keys by the
+// permission sets and mints on first use.
+func stubSpaceMintedScheme(t *testing.T, mockAPI *plugintest.API) *testutil.SchemePoolRecorder {
 	t.Helper()
-	testutil.StubPooledSchemeMiss(mockAPI)
-	customSchemeID := mmmodel.NewId()
-	userRole, adminRole, guestRole := "custom_scheme_user_role", "custom_scheme_admin_role", "custom_scheme_guest_role"
-	customScheme := &mmmodel.Scheme{
-		Id:                      customSchemeID,
-		Name:                    model.SharedSchemeNameForPermissions([]string{"create_page"}),
-		Scope:                   mmmodel.SchemeScopeChannel,
-		DefaultChannelUserRole:  userRole,
-		DefaultChannelAdminRole: adminRole,
-		DefaultChannelGuestRole: guestRole,
-	}
-	mockAPI.On("CreateScheme", mock.AnythingOfType("*model.Scheme")).Return(customScheme, nil)
-	testutil.RegisterSchemeRoles(customSchemeID, guestRole, userRole, adminRole)
-	// The generated roles start empty, the way core's CreateScheme leaves them before the plugin
-	// patches in the exact sets. StubRole hands back one shared *Role per name so StubPatchRole's
-	// mutation is visible to a later getRolePermissionsByName read of the same role.
-	testutil.StubRole(mockAPI, userRole, nil)
-	testutil.StubRole(mockAPI, adminRole, nil)
-	testutil.StubRole(mockAPI, guestRole, nil)
-	testutil.StubPatchRole(mockAPI)
-	return customSchemeID
+	return testutil.StubSchemePool(mockAPI)
 }
 
-// assertCustomSchemeRolePermissions pins which permission set each generated role received, so a
-// regression that sent the space-admin set to the guest or user role fails instead of passing on a
-// single catch-all PatchRole expectation. permissions is the requested default set.
-func assertCustomSchemeRolePermissions(t *testing.T, mockAPI *plugintest.API, permissions []string) {
+// assertSpaceTierModel pins which permission set each generated role was minted with, so a
+// regression that sent the space-admin set to the guest role fails here rather than passing on a
+// single catch-all expectation. permissions is the requested default set.
+func assertSpaceTierModel(t *testing.T, got testutil.SchemePoolRequest, permissions []string) {
 	t.Helper()
-	expected := map[string][]string{
-		"custom_scheme_user_role":  append([]string{mmmodel.PermissionReadPage.Id}, permissions...),
-		"custom_scheme_admin_role": mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions),
-		"custom_scheme_guest_role": {mmmodel.PermissionReadPage.Id},
-	}
-	for roleName, perms := range expected {
-		mockAPI.AssertCalled(t, "PatchRole",
-			mock.MatchedBy(func(roleID string) bool {
-				patchedName, ok := testutil.StubbedRoleName(roleID)
-				return ok && patchedName == roleName
-			}),
-			mock.MatchedBy(func(p *mmmodel.RolePatch) bool {
-				return p != nil && p.Permissions != nil && slices.Equal(
-					model.NormalizePermissions(*p.Permissions), model.NormalizePermissions(perms))
-			}))
-	}
+	require.Equal(t, model.NormalizePermissions(append([]string{mmmodel.PermissionReadPage.Id}, permissions...)),
+		model.NormalizePermissions(got.User), "members hold the baseline read plus the requested set")
+	require.Equal(t, mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions), got.Admin)
+	require.Equal(t, []string{mmmodel.PermissionReadPage.Id}, got.Guest, "the guest tier reads and nothing more")
 }
 
 // TestHandler_SetSpaceDefaultPermissions_Forbidden verifies a manage-only caller (team
@@ -2581,7 +2541,7 @@ func TestHandler_SetSpaceDefaultPermissions_CreatesPooledScheme(t *testing.T) {
 	mockAPI := newEnabledMockAPI()
 	grantSpaceAdmin(mockAPI, channelID, userID)
 	channel := stubSpaceSchemeRepoint(t, mockAPI, channelID)
-	customSchemeID := stubSpaceCustomSchemeCreate(t, mockAPI)
+	pool := stubSpaceMintedScheme(t, mockAPI)
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, channelID)
 	// RequireSpaceAdminOrSysadmin reads SchemeAdmin from the master, not from the cached
@@ -2597,17 +2557,16 @@ func TestHandler_SetSpaceDefaultPermissions_CreatesPooledScheme(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updated))
 	require.Equal(t, []string{"create_page"}, updated.DefaultPermissions)
 
-	// The pool key is a pure function of the permission set, so the minted scheme's name is exactly
-	// the one any other space requesting this set would resolve to.
-	mockAPI.AssertCalled(t, "CreateScheme", mock.MatchedBy(func(s *mmmodel.Scheme) bool {
-		return s.Name == model.SharedSchemeNameForPermissions([]string{"create_page"})
-	}))
+	minted, ok := pool.Last()
+	require.True(t, ok, "the non-preset set must resolve through the pool")
 	require.NotNil(t, channel.SchemeId)
-	require.Equal(t, customSchemeID, *channel.SchemeId, "the channel must be repointed at the pooled scheme")
-	assertCustomSchemeRolePermissions(t, mockAPI, []string{"create_page"})
-	// Exactly the three generated roles (user/admin/guest) are patched — no role skipped, none
-	// double-patched. assertCustomSchemeRolePermissions pins the per-role content; this pins the count.
-	mockAPI.AssertNumberOfCalls(t, "PatchRole", 3)
+	require.Equal(t, minted.SchemeID, *channel.SchemeId, "the channel must be repointed at the minted scheme")
+	assertSpaceTierModel(t, minted, []string{"create_page"})
+
+	// The scheme arrives complete, so nothing patches its roles afterwards. This is the property
+	// that makes it safe to share: a scheme every space with this set points at cannot be changed
+	// out from under them by a later write.
+	mockAPI.AssertNumberOfCalls(t, "PatchRole", 0)
 }
 
 // TestHandler_SetSpaceDefaultPermissions_ReusesPooledScheme pins the property the shared pool
@@ -2621,7 +2580,7 @@ func TestHandler_SetSpaceDefaultPermissions_ReusesPooledScheme(t *testing.T) {
 	mockAPI := newEnabledMockAPI()
 	grantSpaceAdmin(mockAPI, channelID, userID)
 	channel := stubSpaceSchemeRepoint(t, mockAPI, channelID)
-	testutil.StubSchemePool(mockAPI)
+	pool := testutil.StubSchemePool(mockAPI)
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, channelID)
 	// RequireSpaceAdminOrSysadmin reads SchemeAdmin from the master, not from the cached
@@ -2651,10 +2610,19 @@ func TestHandler_SetSpaceDefaultPermissions_ReusesPooledScheme(t *testing.T) {
 	require.Equal(t, pooledSchemeID, *channel.SchemeId,
 		"returning to a permission set must resolve to the scheme already pooled for it")
 
-	// One scheme minted across all three switches, and none deleted: a pooled scheme is shared, so
-	// no space owns it and no repoint retires it.
-	mockAPI.AssertNumberOfCalls(t, "CreateScheme", 1)
+	// One scheme backs both non-preset resolutions, and none is deleted: a pooled scheme is
+	// shared, so no space owns it and no repoint retires it.
+	distinct := map[string]struct{}{}
+	for _, req := range []string{pooledSchemeID} {
+		distinct[req] = struct{}{}
+	}
+	last, ok := pool.Last()
+	require.True(t, ok)
+	distinct[last.SchemeID] = struct{}{}
+	require.Len(t, distinct, 1, "returning to a set must reuse its scheme rather than mint a second")
 	mockAPI.AssertNotCalled(t, "DeleteScheme", mock.Anything)
+	// The scheme's roles are never rewritten, which is what makes sharing it safe.
+	mockAPI.AssertNumberOfCalls(t, "PatchRole", 0)
 }
 
 // TestHandler_SetSpaceDefaultPermissions_ResubmitCurrentSetIsNoOp verifies that resubmitting the

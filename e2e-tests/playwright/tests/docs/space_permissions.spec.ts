@@ -6,15 +6,15 @@
 // - [*] indicates an assertion (e.g. * Check the title)
 // ***************************************************************
 
-import type {Browser} from '@playwright/test';
+import type {Browser, Page} from '@playwright/test';
 
 import {expect, newContext, test} from '../fixtures';
 import {loginAs} from '../helpers/auth';
 import {requestedWith, uniqueSuffix} from '../helpers/client';
-import {addSpaceMember, apiRoot, createPage, createSpace} from '../helpers/docs';
+import {addSpaceMember, apiRoot, createPage, createSpace, isSpaceMember} from '../helpers/docs';
 import {demoteToGuest, setGuestAccountsEnabled} from '../helpers/guest';
 import {addUserToTeam, createTeam} from '../helpers/team';
-import {createUser, type SeededUser} from '../helpers/user';
+import {createUser, type SeededUser, suppressOnboarding} from '../helpers/user';
 import {SpacePage} from '../pages/space_page';
 import {SpaceSettingsModalPage} from '../pages/space_settings_modal_page';
 import {SpacesSidebarPage} from '../pages/spaces_sidebar_page';
@@ -24,14 +24,18 @@ import {SpacesSidebarPage} from '../pages/spaces_sidebar_page';
  *
  * What only this suite can prove: that the toggle a space admin moves in the UI reaches
  * the server, that what comes back is what the UI then shows, and that the change lands
- * on another member's authority. server/e2e asserts the same endpoints far more cheaply,
- * and the Jest suite asserts the same rendering against mocked reads — neither runs the
- * UI against a real server, so neither can catch a control wired to the wrong field, a
- * write that never reads back, or a lock that only looks locked.
+ * on another member's authority. The handler tests assert the same endpoints far more
+ * cheaply against a mocked plugin API, and the Jest suite asserts the same rendering
+ * against mocked reads — neither runs the UI against a real server, so neither can catch a
+ * control wired to the wrong field, a write that never reads back, or a lock that only
+ * looks locked.
  *
- * The permission *consequence* is observed over the API rather than by driving a second
- * browser: a 403 on a page create is the same fact either way, and asserting it directly
- * keeps the test from depending on how the other member's UI happens to surface a denial.
+ * A permission consequence is asserted twice: over the API, for what the server enforces,
+ * and in the browser, for what the product offers. Those are not the same fact, and this
+ * suite previously assumed they were. They can disagree in both directions — a control the
+ * server would accept but the client withholds is a feature nobody can reach, and a control
+ * the client offers but the server refuses is an error message where an affordance should
+ * have been. Only asserting both catches either.
  */
 test.describe('space permissions', () => {
     let teamName: string;
@@ -39,6 +43,10 @@ test.describe('space permissions', () => {
     let spaceTitle: string;
     let spaceId: string;
     let member: SeededUser;
+
+    // In the team, deliberately not in the space. The actor the open/private distinction
+    // exists for, and the one this suite had no persona for.
+    let nonMember: SeededUser;
 
     // Per-test, not shared: each test mutates the space's permission state, and a shared
     // space would make them order-dependent.
@@ -59,8 +67,17 @@ test.describe('space permissions', () => {
         const adminId = (await admin.json() as {id: string}).id;
         await addUserToTeam(page, teamId, adminId);
 
+        // The admin drives the browser in most of these tests and is not created by createUser, so
+        // the onboarding overlay it suppresses has to be suppressed here too.
+        await suppressOnboarding(page, adminId);
+
         member = await createUser(page, 'docs-perms-member');
         await addUserToTeam(page, teamId, member.id);
+
+        // Added to the team but never to the space, so their only route in is whatever the
+        // space's view access grants a team member.
+        nonMember = await createUser(page, 'docs-perms-nonmember');
+        await addUserToTeam(page, teamId, nonMember.id);
 
         // Created over the API: the authoring journey is covered by its own spec, and this
         // one is about what happens to a space that already exists.
@@ -106,6 +123,45 @@ test.describe('space permissions', () => {
         }
     };
 
+    // Whether the space view OFFERS the member page creation. The API probes above answer
+    // what the server enforces; this answers what the product lets them reach. A test that
+    // asserts only the first passes while the feature is unusable.
+    const memberIsOfferedAuthoring = async (baseURL: string, browser: Browser): Promise<boolean> => {
+        const context = await newContext(browser, {baseURL});
+        try {
+            const probePage = await context.newPage();
+            await loginAs(probePage, member.username, member.password);
+
+            const sidebar = new SpacesSidebarPage(probePage);
+            const space = new SpacePage(probePage);
+            await sidebar.goto(teamName);
+            await sidebar.openSpace(spaceTitle);
+            await space.expectOpen(spaceTitle);
+
+            return await space.addPageButton.isVisible();
+        } finally {
+            await context.close();
+        }
+    };
+
+    // Whether userId holds a membership in the space, read as the admin. Used where the
+    // question is who the space ended up containing rather than what they may do.
+    const spaceContains = async (
+        server: {baseURL: string; adminUsername: string; adminPassword: string},
+        browser: Browser,
+        userId: string,
+    ): Promise<boolean> => {
+        const context = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const adminPage = await context.newPage();
+            await loginAs(adminPage, server.adminUsername, server.adminPassword);
+
+            return await isSpaceMember(adminPage, spaceId, userId);
+        } finally {
+            await context.close();
+        }
+    };
+
     /**
      * @objective Revoking a space default in the UI removes that authority from a member.
      *
@@ -122,6 +178,11 @@ test.describe('space permissions', () => {
         // * Verify the seeded default already grants the member page creation, so the
         //   revocation below is what changes it rather than it never having been granted.
         expect(await memberCanCreatePage(server.baseURL, browser)).toBe(201);
+
+        // * Verify the product offers it too. Asserted alongside the status code, not
+        //   instead of it: a grant the server honours and the UI hides is not a grant the
+        //   user has.
+        expect(await memberIsOfferedAuthoring(server.baseURL, browser)).toBe(true);
 
         // # Open the space's permissions as its admin
         await loginAs(page, server.adminUsername, server.adminPassword);
@@ -140,6 +201,10 @@ test.describe('space permissions', () => {
         // * Verify the member can no longer create a page. The 403 is the point: the click
         //   changed server-enforced authority, not just a checkbox.
         expect(await memberCanCreatePage(server.baseURL, browser)).toBe(403);
+
+        // * Verify the revocation reached the product too, so the member is not left
+        //   clicking a control that can only fail.
+        expect(await memberIsOfferedAuthoring(server.baseURL, browser)).toBe(false);
     });
 
     /**
@@ -292,17 +357,219 @@ test.describe('space permissions', () => {
     });
 
     /**
-     * The third persona on the same space the tests above use: a guest.
+     * @objective A page action the space default withholds is not offered on the page.
+     *
+     * The contribute default grants delete_own_page but not delete_page, so a member may
+     * delete what they wrote and nothing else. The page header withholds create and edit on
+     * exactly this reasoning; the page menu withholds nothing, so Delete page is offered on
+     * a page the member did not author and answers 403 when clicked.
+     *
+     * EXPECTED TO FAIL: page_menu.tsx reads no permission at all. Two surfaces of one
+     * feature disagree about whether an action the server refuses should be shown.
+     */
+    test('a member is not offered page actions the space default withholds', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
+        const sidebar = new SpacesSidebarPage(page);
+        const space = new SpacePage(page);
+        const seededTitle = `Seed ${uniqueSuffix()}`;
+
+        // # Seed a page the member did not author, so removing it needs delete_page
+        const adminContext = await newContext(browser, {baseURL: server.baseURL});
+        let seededPageId: string;
+        try {
+            const adminPage = await adminContext.newPage();
+            await loginAs(adminPage, server.adminUsername, server.adminPassword);
+            seededPageId = (await createPage(adminPage, spaceId, seededTitle)).id;
+        } finally {
+            await adminContext.close();
+        }
+
+        // * Verify the server refuses it, so the absence asserted below would be the menu
+        //   agreeing with enforcement rather than the menu having failed to render
+        expect(await memberCanDeletePage(server.baseURL, browser, seededPageId)).toBe(403);
+
+        // # Open that page as the member and open its menu
+        await loginAs(page, member.username, member.password);
+        await sidebar.goto(teamName);
+        await sidebar.openSpace(spaceTitle);
+        await space.openPageFromTree(seededTitle);
+        await page.getByRole('button', {name: `Page options for ${seededTitle}`}).click();
+
+        // * Verify the menu opened, so the absence below is a real absence
+        await expect(page.getByRole('menuitem', {name: 'Copy link'})).toBeVisible();
+
+        // * Verify the action the server just refused is not offered
+        await expect(page.getByRole('menuitem', {name: 'Delete page'})).toBeHidden();
+    });
+
+    /**
+     * A team member who is not a member of the space, on a space that is open.
+     *
+     * This is the persona the open/private distinction exists for, and the suite had no actor
+     * for it. An open space is readable by any team member through the server's
+     * read_public_channel fall-through, and the server will join such a reader to the space on
+     * their first write when the space default grants it — so the product's claim is that
+     * authoring is one click away and the join happens on the way to it.
+     *
+     * EXPECTED TO FAIL, all three. The two halves were built against different assumptions and
+     * were never driven end to end together: the server auto-joins a non-member who writes,
+     * while the space view resolves their present-tense permission set (read_page alone) and
+     * correctly withholds the control that would send that write. Nothing in the UI reaches the
+     * join. These tests assert the intended behaviour, not the behaviour that ships today.
+     */
+    test.describe('a non-member of an open space', () => {
+        // Drives the non-member through authoring in the browser — the flow that is supposed
+        // to turn a reader into a member. Returns the title it published.
+        const authorAsNonMember = async (page: Page): Promise<string> => {
+            const sidebar = new SpacesSidebarPage(page);
+            const space = new SpacePage(page);
+            const title = `NonMember ${uniqueSuffix()}`;
+
+            await loginAs(page, nonMember.username, nonMember.password);
+            await sidebar.goto(teamName);
+            await sidebar.openSpace(spaceTitle);
+            await space.expectOpen(spaceTitle);
+
+            // Fails here today: the view withholds page creation from a non-member, so the
+            // write that would join them is never sent.
+            await space.addPage(title);
+            await space.expectDraftRoute();
+            await space.writeBody('Authored without an invitation.');
+            await space.expectDraftSaved();
+            await space.publish();
+            await space.expectPublished();
+
+            return title;
+        };
+
+        /**
+         * @objective An open space offers a non-member the authoring its default grants.
+         *
+         * The discovery half is asserted first and passes today, which localises the failure:
+         * the space is listed and opens, so the read fall-through works and it is only the
+         * affordance that is missing.
+         */
+        test('is offered the authoring the space default grants', {tag: ['@docs', '@permissions']}, async ({page}) => {
+            const sidebar = new SpacesSidebarPage(page);
+            const space = new SpacePage(page);
+
+            // # Open the space as someone who was never added to it
+            await loginAs(page, nonMember.username, nonMember.password);
+            await sidebar.goto(teamName);
+
+            // * Verify an open space is discoverable without membership
+            await sidebar.expectSpaceListed(spaceTitle);
+
+            await sidebar.openSpace(spaceTitle);
+
+            // * Verify it opens, so the caller can read it
+            await space.expectOpen(spaceTitle);
+
+            // * Verify authoring is offered, because the space's contribute default grants
+            //   create_page to anyone who is a member — which writing here is meant to make
+            //   them. This is the assertion the product fails.
+            await expect(space.addPageButton).toBeVisible();
+        });
+
+        /**
+         * @objective Authoring in an open space is what joins the author to it.
+         *
+         * Reading must not join — a space someone merely opened should not acquire them as a
+         * member — so the pre-assertion is as much the point as the post-assertion.
+         */
+        test('becomes a member by authoring, not by reading', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
+            const sidebar = new SpacesSidebarPage(page);
+            const space = new SpacePage(page);
+
+            // # Read the space without writing anything
+            await loginAs(page, nonMember.username, nonMember.password);
+            await sidebar.goto(teamName);
+            await sidebar.openSpace(spaceTitle);
+            await space.expectOpen(spaceTitle);
+
+            // * Verify reading alone did not make them a member
+            expect(await spaceContains(server, browser, nonMember.id)).toBe(false);
+
+            // # Author a page
+            await authorAsNonMember(page);
+
+            // * Verify authoring did. The roster is the observable outcome: whatever mechanism
+            //   joins them, the space has to end up containing them or their next write fails.
+            expect(await spaceContains(server, browser, nonMember.id)).toBe(true);
+        });
+
+        /**
+         * @objective Making a space private withdraws the access it granted openly.
+         *
+         * Confluence parity, which is what this models: space permissions are additive grants,
+         * and withdrawing a broad grant immediately drops everyone who held access only
+         * through it while an individual grant survives untouched. Here the broad grant is
+         * view_access=open and the individual grant is a deliberate invitation, so the author
+         * who joined by writing goes and the invited member stays.
+         *
+         * Without this, "make this space private" leaves every open-access author inside it
+         * with their write authority intact, and the only remedy is removing them one at a
+         * time from the roster.
+         */
+        test('loses access when the space is made private, while an invited member keeps it', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
+            const settings = new SpaceSettingsModalPage(page);
+            const sidebar = new SpacesSidebarPage(page);
+
+            // # Join by authoring, so the space holds one member of each kind. In its own
+            //   context: every actor in this suite gets one, so the admin below drives a
+            //   browser that was never signed in as anyone else.
+            const authorContext = await newContext(browser, {baseURL: server.baseURL});
+            try {
+                await authorAsNonMember(await authorContext.newPage());
+            } finally {
+                await authorContext.close();
+            }
+
+            // * Verify the precondition: one invited member, one who joined by writing
+            expect(await spaceContains(server, browser, member.id)).toBe(true);
+            expect(await spaceContains(server, browser, nonMember.id)).toBe(true);
+
+            // # Make the space private, as its admin, through the UI
+            await loginAs(page, server.adminUsername, server.adminPassword);
+            await sidebar.goto(teamName);
+            await sidebar.openSpace(spaceTitle);
+            await settings.openFromSpaceHeader(spaceTitle);
+            await settings.openPermissions();
+            await settings.chooseAccess('Private');
+            await settings.close();
+
+            // * Verify the invitation survives the withdrawal of the broad grant
+            expect(await spaceContains(server, browser, member.id)).toBe(true);
+
+            // * Verify the author who held access only through the open setting does not
+            expect(await spaceContains(server, browser, nonMember.id)).toBe(false);
+
+            // * Verify the space is no longer even discoverable to them
+            const context = await newContext(browser, {baseURL: server.baseURL});
+            try {
+                const nonMemberPage = await context.newPage();
+                await loginAs(nonMemberPage, nonMember.username, nonMember.password);
+
+                const nonMemberSidebar = new SpacesSidebarPage(nonMemberPage);
+                await nonMemberSidebar.goto(teamName);
+                await expect(nonMemberSidebar.spaceLink(spaceTitle)).toBeHidden();
+            } finally {
+                await context.close();
+            }
+        });
+    });
+
+    /**
+     * The remaining persona on the same space the tests above use: a guest.
      *
      * The distinction guests carry is that the space's own default permission set does not
      * reach them — the server pins a guest to read_page whatever the default grants, so a
      * guest and an ordinary member on the *identical* space differ in what they may do. That
      * contrast is the point of seeding them here rather than on a space of their own.
      *
-     * server/e2e/scenarios_test.go already asserts the guest API invariants (read 200, create
-     * 403, edit 403, permission grant 400) far more cheaply. What is left for a browser, and
-     * asserted below, is that the UI agrees with them: a guest who may not author is not shown
-     * the affordances for it.
+     * The guest API invariants (read 200, create 403, edit 403, permission grant 400) are
+     * asserted far more cheaply by the handler tests. What is left for a browser, and asserted
+     * below, is that the UI agrees with them: a guest who may not author is not shown the
+     * affordances for it.
      */
     test.describe('a guest', () => {
         let guest: SeededUser;

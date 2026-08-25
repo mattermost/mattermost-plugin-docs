@@ -25,6 +25,12 @@ export class SpacesSidebarPage {
     async goto(teamName: string) {
         await this.page.goto(`/${teamName}/spaces`);
         await this.sidebar.waitFor();
+
+        // The webapp's boot overlay paints over the whole viewport and fades out after the sidebar
+        // is already in the DOM, so waiting on the sidebar alone can hand back a page whose links
+        // resolve but cannot be clicked — every click then retries against the overlay until the
+        // test times out. Detached, not hidden: it is removed once the fade completes.
+        await this.page.locator('#initialPageLoadingScreen').waitFor({state: 'detached'});
     }
 
     async openCreateSpace() {

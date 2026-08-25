@@ -323,7 +323,7 @@ func TestServicePublishPageDraft_PublishesUpdatedEvent(t *testing.T) {
 	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
-	republished, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, page.Id, false, app.ReadViaMember)
+	republished, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, page.Id, false)
 	require.Nil(t, appErr)
 	require.False(t, wasCreated, "publishing an edit to an existing page must report wasCreated=false")
 

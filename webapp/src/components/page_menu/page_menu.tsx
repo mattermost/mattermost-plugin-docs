@@ -3,7 +3,8 @@
 
 import {useIsFavorite, useToggleFavorite} from 'hooks/favorites';
 import {useDocsNavigation} from 'hooks/navigation';
-import {useAppDispatch} from 'hooks/redux';
+import {useCanDeletePage, useCanEditPage} from 'hooks/permissions';
+import {useAppDispatch, useAppSelector} from 'hooks/redux';
 import React, {useCallback} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 import {copyToClipboard} from 'utils/clipboard';
@@ -22,6 +23,7 @@ import StarOutlineIcon from '@mattermost/compass-icons/components/star-outline';
 import TrashCanOutlineIcon from '@mattermost/compass-icons/components/trash-can-outline';
 
 import {updatePage} from 'store/actions';
+import {getPage} from 'store/selectors';
 
 import BasicInputModal from 'components/basic_input_modal/basic_input_modal';
 import DeletePageModal from 'components/delete_page_modal/delete_page_modal';
@@ -58,6 +60,16 @@ type Props = {
  * Items without a handler are scaffolding for features that have no API yet.
  */
 const PageMenu = ({spaceId, pageId, pageTitle, isDraft = false, trigger, align = 'left', tooltip, open, onOpenChange}: Props) => {
+    // The author decides the delete_own_page half of the delete answer. Read from the store rather
+    // than passed in: every caller of this menu already has the page loaded, and threading the
+    // author through each of them would put the same lookup in three places.
+    const pageAuthorId = useAppSelector((state) => getPage(state, pageId))?.user_id ?? '';
+
+    // Withheld rather than disabled, matching the page header and the space header menu: an action
+    // the server will refuse is not offered. Without this the menu was the one surface that offered
+    // page writes to anyone — a reader clicked Delete page, confirmed, and got a 403.
+    const canEditPage = useCanEditPage(spaceId);
+    const canDeletePage = useCanDeletePage(spaceId, pageAuthorId);
     const {formatMessage} = useIntl();
     const {paths: absolutePaths} = useDocsNavigation({absolute: true});
     const dispatch = useAppDispatch();
@@ -177,15 +189,17 @@ const PageMenu = ({spaceId, pageId, pageTitle, isDraft = false, trigger, align =
                     />
                 )}
             </Menu.Item>
-            <Menu.Item
-                leadingIcon={<PencilOutlineIcon size={18}/>}
-                onClick={openRename}
-            >
-                <FormattedMessage
-                    id='docs.pageMenu.rename'
-                    defaultMessage='Rename'
-                />
-            </Menu.Item>
+            {canEditPage && (
+                <Menu.Item
+                    leadingIcon={<PencilOutlineIcon size={18}/>}
+                    onClick={openRename}
+                >
+                    <FormattedMessage
+                        id='docs.pageMenu.rename'
+                        defaultMessage='Rename'
+                    />
+                </Menu.Item>
+            )}
             <Menu.Item
                 leadingIcon={<LinkVariantIcon size={18}/>}
                 onClick={copyLink}
@@ -271,16 +285,18 @@ const PageMenu = ({spaceId, pageId, pageTitle, isDraft = false, trigger, align =
                 </Menu.Item>
             </Menu.Submenu>
 
-            <Menu.Item
-                leadingIcon={<TrashCanOutlineIcon size={18}/>}
-                destructive={true}
-                onClick={openDeleteConfirm}
-            >
-                <FormattedMessage
-                    id='docs.pageMenu.delete'
-                    defaultMessage='Delete page'
-                />
-            </Menu.Item>
+            {canDeletePage && (
+                <Menu.Item
+                    leadingIcon={<TrashCanOutlineIcon size={18}/>}
+                    destructive={true}
+                    onClick={openDeleteConfirm}
+                >
+                    <FormattedMessage
+                        id='docs.pageMenu.delete'
+                        defaultMessage='Delete page'
+                    />
+                </Menu.Item>
+            )}
 
             <Menu.Separator/>
 

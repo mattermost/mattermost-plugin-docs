@@ -67,7 +67,7 @@ func (s *Store) CreatePage(page *model.Page, maxDepth int) (_ *model.Page, err e
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "page", Value: nil}
 	}
 
-	tx, err := s.db.Beginx()
+	tx, err := s.beginUnboundedTx()
 	if err != nil {
 		return nil, errors.Wrap(err, "begin_transaction")
 	}
@@ -183,7 +183,7 @@ func (s *Store) UpdatePage(pageID, spaceID string, patch *model.PagePatch, baseE
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "Patch", Value: validErr.Error(), Reason: validErr.Id}
 	}
 
-	tx, err := s.db.Beginx()
+	tx, err := s.beginUnboundedTx()
 	if err != nil {
 		return nil, errors.Wrap(err, "begin_transaction")
 	}
@@ -286,7 +286,7 @@ func (s *Store) DeletePage(pageID, spaceID, userID string) (_ string, err error)
 		return "", &ErrInvalidInput{Entity: "Page", Field: "SpaceId", Value: spaceID}
 	}
 
-	tx, err := s.db.Beginx()
+	tx, err := s.beginUnboundedTx()
 	if err != nil {
 		return "", errors.Wrap(err, "begin_transaction")
 	}
@@ -464,7 +464,7 @@ func (s *Store) RestorePage(pageID, spaceID, userID string, maxDepth int) (_ *mo
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "SpaceId", Value: spaceID}
 	}
 
-	tx, err := s.db.Beginx()
+	tx, err := s.beginUnboundedTx()
 	if err != nil {
 		return nil, errors.Wrap(err, "begin_transaction")
 	}
@@ -776,7 +776,7 @@ func (s *Store) PublishNewPageDraft(page *model.Page, userID, spaceID string, ma
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "SpaceId", Value: page.SpaceId}
 	}
 
-	tx, err := s.db.Beginx()
+	tx, err := s.beginUnboundedTx()
 	if err != nil {
 		return nil, errors.Wrap(err, "begin_transaction")
 	}
@@ -823,7 +823,7 @@ func (s *Store) PublishPageEditDraft(pageID, spaceID string, patch *model.PagePa
 		return nil, &ErrInvalidInput{Entity: "Page", Field: "Patch", Value: validErr.Error(), Reason: validErr.Id}
 	}
 
-	tx, err := s.db.Beginx()
+	tx, err := s.beginUnboundedTx()
 	if err != nil {
 		return nil, errors.Wrap(err, "begin_transaction")
 	}

@@ -598,6 +598,35 @@ func TestMovePageToSpace_RequiredOwnerID(t *testing.T) {
 		require.Equal(t, spaceA.Id, gotRoot.SpaceId)
 	})
 
+	t.Run("root owned by a different user fails with subtree_not_owned", func(t *testing.T) {
+		s := openTestDB(t)
+		chA := mmmodel.NewId()
+		spaceA, err := s.CreateSpace(newSpace(chA))
+		require.NoError(t, err)
+		owner := mmmodel.NewId()
+		// The root is the only page outside requiredOwnerID here — its descendant is owned — so a
+		// check that walked descendants without their root would admit this move.
+		root, err := s.CreatePage(newPage(spaceA.Id, chA, mmmodel.NewId(), ""), testDefaultMaxDepth)
+		require.NoError(t, err)
+		_, err = s.CreatePage(newPage(spaceA.Id, chA, owner, root.Id), testDefaultMaxDepth)
+		require.NoError(t, err)
+
+		chB := mmmodel.NewId()
+		spaceB, err := s.CreateSpace(newSpace(chB))
+		require.NoError(t, err)
+
+		_, _, err = s.MovePageToSpace(root.Id, spaceA.Id, spaceB.Id, owner, nil, root.UpdateAt, false, store.MaxPageHierarchyDepth, owner)
+		require.Error(t, err)
+		var inv *store.ErrInvalidInput
+		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
+		require.Equal(t, store.ReasonSubtreeNotOwned, inv.Reason)
+
+		// The rejected move must leave the subtree in place.
+		gotRoot, gErr := s.GetPage(root.Id, false)
+		require.NoError(t, gErr)
+		require.Equal(t, spaceA.Id, gotRoot.SpaceId)
+	})
+
 	t.Run("subtree wholly owned by requiredOwnerID succeeds", func(t *testing.T) {
 		s := openTestDB(t)
 		chA := mmmodel.NewId()

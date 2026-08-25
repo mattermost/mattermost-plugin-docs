@@ -2,6 +2,7 @@
 // See LICENSE.txt for license information.
 
 import {useDocsNavigation} from 'hooks/navigation';
+import {useCanDeleteSpace} from 'hooks/permissions';
 import {useAppDispatch, useAppSelector} from 'hooks/redux';
 import React, {useEffect, useMemo, useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
@@ -58,13 +59,21 @@ const SpaceSettingsModal = ({space, onClose, initialTab = 'info'}: Props) => {
     const {formatMessage} = useIntl();
     const {paths: absolutePaths} = useDocsNavigation({absolute: true});
     const [activeTab, setActiveTab] = useState<SpaceSettingsTab>(initialTab);
+    const canArchive = useCanDeleteSpace(space.id);
 
     const tabs: TabDef[] = [
         {id: 'info', label: formatMessage({id: 'docs.spaceSettings.tab.info', defaultMessage: 'Info'}), icon: InformationOutlineIcon},
         {id: 'permissions', label: formatMessage({id: 'docs.spaceSettings.tab.permissions', defaultMessage: 'Permissions'}), icon: ShieldOutlineIcon},
         {id: 'configuration', label: formatMessage({id: 'docs.spaceSettings.tab.configuration', defaultMessage: 'Configuration'}), icon: CogOutlineIcon},
-        {id: 'archive', label: formatMessage({id: 'docs.spaceSettings.tab.archive', defaultMessage: 'Archive space'}), icon: ArchiveOutlineIcon, separated: true, destructive: true},
     ];
+
+    // Gated on the delete tier rather than on having reached this modal at all. Opening the modal
+    // takes the manage tier, which is a different team permission — a team administrator can hold
+    // one without the other, so reaching these settings says nothing about whether the archive
+    // route would admit the caller.
+    if (canArchive) {
+        tabs.push({id: 'archive', label: formatMessage({id: 'docs.spaceSettings.tab.archive', defaultMessage: 'Archive space'}), icon: ArchiveOutlineIcon, separated: true, destructive: true});
+    }
 
     const info = useInfoTab(space);
     const [discarding, setDiscarding] = useState(false);

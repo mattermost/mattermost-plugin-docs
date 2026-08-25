@@ -71,6 +71,16 @@ const confirm = async (name: RegExp) => {
     fireEvent.click(await screen.findByRole('button', {name}));
 };
 
+// The matrix checkboxes are addressed by id rather than by label: the same permission vocabulary is
+// rendered once for the space default and once per member, so a label lookup is ambiguous. The
+// assertion here reports a checkbox that failed to render as such, instead of letting the cast
+// carry a null into a property read further down the test.
+const matrixCheckbox = (id: string): HTMLInputElement => {
+    const element = document.getElementById(id);
+    expect(element).toBeInstanceOf(HTMLInputElement);
+    return element as HTMLInputElement;
+};
+
 describe('PermissionsTab', () => {
     beforeEach(() => {
         jest.clearAllMocks();
@@ -214,7 +224,7 @@ describe('PermissionsTab', () => {
         expect(screen.getByRole('radio', {name: /Private/})).toBeDisabled();
 
         // The roster: live, and a toggle reaches the hook.
-        const memberEdit = document.getElementById('member-u2-create_page') as HTMLInputElement;
+        const memberEdit = matrixCheckbox('member-u2-create_page');
         expect(memberEdit.disabled).toBe(false);
         fireEvent.click(memberEdit);
         expect(mockSetMemberGrants).toHaveBeenCalledWith('u2', ['create_page', 'edit_page']);
@@ -262,8 +272,8 @@ describe('PermissionsTab', () => {
             // Addressed by id: the label alone is ambiguous now, since the same vocabulary
             // is rendered once for the space default and once per member — which is what
             // makes this a matrix rather than a single row.
-            const adaEdit = document.getElementById('member-u2-edit_page') as HTMLInputElement;
-            const adaDelete = document.getElementById('member-u2-delete_page') as HTMLInputElement;
+            const adaEdit = matrixCheckbox('member-u2-edit_page');
+            const adaDelete = matrixCheckbox('member-u2-delete_page');
             expect(adaEdit.checked).toBe(true);
             expect(adaDelete.checked).toBe(false);
         });
@@ -273,7 +283,7 @@ describe('PermissionsTab', () => {
             withMembers();
             renderTab();
 
-            fireEvent.click(document.getElementById('member-u2-create_page') as HTMLInputElement);
+            fireEvent.click(matrixCheckbox('member-u2-create_page'));
 
             expect(mockSetMemberGrants).toHaveBeenCalledWith('u2', ['create_page', 'edit_page']);
         });
@@ -288,7 +298,7 @@ describe('PermissionsTab', () => {
             };
             renderTab();
 
-            const guestEdit = document.getElementById('member-u2-edit_page') as HTMLInputElement;
+            const guestEdit = matrixCheckbox('member-u2-edit_page');
             expect(guestEdit.disabled).toBe(true);
 
             fireEvent.click(guestEdit);

@@ -24,7 +24,7 @@ import type {Permission, SpaceAccess, SpaceMember} from 'types/permissions';
 
 import {useSpacePermissions} from './space_permissions';
 
-import {makeTestState, makeTestStore} from '../../tests/react_testing_utils';
+import {makeTestState} from '../../tests/react_testing_utils';
 
 const mockGetSpaceAccess = jest.fn();
 const mockListAllSpaceMembers = jest.fn();
@@ -44,10 +44,16 @@ jest.mock('components/toast', () => ({toast: {error: jest.fn()}}));
 
 const space = makeSpace('space-1', 'Engineering');
 
-const access = (permissions: Permission[], defaults: Permission[] = []): SpaceAccess => ({
-    id: 'space-1',
+// `from` is the space the response describes. It matters because the hook writes each response into
+// the spaces slice and reads the caller's tiers back out of it by space id, so a response carrying
+// the wrong id resolves to no tiers at all.
+const access = (permissions: Permission[], defaults: Permission[] = [], from: Space = space): SpaceAccess => ({
+    ...from,
     default_permissions: defaults,
     permissions,
+
+    // These fixtures describe a caller who is already in the space, so there is nothing to join.
+    can_join: false,
     view_access: 'open',
     update_at: 100,
 });
@@ -66,8 +72,22 @@ const member = (userId: string, isAdmin = false): SpaceMember => ({
 const restError = (status: number, serverErrorId?: string) =>
     new RestError('/x', status, 'nope', {}, serverErrorId);
 
+// A store running the real Docs reducer, so the hook's own dispatches land: it writes each resolved
+// read into the spaces slice and reads the caller's tiers back out of it.
+const pluginKey = 'plugins-' + manifest.id;
+const makeLiveStore = (docs: Record<string, unknown> = {}) => {
+    const initial = makeTestState({currentUser: {id: 'me'}, docs});
+
+    return createStore((state: GlobalState = initial, action: UnknownAction): GlobalState => ({
+        ...state,
+        [pluginKey]: docsReducer((state as unknown as Record<string, DocsPluginState>)[pluginKey], action),
+    } as unknown as GlobalState));
+};
+
+let liveStore = makeLiveStore();
+
 const wrapper = ({children}: {children: React.ReactNode}) => (
-    <Provider store={makeTestStore({currentUser: {id: 'me'}})}>
+    <Provider store={liveStore}>
         <IntlProvider
             locale='en'
             messages={{}}
@@ -79,18 +99,8 @@ const wrapper = ({children}: {children: React.ReactNode}) => (
 
 const render = () => renderHook(() => useSpacePermissions(space), {wrapper}).result;
 
-// The shared wrapper's store holds a fixed state, so nothing dispatched to it can change what the
-// roster selector returns. This one runs the real Docs reducer under the plugin subtree, which is
-// the seam the hook's reload watches.
-const makeRosterStore = () => {
-    const pluginKey = 'plugins-' + manifest.id;
-    const initial = makeTestState({currentUser: {id: 'me'}, docs: {spaceMembers: {'space-1': ['me']}}});
-
-    return createStore((state: GlobalState = initial, action: UnknownAction): GlobalState => ({
-        ...state,
-        [pluginKey]: docsReducer((state as unknown as Record<string, DocsPluginState>)[pluginKey], action),
-    } as unknown as GlobalState));
-};
+// Seeds the roster slice the hook's reload watches.
+const makeRosterStore = () => makeLiveStore({spaceMembers: {'space-1': ['me']}});
 
 // Renders and waits for the initial load to resolve, so an assertion cannot pass
 // against the pre-load defaults.
@@ -126,6 +136,7 @@ describe('useSpacePermissions', () => {
         // roster read is now gated on it (see the redacted-roster describe below).
         mockGetSpaceAccess.mockResolvedValue(access(['manage_space']));
         mockListAllSpaceMembers.mockResolvedValue([]);
+        liveStore = makeLiveStore();
     });
 
     describe('canAdminister', () => {
@@ -181,8 +192,9 @@ describe('useSpacePermissions', () => {
             const {result, reloadWith} = await renderSwitchable();
             expect(result.current.loadFailed).toBe(true);
 
-            mockGetSpaceAccess.mockResolvedValue(access(['admin_space', 'manage_space']));
-            await reloadWith(makeSpace('space-2', 'Design'));
+            const second = makeSpace('space-2', 'Design');
+            mockGetSpaceAccess.mockResolvedValue(access(['admin_space', 'manage_space'], [], second));
+            await reloadWith(second);
 
             expect(result.current.loadFailed).toBe(false);
             expect(result.current.canAdminister).toBe(true);
@@ -190,20 +202,21 @@ describe('useSpacePermissions', () => {
 
         // The policy values go with the authority: left standing, the surface would attribute the
         // previous space's default set and view access to a space it never read.
+        // The default set goes with the authority: left standing, the surface would attribute the
+        // previous space's defaults to a space it never read. View access is not in that set — it
+        // rides on the space record itself, so a space whose read failed shows its own stored value
+        // rather than the previous space's, which is what the second assertion pins.
         it('drops the previously resolved policy when a later space fails to load', async () => {
-            mockGetSpaceAccess.mockResolvedValue({
-                ...access(['admin_space', 'manage_space'], ['create_page']),
-                view_access: 'private',
-            });
+            mockGetSpaceAccess.mockResolvedValue(access(['admin_space', 'manage_space'], ['create_page']));
             const {result, reloadWith} = await renderSwitchable();
             expect(result.current.defaults).toEqual(['create_page']);
-            expect(result.current.viewAccess).toBe('private');
+            expect(result.current.viewAccess).toBe('open');
 
             mockGetSpaceAccess.mockRejectedValue(restError(500));
             await reloadWith(makeSpace('space-2', 'Design'));
 
             expect(result.current.defaults).toEqual([]);
-            expect(result.current.viewAccess).toBe('open');
+            expect(result.current.viewAccess).toBe('private');
         });
 
         // The mirror of the above: an administrator switching to a space whose read fails
@@ -273,6 +286,63 @@ describe('useSpacePermissions', () => {
             });
 
             await waitFor(() => expect(result.current.members.get('u2')).toBeDefined());
+        });
+    });
+
+    // Another administrator's change reaches this client as a websocket event, which bumps the
+    // access revision. None of it moves a member row or a space record, so the revision is the
+    // only thing the hook can watch — without it the surface keeps showing what was true when it
+    // mounted.
+    describe('an access change reported by the server', () => {
+        it('re-reads the space defaults and the grant matrix', async () => {
+            const store = makeRosterStore();
+            const revisionWrapper = ({children}: {children: React.ReactNode}) => (
+                <Provider store={store}>
+                    <IntlProvider
+                        locale='en'
+                        messages={{}}
+                    >
+                        {children}
+                    </IntlProvider>
+                </Provider>
+            );
+
+            const {result} = renderHook(() => useSpacePermissions(space), {wrapper: revisionWrapper});
+            await waitFor(() => expect(result.current.loading).toBe(false));
+            expect(result.current.defaults).toEqual([]);
+
+            mockGetSpaceAccess.mockResolvedValue(access(['admin_space', 'manage_space'], ['create_page']));
+            mockListAllSpaceMembers.mockResolvedValue([member('me', true), member('u2')]);
+            act(() => {
+                store.dispatch({type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: space.id});
+            });
+
+            await waitFor(() => expect(result.current.defaults).toEqual(['create_page']));
+            expect(result.current.members.get('u2')).toBeDefined();
+        });
+
+        it('ignores a change reported for another space', async () => {
+            const store = makeRosterStore();
+            const revisionWrapper = ({children}: {children: React.ReactNode}) => (
+                <Provider store={store}>
+                    <IntlProvider
+                        locale='en'
+                        messages={{}}
+                    >
+                        {children}
+                    </IntlProvider>
+                </Provider>
+            );
+
+            const {result} = renderHook(() => useSpacePermissions(space), {wrapper: revisionWrapper});
+            await waitFor(() => expect(result.current.loading).toBe(false));
+            const readsAfterLoad = mockGetSpaceAccess.mock.calls.length;
+
+            act(() => {
+                store.dispatch({type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: 'space-2'});
+            });
+
+            expect(mockGetSpaceAccess).toHaveBeenCalledTimes(readsAfterLoad);
         });
     });
 

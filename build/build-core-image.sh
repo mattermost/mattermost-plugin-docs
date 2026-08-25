@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # build-core-image.sh — build a Docker image of the docs-core server (the RBAC epic's paired core
-# branch) so the Go e2e suite (server/e2e/) can boot a real Mattermost with the plugin installed via
-# Testcontainers, without waiting for the branch to merge and ship a published image.
+# branch) so the Playwright suite (e2e-tests/playwright/) can boot a real Mattermost with the plugin
+# installed via Testcontainers, without waiting for the branch to merge and ship a published image.
 #
 # What it does:
 #   1. Guards that MM_SERVER_REPO is checked out on DOCS_CORE_BRANCH (never checks out for you).
 #   2. Cross-compiles ./cmd/mattermost for the Docker daemon's architecture (so this works
 #      whether Docker is running amd64 or arm64 containers, independent of the host arch).
-#   3. Assembles a minimal build context (binary + i18n/templates/fonts from the core tree, plus
-#      empty config/client/plugins/data/logs directories) in a temp dir.
+#   3. Assembles a build context (binary + i18n/templates/fonts and the compiled webapp from the
+#      core tree, plus empty config/plugins/data/logs directories) in a temp dir.
 #   4. Builds the image and tags it $CORE_IMAGE (default mm-docs-rbac-core:dev).
+#
+# The webapp is packaged into /mattermost/client because the suite drives the UI, and a server with
+# an empty client/ serves it nothing. This is the local alternative to pointing MM_IMAGE at a
+# published per-commit CI image, which exists only once the paired core branch is pushed.
 #
 # Usage:
 #   ./build/build-core-image.sh
@@ -31,17 +35,16 @@ set -euo pipefail
 #                     conventional sibling checkouts when unset)
 #   DOCS_CORE_BRANCH  branch the core repo must be on (default below)
 #   CORE_IMAGE        image tag to build (default below)
+#   MM_WEBAPP_DIST    path to the compiled webapp (defaults to the core tree's webapp/channels/dist)
 DOCS_CORE_BRANCH="${DOCS_CORE_BRANCH:-MM-69269-permissions-rbac-core}"
 CORE_IMAGE="${CORE_IMAGE:-mm-docs-rbac-core:dev}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-if [[ -z "${MM_SERVER_REPO:-}" ]]; then
-    for candidate in "$REPO_ROOT/../MM-69269-core/server" "$REPO_ROOT/../mattermost/server"; do
-        if [[ -d "$candidate" ]]; then
-            MM_SERVER_REPO="$(cd "$candidate" && pwd)"
-            break
-        fi
-    done
+# Only the conventional sibling checkout is auto-detected. A developer whose core tree lives
+# anywhere else sets MM_SERVER_REPO explicitly, rather than this guessing at worktree names that
+# exist on one machine.
+if [[ -z "${MM_SERVER_REPO:-}" && -d "$REPO_ROOT/../mattermost/server" ]]; then
+    MM_SERVER_REPO="$(cd "$REPO_ROOT/../mattermost/server" && pwd)"
 fi
 if [[ -z "${MM_SERVER_REPO:-}" || ! -d "$MM_SERVER_REPO" ]]; then
     echo "ERROR: cannot locate the core repo. Set MM_SERVER_REPO to its server/ directory, e.g." >&2
@@ -122,6 +125,22 @@ cp "$MMCTL_BINARY" "$MM_ROOT/bin/mmctl"
 cp -R "$MM_SERVER_REPO/i18n" "$MM_ROOT/i18n"
 cp -R "$MM_SERVER_REPO/templates" "$MM_ROOT/templates"
 cp -R "$MM_SERVER_REPO/fonts" "$MM_ROOT/fonts"
+
+# The webapp, copied into client/ alongside the client/plugins directory created above, which is
+# where the server writes webapp plugin bundles at runtime.
+WEBAPP_DIST="${MM_WEBAPP_DIST:-$MM_SERVER_REPO/../webapp/channels/dist}"
+# A missing or half-built webapp is a hard error naming the build, not a silent fall-through to an
+# image serving nothing: the suite would otherwise boot and fail on a selector, reporting a
+# packaging mistake as a spec failure.
+if [[ ! -f "$WEBAPP_DIST/root.html" ]]; then
+    echo "ERROR: no compiled webapp was found at $WEBAPP_DIST (looked for root.html)." >&2
+    echo "       Build it first:" >&2
+    echo "         cd $(cd "$MM_SERVER_REPO/../webapp" 2>/dev/null && pwd || echo '<core>/webapp') && make dist" >&2
+    echo "       or point MM_WEBAPP_DIST at an existing build." >&2
+    exit 1
+fi
+echo "Packaging the webapp from $WEBAPP_DIST ..."
+cp -R "$WEBAPP_DIST"/. "$MM_ROOT/client/"
 
 cat > "$BUILD_CTX/Dockerfile" <<'DOCKEREOF'
 # Pinned by digest: this image is the server the e2e scenarios assert against, so an upstream

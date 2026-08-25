@@ -25,7 +25,9 @@ import (
 // withPermissions selects the projection. The route admits anyone who can read the space, so that
 // its member count and avatars render for an ordinary member, but the per-member permission matrix
 // is management state: it is emitted only to a caller who holds the manage tier the membership
-// writes require, and redacted for everyone else (see redactSpaceMember).
+// writes require. Without it the roster reports who is in the space and which of them administer
+// it — what core lets any channel member see of an ordinary channel — and the state behind the
+// matrix is never looked up rather than looked up and discarded.
 func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int, withPermissions bool) ([]*model.SpaceMember, bool, *mmmodel.AppError) {
 	if space == nil {
 		return nil, false, mmmodel.NewAppError("GetSpaceMembers", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -33,9 +35,13 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int, withPer
 	if appErr := s.requireClient("GetSpaceMembers", "space_id", space.Id); appErr != nil {
 		return nil, false, appErr
 	}
-	defaultPermissions, err := s.spaceDefaultPermissions(space)
-	if err != nil {
-		return nil, false, schemeAppError("GetSpaceMembers", err)
+	var defaultPermissions []string
+	if withPermissions {
+		resolved, err := s.spaceDefaultPermissions(space)
+		if err != nil {
+			return nil, false, schemeAppError("GetSpaceMembers", err)
+		}
+		defaultPermissions = resolved
 	}
 	page = ClampPage(page)
 	perPage = ClampPerPage(perPage)
@@ -43,20 +49,28 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int, withPer
 	if err != nil {
 		return nil, false, mmmodel.NewAppError("GetSpaceMembers", "app.space.get_members.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
-	// One lookup for the whole page rather than one per member: the markers are per-membership
-	// rows, so reading the space's set once and testing each member against it in memory costs a
-	// single query instead of perPage of them.
-	autoJoined, err := s.store.AutoJoinedIDs(space.Id)
-	if err != nil {
-		return nil, false, mmmodel.NewAppError("GetSpaceMembers", "app.space.get_members.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+	autoJoinedSet := map[string]struct{}{}
+	if withPermissions {
+		// One lookup for the whole page rather than one per member: the markers are per-membership
+		// rows, so reading the space's set once and testing each member against it in memory costs a
+		// single query instead of perPage of them.
+		autoJoined, markerErr := s.store.AutoJoinedIDs(space.Id)
+		if markerErr != nil {
+			return nil, false, mmmodel.NewAppError("GetSpaceMembers", "app.space.get_members.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(markerErr)
+		}
+		autoJoinedSet = make(map[string]struct{}, len(autoJoined))
+		for _, id := range autoJoined {
+			autoJoinedSet[id] = struct{}{}
+		}
 	}
 	members := make([]*model.SpaceMember, 0, len(channelMembers))
 	for _, cm := range channelMembers {
-		member := toSpaceMember(cm, defaultPermissions, slices.Contains(autoJoined, cm.UserId))
 		if !withPermissions {
-			redactSpaceMember(member)
+			members = append(members, toRedactedSpaceMember(cm))
+			continue
 		}
-		members = append(members, member)
+		_, wasAutoJoined := autoJoinedSet[cm.UserId]
+		members = append(members, toSpaceMember(cm, defaultPermissions, wasAutoJoined))
 	}
 	hasMore := false
 	if len(channelMembers) == perPage {
@@ -72,14 +86,17 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int, withPer
 	return members, hasMore, nil
 }
 
-// redactSpaceMember strips the management state from a roster entry: the permission matrix, and the
-// auto-join provenance a membership review reads. What survives is who is in the space and which of
-// them administer it, which is what the space view renders and what core lets any channel member
-// see of an ordinary channel.
-func redactSpaceMember(member *model.SpaceMember) {
-	member.Permissions = []string{}
-	member.GrantedPermissions = []string{}
-	member.AutoJoined = false
+// toRedactedSpaceMember builds the roster entry a caller without the manage tier receives: identity
+// and role standing, with no permission matrix and no auto-join provenance. Both flags come straight
+// off the membership, so this needs neither the space's default permission set nor the marker table.
+func toRedactedSpaceMember(cm *mmmodel.ChannelMember) *model.SpaceMember {
+	member := &model.SpaceMember{
+		UserId:  cm.UserId,
+		IsAdmin: cm.SchemeAdmin,
+		IsGuest: cm.SchemeGuest,
+	}
+	member.EnsurePermissions()
+	return member
 }
 
 // toSpaceMember builds the wire representation of a channel member's permission state.
@@ -125,27 +142,8 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 	}
 	// Adding an already-existing member is a no-op for core, which returns their membership
 	// unchanged rather than erroring — so this also covers a deliberate re-add of a member the
-	// auto-join pre-step joined earlier. Either way it is a deliberate admin act on this membership,
-	// the same legitimizing act SetSpaceMemberPermissions' clear is for, so the marker is cleared
-	// here too. The add and the clear run together under the space-keyed lock — the same lock
-	// UndoAutoJoin takes to check the marker before deleting — so the clear can never be separated
-	// from the add it legitimizes: UndoAutoJoin either runs wholly before (deletes the stale membership,
-	// and this call's locked add then recreates it fresh) or wholly after (finds the marker already
-	// cleared and skips the delete). An unlocked clear could instead land in the gap between
-	// UndoAutoJoin's marker check and its delete, so its delete removes a membership this call just
-	// legitimized.
-	//
-	// The clear runs BEFORE the add, and its failure fails the call. That ordering is what makes the
-	// paragraph above hold: UndoAutoJoin's "finds the marker already cleared" arm assumes the clear
-	// happened, so a clear that only logged left the marker standing and a later undo — reading it
-	// faithfully — deleted the membership this call had legitimized.
-	//
-	// The residue it can leave is provenance loss, not the reverse: if the clear commits and the add
-	// then fails, a target who was auto-joined earlier keeps that membership with its marker gone,
-	// so a later undo skips it and a membership review can no longer tell it from a deliberate add.
-	// Nothing is granted that was not already granted — authority comes from the membership and its
-	// roles, which this path did not change — and the alternative ordering trades this for deleting
-	// a membership that was legitimized, which is the worse direction.
+	// caller joined themselves earlier. Either way it is a deliberate admin act on this membership,
+	// so the auto-join marker no longer describes how they got here and is cleared.
 	var member *mmmodel.ChannelMember
 	var defaultPermissions []string
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
@@ -162,7 +160,9 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 		defaultPermissions = defaults
 
 		if clearErr := s.store.ClearAutoJoined(space.Id, userID); clearErr != nil {
-			return mmmodel.NewAppError("AddSpaceMember", "app.space.member.clear_auto_join_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(clearErr)
+			// Best-effort, matching the clear in RemoveSpaceMember: the marker only labels how a
+			// member got here, so a stale one degrades that label and grants nothing.
+			s.log.Warn("failed to clear auto-join provenance marker", "space_id", space.Id, "user_id", userID, "err", clearErr)
 		}
 		added, addErr := s.client.Channel.AddMember(space.ChannelId, userID)
 		if addErr != nil {
@@ -183,12 +183,69 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 	return toSpaceMember(member, defaultPermissions, false), nil
 }
 
+// PruneSelfJoinedMembers removes the members who joined space themselves through its open view
+// access, leaving every deliberately added member in place. Returns the ids actually removed.
+//
+// This is what makes "make this space private" mean something for the people already inside it.
+// Space access is a set of grants: view_access=open is a standing grant to the whole team, and a
+// membership created under it is held on the strength of that grant alone. Withdrawing the grant
+// therefore withdraws those memberships, while an invitation — a grant made to one person — is
+// untouched. Without this the flip changes who may discover the space and nobody who is already in
+// it, which is the opposite of what an administrator making a space private is asking for.
+//
+// The provenance markers are what separate the two, and they are only ever written by JoinOpenSpace
+// and cleared by every deliberate act on a membership (an admin add, a permission grant, a
+// removal). So a marked member has by construction never been administered, which is also why this
+// cannot strand the space without an admin: granting admin clears the marker, and the creator is
+// never marked.
+//
+// Runs after the flip has committed and outside the space membership lock, because it makes one
+// plugin call per member and the lock holds a dedicated connection for its whole duration. That is
+// safe in the direction that matters: a JoinOpenSpace already waiting on the lock re-reads the
+// space under it, finds it private, and aborts — so no membership this misses can be created after
+// the flip.
+func (s *Service) PruneSelfJoinedMembers(space *model.Space) ([]string, *mmmodel.AppError) {
+	if space == nil {
+		return nil, mmmodel.NewAppError("PruneSelfJoinedMembers", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
+	}
+	if appErr := s.requireClient("PruneSelfJoinedMembers", "space_id", space.Id); appErr != nil {
+		return nil, appErr
+	}
+	selfJoined, err := s.store.AutoJoinedIDs(space.Id)
+	if err != nil {
+		return nil, mmmodel.NewAppError("PruneSelfJoinedMembers", "app.space.prune_self_joined.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+	}
+
+	removed := make([]string, 0, len(selfJoined))
+	for _, userID := range selfJoined {
+		if delErr := s.client.Channel.DeleteMember(space.ChannelId, userID); delErr != nil {
+			if !errors.Is(delErr, pluginapi.ErrNotFound) {
+				// Logged rather than returned, and the loop continues: the remaining members are
+				// each their own withdrawal, so abandoning the walk would leave more access in place
+				// than finishing it. Error level, because what is left behind is a member who keeps
+				// write access to a space its administrator has made private.
+				s.log.Error("failed to remove a self-joined member while making the space private; they retain access",
+					"space_id", space.Id, "user_id", userID, "err", delErr)
+				continue
+			}
+			// Already gone. The marker is stale and still needs clearing below.
+		}
+		if clearErr := s.store.ClearAutoJoined(space.Id, userID); clearErr != nil {
+			// Best-effort, as everywhere else this marker is cleared: the membership is gone, which
+			// is what any later check acts on, and a stale marker grants nothing.
+			s.log.Warn("failed to clear auto-join provenance marker", "space_id", space.Id, "user_id", userID, "err", clearErr)
+		}
+		removed = append(removed, userID)
+	}
+	return removed, nil
+}
+
 // requireNotLastAdmin rejects an operation that would leave space without an admin who can still
 // reach it, disregarding excludeUserID (the member being demoted or removed). Callers run it inside
 // the space-keyed membership lock, alongside the mutation it guards. where attributes both the
 // lookup failure and the rejection to the calling operation.
 func (s *Service) requireNotLastAdmin(where string, space *model.Space, excludeUserID string) *mmmodel.AppError {
-	_, otherAdmin, err := s.otherAuthorizedMembers(space, excludeUserID)
+	_, otherAdmin, err := s.store.OtherAuthorizedMembers(space.ChannelId, space.TeamId, excludeUserID)
 	if err != nil {
 		return mmmodel.NewAppError(where, "app.space.member.admin_count_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
@@ -283,12 +340,10 @@ func (s *Service) SetSpaceMemberPermissions(space *model.Space, targetUserID str
 			roles = roles + " " + resolvedRoles.AdminRoleName
 		}
 		// A deliberate admin act on this member's permissions supersedes whatever brought them into
-		// the space, so any auto-join provenance marker is now stale. Cleared before the role write
-		// and fatal on failure, for the reason AddSpaceMember's clear is: a marker left standing is
-		// one a later UndoAutoJoin reads faithfully and acts on, deleting the membership this call
-		// just legitimized.
+		// the space, so any auto-join provenance marker is now stale. Best-effort, as in
+		// AddSpaceMember: the marker only labels how a member got here.
 		if clearErr := s.store.ClearAutoJoined(space.Id, targetUserID); clearErr != nil {
-			return mmmodel.NewAppError("SetSpaceMemberPermissions", "app.space.member.clear_auto_join_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(clearErr)
+			s.log.Warn("failed to clear auto-join provenance marker", "space_id", space.Id, "user_id", targetUserID, "err", clearErr)
 		}
 		member, updErr := s.client.Channel.UpdateChannelMemberRoles(space.ChannelId, targetUserID, roles)
 		if updErr != nil {
@@ -357,7 +412,7 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 			if userID != actingUserID || space.ViewAccess == model.ViewAccessOpen {
 				return mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(memErr)
 			}
-			return existenceHidingForbidden("RemoveSpaceMember")
+			return ExistenceHidingForbidden("RemoveSpaceMember")
 		}
 
 		// Resolved before the scan below so an unauthorized caller is rejected without running it.
@@ -368,7 +423,7 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 		}
 		// The last-admin and last-member invariants are answered from one walk: removing an admin
 		// needs both, and the admin set is a subset of the reachable set.
-		hasOther, hasOtherAdmin, guardErr := s.otherAuthorizedMembers(space, userID)
+		hasOther, hasOtherAdmin, guardErr := s.store.OtherAuthorizedMembers(space.ChannelId, space.TeamId, userID)
 		if guardErr != nil {
 			// Attributed to whichever invariant the caller is actually being held to, so the failure
 			// of the shared walk reports the same id each guard reported when it walked alone.
@@ -397,7 +452,7 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 		return nil
 	})
 	if lockErr != nil {
-		// The store's own errors — notably the retryable ErrConflict a lock-acquisition timeout
+		// The store's own errors — notably the retryable ErrLockTimeout a lock-acquisition timeout
 		// yields — keep their conventional status codes rather than collapsing to a 500.
 		return membershipLockAppError("RemoveSpaceMember", lockErr)
 	}

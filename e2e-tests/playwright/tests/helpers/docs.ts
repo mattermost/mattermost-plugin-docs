@@ -81,3 +81,21 @@ export async function addSpaceMember(page: Page, spaceId: string, userId: string
 
     return readJsonOrThrow<SpaceMember>(response, `Unable to add user ${userId} to space ${spaceId}`);
 }
+
+// Reads a space's whole roster. Paginated on the wire; one generous page is enough for a
+// suite whose spaces hold a handful of members, and asking for more than the server's cap
+// simply clamps.
+export async function listSpaceMembers(page: Page, spaceId: string): Promise<SpaceMember[]> {
+    const response = await page.request.get(`${apiRoot}/spaces/${spaceId}/members?per_page=200`, requestedWith);
+    const body = await readJsonOrThrow<{items: SpaceMember[]}>(response, `Unable to list members of space ${spaceId}`);
+
+    return body.items;
+}
+
+// Whether userId currently holds a membership in spaceId. The roster route admits any reader,
+// so this answers for a caller who is not an administrator of the space.
+export async function isSpaceMember(page: Page, spaceId: string, userId: string): Promise<boolean> {
+    const members = await listSpaceMembers(page, spaceId);
+
+    return members.some((member) => member.user_id === userId);
+}

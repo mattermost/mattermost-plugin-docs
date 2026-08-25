@@ -22,6 +22,7 @@ const EMPTY_PLUGIN_STATE: DocsPluginState = {
         pages: {},
         pagesInSpace: {},
         spaceMembers: {},
+        spaceMemberPermissionsRevision: {},
         drafts: {},
         draftsInSpace: {},
     },
@@ -82,6 +83,12 @@ const EMPTY_MEMBER_IDS: string[] = [];
 
 export const getSpaceMemberIds = (state: GlobalState, spaceId: string): string[] =>
     entities(state).spaceMembers[spaceId] ?? EMPTY_MEMBER_IDS;
+
+// How many times the server has reported a change to this space's per-member grant matrix.
+// Meaningful only as a comparison against a previously read value; the absolute number says
+// nothing.
+export const getSpaceMemberPermissionsRevision = (state: GlobalState, spaceId: string): number =>
+    entities(state).spaceMemberPermissionsRevision[spaceId] ?? 0;
 
 // Spaces for an explicit team, resolved through the byId map and sorted.
 // Mirrors core's getChannelsInTeam-style read: index Set → entities → order.

@@ -1,6 +1,8 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {RestError} from 'client/rest';
+import {joinSpace} from 'client/space_permissions';
 import {docsDataSource} from 'data';
 
 import {ClientError} from '@mattermost/client';
@@ -10,11 +12,13 @@ import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
 import type {CreatePageInput, CreateSpaceInput, Page, Space, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
 import type {Draft, DraftPatch} from 'types/drafts';
+import type {SpaceAccess} from 'types/permissions';
 import {LAST_SPACE_ADMIN_ERROR_ID, LAST_SPACE_MEMBER_ERROR_ID, SPACE_LOCK_TIMEOUT_ERROR_ID} from 'types/server_errors';
 import type {DocsThunkAction} from 'types/store';
 
 import {DraftTypes, PageTypes, SpaceTypes} from './action_types';
 import {collectSubtreeIds} from './entities';
+import {getMustJoinSpace} from './permissions';
 import {getPage, getPagesById, getSpace} from './selectors';
 
 // Spaces the caller belongs to in the current team (the server scopes the list
@@ -235,6 +239,10 @@ export function fetchPageDraft(spaceId: string, pageId: string, signal?: AbortSi
  */
 export function createDraft(spaceId: string, title: string, parentId = ''): DocsThunkAction<Promise<Draft>> {
     return async (dispatch) => {
+        // On the two draft writes rather than at the affordance that leads to them, so a membership
+        // records a contribution rather than an intention to make one — see ensureSpaceMembership.
+        await dispatch(ensureSpaceMembership(spaceId));
+
         const draft = await docsDataSource.createSpaceDraft(spaceId, title, parentId);
         dispatch({type: DraftTypes.RECEIVED_DRAFT, draft});
         return draft;
@@ -245,6 +253,9 @@ export function createDraft(spaceId: string, title: string, parentId = ''): Docs
 // just the write and the store update.
 export function saveDraft(spaceId: string, pageId: string, patch: DraftPatch, signal?: AbortSignal): DocsThunkAction<Promise<Draft>> {
     return async (dispatch) => {
+        // A no-op for a member, which is every caller after the first autosave of a session.
+        await dispatch(ensureSpaceMembership(spaceId));
+
         const draft = await docsDataSource.updatePageDraft(spaceId, pageId, patch, signal);
         dispatch({type: DraftTypes.RECEIVED_DRAFT, draft});
         return draft;
@@ -321,6 +332,54 @@ export function removeSpaceMember(spaceId: string, userId: string): DocsThunkAct
     };
 }
 
+/**
+ * Puts a space read that already resolved the caller's own permissions and the space's default
+ * permission set into the spaces slice, so every permission-gated affordance reads one answer
+ * rather than each surface keeping its own. Plain action, not a thunk: the caller has the
+ * response already.
+ */
+/**
+ * Joins the caller to a space when the server has said they may join it, before a write of theirs
+ * is sent.
+ *
+ * This is what the authoring affordances on an open space are offered on the strength of: the
+ * caller holds read_page and nothing else, and the space's defaults are what they would hold as a
+ * member. The write itself is gated on their real membership and nothing else — no gate joins
+ * anybody — so this has to land first or the write is refused.
+ *
+ * A no-op when the store says there is nothing to join, which is every case but a non-member of an
+ * open space. Idempotent server-side, so a stale "yes" costs a round trip rather than an error.
+ *
+ * Called from the draft writes themselves (createDraft, saveDraft), never from the affordance that
+ * leads to them. Joining when the editor opens would make a membership out of an intention: someone
+ * who clicks Edit, types nothing and navigates away would be a member of the space for good. Joining
+ * on the write keeps membership a record of a contribution, which is also what makes removing a
+ * member worth doing — a removed user rejoins by writing again, not by opening an editor.
+ *
+ * Rejects on failure so the caller can abandon the write rather than send one that will be refused.
+ */
+export function ensureSpaceMembership(spaceId: string): DocsThunkAction<Promise<void>> {
+    return async (dispatch, getState) => {
+        if (!getMustJoinSpace(getState(), spaceId)) {
+            return;
+        }
+        dispatch(receivedSpaceAccess(await joinSpace(spaceId)));
+    };
+}
+
+export function receivedSpaceAccess(space: SpaceAccess) {
+    return {type: SpaceTypes.RECEIVED_SPACES, spaces: [space]};
+}
+
+/**
+ * Records that the server reported a change to this space's per-member grant matrix. A plain
+ * action rather than a thunk: the matrix is not stored here, so this only tells the surface
+ * holding it that the answer moved.
+ */
+export function spaceMemberPermissionsChanged(spaceId: string) {
+    return {type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId};
+}
+
 export type FailedMemberAdd = {userId: string; error: unknown};
 
 /**
@@ -372,6 +431,41 @@ export function updateSpace(spaceId: string, patch: UpdateSpacePatch): DocsThunk
     };
 }
 
+/**
+ * Re-resolves a space after the caller's own membership was removed, evicting it only once the
+ * server has actually refused the read.
+ *
+ * Removal and loss of access are not the same event. An open space stays readable to any team
+ * member through the server's read_public_channel fall-through, and the record that comes back
+ * carries the narrowed permission set that fall-through resolves to — so the space belongs in the
+ * store, showing what the caller may now do rather than disappearing.
+ *
+ * Only a definitive denial evicts. A request that never completed is not an answer about access,
+ * and treating it as one would drop a space the caller can still read until some later listing
+ * happened to restore it.
+ */
+export function refreshSpaceAfterSelfRemoval(spaceId: string): DocsThunkAction<Promise<void>> {
+    return async (dispatch) => {
+        try {
+            const space = await docsDataSource.getSpace(spaceId);
+            if (space) {
+                dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: [space]});
+
+                // The caller is gone from the roster the space view renders its count from, so the
+                // read that survived has a stale member list behind it.
+                await dispatch(fetchSpaceMembers(spaceId));
+            }
+        } catch (error) {
+            if (error instanceof RestError && (error.status === 403 || error.status === 404)) {
+                dispatch({type: SpaceTypes.DELETED_SPACE, spaceId});
+                return;
+            }
+            // eslint-disable-next-line no-console
+            console.error('Docs: failed to re-resolve space after removal', spaceId, error);
+        }
+    };
+}
+
 // Archives (soft-deletes) a space and prunes it from the store. Rejects on
 // failure so the caller can surface it.
 export function deleteSpace(spaceId: string): DocsThunkAction<Promise<void>> {
@@ -414,10 +508,15 @@ export function isNotTeamMemberError(error: unknown): boolean {
 
 // Leaving a space is removing yourself from its membership. The server rejects
 // removing the last authorized member (409); the caller surfaces that.
+//
+// Losing membership is not the same as losing the space: an open space stays readable through the
+// team fall-through, so what happens to the record is settled by re-resolving it rather than by
+// evicting outright. That is the same reconciliation the removal WebSocket event performs, done
+// here too so the outcome does not depend on the event arriving first.
 export function leaveSpace(spaceId: string): DocsThunkAction<Promise<void>> {
     return async (dispatch, getState) => {
         const userId = getCurrentUserId(getState());
         await docsDataSource.removeSpaceMember(spaceId, userId);
-        dispatch({type: SpaceTypes.DELETED_SPACE, spaceId});
+        await dispatch(refreshSpaceAfterSelfRemoval(spaceId));
     };
 }

@@ -24,6 +24,7 @@ type MovedPageAction = {pageId: string; spaceId: string; parentId: string; sibli
 type DeletedPageAction = {pageId: string; spaceId: string; pageIds: string[]};
 type ReceivedSpaceMembersAction = {spaceId: string; userIds: string[]};
 type SpaceMemberAction = {spaceId: string; userId: string};
+type SpaceMemberPermissionsChangedAction = {spaceId: string};
 
 // `spaceId` marks a full list for that space, seeding its index entry even when the
 // space has no drafts — the same "loaded" signal RECEIVED_PAGES uses.
@@ -118,12 +119,16 @@ function spaces(state: Record<string, Space> = {}, action: UnknownAction): Recor
         }
         const next = {...state};
         for (const space of received) {
-            // The team listing answers with bare spaces, so it must not erase permissions a
-            // single-space read already resolved: without this, opening a space and then any
-            // later listing would drop the caller's own permissions back to unresolved, and
-            // every permission-gated affordance would reappear.
-            const resolved = next[space.id]?.permissions;
-            next[space.id] = space.permissions === undefined && resolved ? {...space, permissions: resolved} : space;
+            // The team listing answers with bare spaces, so it must not erase the permission
+            // fields a single-space read already resolved: without this, opening a space and then
+            // any later listing would drop them back to unresolved, and every permission-gated
+            // affordance would reappear.
+            const previous = next[space.id];
+            next[space.id] = {
+                ...space,
+                permissions: space.permissions ?? previous?.permissions,
+                default_permissions: space.default_permissions ?? previous?.default_permissions,
+            };
         }
         return next;
     }
@@ -464,8 +469,27 @@ function draftsInSpace(state: Record<string, Set<string>> = {}, action: UnknownA
     }
 }
 
+// A counter per space, bumped each time the server says that space's per-member grant matrix
+// changed.
+//
+// The matrix itself is not held here: only the space settings surface displays it, and only a
+// caller holding the manage tier may read it at all, so the surface fetches it and keeps its own
+// snapshot. Everything else about a space's permission state — its default set, its view access,
+// the caller's own tier — lives in the spaces slice and re-renders on its own. A grant change
+// moves none of that, which is why this counter exists and why it covers nothing else.
+function spaceMemberPermissionsRevision(state: Record<string, number> = {}, action: UnknownAction): Record<string, number> {
+    switch (action.type) {
+    case SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED: {
+        const {spaceId} = action as unknown as SpaceMemberPermissionsChangedAction;
+        return {...state, [spaceId]: (state[spaceId] ?? 0) + 1};
+    }
+    default:
+        return state;
+    }
+}
+
 // Normalized server entities, kept separate from view/UI state so future
 // top-level reducers (e.g. `views`) can sit beside this one.
-const entities = combineReducers({spaces, spacesInTeam, pages, pagesInSpace, spaceMembers, drafts, draftsInSpace});
+const entities = combineReducers({spaces, spacesInTeam, pages, pagesInSpace, spaceMembers, spaceMemberPermissionsRevision, drafts, draftsInSpace});
 
 export default entities;

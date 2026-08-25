@@ -1,8 +1,8 @@
 name: "verify-core-image-pin"
 description: Verifies CORE_IMAGE is sha-pinned and matches the core commit build/core-commit.txt names
 
-# Both e2e suites run against the paired core branch's image, so both need this check. It lives here
-# rather than inline so the two jobs cannot drift apart on what "correctly pinned" means.
+# The space-permission specs run against the paired core branch's image. The check lives here rather
+# than inline in the job so a second consumer cannot drift from what "correctly pinned" means.
 
 inputs:
   CORE_IMAGE:
@@ -13,7 +13,7 @@ runs:
   using: "composite"
   steps:
     # The pin is checked, not just documented: a floating tag (:master, :latest) would silently
-    # re-point the suites at whatever core published most recently, so an unrelated upstream change
+    # re-point the suite at whatever core published most recently, so an unrelated upstream change
     # would surface as a test failure with no corresponding commit in this repo.
     - name: ci/verify-core-image-pin
       shell: bash
@@ -28,13 +28,13 @@ runs:
         image_tag="${CORE_IMAGE##*:}"
 
         # The shape check above cannot catch the drift that matters. build/core-commit.txt records
-        # the core commit these suites are meant to run against; CORE_IMAGE is a separate repository
+        # the core commit the suite is meant to run against; CORE_IMAGE is a separate repository
         # variable a human sets. Nothing ties them together, so bumping one without the other leaves
-        # the suites green against a core image that predates the very changes under test.
+        # the suite green against a core image that predates the very changes under test.
         #
         # The comparison is against that file rather than the go.mod server/public pin, because most
         # of the RBAC implementation lives outside the public module: a core commit can change the
-        # scheme guards and role composition these suites assert on without moving the pin.
+        # scheme guards and role composition the suite asserts on without moving the pin.
         # Wrapped so a missing or comment-only pin file cannot abort the step under this shell's
         # `-eo pipefail` (grep's no-match exit 1, or its SIGPIPE when head closes the pipe first),
         # which would skip the named diagnostic below. Same guard as build/build-core-image.sh.
@@ -60,7 +60,7 @@ runs:
         # pin file in step; it says nothing about whether the image they name still exists. Core CI
         # does not retain per-commit images indefinitely, so the pin's usual failure is that its tag
         # has been reaped — and without this check that surfaces several steps later as a pull error
-        # in the e2e job, with nothing connecting it back to a stale pin.
+        # later in the job, with nothing connecting it back to a stale pin.
         #
         # A registry lookup can fail for reasons that are not the pin's fault (rate limit, outage),
         # so only a definite 404 fails the step; anything else is reported and passes. The guard is

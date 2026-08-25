@@ -63,7 +63,7 @@ What the permission run adds, under `MM_E2E_SPACE_PERMISSIONS` alone:
 
 | Where | What | Why |
 |---|---|---|
-| `tests/helpers/mmcontainer.ts` | `resolveLicense()` + `applyLicense()` (`mmctl license upload-string`) | The pooled custom-scheme paths drive core's `CreateScheme`, gated on `CustomPermissionsSchemes`. Unlicensed, permission routes answer 501. Mirrors `server/e2e/container_test.go`'s `MM_LICENSE` / `MM_LICENSE_FILE` contract. |
+| `tests/helpers/mmcontainer.ts` | `resolveLicense()` + `applyLicense()` (`mmctl license upload-string`) | The guest scenarios demote a user to a guest, which needs `GuestAccountsSettings.Enable` — a licensed feature. Accepts the license as `MM_LICENSE` or `MM_LICENSE_FILE`. |
 
 These apply to every run, permission specs or not:
 
@@ -71,7 +71,7 @@ These apply to every run, permission specs or not:
 |---|---|---|
 | `tests/helpers/mmcontainer.ts` | The image is derived from `build/core-commit.txt` (`resolveImage()`), not a release tag | `CreateSpace` resolves a preset space scheme seeded only on the paired core branch. A stock image boots, passes the `EnableDocs` check, then fails the first space for a reason nothing names. |
 | `tests/helpers/mmcontainer.ts` | `assertSupportsSpacePermissions()` probes the `docs_pg_create` role | Neither the version check nor the `EnableDocs` check can tell a core image that predates the RBAC work — the flag exists on master. Turns unexplained 403s into one named setup failure. |
-| `tests/helpers/mmcontainer.ts` | `waitForPhase2Migration()` before the first spec runs | The advanced-permissions phase-2 migration runs as a post-boot job, and core reads a scheme through that gate whichever route asks — until it finishes, the first `CreateSpace` fails with `app.schemes.is_phase_2_migration_completed.not_completed`. Mirrors `server/e2e/container_test.go`. |
+| `tests/helpers/mmcontainer.ts` | `waitForPhase2Migration()` before the first spec runs | The advanced-permissions phase-2 migration runs as a post-boot job, and core reads a scheme through that gate whichever route asks — until it finishes, the first `CreateSpace` fails with `app.schemes.is_phase_2_migration_completed.not_completed`.
 | `tests/helpers/mmcontainer.ts` | `MM_SERVICEENVIRONMENT: 'test'` in the container env | The published core images are production builds, which default to the production service environment and reject a test/development license outright. Without this the license step fails, not a spec. |
 | `tests/helpers/mmcontainer.ts` | `exec()` takes a `displayCommand` override; `applyLicense` passes a redacted form | The failure message is built from the whole command, so a rejected license would otherwise print itself into the terminal and into the CI job log. |
 | `tests/helpers/docs.ts` | `apiRoot` exported | The helpers throw on a non-OK response, which is wrong when the assertion *is* the 403. The permission specs probe the route directly. |

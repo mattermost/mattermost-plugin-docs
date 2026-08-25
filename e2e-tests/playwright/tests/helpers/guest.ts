@@ -16,8 +16,7 @@ type GuestAccountsConfig = {
  * Demotion is refused unless GuestAccountsSettings.Enable is on, which is server-wide and
  * therefore shared by every spec running against this container. So the demote is attempted
  * first and the config is only touched when the server actually refuses — a server that
- * already allows guests is left alone, and the returned undo is a no-op. This mirrors
- * server/e2e/scenarios_test.go's scenario6, which established the sequence.
+ * already allows guests is left alone, and the returned undo is a no-op.
  *
  * Demote the user *after* adding them to the team and the space: demotion converts the
  * memberships that already exist into guest ones rather than granting new access, so a guest

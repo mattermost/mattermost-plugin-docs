@@ -453,3 +453,26 @@ describe('reindexAfterMove', () => {
         expect(next.a.sort_order).toBe(2);
     });
 });
+
+describe('spaceMemberPermissionsRevision', () => {
+    const initialState = reducer(undefined, {type: '@@INIT'});
+
+    it('SPACE_MEMBER_PERMISSIONS_CHANGED counts up from nothing', () => {
+        const once = reducer(initialState, {type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: 's1'});
+        const twice = reducer(once, {type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: 's1'});
+
+        expect(once.spaceMemberPermissionsRevision.s1).toBe(1);
+        expect(twice.spaceMemberPermissionsRevision.s1).toBe(2);
+    });
+
+    // Each space is counted separately, so a change to one does not make every open
+    // permissions surface re-read.
+    it('SPACE_MEMBER_PERMISSIONS_CHANGED leaves other spaces alone', () => {
+        const bumped = reducer(
+            reducer(initialState, {type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: 's1'}),
+            {type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: 's2'},
+        );
+
+        expect(bumped.spaceMemberPermissionsRevision).toEqual({s1: 1, s2: 1});
+    });
+});

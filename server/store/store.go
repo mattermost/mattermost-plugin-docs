@@ -185,16 +185,20 @@ func (s *Store) finalizeTransaction(tx *sqlx.Tx, perr *error) {
 	}
 }
 
+// Every transaction in this package begins through one of the two helpers below, and which one it
+// picks declares whether the method may run inside a WithSpaceMembershipLock closure. Such a
+// closure already holds the lock's dedicated connection, so an unbounded acquisition there can
+// wait forever on a saturated pool while holding a connection that pool needs in order to drain.
+// The split makes that hazard greppable: beginUnboundedTx names exactly the methods a lock closure
+// must not reach.
+
 // beginBoundedTx starts a transaction bounded by defaultQueryTimeout, and must be used by any
 // transaction that can run while its caller already holds WithSpaceMembershipLock's dedicated
-// connection. Such a caller needs a second pooled connection while holding one, so an unbounded
-// acquisition can wait forever on a saturated pool while itself holding a connection that pool
-// needs in order to drain.
+// connection.
 //
-// The timeout spans the whole transaction, not just connection acquisition: the context is handed
-// to BeginTxx, so database/sql rolls the transaction back if it expires mid-flight. Callers must
-// therefore finish inside defaultQueryTimeout, not merely start inside it. The returned cancel must
-// be deferred, and runs after the commit or rollback that the caller's own defer performs.
+// The timeout spans the whole transaction, not just connection acquisition, so callers must finish
+// inside defaultQueryTimeout rather than merely start inside it. The returned cancel must be
+// deferred, and runs after the commit or rollback that the caller's own defer performs.
 func (s *Store) beginBoundedTx() (*sqlx.Tx, context.CancelFunc, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
 	tx, err := s.db.BeginTxx(ctx, nil)
@@ -203,6 +207,17 @@ func (s *Store) beginBoundedTx() (*sqlx.Tx, context.CancelFunc, error) {
 		return nil, nil, err
 	}
 	return tx, cancel, nil
+}
+
+// beginUnboundedTx starts a transaction with no overall deadline, for work whose duration scales
+// with the data it touches — a page move or duplicate over a wide subtree — where a fixed cap would
+// fail the operation rather than protect anything. Individual statements still carry
+// defaultQueryTimeout.
+//
+// A method that begins here must never be called from inside a WithSpaceMembershipLock closure; see
+// the note above beginBoundedTx.
+func (s *Store) beginUnboundedTx() (*sqlx.Tx, error) {
+	return s.db.Beginx()
 }
 
 // get executes a query and scans one row into dest.

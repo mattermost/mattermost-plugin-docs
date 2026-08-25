@@ -3,13 +3,15 @@
 
 import {RestError} from 'client/rest';
 import {getSpaceAccess, listAllSpaceMembers, setDefaultPermissions, setMemberPermissions, setSpaceViewAccess} from 'client/space_permissions';
-import {useAppSelector} from 'hooks/redux';
-import {useCallback, useEffect, useRef, useState} from 'react';
+import {useCanAdministerSpace, useCanManageSpaceMembers} from 'hooks/permissions';
+import {useAppDispatch, useAppSelector} from 'hooks/redux';
+import {useCallback, useEffect, useState} from 'react';
 import {useIntl} from 'react-intl';
 
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
-import {getSpaceMemberIds} from 'store/selectors';
+import {receivedSpaceAccess} from 'store/actions';
+import {getSpace, getSpaceMemberPermissionsRevision, getSpaceMemberIds} from 'store/selectors';
 
 import {toast} from 'components/toast';
 
@@ -20,7 +22,10 @@ import {GUEST_NOT_ASSIGNABLE_ERROR_ID, LAST_SPACE_ADMIN_ERROR_ID, SPACE_LOCK_TIM
 
 export type SpacePermissions = {
 
-    /** The space's default permission set — what every member holds without a grant. */
+    /**
+     * The space's default permission set — what every member holds without a grant. Read from the
+     * store, which this hook's own reads and the websocket handlers both keep current.
+     */
     defaults: Permission[];
     viewAccess: SpaceViewAccess;
 
@@ -29,7 +34,8 @@ export type SpacePermissions = {
 
     /**
      * Whether the current user may change the space's own exposure policy — the default
-     * permission set and view_access. Sysadmin or space admin only.
+     * permission set and view_access. Sysadmin or space admin only. Read from the store, which
+     * this hook keeps current from its own reads — the same answer every other surface gates on.
      */
     canAdminister: boolean;
 
@@ -37,7 +43,6 @@ export type SpacePermissions = {
      * Whether the current user may read and write the member roster. A strictly wider tier than
      * canAdminister: the roster routes also admit a team manage_space holder, who holds no
      * admin_space and would be locked out of the roster if this were derived from canAdminister.
-     * Taken from the server rather than computed here.
      */
     canManageMembers: boolean;
 
@@ -63,12 +68,16 @@ export type SpacePermissions = {
 const serverErrorId = (error: unknown): string | undefined =>
     (error instanceof RestError ? error.server_error_id : undefined);
 
+// Stable identity, so a space whose defaults have not resolved does not hand out a fresh array
+// every render.
+const EMPTY_PERMISSIONS: Permission[] = [];
+
 /**
  * The space's permission state and the mutations that change it.
  *
- * Read straight from the permissions client rather than through the Docs data source:
- * permission state is only ever displayed by this surface, so putting it in the shared
- * store would make every other consumer carry state none of them read.
+ * Everything about that state lives in the store except the per-member grant matrix: only this
+ * surface displays it, and only a caller holding the manage tier may read it at all, so it is
+ * fetched and held here and the store carries a revision counter to say when it went stale.
  *
  * Every mutation re-reads from the server response rather than patching local state
  * optimistically. The server derives the effective set from the space default, the
@@ -77,7 +86,15 @@ const serverErrorId = (error: unknown): string | undefined =>
  */
 export function useSpacePermissions(space: Space): SpacePermissions {
     const {formatMessage} = useIntl();
+    const dispatch = useAppDispatch();
     const currentUserId = useAppSelector(getCurrentUserId);
+
+    // The caller's own tiers come from the store, not from a second copy kept here: every other
+    // permission-gated surface already gates on these selectors, and two resolutions of the same
+    // answer drift the moment one of them refreshes and the other does not. This hook's own reads
+    // feed the store, so reading back from it is not a staleness trade.
+    const storeCanAdminister = useCanAdministerSpace(space.id);
+    const storeCanManageMembers = useCanManageSpaceMembers(space.id);
 
     // The roster this hook reads is its own snapshot, taken once per load. Membership changes
     // elsewhere — the tab's own add/remove field, or another administrator's change arriving over
@@ -86,74 +103,48 @@ export function useSpacePermissions(space: Space): SpacePermissions {
     // because the grant matrix has no record of them.
     const memberIds = useAppSelector((state) => getSpaceMemberIds(state, space.id));
 
-    const [defaults, setDefaultsState] = useState<Permission[]>([]);
-    const [viewAccess, setViewAccessState] = useState<SpaceViewAccess>('open');
+    // The staleness signal for the one piece of permission state this surface still resolves
+    // itself. A per-member grant change moves no slice the store holds, so without this the matrix
+    // below would keep showing what was true when the surface mounted.
+    const grantRevision = useAppSelector((state) => getSpaceMemberPermissionsRevision(state, space.id));
+
+    // view_access, update_at and the default permission set come off the space record rather than
+    // copies taken at load: all three are already store state that the websocket handlers refresh,
+    // and the writes below feed their responses straight back into it. Falls back to the caller's
+    // own record, which is what a space reached without a single-space read carries.
+    const stored = useAppSelector((state) => getSpace(state, space.id)) ?? space;
+    const viewAccess = stored.view_access;
+    const defaults = stored.default_permissions ?? EMPTY_PERMISSIONS;
+
     const [members, setMembers] = useState<Map<string, SpaceMember>>(new Map());
-    const [canAdminister, setCanAdminister] = useState(false);
-    const [canManageMembers, setCanManageMembers] = useState(false);
     const [loading, setLoading] = useState(true);
     const [loadFailed, setLoadFailed] = useState(false);
     const [busy, setBusy] = useState(false);
-
-    // The optimistic-concurrency baseline for a view-access change. Held in a ref
-    // because a mutation reads the newest value without re-running the load effect.
-    const updateAtRef = useRef(0);
-
-    // busy is shared by three independent writes (defaults, a member's grants, view
-    // access), so it is reference-counted rather than a plain flag: a bare
-    // setBusy(false) in each finally would let whichever write settled first re-enable
-    // the controls while another was still in flight. That matters most for view
-    // access, which carries an update_at baseline a second overlapping write would
-    // send stale.
-    const inFlightRef = useRef(0);
-    const beginWrite = useCallback(() => {
-        inFlightRef.current += 1;
-        setBusy(true);
-    }, []);
-    const endWrite = useCallback(() => {
-        inFlightRef.current -= 1;
-        if (inFlightRef.current === 0) {
-            setBusy(false);
-        }
-    }, []);
 
     const genericError = useCallback(() => formatMessage({
         id: 'docs.spacePermissions.error.generic',
         defaultMessage: 'Something went wrong. Please try again.',
     }), [formatMessage]);
 
-    // Re-reads the caller's own authority from the server. Used after a write that can change it —
-    // editing your own row — rather than reconstructing the new tiers locally: which tier granted
-    // the roster (admin_space, a team grant, or sysadmin) is not recoverable from the response, and
-    // guessing is how the surface and the routes drift apart in the first place.
+    // Re-reads the caller's own authority from the server and puts it in the store. Used after a
+    // write that can change it — editing your own row — rather than reconstructing the new tiers
+    // locally: which tier granted the roster (admin_space, a team grant, or sysadmin) is not
+    // recoverable from the response, and guessing is how the surface and the routes drift apart in
+    // the first place.
     const reloadTiers = useCallback(async () => {
         try {
-            const access = await getSpaceAccess(space.id);
-            setCanAdminister(access.permissions.includes(Permissions.ADMIN_SPACE));
-            setCanManageMembers(access.permissions.includes(Permissions.MANAGE_SPACE));
+            dispatch(receivedSpaceAccess(await getSpaceAccess(space.id)));
         } catch {
-            // The write itself succeeded, so this must not surface as a failure. Falling closed
-            // locks the surface until the next load, which is the safe direction: the alternative
-            // is leaving controls enabled on authority that may be gone.
-            setCanAdminister(false);
-            setCanManageMembers(false);
+            // The write itself succeeded, so this must not surface as a failure. The store keeps
+            // the tiers it last resolved; the next load or websocket refresh corrects them.
         }
-    }, [space.id]);
+    }, [dispatch, space.id]);
 
     useEffect(() => {
         let cancelled = false;
 
-        // A failed read must not leave the previous space's answer standing, so the resolved values
-        // clear together — the optimistic-lock baseline included, which a later write would
-        // otherwise send against a space it was never read from.
-        const clearResolved = () => {
-            setDefaultsState([]);
-            setViewAccessState('open');
-            setMembers(new Map());
-            setCanAdminister(false);
-            setCanManageMembers(false);
-            updateAtRef.current = 0;
-        };
+        // A failed read must not leave the previous space's matrix standing.
+        const clearResolved = () => setMembers(new Map());
 
         const load = async () => {
             setLoading(true);
@@ -164,9 +155,12 @@ export function useSpacePermissions(space: Space): SpacePermissions {
                     return;
                 }
 
-                // The caller's own effective set, which the server resolves the same way the
-                // write gate does — so a system administrator, who holds admin_space without
-                // appearing in the roster at all, resolves here as able to administer.
+                // Into the store, where every permission-gated surface reads the caller's own
+                // tiers from — including canAdminister/canManageMembers above. The server resolves
+                // that set the same way the write gate does, so a system administrator, who holds
+                // admin_space without appearing in the roster at all, resolves as able to
+                // administer.
+                dispatch(receivedSpaceAccess(access));
                 const canManage = access.permissions.includes(Permissions.MANAGE_SPACE);
 
                 // Read after the tier, not alongside it: the roster route serves every reader so a
@@ -184,13 +178,7 @@ export function useSpacePermissions(space: Space): SpacePermissions {
                     return;
                 }
 
-                setDefaultsState(access.default_permissions);
-                setViewAccessState(access.view_access);
-                updateAtRef.current = access.update_at;
                 setMembers(new Map(roster.map((member) => [member.user_id, member])));
-
-                setCanAdminister(access.permissions.includes(Permissions.ADMIN_SPACE));
-                setCanManageMembers(canManage);
             } catch {
                 if (!cancelled) {
                     // No toast: a failed read leaves the controls disabled and empty, which is
@@ -210,34 +198,25 @@ export function useSpacePermissions(space: Space): SpacePermissions {
         return () => {
             cancelled = true;
         };
-    }, [space.id, memberIds]);
+    }, [dispatch, space.id, memberIds, grantRevision]);
 
+    // No roster re-read afterwards: a default change moves every member's effective set, but the
+    // matrix this surface renders is bound to granted_permissions, which a default change leaves
+    // untouched.
     const setDefaults = useCallback(async (next: Permission[]) => {
-        beginWrite();
+        setBusy(true);
         try {
-            const updated = await setDefaultPermissions(space.id, next);
-            setDefaultsState(updated.default_permissions);
-            updateAtRef.current = updated.update_at;
-
-            // A default change alters what every member effectively holds, and the server
-            // is the only place that composition happens. Failures are absorbed here: this
-            // is a second request, made after the write already committed, so reporting it
-            // would tell the caller their saved change failed. The roster stays stale until
-            // the next load instead.
-            const roster = await listAllSpaceMembers(space.id).catch(() => null);
-            if (roster) {
-                setMembers(new Map(roster.map((member) => [member.user_id, member])));
-            }
+            dispatch(receivedSpaceAccess(await setDefaultPermissions(space.id, next)));
         } catch (error) {
             toast.error(genericError());
             throw error;
         } finally {
-            endWrite();
+            setBusy(false);
         }
-    }, [space.id, genericError, beginWrite, endWrite]);
+    }, [dispatch, space.id, genericError]);
 
     const setMemberGrants = useCallback(async (userId: string, next: Permission[]) => {
-        beginWrite();
+        setBusy(true);
         try {
             const updated = await setMemberPermissions(space.id, userId, next);
             setMembers((current) => new Map(current).set(updated.user_id, updated));
@@ -268,16 +247,14 @@ export function useSpacePermissions(space: Space): SpacePermissions {
             }
             throw error;
         } finally {
-            endWrite();
+            setBusy(false);
         }
-    }, [space.id, currentUserId, reloadTiers, formatMessage, genericError, beginWrite, endWrite]);
+    }, [space.id, currentUserId, reloadTiers, formatMessage, genericError]);
 
     const setViewAccess = useCallback(async (next: SpaceViewAccess) => {
-        beginWrite();
+        setBusy(true);
         try {
-            const updated = await setSpaceViewAccess(space.id, next, updateAtRef.current);
-            setViewAccessState(updated.view_access);
-            updateAtRef.current = updated.update_at;
+            dispatch(receivedSpaceAccess(await setSpaceViewAccess(space.id, next, stored.update_at)));
         } catch (error) {
             const id = serverErrorId(error);
             if (id === SPACE_LOCK_TIMEOUT_ERROR_ID) {
@@ -295,9 +272,24 @@ export function useSpacePermissions(space: Space): SpacePermissions {
             }
             throw error;
         } finally {
-            endWrite();
+            setBusy(false);
         }
-    }, [space.id, formatMessage, genericError, beginWrite, endWrite]);
+    }, [dispatch, space.id, stored.update_at, formatMessage, genericError]);
 
-    return {defaults, viewAccess, members, canAdminister, canManageMembers, loading, loadFailed, busy, setDefaults, setMemberGrants, setViewAccess};
+    // Both tiers are additionally gated on this surface's own read having landed. The tier itself is
+    // the store's answer, but a surface whose read failed holds nothing to administer — leaving the
+    // controls live on a stale tier would offer edits against state it never loaded.
+    return {
+        defaults,
+        viewAccess,
+        members,
+        canAdminister: storeCanAdminister && !loadFailed,
+        canManageMembers: storeCanManageMembers && !loadFailed,
+        loading,
+        loadFailed,
+        busy,
+        setDefaults,
+        setMemberGrants,
+        setViewAccess,
+    };
 }

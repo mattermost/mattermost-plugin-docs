@@ -4,7 +4,6 @@
 package app_test
 
 import (
-	"errors"
 	"net/http"
 	"testing"
 
@@ -49,19 +48,32 @@ func autoJoinHarness(t *testing.T, mockAPI *plugintest.API, viewAccess model.Vie
 	return h, space
 }
 
-// TestAutoJoin_NotFallthroughIsNoOp covers the guard that makes auto-join apply to exactly one
-// admission path: a caller admitted as a member (or as sysadmin, or denied outright) must never be
-// joined, since joining is only ever a consequence of the open-space non-member fall-through.
-func TestAutoJoin_NotFallthroughIsNoOp(t *testing.T) {
-	for _, resolution := range []app.ReadResolution{app.ReadDenied, app.ReadViaSysadmin, app.ReadViaMember} {
-		mockAPI := &plugintest.API{}
-		h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+// readOnlyJoinHarness seeds one open space on the read-only preset, whose defaults confer nothing
+// beyond the baseline read — the set JoinOpenSpace refuses to create a membership for.
+func readOnlyJoinHarness(t *testing.T, mockAPI *plugintest.API) (*testHarness, *model.Space) {
+	t.Helper()
+	h := openTestServiceWithAPI(t, mockAPI)
+	channelID := mmmodel.NewId()
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceReadOnly)
+	return h, testutil.MustCreateSpace(t, h.store, channelID, mmmodel.NewId())
+}
 
-		joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, mmmodel.NewId(), resolution, mmmodel.PermissionCreatePage, nil)
-		require.Nil(t, appErr)
-		require.False(t, joined, "resolution %v must not auto-join", resolution)
-		mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
-	}
+// TestJoinOpenSpace_MemberIsNoOp covers idempotency at the admission boundary: a caller whose read
+// already resolves through a membership is answered with their current access rather than joined a
+// second time, so a client that cannot tell whether it has joined may simply call it.
+func TestJoinOpenSpace_MemberIsNoOp(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	// Deliberately no stubNonMember: the harness's default grants admit this caller as a member, so
+	// the read resolves through the membership rather than the open-space fall-through.
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+	mockAPI.On("GetChannelMember", space.ChannelId, userID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil).Maybe()
+
+	access, appErr := h.svc.JoinOpenSpace(space, userID)
+	require.Nil(t, appErr)
+	require.NotNil(t, access)
+	mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
 }
 
 // TestAutoJoin_JoinsWhenDefaultGrants covers the success path of the auto-join pre-step — the step
@@ -80,9 +92,8 @@ func TestAutoJoin_JoinsWhenDefaultGrants(t *testing.T) {
 	mockAPI.On("AddChannelMember", space.ChannelId, userID).
 		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
 
-	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
+	_, appErr := h.svc.JoinOpenSpace(space, userID)
 	require.Nil(t, appErr)
-	require.True(t, joined)
 	mockAPI.AssertCalled(t, "AddChannelMember", space.ChannelId, userID)
 }
 
@@ -100,9 +111,8 @@ func TestAutoJoin_ProvenanceMarkerLifecycle(t *testing.T) {
 	mockAPI.On("AddChannelMember", space.ChannelId, userID).
 		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
 
-	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
+	_, appErr := h.svc.JoinOpenSpace(space, userID)
 	require.Nil(t, appErr)
-	require.True(t, joined)
 
 	mockAPI.On("GetChannelMembers", space.ChannelId, 0, 60).
 		Return(mmmodel.ChannelMembers{{ChannelId: space.ChannelId, UserId: userID}}, nil)
@@ -127,11 +137,10 @@ func TestAutoJoin_ProvenanceMarkerLifecycle(t *testing.T) {
 	require.False(t, members[0].AutoJoined, "a deliberate admin permission change must clear the auto-join marker")
 }
 
-// TestAutoJoin_ProvenanceMarkerFailureAddsNoMembership pins the write order the undo path depends
-// on. UndoAutoJoin removes a membership only while its marker exists, and reads a missing marker as
-// "an admin legitimized this member" — so a membership that outlives its marker is one nothing ever
-// reclaims. Marking first is what rules that out: the failure can then only leave a marker with no
-// membership, which grants nothing, because authority comes from channel membership and roles.
+// TestAutoJoin_ProvenanceMarkerFailureAddsNoMembership pins the write order: marking first means a
+// marker-write failure can only leave a marker with no membership, which grants nothing, because
+// authority comes from channel membership and roles rather than from this table. The reverse order
+// would leave a membership no review can attribute.
 //
 // The assertion that carries this is AssertNotCalled on the add: restoring the add-then-mark order
 // makes the add happen, so this test fails rather than merely reporting a different error.
@@ -154,60 +163,83 @@ func TestAutoJoin_ProvenanceMarkerFailureAddsNoMembership(t *testing.T) {
 	_, dbErr := h.db.Exec(`DROP TABLE DOCS_SpaceAutoJoin`)
 	require.NoError(t, dbErr)
 
-	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
+	_, appErr := h.svc.JoinOpenSpace(space, userID)
 	require.NotNil(t, appErr, "a marker write that failed must fail the join rather than proceed untracked")
 	require.Equal(t, "app.space.auto_join.provenance_write_failed.app_error", appErr.Id)
-	require.False(t, joined)
 	mockAPI.AssertNotCalled(t, "AddChannelMember", space.ChannelId, userID)
 }
 
-// TestRequireSpacePublish_JoinedThenDeniedLeavesNoMembership covers the property that makes the
-// auto-join safe to run ahead of the gate it enables: when the gate refuses after the join has
-// committed, the caller is told it joined, so the membership can be undone and the rejected request
-// leaves nothing behind.
+// TestRequireSpacePublish_NonMemberIsRefusedNotJoined pins the property that purifying the write
+// gates bought. A non-member reading an open space whose default grants create_page is refused —
+// not joined into being allowed. The membership they need comes from JoinOpenSpace, which they ask
+// for; never from a gate that was only asked whether they may write.
 //
-// It also pins the direction of the one window this design accepts. The post-join re-check reads
-// membership through the plugin API, which answers from a replica, so a replica lagging behind the
-// add reports a non-member and the write is refused — modelled here by a channel check that never
-// reports the permission. Refusing is the safe direction; what must not happen is refusing *and*
-// keeping the membership.
-func TestRequireSpacePublish_JoinedThenDeniedLeavesNoMembership(t *testing.T) {
+// The refusal must also be the shared existence-hiding 403, so it stays indistinguishable from the
+// one a space they may not see would give them.
+func TestRequireSpacePublish_NonMemberIsRefusedNotJoined(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	userID := mmmodel.NewId()
 	// Registered before the harness so it beats StubDefaultSpacePermissions' catch-all: no
-	// backing-channel permission is ever reported for this user, which is both what forces the
-	// fall-through read and what stands in for a re-check that cannot see the fresh membership.
+	// backing-channel permission is ever reported for this user, which is what forces the
+	// fall-through read.
 	stubNonMember(mockAPI, userID)
 	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
 
-	// The space default does grant create_page, so the auto-join is authorized and proceeds.
-	mockAPI.On("RolesGrantPermission", []string{testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)}, mmmodel.PermissionCreatePage.Id).Return(true)
-	mockAPI.On("AddChannelMember", space.ChannelId, userID).
-		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
-	mockAPI.On("DeleteChannelMember", space.ChannelId, userID).Return(nil)
+	appErr := h.svc.RequireSpacePublish("test", space, userID, true)
 
-	joined, appErr := h.svc.RequireSpacePublish("test", space, userID, app.ReadViaOpenFallthrough, true)
-
-	require.True(t, joined, "the caller must learn a membership was created, or it cannot undo one")
-	require.NotNil(t, appErr, "a re-check that cannot see the membership must refuse, not admit")
+	require.NotNil(t, appErr, "a non-member must be refused rather than admitted")
 	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
 	require.Equal(t, "app.space.access.forbidden.app_error", appErr.Id,
 		"the refusal must be the shared existence-hiding 403, not a distinguishable one")
 
-	// What the API layer does with that pair, and the half that matters: no membership survives a
-	// request the server refused.
-	h.svc.UndoAutoJoin(joined, space, userID)
-	mockAPI.AssertCalled(t, "DeleteChannelMember", space.ChannelId, userID)
-
-	members, err := h.store.AutoJoinedIDs(space.Id)
+	// The gate wrote nothing: no membership, and so no provenance describing one.
+	mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
+	marked, err := h.store.AutoJoinedIDs(space.Id)
 	require.NoError(t, err)
-	require.NotContains(t, members, userID, "the undo must clear the provenance marker with the membership")
+	require.Empty(t, marked)
 }
 
-// TestUndoAutoJoin_ClearsProvenanceMarker covers the other half of the marker's lifecycle: undoing
-// a join a rejected write triggered must clear the marker too, so a later deliberate re-add of the
-// same user is not misreported as auto-joined.
-func TestUndoAutoJoin_ClearsProvenanceMarker(t *testing.T) {
+// TestPruneSelfJoinedMembers_RemovesOnlySelfJoined pins the discrimination the whole prune rests
+// on: making a space private withdraws the memberships that were held on its open access alone, and
+// leaves every deliberately added member in place.
+//
+// Both members are plain SchemeUser rows with no explicit roles — byte-identical on the membership
+// itself — so nothing but the provenance marker can tell them apart. That is what the marker table
+// is for, and this is the test that would fail if it were removed.
+func TestPruneSelfJoinedMembers_RemovesOnlySelfJoined(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	selfJoined := mmmodel.NewId()
+	invited := mmmodel.NewId()
+	stubNonMember(mockAPI, selfJoined)
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	mockAPI.On("AddChannelMember", space.ChannelId, selfJoined).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: selfJoined}, nil)
+	mockAPI.On("DeleteChannelMember", space.ChannelId, mock.Anything).Return(nil).Maybe()
+
+	// One member of each kind: one who joined through the open access, one added deliberately.
+	_, appErr := h.svc.JoinOpenSpace(space, selfJoined)
+	require.Nil(t, appErr)
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, invited)
+
+	removed, appErr := h.svc.PruneSelfJoinedMembers(space)
+	require.Nil(t, appErr)
+	require.Equal(t, []string{selfJoined}, removed)
+
+	mockAPI.AssertCalled(t, "DeleteChannelMember", space.ChannelId, selfJoined)
+	mockAPI.AssertNotCalled(t, "DeleteChannelMember", space.ChannelId, invited)
+
+	// The marker goes with the membership, so a later re-join is recorded afresh rather than
+	// inheriting a marker describing a membership that no longer exists.
+	marked, err := h.store.AutoJoinedIDs(space.Id)
+	require.NoError(t, err)
+	require.Empty(t, marked)
+}
+
+// TestAddSpaceMember_ClearsProvenanceMarker covers the second clearing path: a deliberate admin add
+// of a member the auto-join pre-step brought in supersedes how they got here, so the marker must go
+// and the membership must stop reporting as auto-joined.
+func TestAddSpaceMember_ClearsProvenanceMarker(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	userID := mmmodel.NewId()
 	stubNonMember(mockAPI, userID)
@@ -218,16 +250,11 @@ func TestUndoAutoJoin_ClearsProvenanceMarker(t *testing.T) {
 	mockAPI.On("AddChannelMember", space.ChannelId, userID).
 		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
 
-	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
+	_, appErr := h.svc.JoinOpenSpace(space, userID)
 	require.Nil(t, appErr)
-	require.True(t, joined)
 
-	mockAPI.On("DeleteChannelMember", space.ChannelId, userID).Return(nil)
-	h.svc.UndoAutoJoin(joined, space, userID)
-	mockAPI.AssertCalled(t, "DeleteChannelMember", space.ChannelId, userID)
-
-	// Re-added deliberately, not through auto-join: if UndoAutoJoin left the marker behind, this
-	// membership would incorrectly resurface as auto-joined.
+	// Added deliberately on top of the auto-join: an existing member is a no-op for core, so what
+	// this exercises is the clear that rides with the add.
 	_, appErr = h.svc.AddSpaceMember(space, userID)
 	require.Nil(t, appErr)
 
@@ -237,7 +264,7 @@ func TestUndoAutoJoin_ClearsProvenanceMarker(t *testing.T) {
 	require.Nil(t, appErr)
 	require.Len(t, members, 1)
 	require.False(t, members[0].AutoJoined,
-		"UndoAutoJoin must clear the provenance marker rather than leave it for a later deliberate add")
+		"a deliberate admin add must clear the auto-join marker rather than leave it standing")
 }
 
 // TestRemoveSpaceMember_ClearsProvenanceMarker covers the third clearing path: removing an
@@ -255,9 +282,8 @@ func TestRemoveSpaceMember_ClearsProvenanceMarker(t *testing.T) {
 	mockAPI.On("AddChannelMember", space.ChannelId, userID).
 		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
 
-	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
+	_, appErr := h.svc.JoinOpenSpace(space, userID)
 	require.Nil(t, appErr)
-	require.True(t, joined)
 
 	// The target lookup and the reachability guard both read membership from the master DB; the
 	// auto-join above only ran through the mocked pluginapi call, which does not write this table, so
@@ -285,81 +311,20 @@ func TestRemoveSpaceMember_ClearsProvenanceMarker(t *testing.T) {
 		"RemoveSpaceMember must clear the provenance marker rather than leave it for a later deliberate add")
 }
 
-// TestUndoAutoJoin_SkipsRemovalWhenLegitimizedConcurrently is the marker guard's positive case: an
-// admin permission grant lands, clearing the marker, in the window between the auto-join and the
-// undo of the rejected write it admitted. The undo must leave the now-deliberate membership intact.
-func TestUndoAutoJoin_SkipsRemovalWhenLegitimizedConcurrently(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	userID := mmmodel.NewId()
-	stubNonMember(mockAPI, userID)
-	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
-
-	roleName := testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)
-	mockAPI.On("RolesGrantPermission", []string{roleName}, mmmodel.PermissionCreatePage.Id).Return(true)
-	mockAPI.On("AddChannelMember", space.ChannelId, userID).
-		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
-
-	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
-	require.Nil(t, appErr)
-	require.True(t, joined)
-
-	// A deliberate admin act legitimizes the membership before the guarded write's own rejection
-	// reaches UndoAutoJoin — clearing the marker, exactly as SetSpaceMemberPermissions does. The
-	// target read is master-backed; the auto-join above only ran through the mocked pluginapi call,
-	// which does not write this table, so seed it directly.
-	testutil.MustAddChannelMember(t, h.db, space.ChannelId, userID)
-	_, appErr = h.svc.SetSpaceMemberPermissions(space, userID, []string{mmmodel.PermissionCommentPage.Id}, mmmodel.NewId())
-	require.Nil(t, appErr)
-
-	h.svc.UndoAutoJoin(joined, space, userID)
-
-	mockAPI.AssertNotCalled(t, "DeleteChannelMember", space.ChannelId, userID)
-}
-
-// TestUndoAutoJoin_SkipsRemovalWhenLegitimizedByDeliberateReAdd is
-// TestUndoAutoJoin_SkipsRemovalWhenLegitimizedConcurrently's counterpart for the other legitimizing
-// act: a deliberate re-add via AddSpaceMember (not just a permission grant) also clears the marker,
-// and does so atomically with the add under the space-keyed lock, so UndoAutoJoin can only ever see
-// the clear wholly before or wholly after its own locked marker check — never in between.
-func TestUndoAutoJoin_SkipsRemovalWhenLegitimizedByDeliberateReAdd(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	userID := mmmodel.NewId()
-	stubNonMember(mockAPI, userID)
-	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
-
-	roleName := testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)
-	mockAPI.On("RolesGrantPermission", []string{roleName}, mmmodel.PermissionCreatePage.Id).Return(true)
-	mockAPI.On("AddChannelMember", space.ChannelId, userID).
-		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
-
-	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
-	require.Nil(t, appErr)
-	require.True(t, joined)
-
-	// An admin deliberately re-adds the same user before the guarded write's own rejection reaches
-	// UndoAutoJoin. Re-adding an existing member is a no-op for core; AddSpaceMember clears the marker.
-	_, appErr = h.svc.AddSpaceMember(space, userID)
-	require.Nil(t, appErr)
-
-	h.svc.UndoAutoJoin(joined, space, userID)
-
-	mockAPI.AssertNotCalled(t, "DeleteChannelMember", space.ChannelId, userID)
-}
-
 // TestAutoJoin_DefaultDoesNotGrant covers the admission test: the fall-through alone never joins.
-// A space whose default permission set withholds the permission leaves the caller a non-member, so
-// the write gate that follows denies them rather than silently granting access by joining first.
-func TestAutoJoin_DefaultDoesNotGrant(t *testing.T) {
+// A space whose defaults confer nothing beyond the read every reader already has refuses the join
+// outright: creating a membership that grants exactly what the caller had without one is not a
+// no-op to be papered over, it is a request that cannot be satisfied.
+func TestJoinOpenSpace_ReadOnlyDefaultsRefused(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	userID := mmmodel.NewId()
 	stubNonMember(mockAPI, userID)
-	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+	h, space := readOnlyJoinHarness(t, mockAPI)
 
-	mockAPI.On("RolesGrantPermission", []string{testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)}, mmmodel.PermissionCreatePage.Id).Return(false)
-
-	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
-	require.Nil(t, appErr)
-	require.False(t, joined)
+	_, appErr := h.svc.JoinOpenSpace(space, userID)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+	require.Equal(t, "app.space.join.nothing_to_grant.app_error", appErr.Id)
 	mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
 }
 
@@ -383,65 +348,46 @@ func TestAutoJoin_PrivateFlipAbortsJoin(t *testing.T) {
 	_, err := h.store.UpdateSpace(space.Id, &model.SpacePatch{ViewAccess: &private}, space.UpdateAt, false)
 	require.NoError(t, err)
 
-	joined, appErr := h.svc.AutoJoinIfDefaultGranted(&stale, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
+	_, appErr := h.svc.JoinOpenSpace(&stale, userID)
 	require.Nil(t, appErr)
-	require.False(t, joined, "a space that flipped private must not auto-join a stale open-read admission")
 	mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
 }
 
-// TestAutoJoin_DeletedSpaceIsNoOp covers the space-vanished branch: a space deleted between the
-// admitting read and the pre-step yields no join and no error, rather than a 500 on a race the
-// caller cannot act on.
-func TestAutoJoin_DeletedSpaceIsNoOp(t *testing.T) {
+// TestJoinOpenSpace_DeletedSpaceIsHidden covers the space-vanished branch. Unlike the pre-step this
+// replaced — which ran inside someone else's write and could only decline to join — this is the
+// caller's own request, so it answers. A space deleted under it must report as the shared
+// existence-hiding 403, indistinguishable from one they were never allowed to see.
+func TestJoinOpenSpace_DeletedSpaceIsHidden(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	userID := mmmodel.NewId()
 	stubNonMember(mockAPI, userID)
 	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
-
-	// Granted, so the deleted-space branch below is the only thing that can prevent the join.
-	mockAPI.On("RolesGrantPermission", []string{testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)}, mmmodel.PermissionCreatePage.Id).Return(true)
 
 	require.NoError(t, h.store.DeleteSpace(space.Id))
 
-	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
-	require.Nil(t, appErr)
-	require.False(t, joined)
-	mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
-}
-
-// TestAutoJoin_OwnerCheckGatesJoin covers the delete_own_page contract: the ownerCheck must hold
-// before the join, so a caller who does not own the target page is never made a member on the
-// strength of an own-page permission that cannot apply to it.
-func TestAutoJoin_OwnerCheckGatesJoin(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	userID := mmmodel.NewId()
-	stubNonMember(mockAPI, userID)
-	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
-
-	mockAPI.On("RolesGrantPermission", []string{testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)}, mmmodel.PermissionDeleteOwnPage.Id).Return(true)
-
-	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough,
-		mmmodel.PermissionDeleteOwnPage, func() (bool, error) { return false, nil })
-	require.Nil(t, appErr)
-	require.False(t, joined)
-	mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
-}
-
-// TestAutoJoin_OwnerCheckFailurePropagates distinguishes a failed ownership lookup from a negative
-// one: the first is an outage and must surface as an error, not as a silent no-join the caller
-// would report to the user as a denial.
-func TestAutoJoin_OwnerCheckFailurePropagates(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	userID := mmmodel.NewId()
-	stubNonMember(mockAPI, userID)
-	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
-
-	mockAPI.On("RolesGrantPermission", []string{testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)}, mmmodel.PermissionDeleteOwnPage.Id).Return(true)
-
-	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough,
-		mmmodel.PermissionDeleteOwnPage, func() (bool, error) { return false, errors.New("lookup failed") })
+	_, appErr := h.svc.JoinOpenSpace(space, userID)
 	require.NotNil(t, appErr)
-	require.False(t, joined)
+	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+	mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
+}
+
+// TestResolveSpaceRemovePage_NeverJoins pins the property that made the delete gate safe to
+// simplify: resolving a delete-class operation is a question, so a non-member whose space default
+// would grant them the permission is still refused rather than joined into being able to answer it.
+// Membership is created only by JoinOpenSpace, which the caller asks for.
+func TestResolveSpaceRemovePage_NeverJoins(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	stubNonMember(mockAPI, userID)
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	// Owner matches and the contribute default grants delete_own_page, so under the pre-step this
+	// call would have joined the caller. It must now simply deny.
+	ownOnly, admitted, appErr := h.svc.ResolveSpaceRemovePage(space, userID,
+		"api.page.delete", "api.page.delete_own", true)
+	require.Nil(t, appErr)
+	require.False(t, admitted)
+	require.False(t, ownOnly)
 	mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
 }
 
@@ -460,35 +406,41 @@ func TestAutoJoin_AlreadyMemberIsNoOp(t *testing.T) {
 	// with it would then remove a membership the caller already held.
 	testutil.MustAddChannelMember(t, h.db, space.ChannelId, userID)
 
-	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
+	_, appErr := h.svc.JoinOpenSpace(space, userID)
 	require.Nil(t, appErr)
-	require.False(t, joined)
 	mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
 }
 
 // TestRequireSpaceDraftWrite_LookupFailureIsNotADenial pins the error discipline of the two-attempt
 // draft gate: a failure of the create_page check must surface as itself, not be retried into the
 // edit_page attempt and reported as a 403 — a backend outage must never read as "not authorized".
+//
+// Driven through the guest clamp, which is the one fallible lookup left inside a write gate now
+// that the gates no longer resolve a space's defaults.
 func TestRequireSpaceDraftWrite_LookupFailureIsNotADenial(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	userID := mmmodel.NewId()
-	stubNonMember(mockAPI, userID)
-	// The scheme lookup behind the auto-join pre-step fails outright. That is a failure of the
-	// check, not a denial, so it must not be swallowed and retried as the edit_page attempt.
-	channelID := mmmodel.NewId()
-	mockAPI.On("GetChannelOfType", channelID, mmmodel.ChannelTypeSpace).
-		Return((*mmmodel.Channel)(nil), &mmmodel.AppError{StatusCode: 500, Id: "channel.lookup.failed"})
+	// Registered before the harness, whose constructor installs a catch-all GetUser returning an
+	// ordinary user: mock.Mock matches expectations in registration order, so a later stub for the
+	// same call is never reached.
+	mockAPI.On("GetUser", userID).
+		Return((*mmmodel.User)(nil), &mmmodel.AppError{StatusCode: 500, Id: "user.lookup.failed"})
+
+	// No stubNonMember: the caller must clear the channel-permission check so the guest clamp
+	// behind it is reached at all.
 	h := openTestServiceWithAPI(t, mockAPI)
+	channelID := mmmodel.NewId()
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
 	space := testutil.MustCreateSpace(t, h.store, channelID, mmmodel.NewId())
 
-	_, appErr := h.svc.RequireSpaceDraftWrite("test", space, userID, app.ReadViaOpenFallthrough)
+	appErr := h.svc.RequireSpaceDraftWrite("test", space, userID)
 
 	require.NotNil(t, appErr)
 	require.NotEqual(t, http.StatusForbidden, appErr.StatusCode,
 		"a failed lookup must not be reported as an authorization denial")
 	// One attempt, not two: the create_page failure short-circuits instead of falling through to
-	// the edit_page retry. Each attempt runs the pre-step, which resolves team membership once.
-	mockAPI.AssertNumberOfCalls(t, "GetTeamMember", 1)
+	// the edit_page retry, which would read the user a second time.
+	mockAPI.AssertNumberOfCalls(t, "GetUser", 1)
 }
 
 // TestRequireSpaceDraftWrite_EitherPermissionAdmits pins the OR-semantics of the two-attempt draft
@@ -512,9 +464,8 @@ func TestRequireSpaceDraftWrite_EitherPermissionAdmits(t *testing.T) {
 			h := openTestServiceWithAPI(t, mockAPI)
 			space := testutil.MustCreateSpace(t, h.store, channelID, mmmodel.NewId())
 
-			joined, appErr := h.svc.RequireSpaceDraftWrite("test", space, userID, app.ReadViaMember)
+			appErr := h.svc.RequireSpaceDraftWrite("test", space, userID)
 			require.Nil(t, appErr, "%s must admit a draft write", granted.Id)
-			require.False(t, joined, "a member admission never auto-joins")
 		})
 	}
 
@@ -528,14 +479,14 @@ func TestRequireSpaceDraftWrite_EitherPermissionAdmits(t *testing.T) {
 		h := openTestServiceWithAPI(t, mockAPI)
 		space := testutil.MustCreateSpace(t, h.store, channelID, mmmodel.NewId())
 
-		_, appErr := h.svc.RequireSpaceDraftWrite("test", space, userID, app.ReadViaMember)
+		appErr := h.svc.RequireSpaceDraftWrite("test", space, userID)
 		require.NotNil(t, appErr)
 		require.Equal(t, http.StatusForbidden, appErr.StatusCode)
 	})
 }
 
-// TestResolveSpacePageOwnOrAny_CheckFailureIsNotADenial pins the same error discipline on the
-// own/any gate that TestRequireSpaceDraftWrite_LookupFailureIsNotADenial pins on the draft gate:
+// TestResolveSpaceRemovePage_CheckFailureIsNotADenial pins the same error discipline on the
+// remove-page gate that TestRequireSpaceDraftWrite_LookupFailureIsNotADenial pins on the draft gate:
 // a failure of either attempt surfaces as itself.
 //
 // The distinction the gate draws is between "neither permission grants this" — reported as
@@ -546,7 +497,7 @@ func TestRequireSpaceDraftWrite_EitherPermissionAdmits(t *testing.T) {
 // and the failure must not be converted into a grant by it. Only the any-attempt's guard is
 // exercised either way: both attempts resolve through the same client, so an any-attempt that
 // reached a verdict at all guarantees the own-attempt can only deny or grant.
-func TestResolveSpacePageOwnOrAny_CheckFailureIsNotADenial(t *testing.T) {
+func TestResolveSpaceRemovePage_CheckFailureIsNotADenial(t *testing.T) {
 	for name, ownerMatches := range map[string]bool{
 		"owner does not match": false,
 		"owner matches":        true,
@@ -557,11 +508,8 @@ func TestResolveSpacePageOwnOrAny_CheckFailureIsNotADenial(t *testing.T) {
 			h.svc = app.New(h.store, nil, nil)
 			space := testutil.MustCreateSpace(t, h.store, mmmodel.NewId(), mmmodel.NewId())
 
-			ownOnly, admitted, appErr := h.svc.ResolveSpacePageOwnOrAny(
-				space, mmmodel.NewId(),
-				"any", mmmodel.PermissionDeletePage,
-				"own", mmmodel.PermissionDeleteOwnPage,
-				ownerMatches, app.ReadViaMember)
+			ownOnly, admitted, appErr := h.svc.ResolveSpaceRemovePage(
+				space, mmmodel.NewId(), "any", "own", ownerMatches)
 
 			require.NotNil(t, appErr, "a failed check must not be reported as an ordinary denial")
 			require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
@@ -571,14 +519,13 @@ func TestResolveSpacePageOwnOrAny_CheckFailureIsNotADenial(t *testing.T) {
 	}
 }
 
-// TestRequireSpacePagePermissionFrom_FallthroughAdmitsReadOnly is the escalation guard on the
-// open-space fall-through: it exists to admit reads, and must never admit a write. A non-member
-// whose space default withholds the write permission — so the auto-join pre-step does not join
-// them — reaches the gate still holding only the fall-through, and every write permission has to
-// be refused there. Without the read-permission condition on that branch the fall-through would
-// grant create/edit/delete outright, since the caller already holds the team read_public_channel
-// the branch keys on.
-func TestRequireSpacePagePermissionFrom_FallthroughAdmitsReadOnly(t *testing.T) {
+// TestSpaceFallthroughAdmitsReadOnly is the escalation guard on the open-space fall-through: it
+// exists to admit reads, and must never admit a write. A non-member whose space default withholds
+// the write permission — so the auto-join pre-step does not join them — reaches the gate still
+// holding only the fall-through, and every write permission has to be refused there. Without the
+// read-permission condition on that branch the fall-through would grant create/edit/delete
+// outright, since the caller already holds the team read_public_channel the branch keys on.
+func TestSpaceFallthroughAdmitsReadOnly(t *testing.T) {
 	for _, perm := range []*mmmodel.Permission{
 		mmmodel.PermissionCreatePage, mmmodel.PermissionEditPage,
 		mmmodel.PermissionDeletePage, mmmodel.PermissionDeleteOwnPage,
@@ -588,8 +535,11 @@ func TestRequireSpacePagePermissionFrom_FallthroughAdmitsReadOnly(t *testing.T) 
 			userID := mmmodel.NewId()
 			stubNonMember(mockAPI, userID)
 			h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+			// The space default withholds this permission, so the auto-join pre-step inside the
+			// write gate does not join the caller — which is the premise of the assertion below.
+			mockAPI.On("RolesGrantPermission", mock.Anything, perm.Id).Return(false)
 
-			appErr := h.svc.RequireSpacePagePermissionFrom("test", space, userID, perm, app.ReadViaOpenFallthrough)
+			appErr := h.svc.RequireSpacePageWrite("test", space, userID, perm)
 
 			require.NotNil(t, appErr, "%s must not be admitted by the open-space read fall-through", perm.Id)
 			require.Equal(t, http.StatusForbidden, appErr.StatusCode)
@@ -597,16 +547,16 @@ func TestRequireSpacePagePermissionFrom_FallthroughAdmitsReadOnly(t *testing.T) 
 	}
 }
 
-// TestRequireSpacePagePermissionFrom_FallthroughAdmitsRead is the positive half of the pair above:
-// the very same non-member and resolution do get read_page, so the refusals there come from the
-// permission being a write, not from the fall-through being closed altogether.
-func TestRequireSpacePagePermissionFrom_FallthroughAdmitsRead(t *testing.T) {
+// TestSpaceFallthroughAdmitsRead is the positive half of the pair above: the very same non-member
+// does get read_page, so the refusals there come from the permission being a write, not from the
+// fall-through being closed altogether.
+func TestSpaceFallthroughAdmitsRead(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	userID := mmmodel.NewId()
 	stubNonMember(mockAPI, userID)
 	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
 
-	appErr := h.svc.RequireSpacePagePermissionFrom("test", space, userID, mmmodel.PermissionReadPage, app.ReadViaOpenFallthrough)
+	appErr := h.svc.RequireSpacePagePermission("test", space, userID, mmmodel.PermissionReadPage)
 
 	require.Nil(t, appErr)
 }
@@ -860,7 +810,7 @@ func TestResolveSpaceRead_GuestDeniedOpenFallthrough(t *testing.T) {
 	// channel and read_public_channel on the team to any user, and mock.Mock matches expectations
 	// in registration order.
 	stubNonMember(mockAPI, guestID)
-	testutil.StubGuestTeamDefaults(mockAPI, guestID)
+	testutil.StubGuestTeamDefaults(t, mockAPI, guestID)
 	h := openTestServiceWithAPI(t, mockAPI)
 
 	// The default fixture is open and the harness stubs an active team membership, so the guest
@@ -872,6 +822,26 @@ func TestResolveSpaceRead_GuestDeniedOpenFallthrough(t *testing.T) {
 	require.Nil(t, appErr)
 	require.Equal(t, app.ReadDenied, resolution,
 		"a guest lacking team read_public_channel must not be admitted to an open space by the fall-through")
+}
+
+// TestResolveSpaceRead_WithoutTeamReadSpaceDenied covers the outer gate on the direct read: team
+// read_space is what the admin console offers as "View spaces", so revoking it has to close the
+// space to a caller who reaches it by id, not merely hide it from the team listing. Both admission
+// paths are checked, since the caller here holds backing-channel read_page and the fall-through's
+// read_public_channel — everything the two branches would otherwise need.
+func TestResolveSpaceRead_WithoutTeamReadSpaceDenied(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	// Registered before the harness: StubDefaultSpacePermissions grants read_space to every user,
+	// and mock.Mock matches expectations in registration order.
+	mockAPI.On("HasPermissionToTeam", userID, mock.Anything, mmmodel.PermissionReadSpace).Return(false).Maybe()
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	resolution, appErr := h.svc.ResolveSpaceRead("test", space, userID)
+
+	require.Nil(t, appErr)
+	require.Equal(t, app.ReadDenied, resolution,
+		"a caller without team read_space must not read a space by id")
 }
 
 // TestResolveSpaceRead_InvalidUserIDIsBadRequest keeps a malformed user id reporting as a caller
@@ -904,7 +874,7 @@ func TestRequireSpacePagePermission_DemotedGuestDeniedWrites(t *testing.T) {
 			guestID := mmmodel.NewId()
 			mockAPI.On("GetUser", guestID).
 				Return(&mmmodel.User{Id: guestID, Roles: mmmodel.SystemGuestRoleId}, nil)
-			testutil.StubGuestTeamDefaults(mockAPI, guestID)
+			testutil.StubGuestTeamDefaults(t, mockAPI, guestID)
 			h := openTestServiceWithAPI(t, mockAPI)
 			space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), mmmodel.NewId())
 
@@ -922,7 +892,7 @@ func TestRequireSpacePagePermission_DemotedGuestDeniedWrites(t *testing.T) {
 func TestRequireSpacePagePermission_DemotedGuestKeepsRead(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	guestID := mmmodel.NewId()
-	testutil.StubGuestTeamDefaults(mockAPI, guestID)
+	testutil.StubGuestTeamDefaults(t, mockAPI, guestID)
 	h := openTestServiceWithAPI(t, mockAPI)
 	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), mmmodel.NewId())
 
@@ -952,9 +922,8 @@ func TestAutoJoin_PublishOmitsFormerTeamMembers(t *testing.T) {
 	mockAPI.On("AddChannelMember", space.ChannelId, userID).
 		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
 
-	joined, appErr := h.svc.AutoJoinIfDefaultGranted(space, userID, app.ReadViaOpenFallthrough, mmmodel.PermissionCreatePage, nil)
+	_, appErr := h.svc.JoinOpenSpace(space, userID)
 	require.Nil(t, appErr)
-	require.True(t, joined)
 
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_added",
 		map[string]any{"space_id": space.Id, "user_id": userID},

@@ -3,16 +3,10 @@
 
 import {defineMessage} from 'react-intl';
 
-import type {Permission} from './permissions';
-
-// Whether a space is visible to the whole team or only invited members. Only
-// 'private' is selectable for now — public (open) spaces wait on view_access.
-export type SpaceVisibility = 'public' | 'private';
+import type {Permission, SpaceViewAccess} from './permissions';
 
 // Field names and shapes mirror the server model (server/model/space.go) —
-// snake_case JSON per @mattermost/types convention. The server model has no
-// `visibility` yet; it stays a client-only field and maps to the server's
-// `view_access` (open/private) once that lands (PR #10 / MM-69269).
+// snake_case JSON per @mattermost/types convention.
 export type Space = {
     id: string;
     team_id: string;
@@ -25,13 +19,27 @@ export type Space = {
     update_at: number;
     delete_at: number;
     sort_order: number;
-    visibility?: SpaceVisibility;
+
+    // Who may read the space beyond its members: 'open' is the whole team,
+    // 'private' is members only.
+    view_access: SpaceViewAccess;
 
     // The caller's own effective permissions in this space, as the server resolved them.
     // Optional because only the single-space read answers with them: the team listing returns
     // bare spaces, so a space the client has only seen in a list carries none. Undefined
     // therefore means "not resolved yet", never "holds nothing" — see getSpacePermissions.
     permissions?: Permission[];
+
+    // What every member of this space may do without a per-member grant. Optional for the same
+    // reason permissions is, and preserved across a bare team listing the same way.
+    default_permissions?: Permission[];
+
+    // Whether the caller may join this space themselves, which is what would turn
+    // default_permissions into permissions they actually hold. Server-resolved: a guest member and
+    // a non-member reading an open space both carry read_page alone against the same defaults, so
+    // the client cannot tell them apart and must not try. Optional for the same reason the two
+    // fields above are.
+    can_join?: boolean;
 };
 
 // A space member. The server exposes only the user id (roles/permissions are
@@ -41,11 +49,11 @@ export type SpaceMember = {
 };
 
 // The fields the create-space form collects. The data source turns this into a
-// Space (assigning the opaque id, etc.). visibility is client-only for now (maps
-// to the server's view_access later).
+// Space (assigning the opaque id, etc.). view_access is the server's own
+// vocabulary, so nothing maps between the form and the request.
 export type CreateSpaceInput = {
     title: string;
-    visibility: SpaceVisibility;
+    view_access: SpaceViewAccess;
     description?: string;
     icon?: string;
 };

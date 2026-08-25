@@ -130,11 +130,9 @@ func TestServiceCreateSpace_PresetSchemeMissing(t *testing.T) {
 // status core chose. Reporting it as a 500 would hide a condition the operator can act on.
 func TestServiceCreateSpace_SchemeDenialKeepsStatus(t *testing.T) {
 	mockAPI := &plugintest.API{}
-	mockAPI.On("GetSchemeByName", mock.AnythingOfType("string")).
-		Return((*mmmodel.Scheme)(nil), &mmmodel.AppError{StatusCode: http.StatusNotFound})
-	// The status and id core's own gate returns: minting a custom scheme without the licence for it
-	// is reported as not-implemented, not as a permission denial.
-	mockAPI.On("CreateScheme", mock.AnythingOfType("*model.Scheme")).
+	// The status and id core's own gate returns: minting a scheme without the licence for it is
+	// reported as not-implemented, not as a permission denial.
+	mockAPI.On("GetOrCreatePluginChannelScheme", mock.Anything, mock.Anything, mock.Anything).
 		Return((*mmmodel.Scheme)(nil), &mmmodel.AppError{StatusCode: http.StatusNotImplemented, Id: "api.scheme.create_scheme.license.error"})
 	h := openTestServiceWithAPI(t, mockAPI)
 
@@ -635,39 +633,6 @@ func TestServiceCreateSpace_AddMemberFailedCompensates(t *testing.T) {
 	require.Empty(t, spaces)
 }
 
-// stubSchemeCreate wires the mock calls a non-preset default-permission set needs: a CreateScheme
-// returning a scheme with three roles named off rolePrefix, those roles registered so a channel
-// repointed at the scheme resolves them, and a PatchRole. When patchErr is non-nil every role
-// patch fails with it, so the configure step a freshly created scheme needs cannot complete.
-// Returns the new scheme's id.
-func stubSchemeCreate(t *testing.T, mockAPI *plugintest.API, rolePrefix string, patchErr *mmmodel.AppError) string {
-	t.Helper()
-	testutil.StubPooledSchemeMiss(mockAPI)
-	schemeID := mmmodel.NewId()
-	userRole := rolePrefix + "_user_role"
-	adminRole := rolePrefix + "_admin_role"
-	guestRole := rolePrefix + "_guest_role"
-	mockAPI.On("CreateScheme", mock.AnythingOfType("*model.Scheme")).Return(&mmmodel.Scheme{
-		Id:                      schemeID,
-		Name:                    model.SharedSchemeNamePrefix + mmmodel.NewId(),
-		Scope:                   mmmodel.SchemeScopeChannel,
-		DefaultChannelUserRole:  userRole,
-		DefaultChannelAdminRole: adminRole,
-		DefaultChannelGuestRole: guestRole,
-	}, nil)
-	testutil.RegisterSchemeRoles(schemeID, guestRole, userRole, adminRole)
-	testutil.StubRole(mockAPI, userRole, nil)
-	testutil.StubRole(mockAPI, adminRole, nil)
-	testutil.StubRole(mockAPI, guestRole, nil)
-	if patchErr != nil {
-		mockAPI.On("PatchRole", mock.AnythingOfType("string"), mock.AnythingOfType("*model.RolePatch")).
-			Return(nil, patchErr)
-	} else {
-		testutil.StubPatchRole(mockAPI)
-	}
-	return schemeID
-}
-
 // TestServiceCreateSpace_PooledSchemeSurvivesAbandon covers the compensating path a non-preset
 // default-permission set takes when a later create step fails: the doomed backing channel is
 // archived, but the pooled scheme it pointed at is left alone. The pool is keyed by the permission
@@ -682,7 +647,7 @@ func TestServiceCreateSpace_PooledSchemeSurvivesAbandon(t *testing.T) {
 	backingChannelID := mmmodel.NewId()
 
 	channel := testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
-	pooledSchemeID := stubSchemeCreate(t, mockAPI, "custom", nil)
+	pool := testutil.StubSchemePool(mockAPI)
 	// CreateChannel attaches the pooled scheme, which is what lets core admit the role writes.
 	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
 		Run(func(args mock.Arguments) {
@@ -704,7 +669,9 @@ func TestServiceCreateSpace_PooledSchemeSurvivesAbandon(t *testing.T) {
 	mockAPI.AssertCalled(t, "DeleteChannel", backingChannelID)
 	mockAPI.AssertNotCalled(t, "DeleteScheme", mock.Anything)
 	require.NotNil(t, channel.SchemeId, "the doomed channel must have carried the pooled scheme")
-	require.Equal(t, pooledSchemeID, *channel.SchemeId)
+	minted, ok := pool.Last()
+	require.True(t, ok, "the non-preset set must have resolved through the pool")
+	require.Equal(t, minted.SchemeID, *channel.SchemeId)
 }
 
 // TestServiceCreateSpace_PresetSchemeSurvivesAbandon is the negative half of the case above: a
@@ -729,242 +696,6 @@ func TestServiceCreateSpace_PresetSchemeSurvivesAbandon(t *testing.T) {
 	require.NotNil(t, appErr)
 	mockAPI.AssertCalled(t, "DeleteChannel", backingChannelID)
 	mockAPI.AssertNotCalled(t, "DeleteScheme", mock.Anything)
-}
-
-// TestServiceCreateSpace_CustomSchemeConfiguredAfterChannelAttach verifies the ordering core
-// requires: the role writes carrying space permissions land only after the backing channel already
-// points at the scheme, since a caller-chosen scheme name is not accepted as proof of space scope.
-func TestServiceCreateSpace_CustomSchemeConfiguredAfterChannelAttach(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	h := openTestServiceWithAPI(t, mockAPI)
-
-	teamID := mmmodel.NewId()
-	userID := mmmodel.NewId()
-	backingChannelID := mmmodel.NewId()
-
-	channel := testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
-
-	// Registered before stubSchemeCreate's own catch-all PatchRole so this one matches first
-	// (mock.Mock matches in registration order) and can record the permission set per role.
-	channelAttached := false
-	patched := map[string][]string{}
-	mockAPI.On("PatchRole", mock.AnythingOfType("string"), mock.AnythingOfType("*model.RolePatch")).
-		Run(func(args mock.Arguments) {
-			require.True(t, channelAttached, "roles must be patched only after the channel attaches the scheme")
-			roleID, ok := args.Get(0).(string)
-			require.True(t, ok)
-			roleName, ok := testutil.StubbedRoleName(roleID)
-			require.True(t, ok, "PatchRole called with an unregistered role id %q", roleID)
-			patch, ok := args.Get(1).(*mmmodel.RolePatch)
-			require.True(t, ok)
-			require.NotNil(t, patch.Permissions)
-			patched[roleName] = *patch.Permissions
-		}).
-		Return(&mmmodel.Role{}, nil)
-
-	customSchemeID := stubSchemeCreate(t, mockAPI, "custom", nil)
-	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
-		Run(func(args mock.Arguments) {
-			created, ok := args.Get(0).(*mmmodel.Channel)
-			require.True(t, ok)
-			require.NotNil(t, created.SchemeId)
-			require.Equal(t, customSchemeID, *created.SchemeId)
-			channel.SchemeId = created.SchemeId
-			channelAttached = true
-		}).
-		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
-	mockAPI.On("AddChannelMember", backingChannelID, userID).Return(&mmmodel.ChannelMember{}, nil)
-
-	space, appErr := h.svc.CreateSpace(
-		&model.Space{TeamId: teamID, Title: "Custom Caps"}, userID, &[]string{"create_page"}, nil)
-	require.Nil(t, appErr)
-	require.NotNil(t, space)
-
-	// Each generated role gets its own set: the user role the requested permissions plus the
-	// baseline read, the guest role read alone, and the admin role the full space-admin set.
-	require.ElementsMatch(t, []string{"read_page", "create_page"}, patched["custom_user_role"])
-	require.ElementsMatch(t, []string{"read_page"}, patched["custom_guest_role"])
-	require.ElementsMatch(t, mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions), patched["custom_admin_role"])
-}
-
-// TestServiceCreateSpace_PooledSchemeConfigureFailureAbandons covers the CreateSpace branch that
-// runs when the role writes fail after the backing channel already carries the pooled scheme: the
-// create fails and the channel is archived, while the pooled scheme stays — it is shared, so a
-// later space resolving to the same permission set reconfigures it. The creator is never added,
-// since configuration precedes that.
-func TestServiceCreateSpace_PooledSchemeConfigureFailureAbandons(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	h := openTestServiceWithAPI(t, mockAPI)
-
-	teamID := mmmodel.NewId()
-	userID := mmmodel.NewId()
-	backingChannelID := mmmodel.NewId()
-
-	channel := testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
-	customSchemeID := stubSchemeCreate(t, mockAPI, "unconfigurable", &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
-	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
-		Run(func(args mock.Arguments) {
-			created, ok := args.Get(0).(*mmmodel.Channel)
-			require.True(t, ok)
-			require.NotNil(t, created.SchemeId)
-			channel.SchemeId = created.SchemeId
-		}).
-		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
-	mockAPI.On("DeleteChannel", backingChannelID).Return(nil)
-
-	_, appErr := h.svc.CreateSpace(
-		&model.Space{TeamId: teamID, Title: "Unconfigurable Pooled"}, userID, &[]string{"create_page"}, nil)
-	require.NotNil(t, appErr)
-	require.Equal(t, "app.space.create.scheme_configure_failed.app_error", appErr.Id)
-
-	mockAPI.AssertCalled(t, "DeleteChannel", backingChannelID)
-	mockAPI.AssertNotCalled(t, "DeleteScheme", mock.Anything)
-	require.NotEmpty(t, customSchemeID)
-	mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
-
-	spaces, err := h.store.GetSpacesForTeam(teamID, userID, false, 0, 10)
-	require.NoError(t, err)
-	require.Empty(t, spaces)
-}
-
-// TestServiceSetSpaceDefaultPermissions_ConfigureFailureRollsBack covers the repoint-then-configure
-// failure branch: a space whose newly pooled scheme cannot be configured must be put back on its
-// previous scheme rather than left on one whose roles may still carry core's default channel
-// baseline. The pooled scheme itself is never deleted — it is shared, not this space's to retire.
-func TestServiceSetSpaceDefaultPermissions_ConfigureFailureRollsBack(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	channelID := mmmodel.NewId()
-
-	// The write re-authorizes inside the lock, so the actor has to hold admin_space to reach
-	// the configure branch this test is about. Registered before the harness: testify matches
-	// the first expectation registered, and StubDefaultSpacePermissions denies admin_space.
-	actingUserID := mmmodel.NewId()
-	mockAPI.On("HasPermissionToChannel", actingUserID, channelID, mmmodel.PermissionAdminSpace).Return(true).Maybe()
-
-	h := openTestServiceWithAPI(t, mockAPI)
-
-	// That in-lock re-authorization reads SchemeAdmin from the master rather than through the
-	// cached permission composition, so the grant above is not sufficient on its own.
-	testutil.MustAddChannelAdmin(t, h.db, channelID, actingUserID)
-
-	channel := testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
-	pooledSchemeID := stubSchemeCreate(t, mockAPI, "unconfigurable", &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
-
-	space := mustCreateSpace(t, h.store, channelID)
-	_, appErr := h.svc.SetSpaceDefaultPermissions(space, []string{"create_page"}, actingUserID)
-
-	require.NotNil(t, appErr)
-	require.Equal(t, "app.space.default_permissions.scheme_configure_failed.app_error", appErr.Id)
-	require.NotNil(t, channel.SchemeId)
-	require.Equal(t, testutil.PresetSchemeID(mmmodel.SchemeNameSpaceContribute), *channel.SchemeId,
-		"the channel must be repointed back at the scheme it started on")
-	require.NotEqual(t, pooledSchemeID, *channel.SchemeId)
-	mockAPI.AssertNotCalled(t, "DeleteScheme", mock.Anything)
-}
-
-// TestServiceSetSpaceDefaultPermissions_SameSchemeStillConfiguresRoles covers the recovery path for
-// a space already pointing at the scheme its requested set resolves to, whose roles were never
-// written — the state an earlier run interrupted between the channel repoint and the role write
-// leaves behind. There is no repoint to perform, so the operation could return having done nothing,
-// and every later submission of the intended set would do the same, leaving the space permanently on
-// core's default channel baseline with no way to move off it. Resubmitting must write the roles.
-func TestServiceSetSpaceDefaultPermissions_SameSchemeStillConfiguresRoles(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	sysadminID := mmmodel.NewId()
-	// Registered before the harness so the response's own-permission projection resolves via
-	// sysadmin, sidestepping the ReadViaMember channel-member lookup this test does not stub.
-	// mock.Mock matches expectations in registration order.
-	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true)
-	h := openTestServiceWithAPI(t, mockAPI)
-
-	permissions := []string{mmmodel.PermissionCreatePage.Id}
-	pooledName := model.SharedSchemeNameForPermissions(permissions)
-	schemeID := mmmodel.NewId()
-	userRole, adminRole, guestRole := pooledName+"_user", pooledName+"_admin", pooledName+"_guest"
-	mockAPI.On("GetSchemeByName", pooledName).Return(&mmmodel.Scheme{
-		Id:                      schemeID,
-		Name:                    pooledName,
-		DisplayName:             model.SharedSchemeDisplayNameForPermissions(permissions),
-		Scope:                   mmmodel.SchemeScopeChannel,
-		DefaultChannelUserRole:  userRole,
-		DefaultChannelAdminRole: adminRole,
-		DefaultChannelGuestRole: guestRole,
-	}, nil)
-	testutil.RegisterSchemeRoles(schemeID, guestRole, userRole, adminRole)
-	// Empty permission sets stand in for an unconfigured role — one core generated alongside the
-	// scheme and configureSharedScheme has not yet written. Core does not literally leave them
-	// empty (it seeds the moderated subset of the built-in role, and a read merges more in), but
-	// every comparison here goes through the space-permission filter, and an unconfigured role
-	// carries no space permission whatever core put on it. Empty is therefore the same input.
-	unconfiguredUserRole := testutil.StubRole(mockAPI, userRole, nil)
-	testutil.StubRole(mockAPI, adminRole, nil)
-	testutil.StubRole(mockAPI, guestRole, nil)
-	testutil.StubPatchRole(mockAPI)
-
-	// The channel already points at that scheme, so the repoint branch is skipped entirely.
-	channelID := mmmodel.NewId()
-	testutil.StubChannelScheme(mockAPI, channelID, &mmmodel.Channel{
-		Id: channelID, Type: mmmodel.ChannelTypeSpace, SchemeId: &schemeID,
-	})
-	space := mustCreateSpace(t, h.store, channelID)
-
-	updated, appErr := h.svc.SetSpaceDefaultPermissions(space, permissions, sysadminID)
-
-	require.Nil(t, appErr)
-	require.Equal(t, permissions, updated.DefaultPermissions)
-	require.ElementsMatch(t, []string{mmmodel.PermissionReadPage.Id, mmmodel.PermissionCreatePage.Id},
-		unconfiguredUserRole.Permissions,
-		"resubmitting the set a space already resolves to must write the roles it was left without")
-	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_updated",
-		map[string]any{"space_id": space.Id}, &mmmodel.WebsocketBroadcast{ChannelId: channelID})
-}
-
-// TestServiceSetSpaceDefaultPermissions_UserRoleAloneUnconfiguredStillWritesIt models the residual
-// state a User-role-only mid-loop failure leaves under configureSharedScheme's Admin/Guest-before-
-// User write order: Admin and Guest already hold their correct permissions, User is still at core's
-// unconfigured baseline. The no-op shortcut's projection (User role alone) must read this as
-// incorrect and fall through to the recovery branch, which reaches configureSharedScheme and writes
-// the User role — the shortcut must not report the space as already configured.
-func TestServiceSetSpaceDefaultPermissions_UserRoleAloneUnconfiguredStillWritesIt(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	sysadminID := mmmodel.NewId()
-	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true)
-	h := openTestServiceWithAPI(t, mockAPI)
-
-	permissions := []string{mmmodel.PermissionCreatePage.Id}
-	pooledName := model.SharedSchemeNameForPermissions(permissions)
-	schemeID := mmmodel.NewId()
-	userRoleName, adminRoleName, guestRoleName := pooledName+"_user", pooledName+"_admin", pooledName+"_guest"
-	mockAPI.On("GetSchemeByName", pooledName).Return(&mmmodel.Scheme{
-		Id:                      schemeID,
-		Name:                    pooledName,
-		DisplayName:             model.SharedSchemeDisplayNameForPermissions(permissions),
-		Scope:                   mmmodel.SchemeScopeChannel,
-		DefaultChannelUserRole:  userRoleName,
-		DefaultChannelAdminRole: adminRoleName,
-		DefaultChannelGuestRole: guestRoleName,
-	}, nil)
-	testutil.RegisterSchemeRoles(schemeID, guestRoleName, userRoleName, adminRoleName)
-
-	unconfiguredUserRole := testutil.StubRole(mockAPI, userRoleName, nil)
-	testutil.StubRole(mockAPI, adminRoleName, mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions))
-	testutil.StubRole(mockAPI, guestRoleName, []string{mmmodel.PermissionReadPage.Id})
-	testutil.StubPatchRole(mockAPI)
-
-	channelID := mmmodel.NewId()
-	testutil.StubChannelScheme(mockAPI, channelID, &mmmodel.Channel{
-		Id: channelID, Type: mmmodel.ChannelTypeSpace, SchemeId: &schemeID,
-	})
-	space := mustCreateSpace(t, h.store, channelID)
-
-	updated, appErr := h.svc.SetSpaceDefaultPermissions(space, permissions, sysadminID)
-
-	require.Nil(t, appErr)
-	require.Equal(t, permissions, updated.DefaultPermissions)
-	require.ElementsMatch(t, []string{mmmodel.PermissionReadPage.Id, mmmodel.PermissionCreatePage.Id},
-		unconfiguredUserRole.Permissions,
-		"the recovery branch must be reached and write the still-unconfigured user role")
-	mockAPI.AssertCalled(t, "PatchRole", unconfiguredUserRole.Id, mock.AnythingOfType("*model.RolePatch"))
 }
 
 // TestServiceBuildSpaceWithAccess_TeamManagerGetsManageTier covers the caller whose authority over a
@@ -1014,6 +745,74 @@ func TestServiceBuildSpaceWithAccess_TeamManagerGetsManageTier(t *testing.T) {
 		"the manage tier must not imply the administer tier: the space-wide knobs stay refused")
 }
 
+// TestServiceBuildSpaceWithAccess_TeamDeleterGetsDeleteTierOnly covers the caller the archive route
+// admits and the roster routes refuse.
+//
+// The two team permissions behind these tiers are independent, so an effective set that reported
+// only the manage tier would leave a client with no way to tell whether archive is offered: it
+// would hide it from this caller, whom requireSpaceDelete admits, and offer it to a manage_space
+// holder it refuses. Both tiers therefore appear as themselves.
+func TestServiceBuildSpaceWithAccess_TeamDeleterGetsDeleteTierOnly(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	for _, p := range []*mmmodel.Permission{
+		mmmodel.PermissionReadPage, mmmodel.PermissionCreatePage, mmmodel.PermissionCommentPage,
+		mmmodel.PermissionEditPage, mmmodel.PermissionDeleteOwnPage, mmmodel.PermissionDeletePage,
+		mmmodel.PermissionAdminSpace,
+	} {
+		mockAPI.On("HasPermissionToChannel", userID, mock.Anything, p).Return(false).Maybe()
+	}
+	teamID := mmmodel.NewId()
+	mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionReadPublicChannel).Return(true).Maybe()
+	mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionManageSpace).Return(false).Maybe()
+	mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionDeleteSpace).Return(true).Maybe()
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
+	space := testutil.MustCreateSpace(t, h.store, channelID, teamID)
+	open := model.ViewAccessOpen
+	space, err := h.store.UpdateSpace(space.Id, &model.SpacePatch{ViewAccess: &open}, space.UpdateAt, false)
+	require.NoError(t, err)
+
+	wrapper, appErr := h.svc.BuildSpaceWithAccess(space, userID)
+
+	require.Nil(t, appErr)
+	require.ElementsMatch(t,
+		[]string{mmmodel.PermissionReadPage.Id, mmmodel.PermissionDeleteSpace.Id},
+		wrapper.Permissions,
+		"the archive route admits this caller, so the effective set must say so without also "+
+			"claiming a manage tier they do not hold")
+}
+
+// TestServiceBuildSpaceWithAccess_TeamManagerHasNoDeleteTier is the other half of the same
+// independence: holding team manage_space says nothing about archiving, which requireSpaceDelete
+// gates on a different team permission.
+func TestServiceBuildSpaceWithAccess_TeamManagerHasNoDeleteTier(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionAdminSpace).Return(false).Maybe()
+	teamID := mmmodel.NewId()
+	mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionManageSpace).Return(true).Maybe()
+	mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionDeleteSpace).Return(false).Maybe()
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
+	space := testutil.MustCreateSpace(t, h.store, channelID, teamID)
+
+	mockAPI.On("HasPermissionTo", userID, mmmodel.PermissionManageSystem).Return(false).Maybe()
+	mockAPI.On("GetChannelMember", channelID, userID).
+		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: userID, SchemeUser: true}, nil).Maybe()
+
+	wrapper, appErr := h.svc.BuildSpaceWithAccess(space, userID)
+
+	require.Nil(t, appErr)
+	require.Contains(t, wrapper.Permissions, mmmodel.PermissionManageSpace.Id)
+	require.NotContains(t, wrapper.Permissions, mmmodel.PermissionDeleteSpace.Id,
+		"the manage tier must not carry archive across; the delete route would refuse this caller")
+}
+
 // TestServiceBuildSpaceWithAccess_PlainMemberHasNoManageTier is the negative counterpart: an
 // ordinary member with neither space-admin nor team manage_space must not be told they can manage
 // members, or the client would offer a roster the server refuses. Membership alone is not the
@@ -1041,71 +840,6 @@ func TestServiceBuildSpaceWithAccess_PlainMemberHasNoManageTier(t *testing.T) {
 		"an ordinary member holds no manage tier; being in the space is not authority over it")
 }
 
-// TestServiceSetSpaceDefaultPermissions_OverPrivilegedUserRoleRefused is the over-configured
-// counterpart of the test above, and it takes two guards to pass.
-//
-// The pooled scheme's User role holds a permission the pooled name does not imply — admin_space,
-// standing in for a System Console edit — so every member of every space sharing that scheme
-// silently holds space-admin authority. Resubmitting the intended set must not report success:
-//
-//   - the no-op shortcut has to notice. It compares the User role against the whole set the writer
-//     lands, so the extra token makes it differ; comparing the read_page-free wire projection
-//     instead would strip admin_space, read as unchanged, and return early having fixed nothing.
-//   - adoption then has to refuse. The scheme's roles do not match its name, so the pool cannot
-//     prove the scheme is its own, and rewriting the roles of a scheme it does not own could
-//     change authority on channels outside this space.
-//
-// The net behaviour is a 500 naming a server-state conflict, which an admin resolves by correcting
-// or deleting the scheme where they edited it. That is deliberately not a silent self-repair: the
-// pool cannot tell a tampered scheme of its own from an unrelated channel scheme occupying the
-// name, and guessing wrong rewrites permissions on channels that have nothing to do with Docs.
-func TestServiceSetSpaceDefaultPermissions_OverPrivilegedUserRoleRefused(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	sysadminID := mmmodel.NewId()
-	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true)
-	h := openTestServiceWithAPI(t, mockAPI)
-
-	// create_page alone is deliberately not one of the three seeded presets, so this resolves
-	// through the pool rather than a preset scheme — the pool is what adoption guards.
-	permissions := []string{mmmodel.PermissionCreatePage.Id}
-	pooledName := model.SharedSchemeNameForPermissions(permissions)
-	schemeID := mmmodel.NewId()
-	userRoleName, adminRoleName, guestRoleName := pooledName+"_user", pooledName+"_admin", pooledName+"_guest"
-	mockAPI.On("GetSchemeByName", pooledName).Return(&mmmodel.Scheme{
-		Id:                      schemeID,
-		Name:                    pooledName,
-		DisplayName:             model.SharedSchemeDisplayNameForPermissions(permissions),
-		Scope:                   mmmodel.SchemeScopeChannel,
-		DefaultChannelUserRole:  userRoleName,
-		DefaultChannelAdminRole: adminRoleName,
-		DefaultChannelGuestRole: guestRoleName,
-	}, nil)
-	testutil.RegisterSchemeRoles(schemeID, guestRoleName, userRoleName, adminRoleName)
-
-	// The tampered role: the pooled name implies read_page + create_page, and this grants
-	// admin_space on top. The wire projection drops admin_space, so a projection-based comparison
-	// reads this as already correct.
-	tamperedUserRole := testutil.StubRole(mockAPI, userRoleName, []string{
-		mmmodel.PermissionReadPage.Id, mmmodel.PermissionCreatePage.Id, mmmodel.PermissionAdminSpace.Id,
-	})
-	testutil.StubRole(mockAPI, adminRoleName, mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions))
-	testutil.StubRole(mockAPI, guestRoleName, []string{mmmodel.PermissionReadPage.Id})
-	testutil.StubPatchRole(mockAPI)
-
-	channelID := mmmodel.NewId()
-	testutil.StubChannelScheme(mockAPI, channelID, &mmmodel.Channel{
-		Id: channelID, Type: mmmodel.ChannelTypeSpace, SchemeId: &schemeID,
-	})
-	space := mustCreateSpace(t, h.store, channelID)
-
-	_, appErr := h.svc.SetSpaceDefaultPermissions(space, permissions, sysadminID)
-
-	require.NotNil(t, appErr, "a scheme granting more than its pooled name implies must not report success")
-	require.Equal(t, "app.space.pooled_scheme_conflict.app_error", appErr.Id)
-	require.Contains(t, tamperedUserRole.Permissions, mmmodel.PermissionAdminSpace.Id,
-		"the refusal must leave the scheme untouched rather than rewriting roles the pool does not own")
-}
-
 // TestServiceSetSpaceDefaultPermissions_ResponseReflectsRequestedNotStaleReadback covers the
 // projection guard: the response is built from the permission set written under the lock, not
 // from a fresh read of the roles that write just committed. GetRoleByName here always answers with
@@ -1123,26 +857,14 @@ func TestServiceSetSpaceDefaultPermissions_ResponseReflectsRequestedNotStaleRead
 	channelID := mmmodel.NewId()
 	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
 
-	testutil.StubPooledSchemeMiss(mockAPI)
-	schemeID := mmmodel.NewId()
-	userRole, adminRole, guestRole := "stale_readback_user_role", "stale_readback_admin_role", "stale_readback_guest_role"
-	mockAPI.On("CreateScheme", mock.AnythingOfType("*model.Scheme")).Return(&mmmodel.Scheme{
-		Id:                      schemeID,
-		Name:                    model.SharedSchemeNamePrefix + mmmodel.NewId(),
-		Scope:                   mmmodel.SchemeScopeChannel,
-		DefaultChannelUserRole:  userRole,
-		DefaultChannelAdminRole: adminRole,
-		DefaultChannelGuestRole: guestRole,
-	}, nil)
-	testutil.RegisterSchemeRoles(schemeID, guestRole, userRole, adminRole)
-	// Frozen on a permission set that does not match the request below, and never updated by the
-	// PatchRole stub: a caller that re-read this role after the write would see the wrong set.
-	mockAPI.On("GetRoleByName", userRole).
-		Return(&mmmodel.Role{Id: mmmodel.NewId(), Name: userRole, Permissions: []string{mmmodel.PermissionCommentPage.Id}}, nil)
-	mockAPI.On("GetRoleByName", adminRole).Return(&mmmodel.Role{Id: mmmodel.NewId(), Name: adminRole}, nil)
-	mockAPI.On("GetRoleByName", guestRole).Return(&mmmodel.Role{Id: mmmodel.NewId(), Name: guestRole}, nil)
-	mockAPI.On("PatchRole", mock.AnythingOfType("string"), mock.AnythingOfType("*model.RolePatch")).
-		Return(&mmmodel.Role{}, nil)
+	// Registered ahead of the pool stub so it wins the match: every role read answers with a
+	// permission set that is not the one requested below, standing in for a lagging-replica read
+	// of the caller's own committed change.
+	mockAPI.On("GetRoleByName", mock.AnythingOfType("string")).
+		Return(func(name string) (*mmmodel.Role, *mmmodel.AppError) {
+			return &mmmodel.Role{Id: mmmodel.NewId(), Name: name, Permissions: []string{mmmodel.PermissionCommentPage.Id}}, nil
+		})
+	testutil.StubSchemePool(mockAPI)
 
 	space := mustCreateSpace(t, h.store, channelID)
 
@@ -1308,7 +1030,8 @@ func TestServiceUpdateSpace_ViewAccessGuards(t *testing.T) {
 		testutil.MustAddChannelAdmin(t, h.db, channelID, userID)
 		// A nil channel makes the backing-channel metadata sync a no-op.
 		mockAPI.On("GetChannelOfType", mock.Anything, mock.Anything).Return((*mmmodel.Channel)(nil), nil).Maybe()
-		mockAPI.On("GetChannelStats", channelID).Return(&mmmodel.ChannelStats{MemberCount: 3}, nil).Maybe()
+		// The flip prunes the members who joined through the open access; this space has none.
+		mockAPI.On("DeleteChannelMember", channelID, mock.Anything).Return(nil).Maybe()
 		space := mustCreateSpace(t, h.store, channelID)
 
 		updated, appErr := h.svc.UpdateSpace(space, privatePatch(), new(space.UpdateAt), false, userID)
@@ -1421,12 +1144,15 @@ func TestServiceGetSpaceMembers_ListFails(t *testing.T) {
 	require.Equal(t, "app.space.get_members.failed.app_error", appErr.Id)
 }
 
-// TestServiceDefaultRolesGrantPermission_ChannelWithoutScheme covers schemeRolesFromChannel's
+// TestServiceSpaceDefaultPermissions_ChannelWithoutScheme covers schemeRolesFromChannel's
 // fail-closed branch: a backing channel carrying no scheme (a space that lost its scheme) resolves
-// to not-found, which DefaultRolesGrantPermission maps to "not granted" — never a silent
-// fall-through to the team scheme's channel roles, and never a wrong-role grant. The lookup must
+// to not-found rather than falling through to the team scheme's channel roles, which grant no page
+// permissions and would read as a space whose defaults confer nothing. The lookup must
 // short-circuit before reaching GetSchemeRolesForChannel.
-func TestServiceDefaultRolesGrantPermission_ChannelWithoutScheme(t *testing.T) {
+//
+// Reached through the roster's permission projection, which resolves the space's default set
+// without a read gate in front of it.
+func TestServiceSpaceDefaultPermissions_ChannelWithoutScheme(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
 
@@ -1435,9 +1161,8 @@ func TestServiceDefaultRolesGrantPermission_ChannelWithoutScheme(t *testing.T) {
 	mockAPI.On("GetChannelOfType", channelID, mmmodel.ChannelTypeSpace).
 		Return(&mmmodel.Channel{Id: channelID, Type: mmmodel.ChannelTypeSpace}, nil)
 
-	granted, err := h.svc.DefaultRolesGrantPermission(&model.Space{ChannelId: channelID}, mmmodel.PermissionCreatePage)
-	require.NoError(t, err)
-	require.False(t, granted)
+	_, _, appErr := h.svc.GetSpaceMembers(&model.Space{Id: mmmodel.NewId(), ChannelId: channelID}, 0, 60, true)
+	require.NotNil(t, appErr)
 	mockAPI.AssertNotCalled(t, "GetSchemeRolesForChannel", mock.Anything)
 }
 

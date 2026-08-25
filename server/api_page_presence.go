@@ -18,7 +18,7 @@ func (p *Plugin) handleGetPageActiveEditors(w http.ResponseWriter, r *http.Reque
 	pageID := vars["page_id"]
 	userID := userIDFromRequest(r)
 
-	if _, _, ok := p.requireSpaceRead(w, spaceID, userID); !ok {
+	if _, ok := p.requireSpaceRead(w, spaceID, userID); !ok {
 		return
 	}
 

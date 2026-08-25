@@ -17,7 +17,6 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/app"
-	"github.com/mattermost/mattermost-plugin-docs/server/internal/testutil"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
@@ -37,7 +36,7 @@ func publishNewPage(t *testing.T, h *testHarness, space *model.Space, userID, ti
 	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: reservedID, Title: title, Body: docWith(bodyText)}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
-	page, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, reservedID, false, app.ReadViaMember)
+	page, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, reservedID, false)
 	require.Nil(t, appErr)
 	require.True(t, wasCreated, "publishing a brand-new page must report wasCreated=true")
 	require.Equal(t, reservedID, page.Id, "publish must preserve the reserved draft id")
@@ -79,7 +78,7 @@ func TestPublishEmptyDraftBodyDoesNotWipePage(t *testing.T) {
 	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
-	republished, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, false, app.ReadViaMember)
+	republished, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, false)
 	require.Nil(t, appErr)
 	require.Contains(t, republished.Body, "ORIGINAL", "publishing a title-only edit must preserve the page body")
 }
@@ -103,7 +102,7 @@ func TestPublishNoOpDraftDiscardsAndReturnsExistingPage(t *testing.T) {
 	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
-	result, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, page.Id, false, app.ReadViaMember)
+	result, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, page.Id, false)
 	require.Nil(t, appErr)
 	require.False(t, wasCreated, "a no-content publish must not report a creation")
 	require.Equal(t, page.Title, result.Title, "the page's title must be unchanged")
@@ -138,7 +137,7 @@ func TestPublishRejectsMissingBaselineOnEdit(t *testing.T) {
 	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
-	forced, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, true, app.ReadViaMember)
+	forced, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, true)
 	require.Nil(t, appErr)
 	require.Contains(t, forced.Body, "v2")
 }
@@ -167,13 +166,13 @@ func TestPublishRejectsNoBaselineOnExistingPageEdit(t *testing.T) {
 	require.NoError(t, err)
 
 	// Without a baseline, a non-force publish of an edit must be rejected.
-	_, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, false, app.ReadViaMember)
+	_, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 	require.Equal(t, "app.page_draft.publish.baseline_required.app_error", appErr.Id)
 
 	// force=true bypasses the missing-baseline guard and publishes the edit.
-	forced, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, page.Id, true, app.ReadViaMember)
+	forced, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, page.Id, true)
 	require.Nil(t, appErr)
 	require.False(t, wasCreated)
 	require.Equal(t, "Edited", forced.Title)
@@ -205,7 +204,7 @@ func TestPublishStaleBaselineConflicts(t *testing.T) {
 	// Publishing the draft against the now-stale baseline must 409, and return the current server
 	// page (the concurrent edit's content + advanced baseline) so the caller can diff without a
 	// follow-up read.
-	current, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, false, app.ReadViaMember)
+	current, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusConflict, appErr.StatusCode)
 	require.NotNil(t, current, "edit conflict must return the current server page")
@@ -229,7 +228,7 @@ func TestPublishAfterPageDeleteReturns404(t *testing.T) {
 	require.Nil(t, appErr)
 	requireStoreDeletePage(t, h.store, page.Id, space.Id, userID)
 
-	_, _, appErr = h.svc.PublishPageDraft(space, userID, page.Id, false, app.ReadViaMember)
+	_, _, appErr = h.svc.PublishPageDraft(space, userID, page.Id, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusNotFound, appErr.StatusCode)
 }
@@ -279,7 +278,7 @@ func TestPublishPageDraftConcurrentPublishesConverge(t *testing.T) {
 	for i := range results {
 		wg.Go(func() {
 			<-start
-			p, created, pubErr := h.svc.PublishPageDraft(space, userID, draft.PageId, false, app.ReadViaMember)
+			p, created, pubErr := h.svc.PublishPageDraft(space, userID, draft.PageId, false)
 			results[i] = result{page: p, created: created, appErr: pubErr}
 		})
 	}
@@ -394,7 +393,7 @@ func TestPublishForceOverridesStaleBaseline(t *testing.T) {
 	require.Nil(t, appErr)
 
 	// force=true must override the stale-baseline CAS and win with the draft's content.
-	forced, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, true, app.ReadViaMember)
+	forced, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, true)
 	require.Nil(t, appErr)
 	require.Contains(t, forced.Body, "v3", "force must override a stale baseline")
 	require.Greater(t, forced.EditAt, concurrentPage.EditAt, "a force-publish must still advance the page's EditAt")
@@ -422,7 +421,7 @@ func TestPublishForceDoesNotRevertUntouchedField(t *testing.T) {
 
 	// Force-publish the title-only draft: force overrides the stale baseline, but only the title may
 	// be applied. The concurrent body edit must survive rather than be reverted to the pre-lock value.
-	forced, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, true, app.ReadViaMember)
+	forced, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, true)
 	require.Nil(t, appErr)
 	require.Equal(t, "New title", forced.Title, "the draft's title must be applied")
 	require.Contains(t, forced.Body, "concurrent body", "a field the draft never set must not be reverted")
@@ -442,7 +441,7 @@ func TestUpdatePageDraftRejectsStaleBaselineAfterPublish(t *testing.T) {
 		BaseEditAt: baseEditAt,
 	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
-	_, _, appErr = h.svc.PublishPageDraft(space, userID, page.Id, false, app.ReadViaMember)
+	_, _, appErr = h.svc.PublishPageDraft(space, userID, page.Id, false)
 	require.Nil(t, appErr)
 
 	// A late autosave carrying the pre-publish baseline must be rejected, not resurrect a phantom
@@ -529,7 +528,7 @@ func TestPublishCarriesDraftProps(t *testing.T) {
 	}, nil, nil, &mmmodel.StringInterface{"color": "blue"}, "")
 	require.Nil(t, appErr)
 
-	page, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, pageID, false, app.ReadViaMember)
+	page, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, pageID, false)
 	require.Nil(t, appErr)
 	require.True(t, wasCreated)
 	require.Equal(t, "blue", page.Props["color"], "a new page must adopt the draft's props on publish")
@@ -539,7 +538,7 @@ func TestPublishCarriesDraftProps(t *testing.T) {
 		UserId: userID, SpaceId: space.Id, PageId: pageID, Title: "Doc", BaseEditAt: page.EditAt,
 	}, nil, nil, &mmmodel.StringInterface{"color": "red"}, "")
 	require.Nil(t, appErr)
-	edited, _, appErr := h.svc.PublishPageDraft(space, userID, pageID, false, app.ReadViaMember)
+	edited, _, appErr := h.svc.PublishPageDraft(space, userID, pageID, false)
 	require.Nil(t, appErr)
 	require.Equal(t, "red", edited.Props["color"], "an edit with non-empty draft props must replace the page's props")
 
@@ -548,7 +547,7 @@ func TestPublishCarriesDraftProps(t *testing.T) {
 		UserId: userID, SpaceId: space.Id, PageId: pageID, Body: docWith("v2"), BaseEditAt: edited.EditAt,
 	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
-	preserved, _, appErr := h.svc.PublishPageDraft(space, userID, pageID, false, app.ReadViaMember)
+	preserved, _, appErr := h.svc.PublishPageDraft(space, userID, pageID, false)
 	require.Nil(t, appErr)
 	require.Equal(t, "red", preserved.Props["color"], "an edit carrying no props must preserve the page's props")
 	require.Contains(t, preserved.Body, "v2")
@@ -574,14 +573,14 @@ func TestPublishRejectsForeignSpacePage(t *testing.T) {
 	// userA autosaves content and publishes, so the page becomes live in space A.
 	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userA, SpaceId: spaceA.Id, PageId: pageID, Title: "A doc", Body: docWith("a content")}, nil, nil, nil, "")
 	require.Nil(t, appErr)
-	pageA, wasCreated, appErr := h.svc.PublishPageDraft(spaceA, userA, pageID, false, app.ReadViaMember)
+	pageA, wasCreated, appErr := h.svc.PublishPageDraft(spaceA, userA, pageID, false)
 	require.Nil(t, appErr)
 	require.True(t, wasCreated)
 
 	// userB has no draft for pageID (the cross-space reservation was rejected above), so publishing
 	// from space B must fail with 404 (draft not found). force cannot bypass this.
 	for _, force := range []bool{false, true} {
-		_, _, appErr = h.svc.PublishPageDraft(spaceB, userB, pageID, force, app.ReadViaMember)
+		_, _, appErr = h.svc.PublishPageDraft(spaceB, userB, pageID, force)
 		require.NotNil(t, appErr, "cross-space publish (force=%v) must fail", force)
 		require.Equal(t, http.StatusNotFound, appErr.StatusCode,
 			"cross-space publish (force=%v) must be rejected", force)
@@ -645,7 +644,7 @@ func TestPublishEditIgnoresStaleParentGuard(t *testing.T) {
 	childID := childDraft.PageId
 	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: childID, Title: "Child", Body: docWith("c1")}, nil, nil, nil, "")
 	require.Nil(t, appErr)
-	child, _, appErr := h.svc.PublishPageDraft(space, userID, childID, false, app.ReadViaMember)
+	child, _, appErr := h.svc.PublishPageDraft(space, userID, childID, false)
 	require.Nil(t, appErr)
 
 	// Start an edit session whose draft still carries the (currently live) parent id.
@@ -660,7 +659,7 @@ func TestPublishEditIgnoresStaleParentGuard(t *testing.T) {
 	requireStoreDeletePage(t, h.store, parent.Id, space.Id, userID)
 
 	// A content-only edit-publish must still succeed: the edit path does not reparent.
-	republished, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, childID, false, app.ReadViaMember)
+	republished, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, childID, false)
 	require.Nil(t, appErr, "edit-publish must not be blocked by a stale parent id")
 	require.False(t, wasCreated)
 	require.Contains(t, republished.Body, "c2")
@@ -692,7 +691,7 @@ func TestCreateSpaceDraftRejectsForeignDraftParent(t *testing.T) {
 	// userA can, and the child then publishes only after the parent does.
 	child, appErr := h.svc.CreateSpaceDraft(userA, space.Id, "Child", parent.PageId)
 	require.Nil(t, appErr)
-	_, _, appErr = h.svc.PublishPageDraft(space, userA, child.PageId, false, app.ReadViaMember)
+	_, _, appErr = h.svc.PublishPageDraft(space, userA, child.PageId, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusConflict, appErr.StatusCode, "child cannot publish under an unpublished parent")
 }
@@ -756,7 +755,7 @@ func TestUpdatePageDraftRejectsResurrectionAfterNewPagePublish(t *testing.T) {
 
 	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: pageID, Body: docWith("v1")}, nil, nil, nil, "")
 	require.Nil(t, appErr)
-	_, _, appErr = h.svc.PublishPageDraft(space, userID, pageID, false, app.ReadViaMember)
+	_, _, appErr = h.svc.PublishPageDraft(space, userID, pageID, false)
 	require.Nil(t, appErr)
 
 	// Late autosave with no baseline: the draft is gone, so this must be rejected.
@@ -921,7 +920,7 @@ func TestPublishNewPageRejectsCrossSpaceParent(t *testing.T) {
 	// Publishing must reject: the parent lives in a different space than the draft's space. The guard
 	// collapses "cross-space" and "not a live page" into a single parent_unpublished 409 so the
 	// response can't be used to probe page ids in spaces the caller cannot read.
-	_, _, appErr := h.svc.PublishPageDraft(spaceB, userID, pageID, false, app.ReadViaMember)
+	_, _, appErr := h.svc.PublishPageDraft(spaceB, userID, pageID, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusConflict, appErr.StatusCode, "cross-space parent must be rejected: %v", appErr)
 	require.Equal(t, "app.page_draft.publish.parent_unpublished.app_error", appErr.Id)
@@ -1036,7 +1035,7 @@ func TestPublishForceAppliesDraftFieldOverConcurrentEdit(t *testing.T) {
 		&model.PagePatch{Title: &concurrentTitle, Body: &concurrentBody}, new(baseEditAt), false, userID)
 	require.Nil(t, appErr)
 
-	forced, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, true, app.ReadViaMember)
+	forced, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, true)
 	require.Nil(t, appErr)
 	require.Equal(t, "Draft title", forced.Title, "the field the draft carries must win under force")
 	require.Contains(t, forced.Body, "concurrent body", "a field the draft never set must keep the concurrent value")
@@ -1093,48 +1092,4 @@ func TestUpdatePageDraftRejectsInvalidFileId(t *testing.T) {
 			require.Equal(t, "model.draft.is_valid.file_id.app_error", appErr.Id)
 		})
 	}
-}
-
-// TestPublishPageDraftUndoesAutoJoinOnLaterRejection covers the deferred rollback inside
-// PublishPageDraft: the auto-join pre-step admits a fall-through caller by creating a membership,
-// the write gate then passes, and a rejection landing after the gate (here the parent guard's 409
-// on a no-longer-live parent) must remove that membership rather than leave it behind.
-func TestPublishPageDraftUndoesAutoJoinOnLaterRejection(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	userID := mmmodel.NewId()
-	// Registered ahead of the harness's catch-all channel grants: only read_page is withheld, so
-	// the pre-step's in-lock re-validation still resolves the open-space fall-through while the
-	// write gate's create_page re-check after the join passes as a member.
-	mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionReadPage).Return(false).Maybe()
-	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
-
-	roleName := testutil.PresetUserRoleName(mmmodel.SchemeNameSpaceContribute)
-	mockAPI.On("RolesGrantPermission", []string{roleName}, mmmodel.PermissionCreatePage.Id).Return(true)
-	mockAPI.On("AddChannelMember", space.ChannelId, userID).
-		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
-	mockAPI.On("DeleteChannelMember", space.ChannelId, userID).Return(nil)
-
-	// A draft whose parent is live at draft time but not at publish: the parent guard rejects the
-	// publish only after the gate has run, which is what routes the failure through the deferred
-	// rollback rather than the gate's own error path. The parent row is soft-deleted directly —
-	// store.DeletePage would reparent the pending draft as part of its cascade — reproducing the
-	// stale-ParentId race the guard exists for.
-	parent := mustCreatePage(t, h.store, space.Id, space.ChannelId, mmmodel.NewId(), "")
-	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Rolled back", parent.Id)
-	require.Nil(t, appErr)
-	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: draft.PageId, Title: "Rolled back", Body: docWith("kept private")}, nil, nil, nil, "")
-	require.Nil(t, appErr)
-	_, err := h.db.Exec(`UPDATE docs_page SET deleteat = $1 WHERE id = $2`, mmmodel.GetMillis(), parent.Id)
-	require.NoError(t, err)
-
-	page, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, draft.PageId, false, app.ReadViaOpenFallthrough)
-	require.Nil(t, page)
-	require.False(t, wasCreated)
-	require.NotNil(t, appErr)
-	require.Equal(t, http.StatusConflict, appErr.StatusCode)
-
-	mockAPI.AssertCalled(t, "AddChannelMember", space.ChannelId, userID)
-	// The membership the auto-join pre-step created must be removed when the publish is rejected
-	// after the gate.
-	mockAPI.AssertCalled(t, "DeleteChannelMember", space.ChannelId, userID)
 }

@@ -126,7 +126,7 @@ func requireBaseline(where, field string, baseline *int64, force bool) *mmmodel.
 
 // membershipLockAppError maps a WithSpaceMembershipLock failure to an *AppError: an AppError the
 // locked closure returned is surfaced as-is, and the store's own errors — notably the retryable
-// ErrConflict a lock-acquisition timeout yields — go through storeAppError so they keep their
+// ErrLockTimeout a lock-acquisition timeout yields — go through storeAppError so they keep their
 // conventional status codes rather than collapsing to a 500.
 func membershipLockAppError(where string, lockErr error) *mmmodel.AppError {
 	var appErr *mmmodel.AppError
@@ -149,9 +149,6 @@ func membershipLockAppError(where string, lockErr error) *mmmodel.AppError {
 func schemeAppError(where string, err error) *mmmodel.AppError {
 	if errors.Is(err, errPresetSchemeMissing) {
 		return mmmodel.NewAppError(where, "app.space.preset_scheme_missing.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
-	}
-	if errors.Is(err, errPooledSchemeNotConforming) {
-		return mmmodel.NewAppError(where, "app.space.pooled_scheme_conflict.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
 	var appErr *mmmodel.AppError
 	if errors.As(err, &appErr) {

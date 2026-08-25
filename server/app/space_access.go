@@ -9,12 +9,10 @@ import (
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
-
-	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-// The low-level access primitives the space subsystem shares: client wiring, team-membership and
-// team-permission resolution, and backing-channel member iteration. They belong to no single
+// The low-level access primitives the space subsystem shares: client wiring, and team-membership
+// and team-permission resolution. They belong to no single
 // caller — space lifecycle (space.go), authorization (permissions.go), and membership
 // (space_members.go) each build on them — so they live here rather than in whichever file happened
 // to need them first.
@@ -36,9 +34,6 @@ func (s *Service) requireClient(where string, kv ...any) *mmmodel.AppError {
 // this, not just backing-channel membership: leaving a team does not remove a user from the
 // team's space channels, so channel membership alone would let a former team member keep using
 // known space and page IDs.
-//
-// The membership carries the team roles, so a caller that needs both "is a member" and "holds a
-// team permission" answers both from this one row via teamPermGranted.
 func (s *Service) activeTeamMember(teamID, userID string) (*mmmodel.TeamMember, error) {
 	member, err := s.client.Team.GetMember(teamID, userID)
 	if err != nil {
@@ -58,31 +53,4 @@ func (s *Service) activeTeamMember(teamID, userID string) (*mmmodel.TeamMember, 
 func (s *Service) isActiveTeamMember(teamID, userID string) (bool, error) {
 	member, err := s.activeTeamMember(teamID, userID)
 	return member != nil, err
-}
-
-// teamPermGranted reports whether userID holds perm on teamID, answering from member's roles when
-// that already settles it. member is a membership the caller has resolved, or nil.
-//
-// The roles on an already-resolved membership answer the granting case directly. A negative is not
-// conclusive — core also honours a system-role grant the team roles cannot express — so it defers
-// to core rather than denying, which keeps the outcome identical to calling HasPermissionToTeam
-// directly.
-func (s *Service) teamPermGranted(member *mmmodel.TeamMember, userID, teamID string, perm *mmmodel.Permission) bool {
-	if member != nil && s.client.User.RolesGrantPermission(member.GetRoles(), perm.Id) {
-		return true
-	}
-	return s.client.User.HasPermissionToTeam(userID, teamID, perm)
-}
-
-// otherAuthorizedMembers answers both reachability questions the membership guards ask — is there
-// another member who can still reach the space, and is one of them an admin — disregarding
-// excludeUserID (the member being demoted or removed). Former team members keep their
-// channel-member rows after leaving the team, so counting raw rows would let the last reachable
-// member be removed and leave the space stranded behind members who all fail the team half of the
-// access gate. Answered as a single query on the plugin's master DB handle: these invariants
-// guard membership writes committed on the primary a moment earlier, and the plugin API's
-// replica-backed reads could still see a just-demoted admin as current and let the actual last
-// admin go.
-func (s *Service) otherAuthorizedMembers(space *model.Space, excludeUserID string) (anyMember, anyAdmin bool, err error) {
-	return s.store.OtherAuthorizedMembers(space.ChannelId, space.TeamId, excludeUserID)
 }

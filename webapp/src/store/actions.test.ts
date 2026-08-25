@@ -1,6 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {RestError} from 'client/rest';
 import manifest from 'manifest';
 
 import {ClientError} from '@mattermost/client';
@@ -8,7 +9,7 @@ import {ClientError} from '@mattermost/client';
 import {makePage, makeSpace, makeTeam} from 'store/test_fixtures';
 
 import {SpaceTypes} from './action_types';
-import {addSpaceMember, addSpaceMembers, createSpace, fetchAllSpaces, isLastSpaceAdminError, isLastSpaceMemberError, isNotTeamMemberError, isSpaceLockTimeoutError, leaveSpace, movePage, removeSpaceMember} from './actions';
+import {addSpaceMember, addSpaceMembers, createSpace, ensureSpaceMembership, fetchAllSpaces, isLastSpaceAdminError, isLastSpaceMemberError, isNotTeamMemberError, isSpaceLockTimeoutError, leaveSpace, movePage, refreshSpaceAfterSelfRemoval, removeSpaceMember, saveDraft} from './actions';
 
 import {makeTestState} from '../../tests/react_testing_utils';
 
@@ -18,6 +19,14 @@ const mockMovePage = jest.fn();
 const mockListPages = jest.fn();
 const mockListSpaces = jest.fn();
 const mockCreateSpace = jest.fn();
+const mockGetSpace = jest.fn();
+const mockListSpaceMembers = jest.fn();
+const mockUpdatePageDraft = jest.fn();
+const mockJoinSpace = jest.fn();
+
+jest.mock('client/space_permissions', () => ({
+    joinSpace: (...args: unknown[]) => mockJoinSpace(...args as []),
+}));
 
 jest.mock('data', () => ({
     docsDataSource: {
@@ -27,6 +36,9 @@ jest.mock('data', () => ({
         listPages: (...args: unknown[]) => mockListPages(...args as []),
         listSpaces: (...args: unknown[]) => mockListSpaces(...args as []),
         createSpace: (...args: unknown[]) => mockCreateSpace(...args as []),
+        getSpace: (...args: unknown[]) => mockGetSpace(...args as []),
+        listSpaceMembers: (...args: unknown[]) => mockListSpaceMembers(...args as []),
+        updatePageDraft: (...args: unknown[]) => mockUpdatePageDraft(...args as []),
     },
 }));
 
@@ -75,7 +87,7 @@ describe('createSpace', () => {
     beforeEach(() => jest.clearAllMocks());
 
     it('rejects before calling the data source without a current team', async () => {
-        const input = {title: 'New space', visibility: 'public' as const};
+        const input = {title: 'New space', view_access: 'open' as const};
 
         const {result} = run((d, g) => createSpace(input)(d as never, g as never, undefined as never), makeTestState());
 
@@ -117,14 +129,31 @@ describe('409 discrimination on the removal routes', () => {
 describe('leaveSpace', () => {
     beforeEach(() => jest.clearAllMocks());
 
-    it('removes the current user and drops the space from the store', async () => {
+    it('drops the space once the server refuses the re-read', async () => {
         mockRemoveSpaceMember.mockResolvedValue(undefined);
+        mockGetSpace.mockRejectedValue(new RestError('/x', 403, 'forbidden', null));
 
         const {result, dispatch} = run((d, g) => leaveSpace('space1')(d as never, g as never, undefined as never));
         await result;
 
         expect(mockRemoveSpaceMember).toHaveBeenCalledWith('space1', 'user1');
-        expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({spaceId: 'space1'}));
+        expect(dispatch).toHaveBeenCalledWith({type: SpaceTypes.DELETED_SPACE, spaceId: 'space1'});
+    });
+
+    // An open space stays readable through the team fall-through, so leaving it must not evict it.
+    // Dispatching DELETED_SPACE unconditionally made the space vanish from a caller who could still
+    // read it, until a reload or a WebSocket event happened to put it back.
+    it('keeps a space that is still readable after the caller leaves', async () => {
+        const openSpace = {...makeSpace('space1', 'Open'), view_access: 'open' as const};
+        mockRemoveSpaceMember.mockResolvedValue(undefined);
+        mockGetSpace.mockResolvedValue(openSpace);
+        mockListSpaceMembers.mockResolvedValue([]);
+
+        const {result, dispatch} = run((d, g) => leaveSpace('space1')(d as never, g as never, undefined as never));
+        await result;
+
+        expect(dispatch).toHaveBeenCalledWith({type: SpaceTypes.RECEIVED_SPACES, spaces: [openSpace]});
+        expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({type: SpaceTypes.DELETED_SPACE}));
     });
 
     it('rejects so the caller can explain the failure', async () => {
@@ -263,5 +292,108 @@ describe('isNotTeamMemberError', () => {
         expect(isNotTeamMemberError(new ClientError('', {message: 'nope', status_code: 403, url: '/x'}))).toBe(true);
         expect(isNotTeamMemberError(new ClientError('', {message: 'nope', status_code: 409, url: '/x'}))).toBe(false);
         expect(isNotTeamMemberError(new Error('boom'))).toBe(false);
+    });
+});
+
+describe('refreshSpaceAfterSelfRemoval', () => {
+    beforeEach(() => {
+        jest.clearAllMocks();
+        jest.spyOn(console, 'error').mockImplementation(() => {});
+    });
+    afterEach(() => jest.restoreAllMocks());
+
+    const space = makeSpace('space1', 'One');
+    const removed = {type: SpaceTypes.DELETED_SPACE, spaceId: 'space1'};
+
+    // An open space stays readable to any team member through the server's fall-through, so the
+    // removal narrows what the caller may do rather than ending their access. The re-read is the
+    // only thing that can tell those apart.
+    it('keeps a space the server still serves, and refreshes its roster', async () => {
+        mockGetSpace.mockResolvedValue(space);
+        mockListSpaceMembers.mockResolvedValue([{user_id: 'other'}]);
+
+        const {result, dispatch} = run((d, g) => refreshSpaceAfterSelfRemoval('space1')(d as never, g as never, undefined as never));
+        await result;
+
+        expect(dispatch).toHaveBeenCalledWith({type: SpaceTypes.RECEIVED_SPACES, spaces: [space]});
+        expect(dispatch).toHaveBeenCalledWith({type: SpaceTypes.RECEIVED_SPACE_MEMBERS, spaceId: 'space1', userIds: ['other']});
+        expect(dispatch).not.toHaveBeenCalledWith(removed);
+    });
+
+    it.each([403, 404])('evicts the space when the server answers %i', async (status) => {
+        mockGetSpace.mockRejectedValue(new RestError('/spaces/space1', status, 'denied', undefined));
+
+        const {result, dispatch} = run((d, g) => refreshSpaceAfterSelfRemoval('space1')(d as never, g as never, undefined as never));
+        await result;
+
+        expect(dispatch).toHaveBeenCalledWith(removed);
+    });
+
+    // "The request did not complete" is not an answer about access. Evicting on it would drop a
+    // space the caller can still read until some later listing happened to bring it back.
+    it('leaves the space standing when the read fails without a verdict', async () => {
+        mockGetSpace.mockRejectedValue(new Error('network down'));
+
+        const {result, dispatch} = run((d, g) => refreshSpaceAfterSelfRemoval('space1')(d as never, g as never, undefined as never));
+        await result;
+
+        expect(dispatch).not.toHaveBeenCalledWith(removed);
+    });
+
+    it('leaves the space standing on a server fault', async () => {
+        mockGetSpace.mockRejectedValue(new RestError('/spaces/space1', 500, 'boom', undefined));
+
+        const {result, dispatch} = run((d, g) => refreshSpaceAfterSelfRemoval('space1')(d as never, g as never, undefined as never));
+        await result;
+
+        expect(dispatch).not.toHaveBeenCalledWith(removed);
+    });
+});
+
+// Where the join sits decides what a membership means. Joining when the editor opens would record
+// an intention — someone who clicks Edit, types nothing and navigates away would be a member for
+// good, and a removed user would rejoin by opening an editor rather than by writing. Joining on the
+// write keeps it a record of a contribution.
+describe('ensureSpaceMembership', () => {
+    beforeEach(() => jest.clearAllMocks());
+
+    const joinableState = (canJoin: boolean) => makeTestState({
+        docs: {spaces: {space1: {...makeSpace('space1', 'Open'), can_join: canJoin}}},
+        currentUser: {id: 'user1'},
+    });
+
+    it('joins a space the server said the caller may join', async () => {
+        mockJoinSpace.mockResolvedValue({...makeSpace('space1', 'Open'), can_join: false});
+
+        const {result} = run((d, g) => ensureSpaceMembership('space1')(d as never, g as never, undefined as never), joinableState(true));
+        await result;
+
+        expect(mockJoinSpace).toHaveBeenCalledWith('space1');
+    });
+
+    // Every case but a non-member of an open space, which is the overwhelming majority of calls:
+    // this runs on every autosave, so a member must not pay a round trip per keystroke batch.
+    it('does not call the server when there is nothing to join', async () => {
+        const {result} = run((d, g) => ensureSpaceMembership('space1')(d as never, g as never, undefined as never), joinableState(false));
+        await result;
+
+        expect(mockJoinSpace).not.toHaveBeenCalled();
+    });
+
+    it('joins before the draft write it guards, so the write lands as a member', async () => {
+        const order: string[] = [];
+        mockJoinSpace.mockImplementation(() => {
+            order.push('join');
+            return Promise.resolve({...makeSpace('space1', 'Open'), can_join: false});
+        });
+        mockUpdatePageDraft.mockImplementation(() => {
+            order.push('write');
+            return Promise.resolve({page_id: 'page1'});
+        });
+
+        const {result} = run((d, g) => saveDraft('space1', 'page1', {body: 'hi'})(d as never, g as never, undefined as never), joinableState(true));
+        await result;
+
+        expect(order).toEqual(['join', 'write']);
     });
 });

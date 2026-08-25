@@ -9,6 +9,9 @@ import {makeSpace} from 'store/test_fixtures';
 
 import {DocsModalController, closeAllDocsModals} from 'components/modals';
 
+import {Permissions} from 'types/permissions';
+import type {Permission} from 'types/permissions';
+
 import SpaceSettingsModal from './space_settings_modal';
 
 import {renderWithContext} from '../../../tests/react_testing_utils';
@@ -53,6 +56,14 @@ jest.mock('hooks/user_search', () => ({
 
 const space = makeSpace('space-1', 'Project Avalanche');
 
+// The archive tab reads the caller's delete tier out of the stored space record, so every case
+// that expects to see it has to render against a store that carries one.
+const stateWithPermissions = (permissions: Permission[]) => ({
+    docs: {spaces: {[space.id]: {...space, permissions}}},
+});
+
+const canArchive = stateWithPermissions([Permissions.DELETE_SPACE]);
+
 describe('SpaceSettingsModal', () => {
     afterEach(() => {
         closeAllDocsModals();
@@ -64,6 +75,7 @@ describe('SpaceSettingsModal', () => {
                 space={space}
                 onClose={jest.fn()}
             />,
+            {state: canArchive},
         );
 
         expect(screen.getByRole('heading', {name: 'Space Settings'})).toBeInTheDocument();
@@ -71,6 +83,22 @@ describe('SpaceSettingsModal', () => {
         expect(screen.getByRole('tab', {name: /Permissions/, selected: false})).toBeInTheDocument();
         expect(screen.getByRole('tab', {name: /Configuration/})).toBeInTheDocument();
         expect(screen.getByRole('tab', {name: /Archive space/})).toBeInTheDocument();
+    });
+
+    // Opening these settings takes the manage tier; archiving takes the delete tier, which is a
+    // separate team permission. A caller holding only the former reaches this modal and must not
+    // be offered an action the archive route would refuse.
+    it('withholds the archive tab from a caller without the delete tier', () => {
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+            />,
+            {state: stateWithPermissions([Permissions.MANAGE_SPACE])},
+        );
+
+        expect(screen.getByRole('tab', {name: /Configuration/})).toBeInTheDocument();
+        expect(screen.queryByRole('tab', {name: /Archive space/})).not.toBeInTheDocument();
     });
 
     it('surfaces the save bar after a change, then dispatches updateSpace', async () => {

@@ -93,3 +93,147 @@ export async function assertPluginActive(baseURL: string, username: string, pass
         throw new Error(`Plugin ${pluginId} is not active on ${baseURL}. Install and enable it before running the suite.`);
     }
 }
+
+// Signs in and returns a session token, or throws naming the server and the account.
+async function adminToken(baseURL: string, username: string, password: string): Promise<string> {
+    const login = await fetch(`${baseURL}/api/v4/users/login`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({login_id: username, password}),
+        signal: AbortSignal.timeout(requestTimeoutMs),
+    });
+
+    const token = login.headers.get('token');
+    if (!login.ok || !token) {
+        throw new Error(
+            `Unable to sign in to ${baseURL} as "${username}" (${login.status}). Set MM_ADMIN_USERNAME and MM_ADMIN_PASSWORD for that server.`,
+        );
+    }
+
+    return token;
+}
+
+const authed = (token: string) => ({
+    'Content-Type': 'application/json',
+    'X-Requested-With': 'XMLHttpRequest',
+    Authorization: `Bearer ${token}`,
+});
+
+// A permission set matching none of the three seeded presets, so resolving it can only be answered
+// by the minted-scheme pool — which is the capability being probed.
+const NON_PRESET_DEFAULTS = ['comment_page', 'edit_page'];
+
+/**
+ * Fails setup when the server cannot mint a channel scheme for an arbitrary space-default
+ * permission set.
+ *
+ * Every space default outside the three seeded presets resolves through the plugin scheme API
+ * (`GetOrCreatePluginChannelScheme`). A server whose plugin API predates it does not report an
+ * error: the generated plugin RPC client logs a transport failure and hands back zero values, which
+ * the plugin can only surface as a 500. Without this check that lands as a *test* failure — a
+ * permission checkbox that silently reverts — and reads as a product bug rather than a server that
+ * cannot serve the feature.
+ *
+ * Probed end-to-end rather than by version number, because the capability has shipped in
+ * uncommitted core work before appearing in any released or pinned build: the only honest question
+ * is whether *this* server can do it. The probe seeds one throwaway team and space, as every spec
+ * does, and removes the space afterwards.
+ */
+export async function assertSpacePermissionsSupported(baseURL: string, username: string, password: string, remedy = '') {
+    const token = await adminToken(baseURL, username, password);
+    const suffix = Date.now().toString(36);
+
+    const teamResponse = await fetch(`${baseURL}/api/v4/teams`, {
+        method: 'POST',
+        headers: authed(token),
+        body: JSON.stringify({name: `docs-preflight-${suffix}`, display_name: `Docs preflight ${suffix}`, type: 'O'}),
+        signal: AbortSignal.timeout(requestTimeoutMs),
+    });
+    if (!teamResponse.ok) {
+        throw new Error(`Preflight could not create a probe team on ${baseURL} (${teamResponse.status}).`);
+    }
+    const team = await teamResponse.json() as {id: string};
+
+    const spaceResponse = await fetch(`${baseURL}/plugins/${pluginId}/api/v1/teams/${team.id}/spaces`, {
+        method: 'POST',
+        headers: authed(token),
+        body: JSON.stringify({title: `Preflight ${suffix}`, default_permissions: NON_PRESET_DEFAULTS}),
+        signal: AbortSignal.timeout(requestTimeoutMs),
+    });
+
+    if (!spaceResponse.ok) {
+        const body = await spaceResponse.text();
+        throw new Error(
+            `This server cannot resolve an arbitrary space-default permission set (${spaceResponse.status}), so every ` +
+            'space-permission spec that changes a default would fail as though the product were broken.\n' +
+            'The plugin scheme API (GetOrCreatePluginChannelScheme) is missing from this server build.\n' +
+            `Server said: ${body.slice(0, 400)}\n` +
+            `${remedy}`.trimEnd(),
+        );
+    }
+
+    // Best-effort: the probe space is disposable, and a server that answered the create is already
+    // proven. Failing here would turn a successful probe into a setup failure.
+    const space = await spaceResponse.json() as {id: string};
+    await fetch(`${baseURL}/plugins/${pluginId}/api/v1/spaces/${space.id}`, {
+        method: 'DELETE',
+        headers: authed(token),
+        signal: AbortSignal.timeout(requestTimeoutMs),
+    }).catch(() => undefined);
+}
+
+// The team-role permissions the suite itself removes and restores. `create_space` is revoked by the
+// system-console spec and put back in its `finally`; a run killed mid-test — or one whose console
+// navigation timed out — skips that restore and leaves the role short, on a server the next run
+// inherits.
+const REQUIRED_TEAM_USER_PERMISSIONS = ['create_space', 'read_space'];
+
+/**
+ * Restores the baseline team-role permissions the suite depends on, repairing what a previous
+ * aborted run left behind.
+ *
+ * Without this the damage surfaces as the *first assertion* of an unrelated spec — "an ordinary
+ * member starts able to create a space" fails — which reads as a product regression and sends the
+ * reader to the wrong code. The state is server-wide and outlives the run that broke it, so every
+ * later run inherits it until someone repairs the role by hand.
+ *
+ * Repairing rather than only reporting is deliberate: this is a mutation the suite makes on purpose
+ * and undoes on purpose, so restoring it is finishing that job, not overriding an operator's
+ * choice. It is additive — permissions outside this list are untouched — and it says loudly what it
+ * changed, so a repair never passes silently for something a human should look at.
+ */
+export async function restoreBaselineTeamPermissions(baseURL: string, username: string, password: string) {
+    const token = await adminToken(baseURL, username, password);
+
+    const roleResponse = await fetch(`${baseURL}/api/v4/roles/name/team_user`, {
+        headers: authed(token),
+        signal: AbortSignal.timeout(requestTimeoutMs),
+    });
+    if (!roleResponse.ok) {
+        throw new Error(`Unable to read the team_user role on ${baseURL} (${roleResponse.status}).`);
+    }
+
+    const role = await roleResponse.json() as {id: string; permissions: string[]};
+    const missing = REQUIRED_TEAM_USER_PERMISSIONS.filter((p) => !role.permissions.includes(p));
+    if (missing.length === 0) {
+        return;
+    }
+
+    console.log(
+        `[e2e] team_user is missing ${missing.join(', ')} — almost certainly left behind by an aborted run of the ` +
+        'system-console spec, whose restore step never ran. Restoring, so the specs that depend on it fail or pass on their own.',
+    );
+
+    const patch = await fetch(`${baseURL}/api/v4/roles/${role.id}/patch`, {
+        method: 'PUT',
+        headers: authed(token),
+        body: JSON.stringify({permissions: [...role.permissions, ...missing].sort()}),
+        signal: AbortSignal.timeout(requestTimeoutMs),
+    });
+    if (!patch.ok) {
+        throw new Error(
+            `Unable to restore ${missing.join(', ')} on the team_user role of ${baseURL} (${patch.status}). ` +
+            'Repair it in System Console → User Management → Permissions before re-running.',
+        );
+    }
+}

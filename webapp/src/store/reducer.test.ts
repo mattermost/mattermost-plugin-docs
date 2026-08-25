@@ -16,6 +16,7 @@ describe('reducer', () => {
             'pages',
             'pagesInSpace',
             'spaceMembers',
+            'spaceMemberPermissionsRevision',
             'drafts',
             'draftsInSpace',
         ]);

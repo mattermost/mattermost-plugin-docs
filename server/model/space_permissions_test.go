@@ -247,52 +247,6 @@ func TestAtomicRoleVocabularyCoversCore(t *testing.T) {
 		"the plugin's atomic-role vocabulary must match core's SpaceCapabilityRoles exactly")
 }
 
-// TestSharedSchemeNameForPermissions pins the pooled scheme name's literal shape. Every other
-// caller in the suite builds its expected name by calling this same function, which is tautological
-// — a shortened digest or a dropped prefix would survive all of them. The name must stay inside
-// core's [a-z0-9_]{2,64} limit, and it must be a pure function of the permission SET so two spaces
-// configured the same way share one scheme instead of each owning an identical private copy.
-func TestSharedSchemeNameForPermissions(t *testing.T) {
-	contribute, ok := model.DefaultPermissionsForSchemeName(mmmodel.SchemeNameSpaceContribute)
-	require.True(t, ok)
-
-	name := model.SharedSchemeNameForPermissions(contribute)
-
-	require.True(t, strings.HasPrefix(name, model.SharedSchemeNamePrefix), "got %q", name)
-	// The digest length is pinned: shortening it would raise the collision risk silently.
-	require.Len(t, name, len(model.SharedSchemeNamePrefix)+16)
-	require.LessOrEqual(t, len(name), mmmodel.SchemeNameMaxLength)
-	require.Regexp(t, `^[a-z0-9_]{2,64}$`, name)
-
-	t.Run("depends on the set, not the order or duplication", func(t *testing.T) {
-		shuffled := make([]string, 0, len(contribute)*2)
-		for i := len(contribute) - 1; i >= 0; i-- {
-			shuffled = append(shuffled, contribute[i], contribute[i])
-		}
-		require.Equal(t, name, model.SharedSchemeNameForPermissions(shuffled))
-	})
-
-	t.Run("a different set gets a different name", func(t *testing.T) {
-		comment, ok := model.DefaultPermissionsForSchemeName(mmmodel.SchemeNameSpaceComment)
-		require.True(t, ok)
-		require.NotEqual(t, name, model.SharedSchemeNameForPermissions(comment))
-	})
-
-	t.Run("display name lists the set and fits core's limit", func(t *testing.T) {
-		displayName := model.SharedSchemeDisplayNameForPermissions(contribute)
-		require.LessOrEqual(t, len(displayName), mmmodel.SchemeDisplayNameMaxLength)
-		for _, p := range contribute {
-			require.Contains(t, displayName, p)
-		}
-	})
-}
-
-// TestGrantablePermissionSets pins the exact vocabulary ValidateGrantedPermissions and
-// ValidateDefaultPermissions each accept — the full known permission set, checked one token at a
-// time — so an unintended token added to (or a valid one dropped from) grantableMemberPermissions
-// or grantableDefaultPermissions fails here, rather than surfacing later as an unnoticed grant or
-// space default this suite's other tests, which only ever pass the tokens already expected, would
-// never exercise.
 func TestGrantablePermissionSets(t *testing.T) {
 	wantMember := map[string]bool{
 		mmmodel.PermissionReadPage.Id:      false,

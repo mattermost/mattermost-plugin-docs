@@ -39,7 +39,7 @@ func (s *Store) MovePage(pageID, spaceID string, newParentID *string, newIndex *
 		return nil, "", false, &ErrInvalidInput{Entity: "Page", Field: "SpaceId", Value: spaceID}
 	}
 
-	tx, err := s.db.Beginx()
+	tx, err := s.beginUnboundedTx()
 	if err != nil {
 		return nil, "", false, errors.Wrap(err, "begin_transaction")
 	}
@@ -267,7 +267,7 @@ func (s *Store) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID, moverUserI
 		return nil, "", &ErrInvalidInput{Entity: "Page", Field: "MoverUserId", Value: moverUserID}
 	}
 
-	tx, err := s.db.Beginx()
+	tx, err := s.beginUnboundedTx()
 	if err != nil {
 		return nil, "", errors.Wrap(err, "begin_transaction")
 	}

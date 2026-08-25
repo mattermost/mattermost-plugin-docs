@@ -202,20 +202,20 @@ func (p *Plugin) handleGetSpacePages(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleGetSpaceMembers(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
-	space, ok := p.requireSpacePagePerm(w, spaceID, userID, mmmodel.PermissionReadPage)
+	space, ok := p.getSpaceForGate(w, spaceID, false)
 	if !ok {
 		return
 	}
-	// Resolved separately from the route gate, and a denial is not one: it selects the projection
-	// rather than admitting the caller. Only a failure of the check itself aborts — reporting a
-	// backend outage as "no manage tier" would silently redact a roster the caller may see in full.
-	manageErr := p.service.RequireSpaceAdminOrTeamPerm("api.space.manage", space, userID, mmmodel.PermissionManageSpace)
-	if manageErr != nil && manageErr.StatusCode != http.StatusForbidden {
-		p.writeAppError(w, manageErr)
+	// One resolution answers both questions this route asks — may the caller read the space, and do
+	// they hold the manage tier that selects the projection — so the team-membership lookup behind
+	// them runs once. Falling short of the manage tier is not a denial: it redacts.
+	canManage, appErr := p.service.ResolveSpaceRosterAccess("api.space.members", space, userID)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
 		return
 	}
 	page, perPage := pageParam(r), perPageParam(r)
-	members, hasMore, appErr := p.service.GetSpaceMembers(space, page, perPage, manageErr == nil)
+	members, hasMore, appErr := p.service.GetSpaceMembers(space, page, perPage, canManage)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return
@@ -315,6 +315,32 @@ func (p *Plugin) handleSetSpaceDefaultPermissions(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, updated)
 }
 
+// handleJoinSpace handles POST /api/v1/spaces/{space_id}/members/me: the self-join an open space
+// offers a team member who can read it but is not yet a member.
+//
+// No route gate. The gates in this file answer whether a caller may act on a space; this route asks
+// the service to change the caller's own standing in it, and JoinOpenSpace resolves the only
+// authority that admits it — the open-space read fall-through — against the live row under the
+// membership lock. Gating here as well would resolve the same read a second time, one request
+// earlier, and spend it after the handler had done other work.
+//
+// Answers the SpaceWithAccess wrapper the read routes answer, so the caller refreshes the record it
+// already holds from the response rather than following up with a read to discover what joining
+// gave them.
+func (p *Plugin) handleJoinSpace(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromRequest(r)
+	space, ok := p.getSpaceForGate(w, mux.Vars(r)["space_id"], false)
+	if !ok {
+		return
+	}
+	access, appErr := p.service.JoinOpenSpace(space, userID)
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, access)
+}
+
 // handleRemoveSpaceMember handles DELETE /api/v1/spaces/{space_id}/members/{user_id}. Self-removal
 // is gated on the read resolver alone (any member may leave); removing another user requires
 // requireSpaceManage, with the escalation/last-admin guards enforced inside the service.
@@ -327,7 +353,7 @@ func (p *Plugin) handleRemoveSpaceMember(w http.ResponseWriter, r *http.Request)
 	var space *model.Space
 	var ok bool
 	if targetUserID == userID {
-		space, _, ok = p.requireSpaceRead(w, spaceID, userID)
+		space, ok = p.requireSpaceRead(w, spaceID, userID)
 	} else {
 		space, ok = p.requireSpaceManage(w, spaceID, userID)
 	}

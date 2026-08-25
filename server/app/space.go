@@ -55,11 +55,13 @@ func (s *Service) archiveOrphanChannel(channelID, reason string, cause error) {
 //
 // roles names the three generated roles of the resolved scheme in both cases, so no caller has to
 // re-resolve them through a channel lookup — re-reading a just-created channel can miss it under
-// replica lag. pooled reports the shared-pool case, whose roles the caller must write through
-// configureSharedScheme once a backing channel points at the scheme — which is what lets core
-// admit those writes. A preset's roles are seeded already and are never rewritten. Nothing here is
-// owned by one space, so no failure path deletes a scheme.
-func (s *Service) resolveSpaceScheme(permissions []string) (schemeID string, roles *schemeRoles, pooled bool, err error) {
+// replica lag.
+//
+// Both kinds arrive fully configured: a preset is seeded, and core writes a minted scheme's three
+// roles with their final permissions in the transaction that creates it. There is nothing for a
+// caller to write afterwards and no ordering to observe. Nothing here is owned by one space, so no
+// failure path deletes a scheme.
+func (s *Service) resolveSpaceScheme(permissions []string) (schemeID string, roles *schemeRoles, err error) {
 	// Normalize before the permission set is persisted: the validators are dedup-tolerant, so
 	// without this a request repeating one allowlisted token would write that repetition verbatim
 	// into the generated role's Permissions column.
@@ -71,17 +73,24 @@ func (s *Service) resolveSpaceScheme(permissions []string) (schemeID string, rol
 			// is unseeded, not that the caller named something that does not exist, so it is tagged
 			// to keep it out of the shared not-found translation.
 			if store.IsErrNotFound(getErr) {
-				return "", nil, false, fmt.Errorf("%w: %s", errPresetSchemeMissing, presetName)
+				return "", nil, fmt.Errorf("%w: %s", errPresetSchemeMissing, presetName)
 			}
-			return "", nil, false, getErr
+			return "", nil, getErr
 		}
-		return scheme.Id, rolesFromScheme(scheme), false, nil
+		return scheme.Id, rolesFromScheme(scheme), nil
 	}
-	id, pooledRoles, poolErr := s.getOrCreateSharedScheme(permissions)
+	scheme, poolErr := s.client.Scheme.GetOrCreateChannelScheme(
+		spaceUserRolePermissions(permissions),
+		spaceAdminRolePermissions(),
+		spaceGuestRolePermissions(),
+	)
 	if poolErr != nil {
-		return "", nil, false, poolErr
+		return "", nil, poolErr
 	}
-	return id, pooledRoles, true, nil
+	if scheme == nil {
+		return "", nil, errUnsupportedSchemeAPI
+	}
+	return scheme.Id, rolesFromScheme(scheme), nil
 }
 
 // CreateSpace creates a ChannelTypeSpace ("S") backing channel via pluginapi, saves the
@@ -139,7 +148,7 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultPermissi
 	// create_space on the team (or be sysadmin). Unlike the read/manage/delete gates, no space
 	// exists yet here, so there is nothing to existence-hide behind — a plain 403 is correct.
 	if !s.client.User.HasPermissionTo(userID, mmmodel.PermissionManageSystem) &&
-		!s.teamPermGranted(member, userID, space.TeamId, mmmodel.PermissionCreateSpace) {
+		!s.client.User.HasPermissionToTeam(userID, space.TeamId, mmmodel.PermissionCreateSpace) {
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.forbidden.app_error", nil, "", http.StatusForbidden)
 	}
 	// Sanitize before it's used as the channel Header below — Space.PreSave sanitizes it again on
@@ -151,7 +160,7 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultPermissi
 	if viewAccess != nil {
 		va = *viewAccess
 	}
-	if va != model.ViewAccessOpen && va != model.ViewAccessPrivate {
+	if !va.IsValid() {
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.invalid_view_access.app_error", nil, "", http.StatusBadRequest)
 	}
 	space.ViewAccess = va
@@ -164,7 +173,7 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultPermissi
 		return nil, capErr
 	}
 
-	schemeID, resolvedRoles, pooled, schemeErr := s.resolveSpaceScheme(permissions)
+	schemeID, resolvedRoles, schemeErr := s.resolveSpaceScheme(permissions)
 	if schemeErr != nil {
 		return nil, schemeAppError("CreateSpace", schemeErr)
 	}
@@ -187,16 +196,6 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultPermissi
 			s.archiveOrphanChannel(backingChannel.Id, "channel create failed after creation", err)
 		}
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.backing_channel_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
-	}
-
-	// Only now that the backing channel points at the scheme will core admit role writes carrying
-	// space permissions, so a freshly created pooled scheme gets its exact permission sets here
-	// rather than at create time.
-	if pooled {
-		if _, cfgErr := s.configureSharedScheme(resolvedRoles, permissions); cfgErr != nil {
-			s.archiveOrphanChannel(backingChannel.Id, "pooled scheme role configuration failed", cfgErr)
-			return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.scheme_configure_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(cfgErr)
-		}
 	}
 
 	if _, addErr := s.client.Channel.AddMember(backingChannel.Id, userID); addErr != nil {
@@ -235,9 +234,9 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultPermissi
 	wrapper := &model.SpaceWithAccess{
 		Space:              *saved,
 		DefaultPermissions: model.NormalizePermissions(permissions),
-		// The creator is made a space admin as part of this call, so the manage tier follows without
-		// a lookup.
-		Permissions: model.NormalizePermissions(append(model.AdminEffectivePermissions(), mmmodel.PermissionManageSpace.Id)),
+		// The creator is made a space admin as part of this call, so the manage and delete tiers
+		// both follow without a lookup — admin_space satisfies either gate on its own.
+		Permissions: model.NormalizePermissions(append(model.AdminEffectivePermissions(), mmmodel.PermissionManageSpace.Id, mmmodel.PermissionDeleteSpace.Id)),
 	}
 	wrapper.Props = maps.Clone(saved.Props)
 	wrapper.EnsurePermissions()
@@ -317,7 +316,7 @@ func (s *Service) buildSpaceWithAccess(space *model.Space, userID string, knownD
 		return nil, resErr
 	}
 	if resolution == ReadDenied {
-		return nil, existenceHidingForbidden("BuildSpaceWithAccess")
+		return nil, ExistenceHidingForbidden("BuildSpaceWithAccess")
 	}
 	defaultPermissions := knownDefaults
 	if defaultPermissions == nil {
@@ -341,7 +340,7 @@ func (s *Service) buildSpaceWithAccess(space *model.Space, userID string, knownD
 	case ReadViaOpenFallthrough:
 		permissions = []string{mmmodel.PermissionReadPage.Id}
 	default:
-		return nil, existenceHidingForbidden("BuildSpaceWithAccess")
+		return nil, ExistenceHidingForbidden("BuildSpaceWithAccess")
 	}
 
 	// The manage tier, resolved with the same disjunction requireSpaceManage's gate uses so the
@@ -352,17 +351,34 @@ func (s *Service) buildSpaceWithAccess(space *model.Space, userID string, knownD
 	// team lookup only runs for a caller who is neither sysadmin nor space admin.
 	if resolution == ReadViaSysadmin ||
 		slices.Contains(permissions, mmmodel.PermissionAdminSpace.Id) ||
-		s.teamPermGranted(nil, userID, space.TeamId, mmmodel.PermissionManageSpace) {
+		s.client.User.HasPermissionToTeam(userID, space.TeamId, mmmodel.PermissionManageSpace) {
 		// Re-normalized rather than plain-appended: every other producer of this field emits a
 		// sorted, deduplicated set, and a client comparing two responses should not see the order
 		// depend on which tier admitted the caller.
 		permissions = model.NormalizePermissions(append(permissions, mmmodel.PermissionManageSpace.Id))
 	}
 
+	// The delete tier, resolved the same way against requireSpaceDelete's gate. Emitted separately
+	// from the manage tier rather than folded into it: the two team permissions are independent, so
+	// a client gating archive on the manage tier would offer it to a manage_space holder the delete
+	// route refuses and withhold it from a delete_space holder it admits.
+	if resolution == ReadViaSysadmin ||
+		slices.Contains(permissions, mmmodel.PermissionAdminSpace.Id) ||
+		s.client.User.HasPermissionToTeam(userID, space.TeamId, mmmodel.PermissionDeleteSpace) {
+		permissions = model.NormalizePermissions(append(permissions, mmmodel.PermissionDeleteSpace.Id))
+	}
+
 	wrapper := &model.SpaceWithAccess{
 		Space:              *space,
 		DefaultPermissions: defaultPermissions,
 		Permissions:        permissions,
+
+		// Only the fall-through reader may join: a member is already in, a sysadmin needs no
+		// membership, and a guest never resolves this way (the fall-through takes
+		// read_public_channel, which core's team_guest role does not carry). Defaults that confer
+		// nothing beyond the read every reader has make joining pointless, and JoinOpenSpace
+		// refuses it, so this must not offer it either.
+		CanJoin: resolution == ReadViaOpenFallthrough && len(defaultPermissions) > 0,
 	}
 	wrapper.Props = maps.Clone(space.Props)
 	wrapper.EnsurePermissions()
@@ -399,7 +415,7 @@ func (s *Service) SetSpaceDefaultPermissions(space *model.Space, permissions []s
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
 		// Re-authorized in the lock. The route gate runs before the lock is taken, so an admin
 		// demoted in between would otherwise still land this write — and widening the default is
-		// what decides who AutoJoinIfDefaultGranted admits as a member who can write.
+		// what decides what a caller who joins the space themselves ends up holding.
 		//
 		// Unconditional here, unlike the member-scoped writes. SetSpaceMemberPermissions and
 		// RemoveSpaceMember re-run this gate only when the target is an admin or the caller
@@ -419,95 +435,31 @@ func (s *Service) SetSpaceDefaultPermissions(space *model.Space, permissions []s
 			return mmmodel.NewAppError("SetSpaceDefaultPermissions", "app.space.default_permissions.channel_scheme_missing.app_error", nil, "", http.StatusInternalServerError)
 		}
 		currentSchemeID := *channel.SchemeId
-		// Read the superseded scheme's User role from the channel already in hand, before the
-		// repoint below rewrites which scheme the channel points at. A failure here only costs the
-		// no-op shortcut, so it is carried as a value rather than failing the whole operation.
-		liveRoles, liveErr := s.schemeRolesFromChannel(space.ChannelId, channel)
-		var liveUserPermissions []string
-		if liveErr == nil {
-			liveUserPermissions, liveErr = s.getRolePermissionsByName(liveRoles.UserRoleName)
-		}
-
 		requested = model.NormalizePermissions(permissions)
-		_, requestedIsPreset := model.SchemeNameForDefaultPermissions(requested)
 
-		// An unchanged non-preset set is settled here, so the no-op costs no scheme resolution at
-		// all. A preset request is left to the id comparison below, which settles it by scheme
-		// identity — a role read cannot, because a pooled scheme whose roles were never configured
-		// reads as the same empty set as the read-only preset, and shortcutting there would strand
-		// the space on that unconfigured scheme with no way to move off it.
-		//
-		// Compared against the whole set the writer lands (pooledUserRolePermissions), not against a
-		// projection of it: the wire-form projection keeps only the grantable default tokens, so a
-		// User role carrying anything beyond them — admin_space, say, from an edit outside this
-		// plugin — projected equal to the request and short-circuited, leaving that extra authority
-		// in force and making the documented recovery ("resubmit the intended set") do nothing.
-		//
-		// This reads only the User role, so the shortcut still relies on configureSharedScheme
-		// writing Admin and Guest before User: a correct User role is proof the scheme is fully
-		// configured only because nothing else in the write order remains once it reads correctly.
-		if !requestedIsPreset && liveErr == nil &&
-			spacePermissionSetsEqual(liveUserPermissions, pooledUserRolePermissions(requested)) {
-			return nil
-		}
-
-		targetSchemeID, pooledRoles, pooled, schemeErr := s.resolveSpaceScheme(requested)
+		targetSchemeID, _, schemeErr := s.resolveSpaceScheme(requested)
 		if schemeErr != nil {
 			return schemeAppError("SetSpaceDefaultPermissions", schemeErr)
 		}
 		if targetSchemeID == currentSchemeID {
-			// The channel already points at the target scheme, so there is no repoint to perform.
-			// The roles behind that scheme are not necessarily written, though: an earlier run
-			// interrupted between the repoint below and its configure leaves the space resolving
-			// against core's default channel baseline, and every later submission of the same set
-			// would take this branch and never reach that configure. Running it here is what lets
-			// resubmitting the intended set recover such a space; it is a no-op in effect once the
-			// permission sets already match.
-			if pooled {
-				rolesChanged, cfgErr := s.configureSharedScheme(pooledRoles, requested)
-				if cfgErr != nil {
-					return schemeAppError("SetSpaceDefaultPermissions", cfgErr)
-				}
-				changed = rolesChanged
-			}
+			// Already on the scheme expressing this set, so there is nothing to do. Scheme
+			// identity settles it on its own: a scheme is keyed by what its roles grant and is
+			// immutable once created, so being on it is proof of resolving against that set.
+			// There is no partially configured state a resubmission could still need to repair.
 			return nil
 		}
 
+		// Changing the default moves the space to the scheme expressing the new set and leaves the
+		// old one untouched for whichever spaces still point at it. No scheme's roles are ever
+		// rewritten, so a space's members switch permissions the moment the channel row lands, and
+		// no other space is affected.
 		channel.SchemeId = &targetSchemeID
 		if updErr := s.client.Channel.Update(channel); updErr != nil {
 			return mmmodel.NewAppError("SetSpaceDefaultPermissions", "app.space.default_permissions.repoint_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(updErr)
 		}
 		changed = true
 
-		// The repoint above is what lets core admit role writes carrying space permissions, so a
-		// pooled scheme's roles are written only now. A failure leaves the space on a scheme whose
-		// roles may still hold core's default channel baseline, so the repoint is undone.
-		//
-		// Between the repoint and the configure below, a concurrent page-permission check in this
-		// space resolves against the new scheme's roles, which on the pool's first use still hold
-		// that baseline, so a member can be denied a page write they hold. The membership lock does
-		// not close this: it serializes other membership and scheme mutations, not ordinary
-		// permission checks, which read core's roles directly. The ordering is forced — core admits
-		// a role write carrying space permissions only once a channel already references the scheme
-		// — so the window is accepted rather than closed. It is bounded by the role writes below,
-		// self-heals, and does not recur once the pooled scheme is configured.
-		if pooled {
-			if _, cfgErr := s.configureSharedScheme(pooledRoles, requested); cfgErr != nil {
-				channel.SchemeId = &currentSchemeID
-				if rollbackErr := s.client.Channel.Update(channel); rollbackErr != nil {
-					s.log.Error("failed to restore the previous space scheme after a failed scheme configuration; the space is left on a scheme whose roles may be unconfigured", "channel_id", space.ChannelId, "scheme_id", targetSchemeID, "previous_scheme_id", currentSchemeID, "err", rollbackErr)
-					// Distinct from the plain configure failure below: the space is left on the new
-					// scheme with roles that may be unconfigured, which an operator has to resolve.
-					// Reporting both as one id makes that state indistinguishable from the recovered
-					// case in monitoring.
-					return mmmodel.NewAppError("SetSpaceDefaultPermissions", "app.space.default_permissions.scheme_configure_rollback_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(cfgErr)
-				}
-				changed = false
-				return mmmodel.NewAppError("SetSpaceDefaultPermissions", "app.space.default_permissions.scheme_configure_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(cfgErr)
-			}
-		}
-
-		// The superseded scheme is left in place: presets and pooled schemes alike are shared by
+		// The superseded scheme is left in place: presets and minted schemes alike are shared by
 		// every space expressing that permission set, so none is this space's to delete.
 		return nil
 	})
@@ -565,10 +517,10 @@ func (s *Service) GetSpacesForTeam(teamID, userID string, page, perPage int) ([]
 		return nil, false, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.not_team_member.app_error", nil, "", http.StatusForbidden)
 	}
 	if !s.client.User.HasPermissionTo(userID, mmmodel.PermissionManageSystem) &&
-		!s.teamPermGranted(member, userID, teamID, mmmodel.PermissionReadSpace) {
+		!s.client.User.HasPermissionToTeam(userID, teamID, mmmodel.PermissionReadSpace) {
 		return nil, false, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.forbidden.app_error", nil, "", http.StatusForbidden)
 	}
-	callerHasOpenFallthrough := s.hasOpenTeamFallthrough(member, userID, teamID)
+	callerHasOpenFallthrough := s.hasOpenTeamFallthrough(userID, teamID)
 	spaces, err := s.store.GetSpacesForTeam(teamID, userID, callerHasOpenFallthrough, offset, limit)
 	if err != nil {
 		return nil, false, storeAppError("GetSpacesForTeam", err)
@@ -592,7 +544,7 @@ func normalizeAndValidateSpacePatch(where string, patch *model.SpacePatch) *mmmo
 		}
 		patch.Title = &normalized
 	}
-	if patch.ViewAccess != nil && *patch.ViewAccess != model.ViewAccessOpen && *patch.ViewAccess != model.ViewAccessPrivate {
+	if patch.ViewAccess != nil && !patch.ViewAccess.IsValid() {
 		return mmmodel.NewAppError(where, "app.space.update.invalid_view_access.app_error", nil, "", http.StatusBadRequest)
 	}
 	description, icon := "", ""
@@ -618,7 +570,7 @@ func normalizeAndValidateSpacePatch(where string, patch *model.SpacePatch) *mmmo
 // rejected when force=true. actingUserID is used only for that escalation check.
 //
 // Every patch runs under the space's membership advisory lock (the same lock
-// AutoJoinIfDefaultGranted and the last-admin/last-member guards use), because it also drives the
+// JoinOpenSpace and the last-admin/last-member guards use), because it also drives the
 // channel-metadata sync below, which must not race a concurrent membership change.
 func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expectedUpdateAt *int64, force bool, actingUserID string) (*model.Space, *mmmodel.AppError) {
 	if space == nil {
@@ -636,11 +588,10 @@ func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expec
 
 	s.log.Debug("Updating space", "space_id", space.Id)
 
-	// A private->private no-op (the patch re-asserts the current value) must not attach
-	// member_count: only a genuine open->private transition sheds no members but exposes an
-	// admin to a count they should act on. Compare against the live row's prior value, not
-	// just the patch value. Carried out of apply so the count lookup and the broadcast it feeds
-	// run after the lock is released.
+	// A private->private no-op (the patch re-asserts the current value) must not prune: only a
+	// genuine open->private transition withdraws the standing grant the self-joined memberships
+	// were held on. Compare against the live row's prior value, not just the patch value. Carried
+	// out of apply so the prune and the broadcasts it feeds run after the lock is released.
 	var flippedToPrivate bool
 	apply := func() (*model.Space, *mmmodel.AppError) {
 		var live *model.Space
@@ -683,22 +634,30 @@ func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expec
 	// neither of which the update's atomicity depends on — are kept out of it, matching every other
 	// membership-lock caller in this package.
 	publish := func(updated *model.Space) {
-		payload := map[string]any{"space_id": updated.Id}
 		if flippedToPrivate && s.client != nil {
-			// Privatizing does not shed members: every existing member (including anyone
-			// auto-joined earlier) stays. Surface the current count so the admin is prompted to
-			// prune via RemoveSpaceMember.
-			stats, statsErr := s.client.Channel.GetChannelStats(updated.ChannelId)
-			if statsErr != nil {
-				// The update itself committed, so this only affects the prompt: the event ships
-				// without member_count rather than failing a successful write.
-				s.log.Warn("UpdateSpace: member-count lookup failed; the view_access event omits member_count", "channel_id", updated.ChannelId, "space_id", updated.Id, "err", statsErr)
-			} else {
-				payload["member_count"] = stats.MemberCount
-				s.log.Debug("space view_access flipped to private", "space_id", updated.Id, "member_count", stats.MemberCount)
+			// Making a space private withdraws the standing grant its open view access was, so the
+			// memberships held on that grant alone go with it. Deliberately added members stay.
+			//
+			// The failure is logged inside the prune rather than returned: the flip itself has
+			// committed, and reporting it as a failure would tell the administrator their space is
+			// still public when it is not.
+			removed, pruneErr := s.PruneSelfJoinedMembers(updated)
+			if pruneErr != nil {
+				s.log.Error("UpdateSpace: could not prune self-joined members after making the space private; they retain access",
+					"space_id", updated.Id, "err", pruneErr)
+			}
+			for _, userID := range removed {
+				// Delivered to each removed user directly as well as to the channel: they have just
+				// left it, so the channel-scoped broadcast can no longer reach them — and they are
+				// exactly who has to learn their access changed.
+				s.publishMembershipEvent(wsEventSpaceMemberRemoved,
+					map[string]any{"space_id": updated.Id, "user_id": userID}, updated.ChannelId, userID)
+			}
+			if len(removed) > 0 {
+				s.log.Debug("space view_access flipped to private", "space_id", updated.Id, "pruned_members", len(removed))
 			}
 		}
-		s.publishToChannels(wsEventSpaceUpdated, payload, updated.ChannelId)
+		s.publishToChannels(wsEventSpaceUpdated, map[string]any{"space_id": updated.Id}, updated.ChannelId)
 	}
 
 	var result *model.Space

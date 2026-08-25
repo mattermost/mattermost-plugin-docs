@@ -17,7 +17,8 @@ import TextArea from 'components/form_controls/text_area';
 import TextInput from 'components/form_controls/text_input';
 import GenericModal from 'components/generic_modal/generic_modal';
 
-import type {Space, SpaceVisibility} from 'types/docs';
+import type {Space} from 'types/docs';
+import type {SpaceViewAccess} from 'types/permissions';
 
 import styles from './create_space_modal.module.scss';
 import {firstSpaceValidationError} from './validation_messages';
@@ -39,15 +40,10 @@ const CreateSpaceModal = ({onClose, onCreated}: Props) => {
 
     const visibilityOptions: SelectorOption[] = [
         {
-            value: 'public',
+            value: 'open',
             icon: <GlobeIcon size={32}/>,
             title: formatMessage({id: 'docs.createSpace.public.title', defaultMessage: 'Public Space'}),
             description: formatMessage({id: 'docs.createSpace.public.description', defaultMessage: 'Any team member can view'}),
-
-            // Public (open to any team member) waits on view_access — shown but
-            // disabled until that lands. Spaces today are membership-based.
-            disabled: true,
-            disabledReason: formatMessage({id: 'docs.createSpace.public.disabledReason', defaultMessage: 'Public spaces are coming soon'}),
         },
         {
             value: 'private',
@@ -100,7 +96,7 @@ const CreateSpaceModal = ({onClose, onCreated}: Props) => {
                                     <span aria-hidden='true'>
                                         <SpaceIcon
                                             size={20}
-                                            space={{visibility: 'private'}}
+                                            space={{view_access: 'private'}}
                                         />
                                     </span>
                                 )}
@@ -114,13 +110,13 @@ const CreateSpaceModal = ({onClose, onCreated}: Props) => {
                 </div>
 
                 <div className={styles.group}>
-                    <form.Field name='visibility'>
+                    <form.Field name='view_access'>
                         {(field) => (
                             <PublicPrivateSelector
                                 ariaLabel={formatMessage({id: 'docs.createSpace.visibilityLabel', defaultMessage: 'Space visibility'})}
                                 options={visibilityOptions}
                                 value={field.state.value}
-                                onChange={(value) => field.handleChange(value as SpaceVisibility)}
+                                onChange={(value) => field.handleChange(value as SpaceViewAccess)}
                             />
                         )}
                     </form.Field>

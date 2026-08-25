@@ -51,22 +51,31 @@ function resolveImage(): string {
 //
 // Only the Mattermost image needs this. The Postgres image publishes an arm64 manifest, and
 // pinning it to amd64 would make it emulate for nothing.
-function resolvePlatform(): string | undefined {
+//
+// A locally built image is the exception, and pinning it is worse than not pinning:
+// build/build-core-image.sh targets the Docker daemon's own architecture, so on an arm64 host it
+// produces an arm64 image, and asking for amd64 fails the boot outright with "does not provide the
+// specified platform" — there is no manifest to fall back on and nothing to pull. A bare tag means
+// locally built here for the same reason it does in the Go suite: a published image is namespaced.
+function resolvePlatform(image: string): string | undefined {
     const explicit = (process.env.MM_E2E_PLATFORM ?? process.env.DOCKER_DEFAULT_PLATFORM ?? '').trim();
 
     if (explicit) {
         return explicit;
     }
 
+    if (!image.includes('/')) {
+        return undefined;
+    }
+
     return process.arch === 'arm64' ? 'linux/amd64' : undefined;
 }
 
-// resolveLicense mirrors the Go suite's contract (server/e2e/container_test.go): the pooled
-// custom-scheme paths drive core's CreateScheme, which is gated on the CustomPermissionsSchemes
-// feature, so an unlicensed server answers a permission scenario with a 501 no assertion can make
-// sense of. Under spacePermissionsMode absence is therefore a hard error naming both sources rather
-// than a skip, so a run never quietly narrows what it proves. The authoring specs touch no licensed
-// feature and run unlicensed.
+// resolveLicense supplies the Enterprise license the guest scenarios need: demoting a user to a
+// guest requires GuestAccountsSettings.Enable, which an unlicensed server refuses (see
+// helpers/guest.ts). Under spacePermissionsMode absence is therefore a hard error naming both
+// sources rather than a skip, so a run never quietly narrows what it proves. The authoring specs
+// touch no licensed feature and run unlicensed.
 //
 // The license is never committed: MM_LICENSE carries it directly (how CI supplies it from a
 // secret), MM_LICENSE_FILE names a file holding it (how a developer points at a local copy).
@@ -91,9 +100,9 @@ function resolveLicense(): string | undefined {
 
     if (spacePermissionsMode) {
         throw new Error(
-            'No Enterprise license found. The space-permission scenarios drive core\'s CreateScheme, which is ' +
-            'gated on CustomPermissionsSchemes, so an unlicensed server cannot answer them. Set MM_LICENSE to ' +
-            'the raw license, or MM_LICENSE_FILE to a path holding it.',
+            'No Enterprise license found. The space-permission scenarios demote a user to a guest, which ' +
+            'requires GuestAccountsSettings.Enable — a licensed feature. Set MM_LICENSE to the raw license, ' +
+            'or MM_LICENSE_FILE to a path holding it.',
         );
     }
 
@@ -212,7 +221,7 @@ export class DocsServerContainer {
 
         // Assigned before the chain rather than inside it: withPlatform must not be called at all
         // when no platform applies, and the fluent chain has no way to skip a link.
-        const platform = resolvePlatform();
+        const platform = resolvePlatform(image);
         let server = new GenericContainer(image);
 
         if (platform) {
@@ -294,8 +303,7 @@ export class DocsServerContainer {
     // The advanced-permissions phase-2 migration runs as a job after boot, and every
     // scheme-backed route answers 501 until it finishes — so the first CreateSpace fails
     // with app.space.create.admin_role_failed wrapping
-    // app.schemes.is_phase_2_migration_completed.not_completed. Mirrors the Go suite's
-    // waitForPhase2Migration (server/e2e/container_test.go).
+    // app.schemes.is_phase_2_migration_completed.not_completed.
     private async waitForPhase2Migration() {
         const token = await this.adminToken();
         const deadline = Date.now() + phase2MigrationTimeoutMs;

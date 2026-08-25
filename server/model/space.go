@@ -33,6 +33,13 @@ const (
 // it marshals as a plain JSON string, so the wire format is a bare "open"/"private".
 type ViewAccess string
 
+// IsValid reports whether v is one of the two defined policies. The empty string is not one of
+// them: PreSave deliberately does not default ViewAccess, so an unset value means the caller
+// never chose one.
+func (v ViewAccess) IsValid() bool {
+	return v == ViewAccessOpen || v == ViewAccessPrivate
+}
+
 // Space is stored in the DOCS_Space table. Each space owns a backing MM channel (ChannelId).
 // A soft-deleted space (DeleteAt>0) retains its pages; pages share the same DeleteAt via a
 // cascade and can be restored with the space.
@@ -84,6 +91,14 @@ type SpaceWithAccess struct {
 	Space
 	DefaultPermissions []string `json:"default_permissions"`
 	Permissions        []string `json:"permissions"`
+
+	// CanJoin reports that the caller may join this space themselves, which is what turns its
+	// DefaultPermissions into permissions they would actually hold. Resolved by the server rather
+	// than inferred by the client: a guest member and a non-member reading through the open-space
+	// fall-through both carry read_page alone against the same DefaultPermissions, so the two are
+	// indistinguishable on the wire and a client deriving this would offer a guest authoring the
+	// server refuses.
+	CanJoin bool `json:"can_join"`
 }
 
 // EnsurePermissions normalizes DefaultPermissions and Permissions to non-nil slices so they
@@ -274,7 +289,7 @@ func (s *Space) IsValid() *mmmodel.AppError {
 		return err
 	}
 
-	if s.ViewAccess != ViewAccessOpen && s.ViewAccess != ViewAccessPrivate {
+	if !s.ViewAccess.IsValid() {
 		return mmmodel.NewAppError("Space.IsValid", "model.space.is_valid.view_access.app_error", nil, "id="+s.Id, http.StatusBadRequest)
 	}
 

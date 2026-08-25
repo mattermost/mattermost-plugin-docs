@@ -12,7 +12,7 @@ import styles from './space_settings_modal.module.scss';
 type Props = {
 
     // The permissions to offer, in display order.
-    options: Permission[];
+    options: readonly Permission[];
     selected: Permission[];
     disabled?: boolean;
     busy?: boolean;
@@ -37,10 +37,11 @@ export const usePermissionLabels = (): Record<Permission, string> => {
         [Permissions.EDIT_PAGE]: formatMessage({id: 'docs.permission.edit_page', defaultMessage: 'Edit pages'}),
         [Permissions.DELETE_OWN_PAGE]: formatMessage({id: 'docs.permission.delete_own_page', defaultMessage: 'Delete own pages'}),
 
-        // Never rendered as a toggle — manage_space is effective-set-only, not grantable — but the
-        // map is exhaustive over the vocabulary so that adding a grantable permission cannot compile
-        // without a label.
+        // Never rendered as toggles — manage_space and delete_space are effective-set-only, not
+        // grantable — but the map is exhaustive over the vocabulary so that adding a grantable
+        // permission cannot compile without a label.
         [Permissions.MANAGE_SPACE]: formatMessage({id: 'docs.permission.manage_space', defaultMessage: 'Manage space'}),
+        [Permissions.DELETE_SPACE]: formatMessage({id: 'docs.permission.delete_space', defaultMessage: 'Archive space'}),
         [Permissions.DELETE_PAGE]: formatMessage({id: 'docs.permission.delete_page', defaultMessage: 'Delete any page'}),
         [Permissions.ADMIN_SPACE]: formatMessage({id: 'docs.permission.admin_space', defaultMessage: 'Administer space'}),
     };

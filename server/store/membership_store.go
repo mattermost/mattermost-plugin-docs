@@ -197,36 +197,15 @@ func (s *Store) ClearAutoJoined(spaceID, userID string) error {
 }
 
 // Auto-join provenance markers record which of a space's members were added by
-// AutoJoinIfDefaultGranted rather than invited/added deliberately, so a membership review (e.g.
-// after an open->private flip) and UndoAutoJoin can tell the two apart. They live in the plugin's
-// own DOCS_SpaceAutoJoin table, read and written on the master DB handle: UndoAutoJoin deletes a
-// membership on the strength of the marker, so it must observe a concurrent legitimization — which
-// clears the marker — the moment it commits, and the space membership lock can only guarantee that
-// when the serialized reads are answered by the primary. Per-membership rows also make every update
-// a single-row write, so no update can overwrite another's outcome.
+// JoinOpenSpace rather than invited/added deliberately, so a membership review — notably
+// after an open->private flip, which removes nobody — can tell the two apart. They live in the
+// plugin's own DOCS_SpaceAutoJoin table on the master DB handle, alongside the membership reads
+// above. No gate consults them: a marker only labels how a member got here, never what they may do.
+// Per-membership rows make every update a single-row write, so no update can overwrite another's
+// outcome.
 
-// IsAutoJoined reports whether userID carries an auto-join marker for spaceID. Answers the
-// single-membership question the undo path asks, so that path does not load the space's whole
-// marker set to test one id; the (SpaceId, UserId) primary key serves this directly.
-func (s *Store) IsAutoJoined(spaceID, userID string) (bool, error) {
-	if spaceID == "" || userID == "" {
-		return false, &ErrInvalidInput{Entity: "SpaceAutoJoin", Field: "id", Value: spaceID + "/" + userID}
-	}
-
-	builder := s.getQueryBuilder().
-		Select("COUNT(*) > 0").
-		From("DOCS_SpaceAutoJoin").
-		Where(sq.Eq{"SpaceId": spaceID, "UserId": userID})
-
-	var autoJoined bool
-	if err := s.getBuilder(s.db, &autoJoined, builder); err != nil {
-		return false, errors.Wrap(err, "unable_to_check_auto_joined")
-	}
-	return autoJoined, nil
-}
-
-// AutoJoinedIDs returns the user ids currently marked auto-joined to spaceID. For a single id use
-// IsAutoJoined; this is for callers projecting the marker onto a set of members they already hold.
+// AutoJoinedIDs returns the user ids currently marked auto-joined to spaceID, for callers
+// projecting the marker onto a set of members they already hold.
 func (s *Store) AutoJoinedIDs(spaceID string) ([]string, error) {
 	if spaceID == "" {
 		return nil, &ErrInvalidInput{Entity: "SpaceAutoJoin", Field: "space_id", Value: spaceID}

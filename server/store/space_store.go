@@ -202,7 +202,7 @@ func (s *Store) DeleteSpace(spaceID string) (err error) {
 		return &ErrInvalidInput{Entity: "Space", Field: "id", Value: spaceID}
 	}
 
-	tx, err := s.db.Beginx()
+	tx, err := s.beginUnboundedTx()
 	if err != nil {
 		return errors.Wrap(err, "begin_transaction")
 	}
@@ -284,7 +284,7 @@ func (s *Store) RestoreSpace(spaceID string) (err error) {
 		return &ErrInvalidInput{Entity: "Space", Field: "id", Value: spaceID}
 	}
 
-	tx, err := s.db.Beginx()
+	tx, err := s.beginUnboundedTx()
 	if err != nil {
 		return errors.Wrap(err, "begin_transaction")
 	}
@@ -366,25 +366,14 @@ const (
 // membership mutations for one space across processes. Guards that span multiple non-database
 // calls — read the member list, then mutate it — are atomic with respect to each other only
 // under this lock. The lock is session-scoped on a dedicated pooled connection with no open
-// transaction of its own. fn may perform store work of its own — reads and its own transactions
-// — so each in-flight caller holds two pooled connections for the critical section: this
-// lock's session connection plus any connection fn's own transaction acquires. Any transaction fn
-// opens must therefore bound its connection acquisition (see beginBoundedTx), or a saturated pool
-// can leave every lock holder waiting on a connection no other holder will release. Store.UpdateSpace
-// is currently the only transaction any closure opens and it is bounded; the page, draft and
-// page-move stores open unbounded ones, so a closure that reached those would break this. Nothing
-// enforces it, so it is worth re-checking whenever a caller is added.
+// transaction of its own.
 //
-// Concurrent holders are deliberately not capped. The residual exposure is a bounded stall, not a
-// deadlock: acquisition gives up after spaceMembershipLockAcquireTimeout with a retryable conflict, a
-// bounded transaction gives up after defaultQueryTimeout, and pluginMaxOpenConns holds the plugin to
-// a small share of the server's pool so a saturated Docs pool cannot starve unrelated traffic. An
-// admission cap was tried and reverted: it converts a rare bounded stall into a fast retryable
-// conflict, which is a real improvement, but neither this plugin nor core's own store layer meters a
-// pool that way — both bound with timeouts — and inventing the primitive here bought less than the
-// concurrency construct cost. fn must also
-// stay short: the lock connection is held for fn's whole duration, and cross-process
-// serialization of a read-modify-write that spans non-database calls has no cheaper primitive.
+// fn may do store work of its own, so each in-flight caller holds two pooled connections: this
+// lock's session connection plus whatever fn's own transaction acquires. fn must therefore never
+// reach a store method that begins through beginUnboundedTx, or a saturated pool can leave every
+// holder waiting on a connection no other holder will release. fn must also stay short, since the
+// lock connection is held for its whole duration.
+//
 // fn's error is returned unchanged. When the lock cannot be acquired within
 // spaceMembershipLockAcquireTimeout, ErrConflict is returned so the caller can surface a
 // retryable conflict.

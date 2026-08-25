@@ -23,6 +23,7 @@ const EMPTY_DOCS_ENTITIES: DocsEntitiesState = {
     pages: {},
     pagesInSpace: {},
     spaceMembers: {},
+    spaceMemberPermissionsRevision: {},
     drafts: {},
     draftsInSpace: {},
 };
