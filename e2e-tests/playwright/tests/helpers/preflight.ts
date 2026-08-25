@@ -120,11 +120,11 @@ const authed = (token: string) => ({
 });
 
 // A permission set matching none of the three seeded presets, so resolving it can only be answered
-// by the minted-scheme pool — which is the capability being probed.
+// by the plugin-created scheme pool — which is the capability being probed.
 const NON_PRESET_DEFAULTS = ['comment_page', 'edit_page'];
 
 /**
- * Fails setup when the server cannot mint a channel scheme for an arbitrary space-default
+ * Fails setup when the server cannot create a channel scheme for an arbitrary space-default
  * permission set.
  *
  * Every space default outside the three seeded presets resolves through the plugin scheme API
@@ -182,11 +182,33 @@ export async function assertSpacePermissionsSupported(baseURL: string, username:
     }).catch(() => undefined);
 }
 
-// The team-role permissions the suite itself removes and restores. `create_space` is revoked by the
-// system-console spec and put back in its `finally`; a run killed mid-test — or one whose console
-// navigation timed out — skips that restore and leaves the role short, on a server the next run
-// inherits.
-const REQUIRED_TEAM_USER_PERMISSIONS = ['create_space', 'read_space'];
+// The team-role permissions the suite itself changes in the System Console. A killed or timed-out
+// test can leave any of them inverted for the rest of the run (and for later runs against an
+// existing server), so setup restores both halves of the default: read/create present,
+// manage/delete absent. Permissions outside this set are untouched.
+const TEAM_USER_SPACE_PERMISSION_BASELINE: Record<string, boolean> = {
+    read_space: true,
+    create_space: true,
+    manage_space: false,
+    delete_space: false,
+};
+
+type TeamUserRole = {id: string; permissions: string[]};
+
+const matchesTeamUserSpacePermissionBaseline = (role: TeamUserRole) => Object.entries(TEAM_USER_SPACE_PERMISSION_BASELINE).
+    every(([permission, expected]) => role.permissions.includes(permission) === expected);
+
+async function readTeamUserRole(baseURL: string, token: string): Promise<TeamUserRole> {
+    const response = await fetch(`${baseURL}/api/v4/roles/name/team_user`, {
+        headers: authed(token),
+        signal: AbortSignal.timeout(requestTimeoutMs),
+    });
+    if (!response.ok) {
+        throw new Error(`Unable to read the team_user role on ${baseURL} (${response.status}).`);
+    }
+
+    return await response.json() as TeamUserRole;
+}
 
 /**
  * Restores the baseline team-role permissions the suite depends on, repairing what a previous
@@ -199,41 +221,49 @@ const REQUIRED_TEAM_USER_PERMISSIONS = ['create_space', 'read_space'];
  *
  * Repairing rather than only reporting is deliberate: this is a mutation the suite makes on purpose
  * and undoes on purpose, so restoring it is finishing that job, not overriding an operator's
- * choice. It is additive — permissions outside this list are untouched — and it says loudly what it
- * changed, so a repair never passes silently for something a human should look at.
+ * choice. Permissions outside these four are untouched, and the repair says loudly what changed.
  */
 export async function restoreBaselineTeamPermissions(baseURL: string, username: string, password: string) {
     const token = await adminToken(baseURL, username, password);
-
-    const roleResponse = await fetch(`${baseURL}/api/v4/roles/name/team_user`, {
-        headers: authed(token),
-        signal: AbortSignal.timeout(requestTimeoutMs),
-    });
-    if (!roleResponse.ok) {
-        throw new Error(`Unable to read the team_user role on ${baseURL} (${roleResponse.status}).`);
-    }
-
-    const role = await roleResponse.json() as {id: string; permissions: string[]};
-    const missing = REQUIRED_TEAM_USER_PERMISSIONS.filter((p) => !role.permissions.includes(p));
-    if (missing.length === 0) {
+    const role = await readTeamUserRole(baseURL, token);
+    if (matchesTeamUserSpacePermissionBaseline(role)) {
         return;
     }
 
+    const added = Object.entries(TEAM_USER_SPACE_PERMISSION_BASELINE).
+        filter(([permission, expected]) => expected && !role.permissions.includes(permission)).
+        map(([permission]) => permission);
+    const removed = Object.entries(TEAM_USER_SPACE_PERMISSION_BASELINE).
+        filter(([permission, expected]) => !expected && role.permissions.includes(permission)).
+        map(([permission]) => permission);
+    const managed = new Set(Object.keys(TEAM_USER_SPACE_PERMISSION_BASELINE));
+    const permissions = role.permissions.filter((permission) => !managed.has(permission));
+    permissions.push(...Object.entries(TEAM_USER_SPACE_PERMISSION_BASELINE).
+        filter(([, expected]) => expected).
+        map(([permission]) => permission));
+
     console.log(
-        `[e2e] team_user is missing ${missing.join(', ')} — almost certainly left behind by an aborted run of the ` +
-        'system-console spec, whose restore step never ran. Restoring, so the specs that depend on it fail or pass on their own.',
+        `[e2e] repairing the team_user space-permission baseline left by an interrupted System Console test ` +
+        `(add: ${added.join(', ') || 'none'}; remove: ${removed.join(', ') || 'none'}).`,
     );
 
     const patch = await fetch(`${baseURL}/api/v4/roles/${role.id}/patch`, {
         method: 'PUT',
         headers: authed(token),
-        body: JSON.stringify({permissions: [...role.permissions, ...missing].sort()}),
+        body: JSON.stringify({permissions: permissions.sort()}),
         signal: AbortSignal.timeout(requestTimeoutMs),
     });
     if (!patch.ok) {
         throw new Error(
-            `Unable to restore ${missing.join(', ')} on the team_user role of ${baseURL} (${patch.status}). ` +
+            `Unable to restore the team_user space-permission baseline on ${baseURL} (${patch.status}). ` +
             'Repair it in System Console → User Management → Permissions before re-running.',
         );
+    }
+
+    // Read back from the server instead of trusting only the PATCH response. This is also the
+    // readiness barrier before a new browser session resolves its team roles.
+    const verified = await readTeamUserRole(baseURL, token);
+    if (!matchesTeamUserSpacePermissionBaseline(verified)) {
+        throw new Error(`The team_user space-permission baseline on ${baseURL} did not read back after repair.`);
     }
 }

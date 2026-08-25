@@ -9,6 +9,18 @@ type GuestAccountsConfig = {
     GuestAccountsSettings?: {Enable?: boolean};
 };
 
+export async function ensureGuestAccountsEnabled(page: Page): Promise<boolean> {
+    const configResponse = await page.request.get('/api/v4/config', requestedWith);
+    const config = await readJsonOrThrow<GuestAccountsConfig>(configResponse, 'Unable to read server config');
+    const wasEnabled = config.GuestAccountsSettings?.Enable === true;
+
+    if (!wasEnabled) {
+        await setGuestAccountsEnabled(page, true);
+    }
+
+    return wasEnabled;
+}
+
 /**
  * Demotes a seeded user to a guest, returning the undo for whatever server state this had
  * to change to do it.

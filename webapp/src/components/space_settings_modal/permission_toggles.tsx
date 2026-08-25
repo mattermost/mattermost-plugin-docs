@@ -15,6 +15,7 @@ type Props = {
     options: readonly Permission[];
     selected: Permission[];
     disabled?: boolean;
+    disabledOptions?: readonly Permission[];
     busy?: boolean;
     onChange: (next: Permission[]) => void;
 
@@ -47,14 +48,14 @@ export const usePermissionLabels = (): Record<Permission, string> => {
     };
 };
 
-const PermissionToggles = ({options, selected, disabled, busy, onChange, idPrefix, legend}: Props) => {
+const PermissionToggles = ({options, selected, disabled, disabledOptions = [], busy, onChange, idPrefix, legend}: Props) => {
     const labels = usePermissionLabels();
 
     const toggle = (permission: Permission) => {
         // Checked here as well as on the input: `disabled` also covers a save in
         // flight, and a click dispatched just before that re-render would otherwise
         // send a second set built from the pre-save selection.
-        if (disabled) {
+        if (disabled || disabledOptions.includes(permission)) {
             return;
         }
 
@@ -83,7 +84,7 @@ const PermissionToggles = ({options, selected, disabled, busy, onChange, idPrefi
                             id={id}
                             type='checkbox'
                             checked={selected.includes(permission)}
-                            disabled={disabled}
+                            disabled={disabled || disabledOptions.includes(permission)}
                             onChange={() => toggle(permission)}
                         />
                         <label htmlFor={id}>{labels[permission]}</label>

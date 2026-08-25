@@ -76,7 +76,7 @@ func TestResolveSpaceScheme_PoolsByPermissionSet(t *testing.T) {
 		require.Equal(t, []string{mmmodel.PermissionReadPage.Id}, guest, "the guest tier reads and nothing more")
 	})
 
-	t.Run("a preset set resolves to the seeded preset, not a minted scheme", func(t *testing.T) {
+	t.Run("a preset set resolves to the seeded preset instead of creating a plugin scheme", func(t *testing.T) {
 		mockAPI := &plugintest.API{}
 		testutil.StubPresetSchemes(mockAPI)
 		testutil.StubSchemePool(mockAPI)

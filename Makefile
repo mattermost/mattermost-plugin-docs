@@ -5,6 +5,11 @@ MM_DEBUG ?=
 GOPATH ?= $(shell go env GOPATH)
 GO_TEST_FLAGS ?= -race
 GO_BUILD_FLAGS ?=
+# Coverage gates use the current production baseline. Test helpers are deliberately excluded from
+# coverpkg so adding exercised fixture code cannot conceal a production-coverage regression.
+GO_COVERAGE_MIN ?= 83
+SERVER_COVERAGE_PROFILE ?= server/coverage.txt
+SERVER_COVERAGE_PACKAGES ?= $(shell $(GO) list ./server/... | grep -v '/server/internal/testutil$$' | paste -sd, -)
 MM_UTILITIES_DIR ?= ../mattermost-utilities
 DLV_DEBUG_PORT := 2346
 DEFAULT_GOOS := $(shell go env GOOS)
@@ -361,14 +366,22 @@ test-ci: test-ci-server test-ci-webapp
 .PHONY: test-ci-server
 test-ci-server: apply install-go-tools
 ifneq ($(HAS_SERVER),)
-	$(GOBIN)/gotestsum --format standard-verbose --junitfile report.xml -- ./...
+	$(GOBIN)/gotestsum --format standard-verbose --junitfile report.xml -- -covermode=atomic -coverpkg=$(SERVER_COVERAGE_PACKAGES) -coverprofile=$(SERVER_COVERAGE_PROFILE) ./build/... ./server/...
+	@coverage="$$( $(GO) tool cover -func=$(SERVER_COVERAGE_PROFILE) | awk '/^total:/ {gsub(/%/, "", $$3); print $$3}' )"; \
+		awk -v actual="$$coverage" -v minimum="$(GO_COVERAGE_MIN)" 'BEGIN { \
+			if (actual + 0 < minimum + 0) { \
+				printf "server coverage %.1f%% is below the %.1f%% minimum\n", actual, minimum; \
+				exit 1; \
+			} \
+			printf "server coverage %.1f%% meets the %.1f%% minimum\n", actual, minimum; \
+		}'
 endif
 
 ## Runs the webapp unit tests, writing a JUnit report.
 .PHONY: test-ci-webapp
 test-ci-webapp: apply webapp/node_modules
 ifneq ($(HAS_WEBAPP),)
-	cd webapp && $(NPM) run test;
+	cd webapp && $(NPM) run test-ci;
 endif
 
 ## Runs the Playwright E2E suite against a throwaway Mattermost container. Requires Docker.
@@ -394,8 +407,16 @@ test-e2e:
 .PHONY: coverage
 coverage: apply webapp/node_modules
 ifneq ($(HAS_SERVER),)
-	$(GO) test $(GO_TEST_FLAGS) -coverprofile=server/coverage.txt ./server/...
-	$(GO) tool cover -html=server/coverage.txt
+	$(GO) test $(GO_TEST_FLAGS) -covermode=atomic -coverpkg=$(SERVER_COVERAGE_PACKAGES) -coverprofile=$(SERVER_COVERAGE_PROFILE) ./server/...
+	$(GO) tool cover -func=$(SERVER_COVERAGE_PROFILE)
+	@coverage="$$( $(GO) tool cover -func=$(SERVER_COVERAGE_PROFILE) | awk '/^total:/ {gsub(/%/, "", $$3); print $$3}' )"; \
+		awk -v actual="$$coverage" -v minimum="$(GO_COVERAGE_MIN)" 'BEGIN { \
+			if (actual + 0 < minimum + 0) { \
+				printf "server coverage %.1f%% is below the %.1f%% minimum\n", actual, minimum; \
+				exit 1; \
+			} \
+			printf "server coverage %.1f%% meets the %.1f%% minimum\n", actual, minimum; \
+		}'
 endif
 
 ## Extract strings for translation from the source code.

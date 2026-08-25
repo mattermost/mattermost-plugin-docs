@@ -20,8 +20,8 @@ import (
 var errUnsupportedSchemeAPI = errors.New("the server's plugin API did not answer a scheme or role call; it does not carry the space permission support this plugin requires")
 
 // The three functions below are the space tier model: what a plain member, an admin and a guest
-// of a space may do. Core mints the scheme carrying them but does not define them — it validates
-// only that they are channel-scoped — so this is where the space policy lives.
+// of a space may do. Core creates the scheme with these permission sets but does not define them —
+// it validates only that they are channel-scoped — so this is where the space policy lives.
 
 // spaceUserRolePermissions is what a space's plain members hold: the baseline read every member
 // has, plus the space's configured default set. permissions must already be normalized, which its

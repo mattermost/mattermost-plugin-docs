@@ -144,18 +144,18 @@ func StubPresetSchemes(mockAPI *plugintest.API) {
 // the same way a real plugin id would.
 const stubPluginID = "com.mattermost.plugin-docs"
 
-func isMintedSchemeName(name string) bool {
+func isPluginChannelSchemeRoleName(name string) bool {
 	return strings.HasPrefix(name, mmmodel.PluginChannelSchemeNamePrefix)
 }
 
-// StubSchemePool simulates core minting plugin channel schemes, with state: one set of three role
+// StubSchemePool simulates core creating plugin channel schemes, with state: one set of three role
 // permission sets resolves to one scheme however many times it is asked for, and that scheme's
-// generated roles read back carrying exactly the permissions it was minted with.
+// generated roles read back with exactly the permissions supplied at creation.
 //
 // Both halves matter to what the tests assert. The first is the property pooling exists for — two
-// spaces configured alike share a scheme rather than minting two identical ones. The second is that
-// a scheme arrives complete: there is no configure step after creation, so a role that read back
-// empty here would be a stub artefact rather than a state production can reach.
+// spaces configured alike share a scheme rather than creating two identical ones. The second is
+// that a scheme arrives complete: there is no configure step after creation, so a role that read
+// back empty here would be a stub artefact rather than a state production can reach.
 //
 // The generated role names are derived from the scheme name so a standing stub can answer them;
 // registering new expectations from inside a running mock call would race the mock's own lock.
@@ -200,14 +200,14 @@ func StubSchemePool(mockAPI *plugintest.API) *SchemePoolRecorder {
 			return scheme, nil
 		}).Maybe()
 
-	mockAPI.On("GetRoleByName", mock.MatchedBy(isMintedSchemeName)).
+	mockAPI.On("GetRoleByName", mock.MatchedBy(isPluginChannelSchemeRoleName)).
 		Return(func(roleName string) (*mmmodel.Role, *mmmodel.AppError) {
 			mu.Lock()
 			defer mu.Unlock()
 			if role, ok := rolesByName[roleName]; ok {
 				return role, nil
 			}
-			// A role of a scheme this pool never minted. Answered as not-found rather than as an
+			// A role of a scheme this pool never created. Answered as not-found rather than as an
 			// empty role, so a test wiring the wrong scheme fails on the lookup instead of on a
 			// silently permission-less space.
 			return nil, &mmmodel.AppError{Id: "app.role.get_by_name.app_error", StatusCode: http.StatusNotFound}
@@ -252,7 +252,7 @@ func (r *SchemePoolRecorder) Last() (SchemePoolRequest, bool) {
 }
 
 // Count reports how many resolutions the pool answered, so a test can pin that a repeat
-// configuration reused a scheme rather than minting a second one.
+// configuration reused a scheme rather than creating another one.
 func (r *SchemePoolRecorder) Count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()

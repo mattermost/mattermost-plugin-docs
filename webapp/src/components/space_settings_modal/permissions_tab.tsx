@@ -3,6 +3,7 @@
 
 import type {MemberProfile} from 'hooks/members';
 import {useSpaceMemberProfiles} from 'hooks/members';
+import {useAppSelector} from 'hooks/redux';
 import {useManageSpaceMembers} from 'hooks/space_members';
 import {useSpacePermissions} from 'hooks/space_permissions';
 import React, {useMemo} from 'react';
@@ -11,12 +12,14 @@ import {FormattedMessage, useIntl} from 'react-intl';
 import GlobeIcon from '@mattermost/compass-icons/components/globe';
 import LockOutlineIcon from '@mattermost/compass-icons/components/lock-outline';
 
+import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
+
 import PublicPrivateSelector from 'components/form_controls/public_private_selector';
 import {AddMembersField, MemberList} from 'components/space_members';
 import type {MemberListActions} from 'components/space_members';
 
 import type {Space} from 'types/docs';
-import {DEFAULT_PERMISSION_ORDER, MEMBER_PERMISSION_ORDER} from 'types/permissions';
+import {DEFAULT_PERMISSION_ORDER, MEMBER_PERMISSION_ORDER, Permissions} from 'types/permissions';
 
 import PermissionToggles from './permission_toggles';
 import {Section} from './space_settings_modal';
@@ -35,8 +38,9 @@ import styles from './space_settings_modal.module.scss';
  */
 const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) => {
     const {formatMessage} = useIntl();
+    const currentUserId = useAppSelector(getCurrentUserId);
     const members = useSpaceMemberProfiles(space.id);
-    const {addMembers, removeMember, leave, busy} = useManageSpaceMembers(space);
+    const {addMembers, removeMember, leave} = useManageSpaceMembers(space);
     const permissions = useSpacePermissions(space);
 
     // A non-admin, and anyone whose permission state has not loaded, sees the controls
@@ -73,10 +77,18 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
             return null;
         }
 
-        const lockedReason = record.is_guest ? formatMessage({
-            id: 'docs.spaceSettings.permissions.guestLocked',
-            defaultMessage: 'Guests can only view pages',
-        }) : undefined;
+        let lockedReason;
+        if (record.is_guest) {
+            lockedReason = formatMessage({
+                id: 'docs.spaceSettings.permissions.guestLocked',
+                defaultMessage: 'Guests can only view pages',
+            });
+        } else if (profile.id === currentUserId && !permissions.canAdminister) {
+            lockedReason = formatMessage({
+                id: 'docs.spaceSettings.permissions.selfLocked',
+                defaultMessage: 'Only a space administrator can change their own permissions',
+            });
+        }
 
         return (
             <div
@@ -98,7 +110,8 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                 <PermissionToggles
                     options={MEMBER_PERMISSION_ORDER}
                     selected={record.granted_permissions}
-                    disabled={rosterLocked || permissions.busy || record.is_guest}
+                    disabled={rosterLocked || permissions.busy || record.is_guest || (profile.id === currentUserId && !permissions.canAdminister)}
+                    disabledOptions={permissions.canAdminister ? undefined : [Permissions.ADMIN_SPACE]}
                     busy={permissions.busy}
                     idPrefix={`member-${profile.id}`}
                     legend={(
@@ -124,7 +137,7 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                 onClose();
             }
         },
-        disabled: busy,
+        disabled: rosterLocked,
     };
 
     // The option values are the server's own view_access vocabulary ('open'/'private')
@@ -169,10 +182,9 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                 icon: <LockOutlineIcon size={20}/>,
                 title: formatMessage({id: 'docs.spaceSettings.permissions.private.title', defaultMessage: 'Private'}),
 
-                // Deliberately does not promise that switching to private removes anyone: it does
-                // not. Existing members keep their access, including anyone the open-space
-                // auto-join added, until an admin removes them from the member list below.
-                description: formatMessage({id: 'docs.spaceSettings.permissions.private.description', defaultMessage: 'Only members can view this space. Anyone who already joined keeps access until you remove them.'}),
+                // An invitation is an individual grant and survives. A membership created only so
+                // somebody could author under the open-team grant is pruned with that grant.
+                description: formatMessage({id: 'docs.spaceSettings.permissions.private.description', defaultMessage: 'Only invited members can view. People who joined by authoring while public lose access.'}),
                 disabled: adminLocked,
                 disabledReason: lockedReason,
             },
@@ -238,7 +250,7 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                 <AddMembersField
                     excludeIds={memberIds}
                     onAdd={addMembers}
-                    disabled={busy}
+                    disabled={rosterLocked}
                 />
                 <MemberList
                     members={members}

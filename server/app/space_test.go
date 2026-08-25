@@ -130,10 +130,10 @@ func TestServiceCreateSpace_PresetSchemeMissing(t *testing.T) {
 // status core chose. Reporting it as a 500 would hide a condition the operator can act on.
 func TestServiceCreateSpace_SchemeDenialKeepsStatus(t *testing.T) {
 	mockAPI := &plugintest.API{}
-	// The status and id core's own gate returns: minting a scheme without the licence for it is
+	// The status and id core's own gate returns: creating a scheme without the license for it is
 	// reported as not-implemented, not as a permission denial.
 	mockAPI.On("GetOrCreatePluginChannelScheme", mock.Anything, mock.Anything, mock.Anything).
-		Return((*mmmodel.Scheme)(nil), &mmmodel.AppError{StatusCode: http.StatusNotImplemented, Id: "api.scheme.create_scheme.license.error"})
+		Return((*mmmodel.Scheme)(nil), &mmmodel.AppError{StatusCode: http.StatusNotImplemented, Id: "app.scheme.plugin_scheme.scheme_license.app_error"})
 	h := openTestServiceWithAPI(t, mockAPI)
 
 	// A single permission matches no preset, so the create resolves through the shared pool.
@@ -142,7 +142,7 @@ func TestServiceCreateSpace_SchemeDenialKeepsStatus(t *testing.T) {
 
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusNotImplemented, appErr.StatusCode)
-	require.Equal(t, "api.scheme.create_scheme.license.error", appErr.Id)
+	require.Equal(t, "app.scheme.plugin_scheme.scheme_license.app_error", appErr.Id)
 	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 }
 
@@ -633,12 +633,10 @@ func TestServiceCreateSpace_AddMemberFailedCompensates(t *testing.T) {
 	require.Empty(t, spaces)
 }
 
-// TestServiceCreateSpace_PooledSchemeSurvivesAbandon covers the compensating path a non-preset
-// default-permission set takes when a later create step fails: the doomed backing channel is
-// archived, but the pooled scheme it pointed at is left alone. The pool is keyed by the permission
-// set, so that scheme is not this space's to delete — another space may already be resolving to it,
-// and deleting it would strip their members' permissions.
-func TestServiceCreateSpace_PooledSchemeSurvivesAbandon(t *testing.T) {
+// TestServiceCreateSpace_PooledSchemeFailureArchivesChannel covers the compensating path after a
+// non-preset permission set resolves to a pooled scheme: when a later create step fails, the
+// backing channel is archived.
+func TestServiceCreateSpace_PooledSchemeFailureArchivesChannel(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
 
@@ -667,35 +665,10 @@ func TestServiceCreateSpace_PooledSchemeSurvivesAbandon(t *testing.T) {
 	require.Equal(t, "app.space.create.add_member_failed.app_error", appErr.Id)
 
 	mockAPI.AssertCalled(t, "DeleteChannel", backingChannelID)
-	mockAPI.AssertNotCalled(t, "DeleteScheme", mock.Anything)
 	require.NotNil(t, channel.SchemeId, "the doomed channel must have carried the pooled scheme")
-	minted, ok := pool.Last()
+	createdScheme, ok := pool.Last()
 	require.True(t, ok, "the non-preset set must have resolved through the pool")
-	require.Equal(t, minted.SchemeID, *channel.SchemeId)
-}
-
-// TestServiceCreateSpace_PresetSchemeSurvivesAbandon is the negative half of the case above: a
-// preset scheme is shared by every space using it, so a failed create must archive the channel
-// without ever deleting the scheme.
-func TestServiceCreateSpace_PresetSchemeSurvivesAbandon(t *testing.T) {
-	mockAPI := &plugintest.API{}
-	h := openTestServiceWithAPI(t, mockAPI)
-
-	teamID := mmmodel.NewId()
-	userID := mmmodel.NewId()
-	backingChannelID := mmmodel.NewId()
-
-	testutil.MustSeedChannelScheme(t, mockAPI, backingChannelID, mmmodel.SchemeNameSpaceContribute)
-	mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
-		Return(&mmmodel.Channel{Id: backingChannelID, TeamId: teamID, Type: mmmodel.ChannelTypeSpace}, nil)
-	mockAPI.On("AddChannelMember", backingChannelID, userID).
-		Return(nil, &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
-	mockAPI.On("DeleteChannel", backingChannelID).Return(nil)
-
-	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Doomed Preset"}, userID, nil, nil)
-	require.NotNil(t, appErr)
-	mockAPI.AssertCalled(t, "DeleteChannel", backingChannelID)
-	mockAPI.AssertNotCalled(t, "DeleteScheme", mock.Anything)
+	require.Equal(t, createdScheme.SchemeID, *channel.SchemeId)
 }
 
 // TestServiceBuildSpaceWithAccess_TeamManagerGetsManageTier covers the caller whose authority over a

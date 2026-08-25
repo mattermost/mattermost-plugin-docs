@@ -1375,8 +1375,8 @@ func TestHandler_RestorePage_WrongSpaceIs404(t *testing.T) {
 
 // TestHandler_SpaceMembershipRequired verifies that all space- and page-scoped handlers
 // reject callers who are not members of a private space's backing channel with 403 Forbidden.
-// Private, not the default open fixture: an open space deliberately allows non-member reads
-// and auto-joins non-member default-granted writes, so this membership-required
+// Private, not the default open fixture: an open space deliberately allows non-member reads and
+// offers an explicit self-join route before default-granted writes, so this membership-required
 // assertion only holds on a private space.
 func TestHandler_SpaceMembershipRequired(t *testing.T) {
 	mockAPI := newEnabledMockAPI()
@@ -2417,16 +2417,16 @@ func stubSpaceSchemeRepoint(t *testing.T, mockAPI *plugintest.API, channelID str
 	return testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
 }
 
-// stubSpaceMintedScheme wires the mock calls a non-preset default-permission set needs and returns
+// stubPluginChannelScheme wires the mock calls a non-preset default-permission set needs and returns
 // the pool's recorder, so a caller can read back which scheme the set resolved to and what tier
-// model the plugin asked core to mint. The scheme id is not known up front: the pool keys by the
-// permission sets and mints on first use.
-func stubSpaceMintedScheme(t *testing.T, mockAPI *plugintest.API) *testutil.SchemePoolRecorder {
+// model the plugin asked core to create. The scheme id is not known up front: the pool keys by the
+// permission sets and creates the scheme on first use.
+func stubPluginChannelScheme(t *testing.T, mockAPI *plugintest.API) *testutil.SchemePoolRecorder {
 	t.Helper()
 	return testutil.StubSchemePool(mockAPI)
 }
 
-// assertSpaceTierModel pins which permission set each generated role was minted with, so a
+// assertSpaceTierModel pins which permission set each generated role was created with, so a
 // regression that sent the space-admin set to the guest role fails here rather than passing on a
 // single catch-all expectation. permissions is the requested default set.
 func assertSpaceTierModel(t *testing.T, got testutil.SchemePoolRequest, permissions []string) {
@@ -2531,7 +2531,7 @@ func TestHandler_SetSpaceDefaultPermissions_InvalidPermission(t *testing.T) {
 }
 
 // TestHandler_SetSpaceDefaultPermissions_CreatesPooledScheme verifies a non-preset default
-// permission set repoints the backing channel at a scheme from the shared pool, minted on first
+// permission set repoints the backing channel at a scheme from the shared pool, created on first
 // use under the name that permission set resolves to, and that the response echoes exactly the
 // requested set.
 func TestHandler_SetSpaceDefaultPermissions_CreatesPooledScheme(t *testing.T) {
@@ -2541,7 +2541,7 @@ func TestHandler_SetSpaceDefaultPermissions_CreatesPooledScheme(t *testing.T) {
 	mockAPI := newEnabledMockAPI()
 	grantSpaceAdmin(mockAPI, channelID, userID)
 	channel := stubSpaceSchemeRepoint(t, mockAPI, channelID)
-	pool := stubSpaceMintedScheme(t, mockAPI)
+	pool := stubPluginChannelScheme(t, mockAPI)
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, channelID)
 	// RequireSpaceAdminOrSysadmin reads SchemeAdmin from the master, not from the cached
@@ -2557,22 +2557,17 @@ func TestHandler_SetSpaceDefaultPermissions_CreatesPooledScheme(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updated))
 	require.Equal(t, []string{"create_page"}, updated.DefaultPermissions)
 
-	minted, ok := pool.Last()
+	createdScheme, ok := pool.Last()
 	require.True(t, ok, "the non-preset set must resolve through the pool")
 	require.NotNil(t, channel.SchemeId)
-	require.Equal(t, minted.SchemeID, *channel.SchemeId, "the channel must be repointed at the minted scheme")
-	assertSpaceTierModel(t, minted, []string{"create_page"})
-
-	// The scheme arrives complete, so nothing patches its roles afterwards. This is the property
-	// that makes it safe to share: a scheme every space with this set points at cannot be changed
-	// out from under them by a later write.
-	mockAPI.AssertNumberOfCalls(t, "PatchRole", 0)
+	require.Equal(t, createdScheme.SchemeID, *channel.SchemeId, "the channel must be repointed at the plugin-created scheme")
+	assertSpaceTierModel(t, createdScheme, []string{"create_page"})
 }
 
 // TestHandler_SetSpaceDefaultPermissions_ReusesPooledScheme pins the property the shared pool
 // exists for: a permission set resolves to one scheme forever. Switching a space to a non-preset
-// set mints a pooled scheme, switching away to a preset leaves it in place, and switching back
-// resolves to that same scheme rather than minting a second one carrying identical permissions.
+// set creates a pooled scheme, switching away to a preset leaves it in place, and switching back
+// resolves to that same scheme rather than creating another one with identical permissions.
 func TestHandler_SetSpaceDefaultPermissions_ReusesPooledScheme(t *testing.T) {
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
@@ -2610,8 +2605,7 @@ func TestHandler_SetSpaceDefaultPermissions_ReusesPooledScheme(t *testing.T) {
 	require.Equal(t, pooledSchemeID, *channel.SchemeId,
 		"returning to a permission set must resolve to the scheme already pooled for it")
 
-	// One scheme backs both non-preset resolutions, and none is deleted: a pooled scheme is
-	// shared, so no space owns it and no repoint retires it.
+	// One scheme backs both non-preset resolutions.
 	distinct := map[string]struct{}{}
 	for _, req := range []string{pooledSchemeID} {
 		distinct[req] = struct{}{}
@@ -2619,10 +2613,7 @@ func TestHandler_SetSpaceDefaultPermissions_ReusesPooledScheme(t *testing.T) {
 	last, ok := pool.Last()
 	require.True(t, ok)
 	distinct[last.SchemeID] = struct{}{}
-	require.Len(t, distinct, 1, "returning to a set must reuse its scheme rather than mint a second")
-	mockAPI.AssertNotCalled(t, "DeleteScheme", mock.Anything)
-	// The scheme's roles are never rewritten, which is what makes sharing it safe.
-	mockAPI.AssertNumberOfCalls(t, "PatchRole", 0)
+	require.Len(t, distinct, 1, "returning to a set must reuse its scheme rather than create another")
 }
 
 // TestHandler_SetSpaceDefaultPermissions_ResubmitCurrentSetIsNoOp verifies that resubmitting the

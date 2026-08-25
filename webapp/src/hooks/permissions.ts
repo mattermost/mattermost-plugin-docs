@@ -3,7 +3,14 @@
 
 import {useAppSelector} from 'hooks/redux';
 
+import {haveICurrentTeamPermission} from 'mattermost-redux/selectors/entities/roles';
+
 import {getCanAdministerSpace, getCanCreatePage, getCanDeletePage, getCanDeleteSpace, getCanEditPage, getCanManageSpaceMembers} from 'store/permissions';
+
+// Team-scoped, unlike the permissions below. Core owns this permission and includes it in the
+// current user's resolved team roles; the plugin only decides whether to offer its create flow.
+export const useCanCreateSpace = (): boolean =>
+    useAppSelector((state) => haveICurrentTeamPermission(state, 'create_space'));
 
 export const useCanManageSpaceMembers = (spaceId: string): boolean =>
     useAppSelector((state) => getCanManageSpaceMembers(state, spaceId));

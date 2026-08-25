@@ -53,7 +53,8 @@ curl -s -o /dev/null -w '%{http_code}' \
 In CI this run is its own job, `e2e-playwright-space-permissions`, gated on the `CORE_IMAGE`
 repository variable and the license secret — so the authoring job above keeps running on every PR
 regardless. The suite is **not parallel-safe**: `setGuestAccountsEnabled` (`tests/helpers/guest.ts`)
-mutates a server-wide setting. See `workers` in `playwright.config.ts`.
+and the System Console cases mutate server-wide state. Permission mode therefore uses one worker
+locally as well as in CI; see `workers` in `playwright.config.ts`.
 
 ## What the harness carries for the paired core branch
 
@@ -74,14 +75,14 @@ These apply to every run, permission specs or not:
 | `tests/helpers/mmcontainer.ts` | `waitForPhase2Migration()` before the first spec runs | The advanced-permissions phase-2 migration runs as a post-boot job, and core reads a scheme through that gate whichever route asks — until it finishes, the first `CreateSpace` fails with `app.schemes.is_phase_2_migration_completed.not_completed`. |
 | `tests/helpers/mmcontainer.ts` | `MM_SERVICEENVIRONMENT: 'test'` in the container env | The published core images are production builds, which default to the production service environment and reject a test/development license outright. Without this the license step fails, not a spec. |
 | `tests/helpers/mmcontainer.ts` | `exec()` takes a `displayCommand` override; `applyLicense` passes a redacted form | The failure message is built from the whole command, so a rejected license would otherwise print itself into the terminal and into the CI job log. |
-| `tests/helpers/docs.ts` | `apiRoot` exported | The helpers throw on a non-OK response, which is wrong when the assertion *is* the 403. The permission specs probe the route directly. |
+| `tests/helpers/docs.ts` | Fixture-only Docs helpers | APIs arrange prerequisite spaces, pages, and memberships; every permission outcome is observed through the browser. |
 
 ## Permission specs
 
 | Spec | Covers |
 |---|---|
-| `tests/docs/space_permissions.spec.ts` | The plugin's own surface: space-default permission toggles, view access, and the settings entry's member gate. Includes the end-to-end chain — an admin's toggle in the UI changing another member's server-enforced authority. |
-| `tests/docs/system_console_space_permissions.spec.ts` | Core's `Spaces` permission group in the System Console, and the cross-boundary assertion that revoking `create_space` there stops a member creating a Docs space. Also `tests/pages/system_scheme_permissions_page.ts`. |
+| `tests/docs/space_permissions.spec.ts` | All default and per-member toggles in both directions; public/private; page create/edit/rename/delete; roster add/remove/leave; archive; and system admin, space admin, manage-only, delete-only, member, non-member, former member, and invited/uninvited guest personas. |
+| `tests/docs/system_console_space_permissions.spec.ts` | All four core `Spaces` controls, with browser-observed consequences for discovery, creation, management, and archive. Also `tests/pages/system_scheme_permissions_page.ts`. |
 
 The System Console group is core's code, on the paired branch. It is driven from here because the
 *consequence* of changing it is only observable with the plugin installed — core alone has no route

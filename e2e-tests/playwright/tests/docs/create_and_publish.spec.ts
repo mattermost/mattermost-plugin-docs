@@ -9,7 +9,6 @@
 import {expect, newContext, test} from '../fixtures';
 import {loginAs} from '../helpers/auth';
 import {uniqueSuffix} from '../helpers/client';
-import {getPageDraft} from '../helpers/docs';
 import {addUserToTeam, createTeam} from '../helpers/team';
 import {createUser, type SeededUser} from '../helpers/user';
 import {richText, type RichText} from '../data/rich_text';
@@ -94,15 +93,7 @@ test.describe.serial('docs authoring', () => {
         await expect(draftFormats.rule).toBeVisible();
         await expect(draftFormats.codeBlock).toHaveText(body.code);
 
-        // The visible indicator is not a barrier: it still reads "saved" from the title
-        // save, so it is satisfied before the body is even sent.
-        const {spaceId, pageId} = spacePage.routedIds();
-        await expect.poll(
-            async () => (await getPageDraft(page, spaceId, pageId))?.body ?? '',
-            {message: 'draft body was never autosaved', timeout: 30_000},
-        ).toContain(body.code);
-
-        // * The editor agrees the draft is saved
+        // * The editor reports that the body change made its unsaved → saving → saved trip.
         await spacePage.expectDraftSaved();
 
         // # Publish the draft

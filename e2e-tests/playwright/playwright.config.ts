@@ -34,7 +34,10 @@ export default defineConfig({
         ['junit', {outputFile: 'results/junit/test-results.xml'}],
     ],
     retries: process.env.CI ? 2 : 0,
-    workers: process.env.CI ? 1 : undefined,
+    // The permission mode includes System Console cases that deliberately mutate the shared
+    // system scheme and restore it in finally blocks. Keep that mode serial locally too: a local
+    // multi-worker run must not expose unrelated personas to a temporary read/manage/delete role.
+    workers: spacePermissionsMode || process.env.CI ? 1 : undefined,
     use: {
         screenshot: 'only-on-failure',
         trace: 'retain-on-failure',

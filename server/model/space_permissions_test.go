@@ -192,6 +192,25 @@ func TestPresetPermissionContents(t *testing.T) {
 	}
 }
 
+// TestDefaultPermissionsFrom pins the boundary between core scheme permissions and the wire
+// vocabulary. read_page is implicit, admin_space is member-only, and unknown core permissions
+// must not leak into a space default; valid default permissions survive normalized and deduped.
+func TestDefaultPermissionsFrom(t *testing.T) {
+	permissions := []string{
+		mmmodel.PermissionReadPage.Id,
+		mmmodel.PermissionAdminSpace.Id,
+		"not_a_space_default",
+		mmmodel.PermissionEditPage.Id,
+		mmmodel.PermissionCreatePage.Id,
+		mmmodel.PermissionEditPage.Id,
+	}
+
+	require.Equal(t,
+		model.NormalizePermissions([]string{mmmodel.PermissionCreatePage.Id, mmmodel.PermissionEditPage.Id}),
+		model.DefaultPermissionsFrom(permissions),
+	)
+}
+
 // TestAtomicRolesMatchCorePermissions checks the plugin's permission->role mapping against what
 // core's roles actually grant. TestRolesForPermissions_AtomicRoleMapping above pins the mapping
 // against role-name constants, so it catches the plugin mixing two roles up — but it reads only

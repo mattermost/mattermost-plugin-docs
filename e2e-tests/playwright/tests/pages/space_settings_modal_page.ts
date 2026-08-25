@@ -49,6 +49,19 @@ export class SpaceSettingsModalPage {
         await expect(this.dialog).toBeHidden();
     }
 
+    async renameSpace(name: string) {
+        const input = this.dialog.getByLabel('Space name');
+        await input.fill(name);
+
+        const save = this.dialog.getByRole('button', {name: 'Save', exact: true});
+        await save.click();
+
+        // The save bar is derived from the live server-backed record. It disappears only after
+        // the update is dispatched back into the store and the edited value becomes the baseline.
+        await expect(save).toBeHidden();
+        await expect(input).toHaveValue(name);
+    }
+
     // Scoped to the space-default group by its legend: the per-member matrix rows below
     // render the same vocabulary, so an unscoped label match is ambiguous by the number
     // of members in the space.
@@ -81,6 +94,83 @@ export class SpaceSettingsModalPage {
         await expect(box).toBeChecked({checked: !wasChecked});
     }
 
+    async expectMemberPermissionEnabled(userId: string, permission: string, enabled: boolean) {
+        if (enabled) {
+            await expect(this.memberPermission(userId, permission)).toBeEnabled();
+        } else {
+            await expect(this.memberPermission(userId, permission)).toBeDisabled();
+        }
+    }
+
+    memberHandle(username: string): Locator {
+        return this.dialog.getByText(`@${username}`, {exact: true});
+    }
+
+    async expectMemberListed(username: string, listed = true) {
+        if (listed) {
+            await expect(this.memberHandle(username)).toBeVisible();
+        } else {
+            await expect(this.memberHandle(username)).toBeHidden();
+        }
+    }
+
+    async addMember(username: string) {
+        const input = this.dialog.getByLabel('Add people or groups');
+        await input.fill(username);
+        await this.page.getByRole('option', {name: new RegExp(username)}).first().click();
+        await this.dialog.getByRole('button', {name: 'Add', exact: true}).click();
+        await this.expectMemberListed(username);
+    }
+
+    private async openMemberMenu(username: string) {
+        // Seeded E2E users use their username as their display name, which is also what the
+        // product places in this accessible label. Addressing the button directly avoids walking
+        // a CSS-module-dependent parent chain from the @handle.
+        await this.dialog.getByRole('button', {name: `Admin, manage ${username}`, exact: true}).click();
+    }
+
+    async removeMember(username: string) {
+        await this.openMemberMenu(username);
+        const remove = this.page.getByRole('menuitem', {name: 'Remove from space'});
+        await expect(remove).toBeVisible();
+        await expect(remove).toBeEnabled();
+
+        // Adding the row starts two independent live updates (profiles and permission records).
+        // Base UI can replace the menu anchor between Playwright's stability samples even though
+        // the already-open item is visible and enabled. Force only skips that animation/stability
+        // wait; the menu was opened and the real click handler still drives confirmation.
+        await remove.click({force: true});
+        await this.page.getByRole('dialog', {name: new RegExp(`Remove .*${username}`, 'i')}).getByRole('button', {name: 'Yes, remove'}).click();
+        await this.expectMemberListed(username, false);
+    }
+
+    async requestLeaveFromOwnRow(username: string) {
+        await this.openMemberMenu(username);
+        const leave = this.page.getByRole('menuitem', {name: 'Leave space'});
+        await expect(leave).toBeVisible();
+        await expect(leave).toBeEnabled();
+
+        // The roster refresh can replace Base UI's menu anchor while Playwright waits for its
+        // stability checks. As with removal above, assert the item is actionable first and let
+        // the real UI click handler open the confirmation without waiting on that animation.
+        await leave.click({force: true});
+        await this.page.getByRole('dialog', {name: 'Leave space'}).getByRole('button', {name: 'Yes, leave space'}).click();
+    }
+
+    async leaveFromOwnRow(username: string) {
+        await this.requestLeaveFromOwnRow(username);
+        await expect(this.dialog).toBeHidden();
+    }
+
+    async expectAutoJoinedMarker(visible = true) {
+        const marker = this.dialog.getByText('Joined automatically by editing this space');
+        if (visible) {
+            await expect(marker).toBeVisible();
+        } else {
+            await expect(marker).toBeHidden();
+        }
+    }
+
     accessOption(name: 'Public' | 'Private'): Locator {
         return this.dialog.getByRole('radio', {name: new RegExp(name)});
     }
@@ -89,6 +179,14 @@ export class SpaceSettingsModalPage {
     // re-read from the server after every change, so the box is briefly stale.
     async expectPermission(label: string, checked: boolean) {
         await expect(this.permission(label)).toBeChecked({checked});
+    }
+
+    async expectPermissionEnabled(label: string, enabled: boolean) {
+        if (enabled) {
+            await expect(this.permission(label)).toBeEnabled();
+        } else {
+            await expect(this.permission(label)).toBeDisabled();
+        }
     }
 
     async togglePermission(label: string) {
@@ -109,6 +207,14 @@ export class SpaceSettingsModalPage {
 
     async expectAccess(name: 'Public' | 'Private') {
         await expect(this.accessOption(name)).toHaveAttribute('aria-checked', 'true');
+    }
+
+    async expectAccessEnabled(name: 'Public' | 'Private', enabled: boolean) {
+        if (enabled) {
+            await expect(this.accessOption(name)).toBeEnabled();
+        } else {
+            await expect(this.accessOption(name)).toBeDisabled();
+        }
     }
 
 }

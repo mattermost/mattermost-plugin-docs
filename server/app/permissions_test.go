@@ -76,8 +76,8 @@ func TestJoinOpenSpace_MemberIsNoOp(t *testing.T) {
 	mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
 }
 
-// TestAutoJoin_JoinsWhenDefaultGrants covers the success path of the auto-join pre-step — the step
-// that runs ahead of a write gate and can add the caller to the backing channel so the gate then
+// TestAutoJoin_JoinsWhenDefaultGrants covers the success path of the explicit self-join step that
+// the client runs ahead of a write. It can add the caller to the backing channel so the later gate
 // passes. A non-member admitted via the open-space fall-through, whose space default grants the
 // permission, is added to the channel and the membership-added event is published.
 func TestAutoJoin_JoinsWhenDefaultGrants(t *testing.T) {
@@ -520,11 +520,11 @@ func TestResolveSpaceRemovePage_CheckFailureIsNotADenial(t *testing.T) {
 }
 
 // TestSpaceFallthroughAdmitsReadOnly is the escalation guard on the open-space fall-through: it
-// exists to admit reads, and must never admit a write. A non-member whose space default withholds
-// the write permission — so the auto-join pre-step does not join them — reaches the gate still
-// holding only the fall-through, and every write permission has to be refused there. Without the
-// read-permission condition on that branch the fall-through would grant create/edit/delete
-// outright, since the caller already holds the team read_public_channel the branch keys on.
+// exists to admit reads, and must never admit a write. A non-member who has not used the explicit
+// self-join route reaches the gate still holding only the fall-through, and every write permission
+// has to be refused there. Without the read-permission condition on that branch the fall-through
+// would grant create/edit/delete outright, since the caller already holds the team
+// read_public_channel the branch keys on.
 func TestSpaceFallthroughAdmitsReadOnly(t *testing.T) {
 	for _, perm := range []*mmmodel.Permission{
 		mmmodel.PermissionCreatePage, mmmodel.PermissionEditPage,
@@ -535,8 +535,7 @@ func TestSpaceFallthroughAdmitsReadOnly(t *testing.T) {
 			userID := mmmodel.NewId()
 			stubNonMember(mockAPI, userID)
 			h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
-			// The space default withholds this permission, so the auto-join pre-step inside the
-			// write gate does not join the caller — which is the premise of the assertion below.
+			// The write gate does not join the caller, which is the premise of the assertion below.
 			mockAPI.On("RolesGrantPermission", mock.Anything, perm.Id).Return(false)
 
 			appErr := h.svc.RequireSpacePageWrite("test", space, userID, perm)

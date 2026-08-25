@@ -195,6 +195,10 @@ describe('PermissionsTab', () => {
 
         expect(screen.getByRole('checkbox', {name: 'Create pages'})).toBeDisabled();
         expect(screen.getByRole('radio', {name: /Private/})).toBeDisabled();
+        expect(screen.getByRole('button', {name: 'Add'})).toBeDisabled();
+
+        fireEvent.click(screen.getByRole('button', {name: /Ada/}));
+        expect(screen.getByRole('menuitem', {name: 'Remove from space'})).toHaveAttribute('aria-disabled', 'true');
 
         fireEvent.click(screen.getByRole('checkbox', {name: 'Create pages'}));
         fireEvent.click(screen.getByRole('radio', {name: /Private/}));
@@ -213,10 +217,11 @@ describe('PermissionsTab', () => {
             canAdminister: false,
             canManageMembers: true,
             members: new Map([
+                ['me', {user_id: 'me', permissions: ['read_page'], granted_permissions: [], is_admin: false, is_guest: false, auto_joined: false}],
                 ['u2', {user_id: 'u2', permissions: ['read_page'], granted_permissions: ['edit_page'], is_admin: false, is_guest: false, auto_joined: false}],
             ]),
         };
-        renderTab();
+        renderTab(jest.fn(), {currentUser: {id: 'me', username: 'caleb'}});
 
         // The space-wide knobs: locked. Addressed by id rather than label, since the member row
         // below carries a checkbox with the same visible name.
@@ -228,6 +233,17 @@ describe('PermissionsTab', () => {
         expect(memberEdit.disabled).toBe(false);
         fireEvent.click(memberEdit);
         expect(mockSetMemberGrants).toHaveBeenCalledWith('u2', ['create_page', 'edit_page']);
+
+        // Self-targeting also needs the stricter admin tier. A team manager can edit another
+        // person's row, but offering their own would only produce a 403.
+        expect(matrixCheckbox('member-me-create_page').disabled).toBe(true);
+
+        // Promoting a space administrator is a stricter operation than managing the roster. The
+        // server refuses it from manage_space alone, so this one cell must not remain actionable.
+        const memberAdmin = matrixCheckbox('member-u2-admin_space');
+        expect(memberAdmin.disabled).toBe(true);
+        fireEvent.click(memberAdmin);
+        expect(mockSetMemberGrants).toHaveBeenCalledTimes(1);
     });
 
     // Until the first read resolves there is no truthful state to edit against, so the
@@ -312,8 +328,8 @@ describe('PermissionsTab', () => {
             expect(document.getElementById('member-u2-edit_page')).toBeNull();
         });
 
-        // Switching a space to private removes nobody, so an admin pruning access has to be able
-        // to tell who let themselves in by writing to the space while it was public.
+        // Before an open-to-private transition prunes them, an administrator can distinguish
+        // somebody who self-joined by authoring from somebody deliberately invited.
         it('marks a member the auto-join added, and leaves a deliberately added one unmarked', () => {
             mockPermissionsState = {
                 ...mockPermissionsState,

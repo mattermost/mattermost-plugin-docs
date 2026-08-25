@@ -8,8 +8,8 @@ import {ClientError} from '@mattermost/client';
 
 import {makePage, makeSpace, makeTeam} from 'store/test_fixtures';
 
-import {SpaceTypes} from './action_types';
-import {addSpaceMember, addSpaceMembers, createSpace, ensureSpaceMembership, fetchAllSpaces, isLastSpaceAdminError, isLastSpaceMemberError, isNotTeamMemberError, isSpaceLockTimeoutError, leaveSpace, movePage, refreshSpaceAfterSelfRemoval, removeSpaceMember, saveDraft} from './actions';
+import {DraftTypes, SpaceTypes} from './action_types';
+import {addSpaceMember, addSpaceMembers, createDraft, createSpace, ensureSpaceMembership, fetchAllSpaces, isLastSpaceAdminError, isLastSpaceMemberError, isNotTeamMemberError, isSpaceLockTimeoutError, leaveSpace, movePage, refreshSpaceAfterSelfRemoval, removeSpaceMember, saveDraft} from './actions';
 
 import {makeTestState} from '../../tests/react_testing_utils';
 
@@ -21,6 +21,7 @@ const mockListSpaces = jest.fn();
 const mockCreateSpace = jest.fn();
 const mockGetSpace = jest.fn();
 const mockListSpaceMembers = jest.fn();
+const mockCreateSpaceDraft = jest.fn();
 const mockUpdatePageDraft = jest.fn();
 const mockJoinSpace = jest.fn();
 
@@ -38,6 +39,7 @@ jest.mock('data', () => ({
         createSpace: (...args: unknown[]) => mockCreateSpace(...args as []),
         getSpace: (...args: unknown[]) => mockGetSpace(...args as []),
         listSpaceMembers: (...args: unknown[]) => mockListSpaceMembers(...args as []),
+        createSpaceDraft: (...args: unknown[]) => mockCreateSpaceDraft(...args as []),
         updatePageDraft: (...args: unknown[]) => mockUpdatePageDraft(...args as []),
     },
 }));
@@ -58,6 +60,17 @@ const run = <T>(thunk: (dispatch: jest.Mock, getState: () => unknown) => T, stat
 
 const stateWithPage = {
     [`plugins-${manifest.id}`]: {entities: {pages: {[PAGE.id]: PAGE}}},
+};
+
+const deferred = <T>() => {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((promiseResolve, promiseReject) => {
+        resolve = promiseResolve;
+        reject = promiseReject;
+    });
+
+    return {promise, resolve, reject};
 };
 
 describe('fetchAllSpaces', () => {
@@ -380,20 +393,71 @@ describe('ensureSpaceMembership', () => {
         expect(mockJoinSpace).not.toHaveBeenCalled();
     });
 
-    it('joins before the draft write it guards, so the write lands as a member', async () => {
-        const order: string[] = [];
-        mockJoinSpace.mockImplementation(() => {
-            order.push('join');
-            return Promise.resolve({...makeSpace('space1', 'Open'), can_join: false});
-        });
-        mockUpdatePageDraft.mockImplementation(() => {
-            order.push('write');
-            return Promise.resolve({page_id: 'page1'});
-        });
+    it('awaits membership before creating a draft, then reconciles the store', async () => {
+        const join = deferred<ReturnType<typeof makeSpace> & {can_join: boolean}>();
+        const draft = {page_id: 'page1'};
+        mockJoinSpace.mockReturnValue(join.promise);
+        mockCreateSpaceDraft.mockResolvedValue(draft);
 
-        const {result} = run((d, g) => saveDraft('space1', 'page1', {body: 'hi'})(d as never, g as never, undefined as never), joinableState(true));
-        await result;
+        const {result, dispatch} = run((d, g) => createDraft('space1', 'Title')(d as never, g as never, undefined as never), joinableState(true));
 
-        expect(order).toEqual(['join', 'write']);
+        expect(mockJoinSpace).toHaveBeenCalledWith('space1');
+        expect(mockCreateSpaceDraft).not.toHaveBeenCalled();
+
+        join.resolve({...makeSpace('space1', 'Open'), can_join: false});
+        await expect(result).resolves.toBe(draft);
+
+        expect(mockCreateSpaceDraft).toHaveBeenCalledWith('space1', 'Title', '');
+        expect(dispatch).toHaveBeenCalledWith({type: DraftTypes.RECEIVED_DRAFT, draft});
+    });
+
+    it('does not create a draft when joining fails', async () => {
+        const error = new Error('join failed');
+        const join = deferred<ReturnType<typeof makeSpace> & {can_join: boolean}>();
+        mockJoinSpace.mockReturnValue(join.promise);
+
+        const {result, dispatch} = run((d, g) => createDraft('space1', 'Title')(d as never, g as never, undefined as never), joinableState(true));
+
+        expect(mockCreateSpaceDraft).not.toHaveBeenCalled();
+        const rejection = expect(result).rejects.toBe(error);
+        join.reject(error);
+        await rejection;
+
+        expect(mockCreateSpaceDraft).not.toHaveBeenCalled();
+        expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({type: DraftTypes.RECEIVED_DRAFT}));
+    });
+
+    it('awaits membership before saving a draft, then reconciles the store', async () => {
+        const join = deferred<ReturnType<typeof makeSpace> & {can_join: boolean}>();
+        const draft = {page_id: 'page1'};
+        mockJoinSpace.mockReturnValue(join.promise);
+        mockUpdatePageDraft.mockResolvedValue(draft);
+
+        const {result, dispatch} = run((d, g) => saveDraft('space1', 'page1', {body: 'hi'})(d as never, g as never, undefined as never), joinableState(true));
+
+        expect(mockJoinSpace).toHaveBeenCalledWith('space1');
+        expect(mockUpdatePageDraft).not.toHaveBeenCalled();
+
+        join.resolve({...makeSpace('space1', 'Open'), can_join: false});
+        await expect(result).resolves.toBe(draft);
+
+        expect(mockUpdatePageDraft).toHaveBeenCalledWith('space1', 'page1', {body: 'hi'}, undefined);
+        expect(dispatch).toHaveBeenCalledWith({type: DraftTypes.RECEIVED_DRAFT, draft});
+    });
+
+    it('does not save a draft when joining fails', async () => {
+        const error = new Error('join failed');
+        const join = deferred<ReturnType<typeof makeSpace> & {can_join: boolean}>();
+        mockJoinSpace.mockReturnValue(join.promise);
+
+        const {result, dispatch} = run((d, g) => saveDraft('space1', 'page1', {body: 'hi'})(d as never, g as never, undefined as never), joinableState(true));
+
+        expect(mockUpdatePageDraft).not.toHaveBeenCalled();
+        const rejection = expect(result).rejects.toBe(error);
+        join.reject(error);
+        await rejection;
+
+        expect(mockUpdatePageDraft).not.toHaveBeenCalled();
+        expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({type: DraftTypes.RECEIVED_DRAFT}));
     });
 });

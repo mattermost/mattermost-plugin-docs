@@ -57,10 +57,10 @@ func (s *Service) archiveOrphanChannel(channelID, reason string, cause error) {
 // re-resolve them through a channel lookup — re-reading a just-created channel can miss it under
 // replica lag.
 //
-// Both kinds arrive fully configured: a preset is seeded, and core writes a minted scheme's three
-// roles with their final permissions in the transaction that creates it. There is nothing for a
-// caller to write afterwards and no ordering to observe. Nothing here is owned by one space, so no
-// failure path deletes a scheme.
+// Both kinds arrive fully configured: a preset is seeded, and core writes a plugin-created
+// scheme's three roles with their final permissions in the transaction that creates it. There is
+// nothing for a caller to write afterwards and no ordering to observe. Nothing here is owned by
+// one space.
 func (s *Service) resolveSpaceScheme(permissions []string) (schemeID string, roles *schemeRoles, err error) {
 	// Normalize before the permission set is persisted: the validators are dedup-tolerant, so
 	// without this a request repeating one allowlisted token would write that repetition verbatim
@@ -459,7 +459,7 @@ func (s *Service) SetSpaceDefaultPermissions(space *model.Space, permissions []s
 		}
 		changed = true
 
-		// The superseded scheme is left in place: presets and minted schemes alike are shared by
+		// The superseded scheme is left in place: presets and plugin-created schemes are shared by
 		// every space expressing that permission set, so none is this space's to delete.
 		return nil
 	})
