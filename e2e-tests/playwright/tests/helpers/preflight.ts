@@ -64,19 +64,7 @@ export async function assertServerSupportsDocs(baseURL: string, remedy = '') {
 // The webapp listing, not the admin plugin listing: it reports what the browser tests
 // actually need, and any authenticated user can read it.
 export async function assertPluginActive(baseURL: string, username: string, password: string) {
-    const login = await fetch(`${baseURL}/api/v4/users/login`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({login_id: username, password}),
-        signal: AbortSignal.timeout(requestTimeoutMs),
-    });
-
-    const token = login.headers.get('token');
-    if (!login.ok || !token) {
-        throw new Error(
-            `Unable to sign in to ${baseURL} as "${username}" (${login.status}). Set MM_ADMIN_USERNAME and MM_ADMIN_PASSWORD for that server.`,
-        );
-    }
+    const token = await adminToken(baseURL, username, password);
 
     const response = await fetch(`${baseURL}/api/v4/plugins/webapp`, {
         headers: {Authorization: `Bearer ${token}`},

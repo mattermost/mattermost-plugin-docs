@@ -128,6 +128,7 @@ function spaces(state: Record<string, Space> = {}, action: UnknownAction): Recor
                 ...space,
                 permissions: space.permissions ?? previous?.permissions,
                 default_permissions: space.default_permissions ?? previous?.default_permissions,
+                can_join: space.can_join ?? previous?.can_join,
             };
         }
         return next;

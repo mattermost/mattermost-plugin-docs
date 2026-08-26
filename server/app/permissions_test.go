@@ -311,7 +311,7 @@ func TestRemoveSpaceMember_ClearsProvenanceMarker(t *testing.T) {
 		"RemoveSpaceMember must clear the provenance marker rather than leave it for a later deliberate add")
 }
 
-// TestAutoJoin_DefaultDoesNotGrant covers the admission test: the fall-through alone never joins.
+// TestJoinOpenSpace_ReadOnlyDefaultsRefused covers the admission test: the fall-through alone never joins.
 // A space whose defaults confer nothing beyond the read every reader already has refuses the join
 // outright: creating a membership that grants exactly what the caller had without one is not a
 // no-op to be papered over, it is a request that cannot be satisfied.

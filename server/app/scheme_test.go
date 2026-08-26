@@ -113,6 +113,34 @@ func TestSchemeRolesFromChannel_GenericRolesLookupErrorPropagates(t *testing.T) 
 	require.False(t, store.IsErrNotFound(err), "a generic lookup failure must not be reported as not-found")
 }
 
+// TestSchemeRolesFromChannel_EmptyRoleNamesAreUnsupported pins the generated-RPC zero-value
+// answer: a channel with a scheme must resolve all three generated roles, and an absent plugin API
+// reports three strings without an error rather than a conventional not-found response.
+func TestSchemeRolesFromChannel_EmptyRoleNamesAreUnsupported(t *testing.T) {
+	tests := map[string][3]string{
+		"guest": {"", "user-role", "admin-role"},
+		"user":  {"guest-role", "", "admin-role"},
+		"admin": {"guest-role", "user-role", ""},
+	}
+
+	for name, roles := range tests {
+		t.Run(name, func(t *testing.T) {
+			s, _ := testutil.OpenTestStore(t)
+			mockAPI := &plugintest.API{}
+			channelID := mmmodel.NewId()
+			schemeID := mmmodel.NewId()
+			channel := &mmmodel.Channel{Id: channelID, Type: mmmodel.ChannelTypeSpace, SchemeId: &schemeID}
+			mockAPI.On("GetSchemeRolesForChannel", channelID).
+				Return(roles[0], roles[1], roles[2], nil)
+
+			svc := New(s, nil, pluginapi.NewClient(mockAPI, nil))
+			_, err := svc.schemeRolesFromChannel(channelID, channel)
+
+			require.ErrorIs(t, err, errUnsupportedSchemeAPI)
+		})
+	}
+}
+
 // TestSchemeRolesFromChannel_MissingSchemeVariants covers both shapes of "no scheme" the code
 // treats as distinct cases: a nil SchemeId and a non-nil SchemeId pointing at an empty string.
 // Either must resolve to not-found rather than falling through to a scheme lookup.

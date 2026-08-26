@@ -89,6 +89,12 @@ func (s *Service) schemeRolesFromChannel(channelID string, channel *mmmodel.Chan
 		}
 		return nil, err
 	}
+	// The generated RPC client returns zero values with no error when this plugin API is absent.
+	// A channel carrying a scheme cannot legitimately resolve any of its generated role names to
+	// empty, so report the same actionable compatibility error as the other scheme lookups.
+	if guestRole == "" || userRole == "" || adminRole == "" {
+		return nil, errUnsupportedSchemeAPI
+	}
 
 	return &schemeRoles{
 		UserRoleName:  userRole,

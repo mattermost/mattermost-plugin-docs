@@ -60,6 +60,7 @@ const SpaceSettingsModal = ({space, onClose, initialTab = 'info'}: Props) => {
     const {paths: absolutePaths} = useDocsNavigation({absolute: true});
     const [activeTab, setActiveTab] = useState<SpaceSettingsTab>(initialTab);
     const canArchive = useCanDeleteSpace(space.id);
+    const visibleActiveTab = activeTab === 'archive' && !canArchive ? 'info' : activeTab;
 
     const tabs: TabDef[] = [
         {id: 'info', label: formatMessage({id: 'docs.spaceSettings.tab.info', defaultMessage: 'Info'}), icon: InformationOutlineIcon},
@@ -105,7 +106,7 @@ const SpaceSettingsModal = ({space, onClose, initialTab = 'info'}: Props) => {
             <Tabs
                 className={styles.body}
                 orientation='vertical'
-                value={activeTab}
+                value={visibleActiveTab}
                 onValueChange={(value) => setActiveTab(value as SpaceSettingsTab)}
             >
                 <TabList
@@ -155,15 +156,17 @@ const SpaceSettingsModal = ({space, onClose, initialTab = 'info'}: Props) => {
                     >
                         <ConfigurationTab/>
                     </TabPanel>
-                    <TabPanel
-                        value='archive'
-                        className={styles.panelContent}
-                    >
-                        <ArchiveTab
-                            space={space}
-                            onClose={onClose}
-                        />
-                    </TabPanel>
+                    {canArchive && (
+                        <TabPanel
+                            value='archive'
+                            className={styles.panelContent}
+                        >
+                            <ArchiveTab
+                                space={space}
+                                onClose={onClose}
+                            />
+                        </TabPanel>
+                    )}
                 </div>
             </Tabs>
             {info.dirty && (

@@ -13,6 +13,7 @@ import {loginAs} from '../helpers/auth';
 import {requestedWith, uniqueSuffix} from '../helpers/client';
 import {addSpaceMember, createPage, createSpace} from '../helpers/docs';
 import {demoteToGuest, ensureGuestAccountsEnabled, setGuestAccountsEnabled} from '../helpers/guest';
+import {readState} from '../helpers/state';
 import {addUserToTeam, createTeam, promoteToTeamAdmin, removeUserFromTeam, setTeamAdminSpaceTiers} from '../helpers/team';
 import {createUser, type SeededUser, suppressOnboarding} from '../helpers/user';
 import {SpacePage} from '../pages/space_page';
@@ -944,7 +945,8 @@ test.describe('space permissions', () => {
         // the next case's newly-demoted actors while config propagation is still in flight.
         let guestAccountsWereEnabled = true;
 
-        test.beforeAll(async ({browser, server}) => {
+        test.beforeAll(async ({browser}) => {
+            const server = readState();
             const context = await newContext(browser, {baseURL: server.baseURL});
             try {
                 const page = await context.newPage();
@@ -975,11 +977,12 @@ test.describe('space permissions', () => {
             }
         });
 
-        test.afterAll(async ({browser, server}) => {
+        test.afterAll(async ({browser}) => {
             if (guestAccountsWereEnabled) {
                 return;
             }
 
+            const server = readState();
             const context = await newContext(browser, {baseURL: server.baseURL});
             try {
                 const page = await context.newPage();

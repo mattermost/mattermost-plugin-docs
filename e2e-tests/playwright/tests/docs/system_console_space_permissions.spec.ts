@@ -186,8 +186,8 @@ test.describe('system console space permissions', () => {
             await scheme.expectSpacesGroupVisible();
             await scheme.expandSpacesGroup();
             await scheme.togglePermission('create_space');
-            await scheme.save();
             revoked = true;
+            await scheme.save();
 
             // * Verify a fresh member session no longer offers any create journey.
             const afterContext = await newContext(browser, {baseURL: server.baseURL});
@@ -246,8 +246,8 @@ test.describe('system console space permissions', () => {
             await scheme.goto();
             await scheme.expandSpacesGroup();
             await scheme.togglePermission('read_space');
-            await scheme.save();
             revoked = true;
+            await scheme.save();
 
             // * A fresh browser session loses both the list entry and a known deep link.
             const afterContext = await newContext(browser, {baseURL: server.baseURL});
@@ -299,8 +299,8 @@ test.describe('system console space permissions', () => {
             await scheme.goto();
             await scheme.expandSpacesGroup();
             await scheme.togglePermission('manage_space');
-            await scheme.save();
             granted = true;
+            await scheme.save();
 
             // * The exact tier appears in a fresh session: settings yes, archive still no.
             const afterContext = await newContext(browser, {baseURL: server.baseURL});
@@ -338,8 +338,8 @@ test.describe('system console space permissions', () => {
             await scheme.goto();
             await scheme.expandSpacesGroup();
             await scheme.togglePermission('delete_space');
-            await scheme.save();
             granted = true;
+            await scheme.save();
 
             const context = await newContext(browser, {baseURL: server.baseURL});
             try {

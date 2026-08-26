@@ -43,6 +43,18 @@ describe('spaces', () => {
         expect(afterListing.spaces.a.permissions).toEqual(['read_page']);
     });
 
+    // can_join is resolved by the single-space read too. Losing it on a team refresh removes the
+    // authoring journey for an open-space non-member before they have contributed and joined.
+    it('RECEIVED_SPACES keeps can_join a detail read resolved when a listing omits it', () => {
+        const detail = {...makeSpace('a', 'Space A', 't1'), can_join: true};
+        const listed = makeSpace('a', 'Space A', 't1');
+
+        const afterDetail = reducer(initialState, {type: SpaceTypes.RECEIVED_SPACES, spaces: [detail]});
+        const afterListing = reducer(afterDetail, {type: SpaceTypes.RECEIVED_SPACES, spaces: [listed]});
+
+        expect(afterListing.spaces.a.can_join).toBe(true);
+    });
+
     // But a payload that does carry them is authoritative — a revoked permission must land.
     it('RECEIVED_SPACES replaces permissions when the payload carries them', () => {
         const before = {...makeSpace('a', 'Space A', 't1'), permissions: ['read_page', 'create_page'] as Permission[]};

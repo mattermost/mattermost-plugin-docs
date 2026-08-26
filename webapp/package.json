@@ -98,7 +98,9 @@
     "testEnvironment": "jsdom",
     "collectCoverageFrom": [
       "src/**/*.{ts,tsx}",
-      "!src/**/*.d.ts"
+      "!src/**/*.d.ts",
+      "!src/**/*.test.{ts,tsx}",
+      "!src/**/*.spec.{ts,tsx}"
     ],
     "coverageThreshold": {
       "global": {

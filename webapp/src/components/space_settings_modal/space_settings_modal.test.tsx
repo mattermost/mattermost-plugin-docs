@@ -101,6 +101,20 @@ describe('SpaceSettingsModal', () => {
         expect(screen.queryByRole('tab', {name: /Archive space/})).not.toBeInTheDocument();
     });
 
+    it('does not mount archive content when a caller without the delete tier requests it initially', () => {
+        renderWithContext(
+            <SpaceSettingsModal
+                space={space}
+                onClose={jest.fn()}
+                initialTab='archive'
+            />,
+            {state: stateWithPermissions([Permissions.MANAGE_SPACE])},
+        );
+
+        expect(screen.getByRole('tab', {name: /Info/, selected: true})).toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Archive space'})).not.toBeInTheDocument();
+    });
+
     it('surfaces the save bar after a change, then dispatches updateSpace', async () => {
         const onClose = jest.fn();
         renderWithContext(
@@ -156,6 +170,7 @@ describe('SpaceSettingsModal', () => {
                 />
                 <DocsModalController/>
             </>,
+            {state: canArchive},
         );
 
         // The nav is a tab (role="tab"); the in-card action is the only button
