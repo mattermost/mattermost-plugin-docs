@@ -136,18 +136,29 @@ export class SpaceSettingsModalPage {
         await this.expectMemberListed(username);
     }
 
-    private async openMemberMenu(username: string) {
+    private async openMemberMenu(username: string, actionName: 'Remove from space' | 'Leave space'): Promise<Locator> {
         // Seeded E2E users use their username as their display name, which is also what the
         // product places in the neutral action label. It deliberately does not encode Admin,
         // Member, or Guest: all three roles open the same actions menu.
-        await this.dialog.getByRole('button', {name: `More actions for ${username}`, exact: true}).click();
+        const trigger = this.dialog.getByRole('button', {name: `More actions for ${username}`, exact: true});
+        const action = this.page.getByRole('menuitem', {name: actionName});
+
+        // Profiles and permission records resolve independently. If the menu opens before the
+        // latter finishes, the row changes from an unresolved role to Admin/Member/Guest and Base
+        // UI closes its old popup. Retry the whole interaction so the settled row is reopened;
+        // waiting on the detached menu item alone can never recover.
+        await expect(async () => {
+            if (!(await action.isVisible())) {
+                await trigger.click();
+            }
+            await expect(action).toBeEnabled({timeout: 1_000});
+        }).toPass({timeout: 5_000});
+
+        return action;
     }
 
     async removeMember(username: string) {
-        await this.openMemberMenu(username);
-        const remove = this.page.getByRole('menuitem', {name: 'Remove from space'});
-        await expect(remove).toBeVisible();
-        await expect(remove).toBeEnabled();
+        const remove = await this.openMemberMenu(username, 'Remove from space');
 
         // Adding the row starts two independent live updates (profiles and permission records).
         // Base UI can replace the menu anchor between Playwright's stability samples even though
@@ -159,15 +170,9 @@ export class SpaceSettingsModalPage {
     }
 
     async requestLeaveFromOwnRow(username: string) {
-        await this.openMemberMenu(username);
-        const leave = this.page.getByRole('menuitem', {name: 'Leave space'});
-        await expect(leave).toBeVisible();
-        await expect(leave).toBeEnabled();
+        const leave = await this.openMemberMenu(username, 'Leave space');
 
-        // The roster refresh can replace Base UI's menu anchor while Playwright waits for its
-        // stability checks. As with removal above, assert the item is actionable first and let
-        // the real UI click handler open the confirmation without waiting on that animation.
-        await leave.click({force: true});
+        await leave.click();
         await this.page.getByRole('dialog', {name: 'Leave space'}).getByRole('button', {name: 'Yes, leave space'}).click();
     }
 
