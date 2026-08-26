@@ -3,6 +3,9 @@ dist/
 webapp/src/manifest.ts
 server/manifest.go
 
+# JUnit report from `make test-ci` (the webapp's own is covered by webapp/.gitignore)
+report.xml
+
 # Mac
 .DS_Store
 
