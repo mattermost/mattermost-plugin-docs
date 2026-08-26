@@ -173,7 +173,7 @@ export class SpacePage {
     }
 
     async expectBodyReadOnly() {
-        await expect(this.publishedEditor).toHaveAttribute('aria-disabled', 'true');
+        await expect(this.publishedEditor).toHaveAttribute('contenteditable', 'false');
     }
 
     async expectCodeHighlighted() {

@@ -34,14 +34,9 @@
 // View mode still mounts a disabled editor so the body cannot be typed in, but
 // the host greys disabled fields. Reading should look like page copy.
 .reading :global {
-    .WysiwygEditor,
-    .WysiwygEditor .ProseMirror,
-    .custom-textarea,
-    .custom-textarea[disabled] {
+    .WysiwygEditor--disabled .ProseMirror {
         opacity: 1;
-        color: var(--center-channel-color);
-        -webkit-text-fill-color: currentcolor;
-        cursor: default;
+        cursor: auto;
     }
 }
 
