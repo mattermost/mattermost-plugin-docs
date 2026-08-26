@@ -36,7 +36,7 @@ set -euo pipefail
 #   DOCS_CORE_BRANCH  branch the core repo must be on (default below)
 #   CORE_IMAGE        image tag to build (default below)
 #   MM_WEBAPP_DIST    path to the compiled webapp (defaults to the core tree's webapp/channels/dist)
-DOCS_CORE_BRANCH="${DOCS_CORE_BRANCH:-MM-69269-permissions-rbac-core}"
+DOCS_CORE_BRANCH="${DOCS_CORE_BRANCH:-MM-69269-permissions-rbac-core-v2}"
 CORE_IMAGE="${CORE_IMAGE:-mm-docs-rbac-core:dev}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"

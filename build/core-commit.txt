@@ -1,4 +1,4 @@
-# The commit of the paired core branch (MM-69269-permissions-rbac-core) that the e2e suite runs
+# The commit of the paired core branch (MM-69269-permissions-rbac-core-v2) that the e2e suite runs
 # against. CORE_IMAGE must be the image core CI published for it.
 #
 # Core PR: https://github.com/mattermost/mattermost/pull/37685
