@@ -6,7 +6,7 @@ import {useSpaceFavoriteState, useToggleFavorite} from 'hooks/favorites';
 import {useFullscreen} from 'hooks/fullscreen';
 import {useLeaveSpace} from 'hooks/leave_space';
 import {useDocsNavigation} from 'hooks/navigation';
-import {useCanManageSpaceMembers} from 'hooks/permissions';
+import {useCanDeleteSpace, useCanManageSpaceMembers} from 'hooks/permissions';
 import {useAppDispatch} from 'hooks/redux';
 import React, {useCallback} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
@@ -55,6 +55,7 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}
     const dispatch = useAppDispatch();
     const {paths: absolutePaths, spaceId, goHome} = useDocsNavigation({absolute: true});
     const canManageMembers = useCanManageSpaceMembers(space.id);
+    const canArchive = useCanDeleteSpace(space.id);
     const {fullscreen} = useFullscreen();
     const leaveThisSpace = useLeaveSpace(space);
     const favoriteState = useSpaceFavoriteState(space.id);
@@ -292,7 +293,7 @@ const SpaceHeader = ({space, memberCount, infoOpen, onToggleInfo, onShowMembers}
                         defaultMessage='Leave space'
                     />
                 </Menu.Item>
-                {canManageMembers && (
+                {canArchive && (
                     <Menu.Item
                         leadingIcon={<ArchiveOutlineIcon size={18}/>}
                         destructive={true}

@@ -30,7 +30,7 @@ export function createSpaceFormSchema() {
             trim().
             min(1, {error: SpaceValidationError.NameRequired}).
             max(SPACE_NAME_MAX_LENGTH, {error: SpaceValidationError.NameTooLong}),
-        visibility: z.enum(['public', 'private']),
+        view_access: z.enum(['open', 'private']),
 
         // Required string (may be empty) to match the always-present form field;
         // the submit handler converts an empty description to undefined.

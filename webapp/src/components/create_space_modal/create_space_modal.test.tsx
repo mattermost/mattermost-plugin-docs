@@ -13,6 +13,10 @@ import CreateSpaceModal from './create_space_modal';
 
 import {renderWithContext} from '../../../tests/react_testing_utils';
 
+jest.mock('utils/space_icon', () => ({
+    SpaceIcon: ({space}: {space: {view_access: string}}) => <span data-testid='space-name-icon'>{space.view_access}</span>,
+}));
+
 const team = makeTeam('team1', 'myteam');
 let createSpaceSpy: jest.SpyInstance;
 let toastErrorSpy: jest.SpyInstance;
@@ -42,7 +46,7 @@ describe('CreateSpaceModal', () => {
         expect(screen.getByLabelText('Space name')).toBeInTheDocument();
         expect(screen.getByRole('radiogroup', {name: 'Space visibility'})).toBeInTheDocument();
         expect(screen.getByRole('radio', {name: /Private Space/})).toHaveAttribute('aria-checked', 'true');
-        expect(screen.getByRole('radio', {name: /Public Space/})).toBeDisabled();
+        expect(screen.getByRole('radio', {name: /Public Space/})).toBeEnabled();
         expect(screen.getByRole('button', {name: 'Create'})).toBeDisabled();
 
         typeName('My Space');
@@ -66,7 +70,31 @@ describe('CreateSpaceModal', () => {
 
         await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
         expect(onCreated.mock.calls[0][0]).toMatchObject({title: 'Fresh Space'});
+        expect(createSpaceSpy.mock.calls[0][1]).toMatchObject({view_access: 'private'});
         expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    // The selection has to survive all the way to the data source: the server
+    // reads posture from the request alone, and defaults an absent one to open.
+    it('carries a Public selection through to the create call', async () => {
+        renderWithContext(<CreateSpaceModal onClose={jest.fn()}/>, {state: {currentTeam: team}});
+
+        typeName('Fresh Space');
+        fireEvent.click(screen.getByRole('radio', {name: /Public Space/}));
+        fireEvent.click(screen.getByRole('button', {name: 'Create'}));
+
+        await waitFor(() => expect(createSpaceSpy).toHaveBeenCalledTimes(1));
+        expect(createSpaceSpy.mock.calls[0][1]).toMatchObject({view_access: 'open'});
+    });
+
+    it('updates the name-field icon when the visibility changes', () => {
+        renderWithContext(<CreateSpaceModal onClose={jest.fn()}/>, {state: {currentTeam: team}});
+
+        expect(screen.getByTestId('space-name-icon')).toHaveTextContent('private');
+
+        fireEvent.click(screen.getByRole('radio', {name: /Public Space/}));
+
+        expect(screen.getByTestId('space-name-icon')).toHaveTextContent('open');
     });
 
     it('reports a failed create and keeps the modal open', async () => {

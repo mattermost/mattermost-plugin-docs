@@ -56,7 +56,8 @@ const render = () => {
     return renderHook(() => useManageSpaceMembers(space), {wrapper}).result;
 };
 
-const clientError = (status: number) => new ClientError('', {message: 'nope', status_code: status, url: '/x'});
+const clientError = (status: number, serverErrorId?: string) =>
+    new ClientError('', {message: 'nope', status_code: status, url: '/x', server_error_id: serverErrorId});
 
 describe('useManageSpaceMembers', () => {
     beforeEach(() => {
@@ -134,7 +135,7 @@ describe('useManageSpaceMembers', () => {
     });
 
     it('distinguishes the last-member refusal when removing someone', async () => {
-        mockRemoveSpaceMember.mockRejectedValue(clientError(409));
+        mockRemoveSpaceMember.mockRejectedValue(clientError(409, 'app.space.remove_member.last_member.app_error'));
         const hook = render();
 
         await act(async () => {
@@ -142,6 +143,28 @@ describe('useManageSpaceMembers', () => {
         });
 
         expect(toast.error).toHaveBeenCalledWith('A space must keep at least one member with access.');
+    });
+
+    it('distinguishes the last-admin refusal when removing someone', async () => {
+        mockRemoveSpaceMember.mockRejectedValue(clientError(409, 'app.space.member.last_admin.app_error'));
+        const hook = render();
+
+        await act(async () => {
+            await hook.current.removeMember('u1');
+        });
+
+        expect(toast.error).toHaveBeenCalledWith('A space must keep at least one administrator.');
+    });
+
+    it('reports a lock timeout as retryable when removing someone', async () => {
+        mockRemoveSpaceMember.mockRejectedValue(clientError(409, 'app.space.lock_timeout.app_error'));
+        const hook = render();
+
+        await act(async () => {
+            await hook.current.removeMember('u1');
+        });
+
+        expect(toast.error).toHaveBeenCalledWith('This space is being changed right now. Try again in a moment.');
     });
 
     it('reports any other removal failure generically', async () => {

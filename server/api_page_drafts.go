@@ -43,7 +43,7 @@ func (p *Plugin) handleUpdatePageDraft(w http.ResponseWriter, r *http.Request) {
 	pageID := vars["page_id"]
 	userID := userIDFromRequest(r)
 
-	space, ok := p.requireSpaceMembership(w, spaceID, userID, false)
+	space, ok := p.requireDraftWrite(w, spaceID, userID)
 	if !ok {
 		return
 	}
@@ -97,7 +97,7 @@ func (p *Plugin) handleGetPageDraft(w http.ResponseWriter, r *http.Request) {
 	pageID := vars["page_id"]
 	userID := userIDFromRequest(r)
 
-	if _, ok := p.requireSpaceMembership(w, spaceID, userID, false); !ok {
+	if _, ok := p.requireSpaceRead(w, spaceID, userID); !ok {
 		return
 	}
 
@@ -117,7 +117,7 @@ func (p *Plugin) handleDeletePageDraft(w http.ResponseWriter, r *http.Request) {
 	pageID := vars["page_id"]
 	userID := userIDFromRequest(r)
 
-	space, ok := p.requireSpaceMembership(w, spaceID, userID, false)
+	space, ok := p.requireSpaceRead(w, spaceID, userID)
 	if !ok {
 		return
 	}
@@ -143,7 +143,14 @@ func (p *Plugin) handleCreateSpaceDraft(w http.ResponseWriter, r *http.Request) 
 	spaceID := vars["space_id"]
 	userID := userIDFromRequest(r)
 
-	if _, ok := p.requireSpaceMembership(w, spaceID, userID, false); !ok {
+	// Reserving a page id is the first act of page creation, so this gates on create_page rather
+	// than the looser draft-write pair.
+	space, ok := p.requireSpaceRead(w, spaceID, userID)
+	if !ok {
+		return
+	}
+	writeOK := p.requirePageWrite(w, space, userID, mmmodel.PermissionCreatePage)
+	if !writeOK {
 		return
 	}
 
@@ -181,7 +188,8 @@ func (p *Plugin) handlePublishPageDraft(w http.ResponseWriter, r *http.Request) 
 	pageID := vars["page_id"]
 	userID := userIDFromRequest(r)
 
-	if _, ok := p.requireSpaceMembership(w, spaceID, userID, false); !ok {
+	space, ok := p.requireSpaceRead(w, spaceID, userID)
+	if !ok {
 		return
 	}
 
@@ -195,7 +203,7 @@ func (p *Plugin) handlePublishPageDraft(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	page, wasCreated, appErr := p.service.PublishPageDraft(userID, spaceID, pageID, req.Force)
+	page, wasCreated, appErr := p.service.PublishPageDraft(space, userID, pageID, req.Force)
 	if appErr != nil {
 		if page != nil {
 			p.writeConflictWithPage(w, appErr, page)
@@ -219,7 +227,7 @@ func (p *Plugin) handleGetPageDraftsForSpace(w http.ResponseWriter, r *http.Requ
 	spaceID := vars["space_id"]
 	userID := userIDFromRequest(r)
 
-	if _, ok := p.requireSpaceMembership(w, spaceID, userID, false); !ok {
+	if _, ok := p.requireSpaceRead(w, spaceID, userID); !ok {
 		return
 	}
 

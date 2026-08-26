@@ -24,9 +24,17 @@ export class ShareSpaceModalPage {
 
         // This modal commits each pick immediately; there is no Add button to press.
         await this.page.getByRole('option', {name: new RegExp(username)}).first().click();
+
+        // The selected person first appears as a temporary picker chip while the POST is still in
+        // flight. Wait for the roster handle instead: it is rendered only after addSpaceMember has
+        // resolved and dispatched the committed membership. Without this, a test can close the
+        // page while the request is pending and abort the very membership it intends to verify.
+        await this.expectMemberListed(username);
     }
 
     async expectMemberListed(username: string) {
-        await expect(this.dialog.getByText(new RegExp(username)).first()).toBeVisible();
+        // Exact handle distinguishes the committed MemberList row from the picker's pending chip,
+        // whose display name commonly contains the same generated username.
+        await expect(this.dialog.getByText(`@${username}`, {exact: true})).toBeVisible();
     }
 }

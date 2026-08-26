@@ -3,8 +3,9 @@
 
 import {RestError, apiUrl, listAll, restDelete, restGet, restPatch, restPost} from 'client/rest';
 
-import type {CreatePageInput, CreateSpaceInput, Page, Space, SpaceMember, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
+import type {CreatePageInput, CreateSpaceInput, Page, Space, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
 import type {Draft, DraftPatch, DraftSummary} from 'types/drafts';
+import type {SpaceMember} from 'types/permissions';
 
 import type {DocsDataSource} from './docs_data_source';
 import {asPublishConflict} from './publish_conflict';
@@ -38,6 +39,10 @@ export const apiDataSource: DocsDataSource = {
         title: input.title.trim(),
         description: input.description?.trim() || undefined,
         icon: input.icon || undefined,
+
+        // Sent on every create: the server defaults an absent view_access to
+        // 'open', so omitting it would discard a 'private' selection.
+        view_access: input.view_access,
     }),
 
     updateSpace: (spaceId, patch: UpdateSpacePatch, expectedUpdateAt) => restPatch<Space>(`${apiUrl()}/spaces/${seg(spaceId)}`, {

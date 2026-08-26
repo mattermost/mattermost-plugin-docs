@@ -11,6 +11,7 @@ import {copyToClipboard} from 'utils/clipboard';
 
 import ChevronDownIcon from '@mattermost/compass-icons/components/chevron-down';
 import ContentCopyIcon from '@mattermost/compass-icons/components/content-copy';
+import GlobeIcon from '@mattermost/compass-icons/components/globe';
 import LockOutlineIcon from '@mattermost/compass-icons/components/lock-outline';
 
 import {Button, SecondaryButton} from 'components/form_controls/button';
@@ -27,8 +28,10 @@ type Props = {
     onClose: () => void;
 };
 
-// Members, add and remove are real. The visibility and role dropdowns are
-// scaffolding for PR #10's view_access and capabilities.
+// Members, add and remove are real. The visibility and role dropdowns are inert placeholders:
+// view_access and per-member permissions are editable in the space settings modal's Permissions
+// tab, and this modal has not been wired to them. The visibility trigger still reports the space's
+// real view_access, since a lock over a team-readable space misstates who can read it.
 const ShareSpaceModal = ({space, onClose}: Props) => {
     const {formatMessage} = useIntl();
     const {paths: absolutePaths} = useDocsNavigation({absolute: true});
@@ -72,6 +75,8 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
         </SecondaryButton>
     );
 
+    const isOpen = space.view_access === 'open';
+
     const footer = (
         <div className={styles.access}>
             <div className={styles.accessLeft}>
@@ -82,21 +87,35 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
                     aria-haspopup='listbox'
                     title={formatMessage({
                         id: 'docs.share.visibility.disabledReason',
-                        defaultMessage: 'Public spaces are coming soon',
+                        defaultMessage: 'Change who can view this space in space settings',
                     })}
                 >
-                    <LockOutlineIcon size={16}/>
-                    <FormattedMessage
-                        id='docs.share.visibility.private'
-                        defaultMessage='Private'
-                    />
+                    {isOpen ? <GlobeIcon size={16}/> : <LockOutlineIcon size={16}/>}
+                    {isOpen ? (
+                        <FormattedMessage
+                            id='docs.share.visibility.public'
+                            defaultMessage='Public'
+                        />
+                    ) : (
+                        <FormattedMessage
+                            id='docs.share.visibility.private'
+                            defaultMessage='Private'
+                        />
+                    )}
                     <ChevronDownIcon size={16}/>
                 </button>
                 <span className={styles.accessHint}>
-                    <FormattedMessage
-                        id='docs.share.visibility.privateHint'
-                        defaultMessage='Only invited members'
-                    />
+                    {isOpen ? (
+                        <FormattedMessage
+                            id='docs.share.visibility.publicHint'
+                            defaultMessage='Any team member can view'
+                        />
+                    ) : (
+                        <FormattedMessage
+                            id='docs.share.visibility.privateHint'
+                            defaultMessage='Only invited members'
+                        />
+                    )}
                 </span>
             </div>
             <Button

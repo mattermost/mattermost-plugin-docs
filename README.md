@@ -40,19 +40,23 @@ its own throwaway Mattermost and Postgres via testcontainers, installs the fresh
 plugin into it, and tears everything down afterwards. Nothing touches your local dev server.
 
 The Docs plugin needs a server built with Docs core support — the `EnableDocs` feature flag
-and the Space channel type — which stock releases do not yet ship. The suite therefore runs
-against the `mattermostdevelopment/mattermost-enterprise-edition:master` development image,
-and checks on startup that the server is new enough and has the flag, so an image that
-cannot run Docs fails with a message saying so.
+and the Space channel type — which stock releases do not yet ship. The suite therefore defaults
+to the image core CI published for the commit in `build/core-commit.txt`,
+`mattermostdevelopment/mattermost-team-edition:<7-char-sha>`, and checks on startup that the
+server is new enough and has the flag, so an image that cannot run Docs fails with a message
+saying so.
 
-Pin a specific build to reproduce a run or bisect a server-side regression:
+Set `MM_IMAGE` to override that default — to reproduce a run against another build, or to
+bisect a server-side regression:
 
 ```bash
-MM_IMAGE=mattermostdevelopment/mattermost-enterprise-edition:<tag> make test-e2e
+MM_IMAGE=mattermostdevelopment/mattermost-team-edition:<tag> make test-e2e
 ```
 
-If no published image carries Docs core support, build one locally from the `mattermost`
-repository and point `MM_IMAGE` at that.
+Core CI does not retain its per-commit images indefinitely. When the pinned tag stops
+resolving, bump `build/core-commit.txt` to a commit whose image is still published, or build
+one locally from the `mattermost` repository with `build/build-core-image.sh` and point
+`MM_IMAGE` at it.
 
 To run against a Mattermost server you are already running instead of a container:
 
@@ -64,6 +68,18 @@ cd e2e-tests/playwright && \
 This seeds real teams and users into that server, so it is opt-in through
 `MM_E2E_USE_EXISTING_SERVER` alone — exporting `MM_SERVICESETTINGS_SITEURL`, as most
 Mattermost dev shells do, is not enough to trigger it.
+
+The space-permission specs need a paired-core image and a license, and are excluded from the
+default run without them:
+
+```bash
+MM_E2E_SPACE_PERMISSIONS=true \
+MM_IMAGE=mattermostdevelopment/mattermost-team-edition:<7-char-sha> \
+MM_LICENSE_FILE=/path/to/license \
+make test-e2e
+```
+
+See `e2e-tests/playwright/README.md` for the image pin and the license.
 
 Other useful scripts, run from `e2e-tests/playwright/`:
 

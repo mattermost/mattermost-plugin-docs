@@ -13,10 +13,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
+	"github.com/mattermost/mattermost/server/public/pluginapi"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/app"
 	"github.com/mattermost/mattermost-plugin-docs/server/internal/testutil"
@@ -51,9 +53,32 @@ func openTestService(t *testing.T) *testHarness {
 
 	s, db := testutil.OpenTestStore(t)
 
-	// nil pluginapi client: these tests seed data directly through the store and
-	// never exercise the client, so no mock is needed.
-	svc := app.New(s, nil, nil)
+	// A permissive client rather than nil: most tests here seed data through the store and never
+	// touch it, but the ones that publish a draft go through PublishPageDraft's own permission
+	// gate, which needs a wired client. The stub grants the ordinary contribute-member set, so a
+	// test asserting publish behaviour is not also asserting authorization.
+	mockAPI := &plugintest.API{}
+	t.Cleanup(func() { mockAPI.AssertExpectations(t) })
+	testutil.StubDefaultSpacePermissions(mockAPI)
+	mockAPI.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
+	mockAPI.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil).Maybe()
+	// The page-write gate reads the acting user to hold guests to read_page. Defaults to an
+	// ordinary (non-guest) user; a test exercising the guest refusal registers its own stub first.
+	mockAPI.On("GetUser", mock.Anything).Return(&mmmodel.User{}, nil).Maybe()
+	// With a client wired, the WS publishes and channel side-effects these paths perform are no
+	// longer no-ops. Tests that assert on specific events register their own expectations against
+	// their own mock.
+	mockAPI.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	mockAPI.On("GetChannelMembers", mock.Anything, mock.AnythingOfType("int"), mock.AnythingOfType("int")).
+		Return(mmmodel.ChannelMembers{}, nil).Maybe()
+	mockAPI.On("DeleteChannel", mock.Anything).Return(nil).Maybe()
+	mockAPI.On("RestoreChannel", mock.Anything).Return(nil).Maybe()
+	// A 404, not a nil channel with a nil error: pluginapi maps this to ErrNotFound, which the
+	// backing-channel readers branch on. A nil/nil pair is a state core never returns and would
+	// send them past that branch into a dereference.
+	mockAPI.On("GetChannelOfType", mock.Anything, mock.Anything).
+		Return(nil, &mmmodel.AppError{Id: "app.channel.get.app_error", StatusCode: http.StatusNotFound}).Maybe()
+	svc := app.New(s, nil, pluginapi.NewClient(mockAPI, nil))
 
 	return &testHarness{svc: svc, store: s, db: db}
 }
@@ -382,8 +407,9 @@ func TestServiceGetTeamSpaces(t *testing.T) {
 
 	teamID := mmmodel.NewId()
 	userID := mmmodel.NewId()
+	testutil.MustAddTeamMember(t, h.db, teamID, userID, 0)
 	for range 2 {
-		sp := &model.Space{ChannelId: mmmodel.NewId(), TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "Test Space"}
+		sp := &model.Space{ChannelId: mmmodel.NewId(), TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "Test Space", ViewAccess: model.ViewAccessPrivate}
 		_, err := h.store.CreateSpace(sp)
 		require.NoError(t, err)
 		testutil.MustAddChannelMember(t, h.db, sp.ChannelId, userID)

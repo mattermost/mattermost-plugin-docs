@@ -22,9 +22,13 @@ import (
 // /api/v1 prefix (full root: <siteUrl>/plugins/com.mattermost.docs/api/v1/).
 //
 // Authorization: every route requires an authenticated user via MattermostAuthorizationRequired.
-// All space- and page-scoped handlers additionally gate on backing-channel membership via
-// CheckSpaceMembership. Per-page role ACLs (author vs. editor within a space) are not yet
-// implemented.
+// Every space- and page-scoped handler additionally gates on the permission-based RBAC model:
+// requireSpaceRead/requireSpacePagePerm for reads (the member roster included), requirePageWrite/
+// requireRemovePage for page writes, requireSpaceManage
+// for membership mutations and general space-field updates, and requireSpaceAdmin/
+// requireSpaceDelete for the space-wide exposure-policy and delete/restore operations. A helper
+// taking a space id resolves the record and then gates it; one taking a *model.Space gates a
+// record the caller already holds. See server/app/permissions.go for the gate implementations.
 func (p *Plugin) initRouter() *mux.Router {
 	router := mux.NewRouter()
 	router.Use(p.MattermostAuthorizationRequired)
@@ -42,9 +46,21 @@ func (p *Plugin) initRouter() *mux.Router {
 	api.HandleFunc("/spaces/{space_id}/restore", p.handleRestoreSpace).Methods(http.MethodPatch)
 
 	// Space membership.
-	api.HandleFunc("/spaces/{space_id}/members", p.handleListSpaceMembers).Methods(http.MethodGet)
+	api.HandleFunc("/spaces/{space_id}/members", p.handleGetSpaceMembers).Methods(http.MethodGet)
 	api.HandleFunc("/spaces/{space_id}/members", p.handleAddSpaceMember).Methods(http.MethodPost)
+	// The self-join an open space offers, and the only route that turns view access into a
+	// membership. Separate from the admin-facing add above because the authority differs: that one
+	// takes the manage tier over the space, this one takes nothing but the caller's own ability to
+	// read the space through its open setting.
+	api.HandleFunc("/spaces/{space_id}/members/me", p.handleJoinSpace).Methods(http.MethodPost)
 	api.HandleFunc("/spaces/{space_id}/members/{user_id}", p.handleRemoveSpaceMember).Methods(http.MethodDelete)
+	// PUT, not PATCH: these two replace the permission set outright — the body carries the full set
+	// the target should end up with, and a token omitted from it is revoked. There is no
+	// add-one/remove-one form. PATCH on this API means "nil fields leave unchanged" (see
+	// PATCH /spaces/{space_id}), so a caller generalizing from that would read an omitted token as
+	// "leave it alone" and silently revoke it instead.
+	api.HandleFunc("/spaces/{space_id}/members/{user_id}/permissions", p.handleSetSpaceMemberPermissions).Methods(http.MethodPut)
+	api.HandleFunc("/spaces/{space_id}/default-permissions", p.handleSetSpaceDefaultPermissions).Methods(http.MethodPut)
 
 	// Page collection.
 	api.HandleFunc("/spaces/{space_id}/pages", p.handleGetSpacePages).Methods(http.MethodGet)
@@ -95,17 +111,131 @@ func (p *Plugin) MattermostAuthorizationRequired(next http.Handler) http.Handler
 	})
 }
 
-// requireSpaceMembership calls CheckSpaceMembership and writes the error response when access is
-// denied. Returns the fetched space and true on success so callers can reuse the already-loaded
-// record instead of re-fetching it. includeDeleted must be true for restore
-// operations where the space is soft-deleted at lookup time.
-func (p *Plugin) requireSpaceMembership(w http.ResponseWriter, spaceID, userID string, includeDeleted bool) (*model.Space, bool) {
-	space, appErr := p.service.CheckSpaceMembership(spaceID, userID, includeDeleted)
+// getSpaceForGate fetches spaceID (with soft-deleted rows included when includeDeleted is
+// true) and maps a not-found lookup to the shared existence-hiding 403, so no enforcement helper
+// ever needs to special-case a missing space differently from a denied one. Writes the error
+// response and returns ok=false on failure.
+func (p *Plugin) getSpaceForGate(w http.ResponseWriter, spaceID string, includeDeleted bool) (*model.Space, bool) {
+	var space *model.Space
+	var appErr *mmmodel.AppError
+	if includeDeleted {
+		space, appErr = p.service.GetSpaceWithDeleted(spaceID)
+	} else {
+		space, appErr = p.service.GetSpace(spaceID)
+	}
 	if appErr != nil {
+		if appErr.StatusCode == http.StatusNotFound {
+			p.writeAppError(w, app.ExistenceHidingForbidden("getSpaceForGate").Wrap(appErr))
+			return nil, false
+		}
 		p.writeAppError(w, appErr)
 		return nil, false
 	}
 	return space, true
+}
+
+// requireSpaceGate fetches spaceID and applies gate to it, writing the error response and
+// returning ok=false on either a failed fetch or a denied gate. Every space-scoped route gate
+// below is this shape — only the enforcement helper and its operation label differ.
+func (p *Plugin) requireSpaceGate(w http.ResponseWriter, spaceID string, includeDeleted bool, gate func(space *model.Space) *mmmodel.AppError) (*model.Space, bool) {
+	space, ok := p.getSpaceForGate(w, spaceID, includeDeleted)
+	if !ok {
+		return nil, false
+	}
+	if appErr := gate(space); appErr != nil {
+		p.writeAppError(w, appErr)
+		return nil, false
+	}
+	return space, true
+}
+
+// requireSpaceRead gates a route on the space read resolver (member, or the non-member open-space
+// team fall-through) — the gate for every page read. The resolution itself stays inside the
+// service: a route that needs a write gate next asks for that gate, which resolves the read again
+// rather than reusing this one.
+func (p *Plugin) requireSpaceRead(w http.ResponseWriter, spaceID, userID string) (*model.Space, bool) {
+	return p.requireSpaceGate(w, spaceID, false, func(space *model.Space) *mmmodel.AppError {
+		resolution, resErr := p.service.ResolveSpaceRead("api.space.read", space, userID)
+		if resErr != nil {
+			return resErr
+		}
+		if resolution == app.ReadDenied {
+			return app.ExistenceHidingForbidden("api.space.read")
+		}
+		return nil
+	})
+}
+
+// requireSpacePagePerm gates a route on a single page-scoped permission (read-only; write
+// permissions go through requirePageWrite).
+func (p *Plugin) requireSpacePagePerm(w http.ResponseWriter, spaceID, userID string, perm *mmmodel.Permission) (*model.Space, bool) {
+	return p.requireSpaceGate(w, spaceID, false, func(space *model.Space) *mmmodel.AppError {
+		return p.service.RequireSpacePagePermission("api.space.page", space, userID, perm)
+	})
+}
+
+// requireSpaceManage gates a route on manage-tier authority: sysadmin, channel admin_space, or
+// (once the read resolver has already admitted the caller) team manage_space.
+func (p *Plugin) requireSpaceManage(w http.ResponseWriter, spaceID, userID string) (*model.Space, bool) {
+	return p.requireSpaceGate(w, spaceID, false, func(space *model.Space) *mmmodel.AppError {
+		return p.service.RequireSpaceAdminOrTeamPerm("api.space.manage", space, userID, mmmodel.PermissionManageSpace)
+	})
+}
+
+// requireSpaceAdmin gates a route on Service.RequireSpaceAdminOrSysadmin — the space-wide
+// exposure-policy knobs (ViewAccess, default permissions).
+func (p *Plugin) requireSpaceAdmin(w http.ResponseWriter, spaceID, userID string) (*model.Space, bool) {
+	return p.requireSpaceGate(w, spaceID, false, func(space *model.Space) *mmmodel.AppError {
+		return p.service.RequireSpaceAdminOrSysadmin("api.space.admin", space, userID)
+	})
+}
+
+// requireSpaceDelete gates space delete/restore: sysadmin, channel admin_space, or (once the
+// read resolver has already admitted the caller) team delete_space. includeDeleted must be true
+// for restore, where the space is soft-deleted at lookup time; the read resolver and the delete
+// gate then evaluate against that soft-deleted record.
+func (p *Plugin) requireSpaceDelete(w http.ResponseWriter, spaceID, userID string, includeDeleted bool) (*model.Space, bool) {
+	return p.requireSpaceGate(w, spaceID, includeDeleted, func(space *model.Space) *mmmodel.AppError {
+		return p.service.RequireSpaceAdminOrTeamPerm("api.space.delete", space, userID, mmmodel.PermissionDeleteSpace)
+	})
+}
+
+// requirePageWrite gates a page write on perm. The read gate and the permission check both happen
+// inside the service call, so no route holds a read resolution across its own work and spends it at
+// a later gate. It never mutates: a caller who is not yet a member of an open space joins it
+// through POST /spaces/{space_id}/members/me before writing.
+func (p *Plugin) requirePageWrite(w http.ResponseWriter, space *model.Space, userID string, perm *mmmodel.Permission) bool {
+	if appErr := p.service.RequireSpacePageWrite("api.page.write", space, userID, perm); appErr != nil {
+		p.writeAppError(w, appErr)
+		return false
+	}
+	return true
+}
+
+// requireDraftWrite gates a draft mutation on create-or-edit authority over the space. It returns
+// the space so the caller can pass the backing channel on to the service.
+func (p *Plugin) requireDraftWrite(w http.ResponseWriter, spaceID, userID string) (*model.Space, bool) {
+	return p.requireSpaceGate(w, spaceID, false, func(space *model.Space) *mmmodel.AppError {
+		return p.service.RequireSpaceDraftWrite("api.page_draft.write", space, userID)
+	})
+}
+
+// requireRemovePage gates a delete-class page operation on an already-fetched space: delete_page
+// (any), or delete_own_page when ownerMatches. anyWhere and ownWhere label the two attempts, and a
+// denial of both becomes the shared existence-hiding 403 under anyWhere. It reports whether the
+// caller qualified only via delete_own_page, which a caller that must push ownership enforcement
+// further down needs. Writes the error response and returns ok=false on failure.
+func (p *Plugin) requireRemovePage(w http.ResponseWriter, space *model.Space, userID, anyWhere, ownWhere string, ownerMatches bool) (ownOnly, ok bool) {
+	ownOnly, allowed, permErr := p.service.ResolveSpaceRemovePage(space, userID, anyWhere, ownWhere, ownerMatches)
+	if permErr != nil {
+		p.writeAppError(w, permErr)
+		return false, false
+	}
+	if !allowed {
+		p.writeAppError(w, app.ExistenceHidingForbidden(anyWhere))
+		return false, false
+	}
+	return ownOnly, true
 }
 
 // EnableDocsRequired is a middleware that rejects all API requests with 501 Not Implemented when

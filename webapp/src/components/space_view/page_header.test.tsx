@@ -6,6 +6,8 @@ import React from 'react';
 
 import {makeDraft, makePage, makeSpace} from 'store/test_fixtures';
 
+import type {Permission} from 'types/permissions';
+
 import PageHeader from './page_header';
 
 import {renderWithContext} from '../../../tests/react_testing_utils';
@@ -25,10 +27,10 @@ const PAGE = makePage('runbook', 'eng', 'Runbook');
 
 const PAGE_URL = '/myteam/spaces/eng/runbook';
 
-const renderHeader = (props: Partial<React.ComponentProps<typeof PageHeader>> = {}, route = PAGE_URL) =>
+const renderHeader = (props: Partial<React.ComponentProps<typeof PageHeader>> = {}, route = PAGE_URL, space = SPACE) =>
     renderWithContext(
         <PageHeader
-            space={SPACE}
+            space={space}
             page={PAGE}
             treeOpen={false}
             editing={false}
@@ -39,8 +41,17 @@ const renderHeader = (props: Partial<React.ComponentProps<typeof PageHeader>> = 
             onPublish={jest.fn()}
             {...props}
         />,
-        {route},
+        {route, state: {docs: {spaces: {[space.id]: space}}}},
     );
+
+// A space the server has resolved without edit_page: a member of a space whose default grants
+// reading and creating but not editing what is already published.
+const NO_EDIT_SPACE = {...SPACE, permissions: ['read_page', 'create_page'] as Permission[]};
+
+// The mirror: a reader who may edit what is already published but may not add a page. Drafting is
+// admitted by either permission (RequireSpaceDraftWrite), so this caller can hold a draft the
+// publish gate will then refuse.
+const NO_CREATE_SPACE = {...SPACE, permissions: ['read_page', 'edit_page'] as Permission[]};
 
 describe('PageHeader edit control', () => {
     it('offers Edit while reading', () => {
@@ -242,5 +253,65 @@ describe('PageHeader fullscreen control', () => {
 
         expect(history.location.search).toBe('?fs=1');
         expect(history.length).toBe(before);
+    });
+});
+
+// The server splits the two publish gates: a new page takes create_page, publishing over a live one
+// takes edit_page. These assert the header offers only what the caller's resolved set allows, so a
+// member without edit_page is never walked into a write the server will refuse.
+describe('PageHeader edit gating', () => {
+    const DRAFT = makeDraft('runbook', 'eng', 'Runbook');
+
+    it('withholds Edit on a published page when the resolved set omits edit_page', () => {
+        renderHeader({}, PAGE_URL, NO_EDIT_SPACE);
+
+        expect(screen.queryByRole('button', {name: 'Edit'})).not.toBeInTheDocument();
+    });
+
+    it('withholds Update from a caller who cannot edit', () => {
+        renderHeader({draft: DRAFT, editing: true}, PAGE_URL, NO_EDIT_SPACE);
+
+        expect(screen.queryByRole('button', {name: 'Update'})).not.toBeInTheDocument();
+    });
+
+    // Publishing an unpublished page for the first time is gated on create_page, which this caller
+    // holds — so their own draft stays editable and publishable.
+    it('still offers Publish and Edit on the caller\'s own unpublished page', () => {
+        renderHeader({page: undefined, draft: DRAFT}, PAGE_URL, NO_EDIT_SPACE);
+
+        expect(screen.getByRole('button', {name: 'Publish'})).toBeEnabled();
+        expect(screen.getByRole('button', {name: 'Edit'})).toBeInTheDocument();
+    });
+
+    it('withholds Publish and Edit on an unpublished page when the resolved set omits create_page', () => {
+        renderHeader({page: undefined, draft: DRAFT}, PAGE_URL, NO_CREATE_SPACE);
+
+        expect(screen.queryByRole('button', {name: 'Publish'})).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Edit'})).not.toBeInTheDocument();
+    });
+
+    it('does not publish on Cmd/Ctrl+Enter when the caller cannot create', () => {
+        const onPublish = jest.fn();
+        renderHeader({page: undefined, draft: DRAFT, onPublish}, PAGE_URL, NO_CREATE_SPACE);
+
+        fireEvent.keyDown(document, {key: 'Enter', metaKey: true});
+        fireEvent.keyDown(document, {key: 'Enter', ctrlKey: true});
+
+        expect(onPublish).not.toHaveBeenCalled();
+    });
+
+    it('does not enter edit on the `e` shortcut when the caller cannot edit', () => {
+        const onToggleEdit = jest.fn();
+        renderHeader({onToggleEdit}, PAGE_URL, NO_EDIT_SPACE);
+
+        fireEvent.keyDown(document, {key: 'e'});
+
+        expect(onToggleEdit).not.toHaveBeenCalled();
+    });
+
+    it('leaves Close reachable if a caller who cannot edit is already editing', () => {
+        renderHeader({editing: true}, PAGE_URL, NO_EDIT_SPACE);
+
+        expect(screen.getByRole('button', {name: 'Close'})).toBeInTheDocument();
     });
 });

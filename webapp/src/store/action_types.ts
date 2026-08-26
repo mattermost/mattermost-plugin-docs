@@ -10,6 +10,11 @@ export const SpaceTypes = {
     RECEIVED_SPACE_MEMBERS: manifest.id + '_received_space_members',
     ADDED_SPACE_MEMBER: manifest.id + '_added_space_member',
     REMOVED_SPACE_MEMBER: manifest.id + '_removed_space_member',
+
+    // Carries no data beyond the space id. The per-member grant matrix is the one piece of a
+    // space's permission state not stored here — only the settings surface reads it, and only a
+    // manager may — so the revision this bumps is how that surface learns the answer moved.
+    SPACE_MEMBER_PERMISSIONS_CHANGED: manifest.id + '_space_member_permissions_changed',
 } as const;
 
 export const PageTypes = {

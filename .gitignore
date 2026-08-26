@@ -3,6 +3,18 @@ dist/
 webapp/src/manifest.ts
 server/manifest.go
 
+# Dependencies, at any depth. The per-directory ignores (webapp/.gitignore,
+# e2e-tests/playwright/.gitignore) are kept, but a suite added without one staged its whole
+# node_modules tree, so this is the backstop that does not depend on remembering.
+node_modules/
+
+# Enterprise licenses and local env files. Both e2e suites read a license from a path
+# (MM_LICENSE_FILE), so one easily ends up saved inside the repo. Narrow on purpose:
+# a broad *.license would also shadow the LICENSE files that ship inside dependencies.
+*.mattermost-license
+.env
+.env.*
+
 # JUnit report from `make test-ci` (the webapp's own is covered by webapp/.gitignore)
 report.xml
 

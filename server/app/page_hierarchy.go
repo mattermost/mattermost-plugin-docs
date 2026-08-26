@@ -156,15 +156,18 @@ func (s *Service) reparentWithinSpace(where, pageID, spaceID string, newParentID
 }
 
 // MovePageToSpace moves a page and its subtree to another space in the same team. parentPageID
-// nil/"" places it at the target root. Rejects cross-team moves and wrong-space parents here;
-// destination-inside-subtree cycles and depth-cap breaches are enforced authoritatively by
-// store.MovePageToSpace and surface through storeAppError's shared message keys.
+// nil/"" places it at the target root. Cross-team moves, wrong-space parents,
+// destination-inside-subtree cycles, and depth-cap breaches are all rejected.
 // A nil expectedUpdateAt without force is rejected: the mutation must supply a baseline.
 // sourceSpace and targetSpace are the caller's already-fetched records (from its membership
 // gates), so no re-read happens here. userID is the acting user and must be a valid ID: the store
 // scopes the target-space draft quota to the drafts it owns. It does not change the page's
-// LastModifiedBy. Per-page restrictions and redirects are not handled yet.
-func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model.Space, parentPageID *string, expectedUpdateAt *int64, force bool, userID string) (*model.Page, *mmmodel.AppError) {
+// LastModifiedBy. requiredOwnerID, when non-empty, requires every live page in the moved subtree
+// to be owned by it — the gate resolves this to userID on the delete_own_page-only path and "" on
+// the delete_page (any) path — and the move is rejected as a whole if any page has a different
+// owner. A same-space request requires only the reparented root to be owned, since no other page
+// leaves the space. Per-page restrictions and redirects are not handled yet.
+func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model.Space, parentPageID *string, expectedUpdateAt *int64, force bool, userID, requiredOwnerID string) (*model.Page, *mmmodel.AppError) {
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -212,6 +215,21 @@ func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model
 	// requestedParent is passed explicitly because nil means "target root" here but "leave
 	// unchanged" to MovePage.
 	if sourceSpace.Id == targetSpace.Id {
+		// The subtree keeps its space, so the reparented root is the only page that moves: when
+		// requiredOwnerID is set, it is the only page whose owner has to match. store.MovePage has
+		// no ownership parameter, so the check runs here rather than inside the store transaction.
+		// Reading the owner outside that transaction is still safe: a page's UserId is set at
+		// creation and never updated, so no concurrent write can change the answer between this
+		// read and the move.
+		if requiredOwnerID != "" {
+			page, pageErr := s.GetPageInSpace("MovePageToSpace", pageID, sourceSpace.Id, false)
+			if pageErr != nil {
+				return nil, pageErr
+			}
+			if page.UserId != requiredOwnerID {
+				return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.subtree_not_owned.app_error", nil, "", http.StatusForbidden)
+			}
+		}
 		if requestedParent != "" && requestedParent != curParentID {
 			if destErr := s.validateDestinationParent("MovePageToSpace", pageID, requestedParent, sourceSpace.Id); destErr != nil {
 				return nil, destErr
@@ -231,7 +249,7 @@ func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model
 
 	s.log.Debug("Moving page to space", "page_id", pageID, "source_space_id", sourceSpace.Id, "target_space_id", targetSpace.Id, "user_id", userID)
 
-	moved, priorParentID, storeErr := s.store.MovePageToSpace(pageID, sourceSpace.Id, targetSpace.Id, userID, parentPageID, mmmodel.SafeDereference(expectedUpdateAt), force, model.MaxPageDepth)
+	moved, priorParentID, storeErr := s.store.MovePageToSpace(pageID, sourceSpace.Id, targetSpace.Id, userID, parentPageID, mmmodel.SafeDereference(expectedUpdateAt), force, model.MaxPageDepth, requiredOwnerID)
 	if storeErr != nil {
 		return nil, storeAppError("MovePageToSpace", storeErr)
 	}

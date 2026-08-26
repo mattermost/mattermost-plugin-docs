@@ -65,6 +65,98 @@
     line-height: 24px;
 }
 
+// The permission checkbox group. A fieldset so the whole set carries one label for
+// assistive technology, with the browser's default border and padding removed.
+.toggles {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+
+    // A pending save dims the set without collapsing layout, so rows do not move
+    // under the pointer while a request is in flight.
+    &[aria-busy='true'] {
+        opacity: 0.72;
+    }
+}
+
+.togglesLegend {
+    padding: 0;
+    color: rgba(var(--center-channel-color-rgb), 0.75);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 16px;
+}
+
+.toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+
+    label {
+        margin: 0;
+        color: var(--center-channel-color);
+        font-size: 14px;
+        font-weight: 400;
+        line-height: 20px;
+    }
+
+    // The disabled pair reads as one unit, so the label dims with its input rather
+    // than staying full-strength beside a greyed checkbox.
+    input:disabled + label {
+        color: rgba(var(--center-channel-color-rgb), 0.56);
+    }
+}
+
+.presets {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+
+    &[aria-busy='true'] {
+        opacity: 0.72;
+    }
+}
+
+.preset {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+
+    input {
+        margin-top: 3px;
+    }
+
+    label {
+        display: flex;
+        margin: 0;
+        flex-direction: column;
+        color: var(--center-channel-color);
+    }
+
+    input:disabled + label {
+        color: rgba(var(--center-channel-color-rgb), 0.56);
+    }
+}
+
+.presetTitle {
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 20px;
+}
+
+.presetDescription {
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 16px;
+}
+
 .field {
     display: flex;
     flex-direction: column;
@@ -165,5 +257,23 @@
 .error {
     color: var(--error-text);
     font-size: 12px;
+    line-height: 16px;
+}
+
+// Indented to the identity line's text, so a member's permissions read as belonging to
+// the person above them rather than as a separate section.
+.memberPermissions {
+    padding-left: 44px;
+}
+
+// Matches .helper's secondary-text treatment: this annotates the row rather than labelling a
+// control, so it reads at the same weight as the other explanatory copy in this tab.
+.autoJoinedNote {
+    display: block;
+    margin-bottom: 4px;
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+    font-family: 'Open Sans', sans-serif;
+    font-size: 12px;
+    font-weight: 400;
     line-height: 16px;
 }

@@ -5,6 +5,11 @@ MM_DEBUG ?=
 GOPATH ?= $(shell go env GOPATH)
 GO_TEST_FLAGS ?= -race
 GO_BUILD_FLAGS ?=
+# Coverage gates use the current production baseline. Test helpers are deliberately excluded from
+# coverpkg so adding exercised fixture code cannot conceal a production-coverage regression.
+GO_COVERAGE_MIN ?= 83
+SERVER_COVERAGE_PROFILE ?= server/coverage.txt
+SERVER_COVERAGE_PACKAGES ?= $(shell $(GO) list ./server/... | grep -v '/server/internal/testutil$$' | paste -sd, -)
 MM_UTILITIES_DIR ?= ../mattermost-utilities
 DLV_DEBUG_PORT := 2346
 DEFAULT_GOOS := $(shell go env GOOS)
@@ -15,6 +20,17 @@ export GO111MODULE=on
 # We need to export GOBIN to allow it to be set
 # for processes spawned from the Makefile
 export GOBIN ?= $(PWD)/bin
+
+define check_go_coverage
+@coverage="$$( $(GO) tool cover -func=$(SERVER_COVERAGE_PROFILE) | awk '/^total:/ {gsub(/%/, "", $$3); print $$3}' )"; \
+	awk -v actual="$$coverage" -v minimum="$(GO_COVERAGE_MIN)" 'BEGIN { \
+		if (actual + 0 < minimum + 0) { \
+			printf "server coverage %.1f%% is below the %.1f%% minimum\n", actual, minimum; \
+			exit 1; \
+		} \
+		printf "server coverage %.1f%% meets the %.1f%% minimum\n", actual, minimum; \
+	}'
+endef
 
 # You can include assets this directory into the bundle. This can be e.g. used to include profile pictures.
 ASSETS_DIR ?= assets
@@ -361,17 +377,22 @@ test-ci: test-ci-server test-ci-webapp
 .PHONY: test-ci-server
 test-ci-server: apply install-go-tools
 ifneq ($(HAS_SERVER),)
-	$(GOBIN)/gotestsum --format standard-verbose --junitfile report.xml -- ./...
+	$(GOBIN)/gotestsum --format standard-verbose --junitfile report.xml -- -covermode=atomic -coverpkg=$(SERVER_COVERAGE_PACKAGES) -coverprofile=$(SERVER_COVERAGE_PROFILE) ./build/... ./server/...
+	$(call check_go_coverage)
 endif
 
 ## Runs the webapp unit tests, writing a JUnit report.
 .PHONY: test-ci-webapp
 test-ci-webapp: apply webapp/node_modules
 ifneq ($(HAS_WEBAPP),)
-	cd webapp && $(NPM) run test;
+	cd webapp && $(NPM) run test-ci;
 endif
 
 ## Runs the Playwright E2E suite against a throwaway Mattermost container. Requires Docker.
+##
+## Set MM_E2E_SPACE_PERMISSIONS=true to select the space-permission specs; they also need MM_IMAGE (a
+## core image carrying the paired branch's work) and a license in MM_LICENSE/MM_LICENSE_FILE, and
+## the suite names either as its own failure when unset. See e2e-tests/playwright/README.md.
 .PHONY: test-e2e
 test-e2e:
 	@# The bundle is installed into a Linux container, so it must carry a Linux
@@ -390,8 +411,9 @@ test-e2e:
 .PHONY: coverage
 coverage: apply webapp/node_modules
 ifneq ($(HAS_SERVER),)
-	$(GO) test $(GO_TEST_FLAGS) -coverprofile=server/coverage.txt ./server/...
-	$(GO) tool cover -html=server/coverage.txt
+	$(GO) test $(GO_TEST_FLAGS) -covermode=atomic -coverpkg=$(SERVER_COVERAGE_PACKAGES) -coverprofile=$(SERVER_COVERAGE_PROFILE) ./build/... ./server/...
+	$(GO) tool cover -func=$(SERVER_COVERAGE_PROFILE)
+	$(call check_go_coverage)
 endif
 
 ## Extract strings for translation from the source code.
@@ -401,7 +423,7 @@ i18n-extract: i18n-extract-webapp i18n-extract-server
 .PHONY: i18n-extract-webapp
 i18n-extract-webapp:
 ifneq ($(HAS_WEBAPP),)
-	cd webapp && $(NPM) run extract
+	cd webapp && $(NPM) run i18n-extract
 endif
 
 .PHONY: i18n-extract-server

@@ -4,7 +4,7 @@
 import {useForm} from '@tanstack/react-form';
 import {getSpaceViews, recordSpaceView} from 'data/recent_spaces';
 import {useAppDispatch, useAppSelector} from 'hooks/redux';
-import {useCallback, useEffect, useMemo, useState} from 'react';
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useIntl} from 'react-intl';
 import {createSpaceFormSchema} from 'validation/space_schema';
 
@@ -15,7 +15,8 @@ import {areMembersLoadedForSpace, getAllSpaces, getPagesForSpace, getSpace, getS
 
 import {toast} from 'components/toast';
 
-import type {Space, SpaceSummary, SpaceVisibility} from 'types/docs';
+import type {Space, SpaceSummary} from 'types/docs';
+import type {SpaceViewAccess} from 'types/permissions';
 
 export function useSpaces(): Space[] {
     return useAppSelector(getSpacesForCurrentTeam);
@@ -77,6 +78,75 @@ export function useRoutedSpace(spaceId?: string): RoutedSpace {
     return {space, resolved: Boolean(spaceId) && (Boolean(space) || checkedId === spaceId)};
 }
 
+const resolveMaxAttempts = 3;
+const resolveRetryDelayMs = 2000;
+
+/**
+ * Resolves the caller's own permissions for the space being viewed.
+ *
+ * Separate from useRoutedSpace, which fetches only while the space is absent: the team
+ * listing puts every space in the store without permissions (it answers with bare spaces),
+ * so by the time a space is opened from the sidebar it is present-but-unresolved and that
+ * effect correctly does nothing. Permission-gated affordances would then never see a
+ * resolved set.
+ *
+ * Runs once per SUCCESSFUL resolution rather than once per attempt, and re-reads on a change of id
+ * so switching spaces cannot carry the previous space's permissions.
+ *
+ * The success condition matters: fetchSpace answers any failure — a network blip, or the 403 a
+ * private space gives a non-member — by resolving to undefined rather than rejecting. Marking the
+ * id resolved before knowing the outcome therefore made one transient failure permanent for the
+ * mounted view, and the two selectors reading that field fail in opposite directions: page creation
+ * is offered on an unresolved set and member management is withheld from one.
+ *
+ * A failed attempt is retried up to resolveMaxAttempts times; past that the space is left
+ * unresolved until the id changes or the view remounts.
+ */
+export function useResolveSpacePermissions(spaceId?: string): void {
+    const dispatch = useAppDispatch();
+    const resolvedFor = useRef<string>();
+    const attempts = useRef<{spaceId?: string; count: number}>({count: 0});
+    const [retry, setRetry] = useState(0);
+
+    useEffect(() => {
+        let cancelled = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+
+        if (spaceId && resolvedFor.current !== spaceId) {
+            // The count belongs to the id being resolved, so a space switch starts a fresh budget
+            // rather than inheriting one the previous space spent.
+            if (attempts.current.spaceId !== spaceId) {
+                attempts.current = {spaceId, count: 0};
+            }
+            resolvedFor.current = spaceId;
+            dispatch(fetchSpace(spaceId)).then((space) => {
+                // Guarded on the id so a resolution that lost a space switch cannot reopen the
+                // current space's.
+                if (cancelled || space || resolvedFor.current !== spaceId) {
+                    return;
+                }
+                resolvedFor.current = undefined;
+                attempts.current.count += 1;
+
+                // Clearing the marker cannot by itself produce another attempt: this effect re-runs
+                // only when one of its dependencies changes, and a failure changes neither dispatch
+                // nor spaceId. The retry counter is state for that reason.
+                if (attempts.current.count < resolveMaxAttempts) {
+                    timer = setTimeout(() => setRetry((n) => n + 1), resolveRetryDelayMs);
+                }
+            });
+        }
+
+        return () => {
+            cancelled = true;
+            clearTimeout(timer);
+            if (resolvedFor.current === spaceId) {
+                resolvedFor.current = undefined;
+            }
+        };
+    }, [dispatch, spaceId, retry]);
+}
+
 // Recently-viewed spaces in the current team (Home). Recency is client-side
 // today (see data/recent_spaces); resolved against the loaded team spaces so a
 // left/deleted space drops out. pageCount is omitted until the server provides
@@ -134,13 +204,13 @@ export function useRecordSpaceView(spaceId?: string): void {
 
 type CreateSpaceValues = {
     name: string;
-    visibility: SpaceVisibility;
+    view_access: SpaceViewAccess;
     description: string;
 };
 
 const INITIAL_VALUES: CreateSpaceValues = {
     name: '',
-    visibility: 'private',
+    view_access: 'private',
     description: '',
 };
 
@@ -162,7 +232,7 @@ export function useCreateSpace({onCreated}: CreateSpaceOptions = {}) {
         onSubmit: async ({value}) => {
             const space = await dispatch(createSpace({
                 title: value.name.trim(),
-                visibility: value.visibility,
+                view_access: value.view_access,
                 description: value.description.trim() || undefined,
             }));
             onCreated?.(space);

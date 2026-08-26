@@ -3,15 +3,24 @@
 
 import {defineConfig, devices} from '@playwright/test';
 
+import {spacePermissionsMode} from './tests/helpers/mode';
+
 // Opt-in: videos are much heavier than traces. Takes Playwright's own mode names.
 type VideoMode = 'on' | 'off' | 'retain-on-failure' | 'on-first-retry';
 const video = (process.env.PW_VIDEO as VideoMode) || 'off';
+const spacePermissionSpecPattern = '**/*space_permissions.spec.ts';
 
 // No `use.baseURL`: the port is mapped at runtime and this module is evaluated before
 // globalSetup. tests/fixtures.ts supplies it instead.
 export default defineConfig({
     testDir: './tests',
-    testMatch: '**/*.spec.ts',
+    // The two modes are separate suites, not additive. In particular, the licensed permission
+    // run must not collect the preset-only authoring scenario a second time: that scenario is
+    // intentionally unlicensed and can only skip on this server.
+    testMatch: spacePermissionsMode ? spacePermissionSpecPattern : '**/*.spec.ts',
+
+    // Permission specs are excluded from the ordinary unlicensed authoring run.
+    testIgnore: spacePermissionsMode ? [] : [spacePermissionSpecPattern],
     globalSetup: './tests/helpers/bootstrap.ts',
     forbidOnly: Boolean(process.env.CI),
     fullyParallel: false,
@@ -25,7 +34,10 @@ export default defineConfig({
         ['junit', {outputFile: 'results/junit/test-results.xml'}],
     ],
     retries: process.env.CI ? 2 : 0,
-    workers: process.env.CI ? 1 : undefined,
+    // The permission mode includes System Console cases that deliberately mutate the shared
+    // system scheme and restore it in finally blocks. Keep that mode serial locally too: a local
+    // multi-worker run must not expose unrelated personas to a temporary read/manage/delete role.
+    workers: spacePermissionsMode || process.env.CI ? 1 : undefined,
     use: {
         screenshot: 'only-on-failure',
         trace: 'retain-on-failure',
