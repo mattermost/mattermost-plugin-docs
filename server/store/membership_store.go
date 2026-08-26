@@ -196,11 +196,11 @@ func (s *Store) ClearAutoJoined(spaceID, userID string) error {
 	return nil
 }
 
-// Auto-join provenance markers record which of a space's members were added by
-// JoinOpenSpace rather than invited/added deliberately, so a membership review — notably
-// before an open->private flip prunes self-joined memberships — can tell the two apart. They live in the
-// plugin's own DOCS_SpaceAutoJoin table on the master DB handle, alongside the membership reads
-// above. No gate consults them: a marker only labels how a member got here, never what they may do.
+// Auto-join provenance markers are written by JoinOpenSpace and normally cleared by deliberate
+// membership changes. Consumers treat a row as provenance recorded by the plugin, not proof of a
+// live membership: marker cleanup after a membership is gone is best-effort. The markers live in
+// DOCS_SpaceAutoJoin on the master DB handle and select which backing memberships must be removed
+// before an open space can become private. No access gate consults them.
 // Per-membership rows make every update a single-row write, so no update can overwrite another's
 // outcome.
 

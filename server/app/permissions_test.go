@@ -59,7 +59,7 @@ func readOnlyJoinHarness(t *testing.T, mockAPI *plugintest.API) (*testHarness, *
 }
 
 // TestJoinOpenSpace_MemberIsNoOp covers idempotency at the admission boundary: a caller whose read
-// already resolves through a membership is answered with their current access rather than joined a
+// already resolves through a membership is answered with server-resolved access rather than joined a
 // second time, so a client that cannot tell whether it has joined may simply call it.
 func TestJoinOpenSpace_MemberIsNoOp(t *testing.T) {
 	mockAPI := &plugintest.API{}

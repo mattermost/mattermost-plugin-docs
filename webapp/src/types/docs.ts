@@ -20,32 +20,19 @@ export type Space = {
     delete_at: number;
     sort_order: number;
 
-    // Who may read the space beyond its members: 'open' is the whole team,
-    // 'private' is members only.
+    // Whether eligible team non-members may also read the space; 'private' is members only.
     view_access: SpaceViewAccess;
 
-    // The caller's own effective permissions in this space, as the server resolved them.
-    // Optional because only the single-space read answers with them: the team listing returns
-    // bare spaces, so a space the client has only seen in a list carries none. Undefined
-    // therefore means "not resolved yet", never "holds nothing" — see getSpacePermissions.
+    // The caller's server-resolved effective permissions. Team listings omit access fields, so
+    // undefined means unresolved rather than an empty permission set.
     permissions?: Permission[];
 
-    // What every member of this space may do without a per-member grant. Optional for the same
-    // reason permissions is, and preserved across a bare team listing the same way.
+    // What every member may do without a grant. Team listings omit this field too.
     default_permissions?: Permission[];
 
-    // Whether the caller may join this space themselves, which is what would turn
-    // default_permissions into permissions they actually hold. Server-resolved: a guest member and
-    // a non-member reading an open space both carry read_page alone against the same defaults, so
-    // the client cannot tell them apart and must not try. Optional for the same reason the two
-    // fields above are.
+    // Server-resolved because read_page plus defaults cannot distinguish a guest from an open-space
+    // non-member. Team listings omit this field.
     can_join?: boolean;
-};
-
-// A space member. The server exposes only the user id (roles/permissions are
-// hidden); the user profile is resolved from the host store when needed.
-export type SpaceMember = {
-    user_id: string;
 };
 
 // The fields the create-space form collects. The data source turns this into a

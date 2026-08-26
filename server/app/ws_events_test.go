@@ -531,6 +531,38 @@ func TestServiceUpdateSpace_PublishesUpdatedEvent(t *testing.T) {
 		&mmmodel.WebsocketBroadcast{ChannelId: updated.ChannelId})
 }
 
+// TestServiceUpdateSpace_PrivateFlipPublishesPrunedMember pins both delivery scopes for a member
+// removed by the pre-prune. Direct delivery reaches the member after core removes them from the
+// channel; channel delivery refreshes everyone who remains. The normal space update follows.
+func TestServiceUpdateSpace_PrivateFlipPublishesPrunedMember(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	adminID := mmmodel.NewId()
+	memberID := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	testutil.MustAddChannelAdmin(t, h.db, channelID, adminID)
+	space := mustCreateSpace(t, h.store, channelID)
+	require.NoError(t, h.store.MarkAutoJoined(space.Id, memberID))
+	mockAPI.On("DeleteChannelMember", channelID, memberID).Return(nil).Once()
+	mockAPI.On("GetChannelOfType", channelID, mmmodel.ChannelTypeSpace).
+		Return((*mmmodel.Channel)(nil), nil).
+		Once()
+
+	private := model.ViewAccessPrivate
+	updated, appErr := h.svc.UpdateSpace(space, &model.SpacePatch{ViewAccess: &private}, new(space.UpdateAt), false, adminID)
+	require.Nil(t, appErr)
+
+	payload := map[string]any{"space_id": space.Id, "user_id": memberID}
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_removed", payload,
+		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_member_removed", payload,
+		&mmmodel.WebsocketBroadcast{UserId: memberID})
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_updated",
+		map[string]any{"space_id": updated.Id},
+		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
+}
+
 // TestServiceDeleteSpace_PublishesDeletedEvent pins space_deleted: space-id payload, delivered
 // directly to each backing-channel member snapshotted before the channel is archived — a
 // channel-scoped broadcast after the archive would resolve zero recipients. Clients must treat
@@ -699,10 +731,10 @@ func TestServiceRemoveSpaceMember_PublishesMemberRemovedEvent(t *testing.T) {
 func TestServiceSetSpaceMemberPermissions_DefaultPermissionsFailureAbortsBeforeCommit(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	targetUserID := mmmodel.NewId()
-	// Registered before the harness so it wins over StubPresetSchemes' GetRoleByName stub for the
-	// same role name: mock.Mock matches expectations in registration order.
-	mockAPI.On("GetRoleByName", "space_contribute_user_role").
-		Return((*mmmodel.Role)(nil), &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
+	// Registered before the harness so it wins over the channel-scheme fixture: mock.Mock matches
+	// expectations in registration order.
+	mockAPI.On("GetSchemeForChannel", mock.AnythingOfType("string")).
+		Return(nil, nil, nil, nil, &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
 	h := openTestServiceWithAPI(t, mockAPI)
 	space, actingUserID := createSpaceForMemberTests(t, h, mockAPI)
 

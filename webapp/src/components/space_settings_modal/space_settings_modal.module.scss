@@ -110,6 +110,53 @@
     }
 }
 
+.presets {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+
+    &[aria-busy='true'] {
+        opacity: 0.72;
+    }
+}
+
+.preset {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+
+    input {
+        margin-top: 3px;
+    }
+
+    label {
+        display: flex;
+        margin: 0;
+        flex-direction: column;
+        color: var(--center-channel-color);
+    }
+
+    input:disabled + label {
+        color: rgba(var(--center-channel-color-rgb), 0.56);
+    }
+}
+
+.presetTitle {
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 20px;
+}
+
+.presetDescription {
+    color: rgba(var(--center-channel-color-rgb), 0.64);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 16px;
+}
+
 .field {
     display: flex;
     flex-direction: column;

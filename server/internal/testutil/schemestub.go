@@ -6,7 +6,6 @@ package testutil
 import (
 	"net/http"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 
@@ -64,40 +63,57 @@ var presetSchemeFixtures = map[string]presetSchemeFixture{
 	},
 }
 
-// schemeRoleNames is the generated guest/user/admin role names one scheme id resolves to.
-type schemeRoleNames struct {
-	Guest string
-	User  string
-	Admin string
+// registeredChannelScheme is the aggregate core returns for a directly assigned channel scheme.
+type registeredChannelScheme struct {
+	Scheme    *mmmodel.Scheme
+	GuestRole *mmmodel.Role
+	UserRole  *mmmodel.Role
+	AdminRole *mmmodel.Role
 }
 
-// schemeRoleRegistry maps a scheme id to its generated role names, so a stubbed channel resolves
+// schemeRoleRegistry maps a scheme id to its generated roles, so a stubbed channel resolves
 // whichever scheme it currently points at. It is keyed by globally unique scheme ids — the three
 // fixed preset ids plus whatever a test registers for a custom scheme — so entries never collide
 // across tests. Guarded because parallel tests in this package register into it concurrently.
 var schemeRoleRegistry = struct {
 	sync.RWMutex
-	byScheme map[string]schemeRoleNames
-}{byScheme: presetSchemeRoleNames()}
+	byScheme map[string]registeredChannelScheme
+}{byScheme: presetChannelSchemes()}
 
-func presetSchemeRoleNames() map[string]schemeRoleNames {
-	out := make(map[string]schemeRoleNames, len(presetSchemeFixtures))
-	for _, fx := range presetSchemeFixtures {
-		out[fx.schemeID] = schemeRoleNames{Guest: fx.guestRole, User: fx.userRole, Admin: fx.adminRole}
+func presetChannelSchemes() map[string]registeredChannelScheme {
+	out := make(map[string]registeredChannelScheme, len(presetSchemeFixtures))
+	for name, fx := range presetSchemeFixtures {
+		out[fx.schemeID] = channelSchemeFixture(name, fx)
 	}
 	return out
 }
 
-// registerSchemeRoles records the generated role names schemeID resolves to, so a channel later
-// repointed at it resolves that scheme's roles through GetSchemeRolesForChannel. The three presets
-// are registered already; a test creating a custom scheme registers its own.
-func registerSchemeRoles(schemeID, guestRole, userRole, adminRole string) {
-	schemeRoleRegistry.Lock()
-	defer schemeRoleRegistry.Unlock()
-	schemeRoleRegistry.byScheme[schemeID] = schemeRoleNames{Guest: guestRole, User: userRole, Admin: adminRole}
+func channelSchemeFixture(name string, fx presetSchemeFixture) registeredChannelScheme {
+	scheme := &mmmodel.Scheme{
+		Id:                      fx.schemeID,
+		Name:                    name,
+		Scope:                   mmmodel.SchemeScopeChannel,
+		DefaultChannelUserRole:  fx.userRole,
+		DefaultChannelAdminRole: fx.adminRole,
+		DefaultChannelGuestRole: fx.guestRole,
+	}
+	return registeredChannelScheme{
+		Scheme:    scheme,
+		GuestRole: &mmmodel.Role{Id: mmmodel.NewId(), Name: fx.guestRole, Permissions: mmmodel.PermissionIDs(fx.guestPerms)},
+		UserRole:  &mmmodel.Role{Id: mmmodel.NewId(), Name: fx.userRole, Permissions: mmmodel.PermissionIDs(fx.userPerms)},
+		AdminRole: &mmmodel.Role{Id: mmmodel.NewId(), Name: fx.adminRole, Permissions: mmmodel.PermissionIDs(fx.adminPerms)},
+	}
 }
 
-func rolesForScheme(schemeID string) (schemeRoleNames, bool) {
+func registerSchemeRoles(scheme *mmmodel.Scheme, guestRole, userRole, adminRole *mmmodel.Role) {
+	schemeRoleRegistry.Lock()
+	defer schemeRoleRegistry.Unlock()
+	schemeRoleRegistry.byScheme[scheme.Id] = registeredChannelScheme{
+		Scheme: scheme, GuestRole: guestRole, UserRole: userRole, AdminRole: adminRole,
+	}
+}
+
+func rolesForScheme(schemeID string) (registeredChannelScheme, bool) {
 	schemeRoleRegistry.RLock()
 	defer schemeRoleRegistry.RUnlock()
 	roles, ok := schemeRoleRegistry.byScheme[schemeID]
@@ -118,24 +134,12 @@ func PresetUserRoleName(name string) string {
 	return presetSchemeFixtures[name].userRole
 }
 
-// StubPresetSchemes registers .Maybe() stubs on mockAPI resolving each of the three preset space
-// schemes by name, plus their three generated roles by name — the shape
-// getSchemeByName/getRolePermissionsByName resolve through the plugin API in production. Call
-// this once per mockAPI, alongside StubDefaultSpacePermissions.
+// StubPresetSchemes registers .Maybe() stubs resolving each seeded preset by name. Channel-level
+// aggregate reads are served by MustSeedChannelScheme or StubDefaultChannelScheme.
 func StubPresetSchemes(mockAPI *plugintest.API) {
 	for name, fx := range presetSchemeFixtures {
-		scheme := &mmmodel.Scheme{
-			Id:                      fx.schemeID,
-			Name:                    name,
-			Scope:                   mmmodel.SchemeScopeChannel,
-			DefaultChannelUserRole:  fx.userRole,
-			DefaultChannelAdminRole: fx.adminRole,
-			DefaultChannelGuestRole: fx.guestRole,
-		}
-		mockAPI.On("GetSchemeByName", name).Return(scheme, nil).Maybe()
-		stubRole(mockAPI, fx.userRole, mmmodel.PermissionIDs(fx.userPerms))
-		stubRole(mockAPI, fx.adminRole, mmmodel.PermissionIDs(fx.adminPerms))
-		stubRole(mockAPI, fx.guestRole, mmmodel.PermissionIDs(fx.guestPerms))
+		fixture := channelSchemeFixture(name, fx)
+		mockAPI.On("GetSchemeByName", name).Return(fixture.Scheme, nil).Maybe()
 	}
 }
 
@@ -143,10 +147,6 @@ func StubPresetSchemes(mockAPI *plugintest.API) {
 // from it at the RPC boundary; the mock intercepts above that, so any stable value keys the pool
 // the same way a real plugin id would.
 const stubPluginID = "com.mattermost.plugin-docs"
-
-func isPluginChannelSchemeRoleName(name string) bool {
-	return strings.HasPrefix(name, mmmodel.PluginChannelSchemeNamePrefix)
-}
 
 // StubSchemePool simulates core creating plugin channel schemes, with state: one set of three role
 // permission sets resolves to one scheme however many times it is asked for, and that scheme's
@@ -162,7 +162,6 @@ func isPluginChannelSchemeRoleName(name string) bool {
 func StubSchemePool(mockAPI *plugintest.API) *SchemePoolRecorder {
 	var mu sync.Mutex
 	byName := map[string]*mmmodel.Scheme{}
-	rolesByName := map[string]*mmmodel.Role{}
 	recorder := &SchemePoolRecorder{}
 
 	mockAPI.On("GetOrCreatePluginChannelScheme", mock.Anything, mock.Anything, mock.Anything).
@@ -187,30 +186,12 @@ func StubSchemePool(mockAPI *plugintest.API) *SchemePoolRecorder {
 			}
 			byName[name] = scheme
 
-			for roleName, permissions := range map[string][]string{
-				scheme.DefaultChannelUserRole:  user,
-				scheme.DefaultChannelAdminRole: admin,
-				scheme.DefaultChannelGuestRole: guest,
-			} {
-				role := &mmmodel.Role{Id: mmmodel.NewId(), Name: roleName, Permissions: slices.Clone(permissions)}
-				rolesByName[roleName] = role
-			}
-			registerSchemeRoles(scheme.Id, scheme.DefaultChannelGuestRole, scheme.DefaultChannelUserRole, scheme.DefaultChannelAdminRole)
+			userRole := &mmmodel.Role{Id: mmmodel.NewId(), Name: scheme.DefaultChannelUserRole, Permissions: slices.Clone(user)}
+			adminRole := &mmmodel.Role{Id: mmmodel.NewId(), Name: scheme.DefaultChannelAdminRole, Permissions: slices.Clone(admin)}
+			guestRole := &mmmodel.Role{Id: mmmodel.NewId(), Name: scheme.DefaultChannelGuestRole, Permissions: slices.Clone(guest)}
+			registerSchemeRoles(scheme, guestRole, userRole, adminRole)
 			recorder.record(user, admin, guest, scheme.Id)
 			return scheme, nil
-		}).Maybe()
-
-	mockAPI.On("GetRoleByName", mock.MatchedBy(isPluginChannelSchemeRoleName)).
-		Return(func(roleName string) (*mmmodel.Role, *mmmodel.AppError) {
-			mu.Lock()
-			defer mu.Unlock()
-			if role, ok := rolesByName[roleName]; ok {
-				return role, nil
-			}
-			// A role of a scheme this pool never created. Answered as not-found rather than as an
-			// empty role, so a test wiring the wrong scheme fails on the lookup instead of on a
-			// silently permission-less space.
-			return nil, &mmmodel.AppError{Id: "app.role.get_by_name.app_error", StatusCode: http.StatusNotFound}
 		}).Maybe()
 
 	return recorder
@@ -259,17 +240,9 @@ func (r *SchemePoolRecorder) Count() int {
 	return len(r.requests)
 }
 
-// stubRole registers a GetRoleByName stub returning one shared *Role carrying permissions.
-// Returns the shared Role.
-func stubRole(mockAPI *plugintest.API, roleName string, permissions []string) *mmmodel.Role {
-	role := &mmmodel.Role{Id: mmmodel.NewId(), Name: roleName, Permissions: permissions}
-	mockAPI.On("GetRoleByName", roleName).Return(role, nil).Maybe()
-	return role
-}
-
 // MustSeedChannelScheme registers mock stubs so channelID resolves to the named seeded space scheme
 // preset: GetChannelOfType returns a channel pointing at the preset's id, and
-// GetSchemeRolesForChannel resolves whichever scheme that channel currently points at — so a test
+// GetSchemeForChannel resolves whichever scheme that channel currently points at — so a test
 // that repoints the channel sees the new scheme's roles without re-stubbing, the way core resolves
 // them. Production sets this up through the real backing channel's SchemeId when
 // CreateSpace/SetSpaceDefaultPermissions points a space at a scheme.
@@ -301,29 +274,28 @@ func MustSeedChannelScheme(t *testing.T, mockAPI *plugintest.API, channelID, sch
 func stubChannelScheme(mockAPI *plugintest.API, channelID string, channel *mmmodel.Channel) {
 	mockAPI.On("GetChannelOfType", channelID, mmmodel.ChannelTypeSpace).Return(channel, nil).Maybe()
 	mockAPI.On("UpdateChannel", channel).Return(channel, nil).Maybe()
-	mockAPI.On("GetSchemeRolesForChannel", channelID).
-		Return(func(string) (string, string, string, *mmmodel.AppError) {
-			return resolveChannelRoles(channel)
+	mockAPI.On("GetSchemeForChannel", channelID).
+		Return(func(string) (*mmmodel.Scheme, *mmmodel.Role, *mmmodel.Role, *mmmodel.Role, *mmmodel.AppError) {
+			return resolveChannelScheme(channel)
 		}).Maybe()
 }
 
-// resolveChannelRoles mirrors core's GetSchemeRolesForChannel for a stubbed channel: the roles of
-// whichever scheme the channel currently points at. A channel with no scheme resolves to empty role
-// names, matching core. A channel pointing at a scheme no test registered resolves to not-found, so
+// resolveChannelScheme mirrors core's GetSchemeForChannel for a stubbed channel. A channel without
+// a direct scheme, or pointing at one no test registered, resolves to not-found, so
 // a test relying on an unregistered scheme fails visibly rather than reading empty role names as a
 // successful lookup.
-func resolveChannelRoles(channel *mmmodel.Channel) (string, string, string, *mmmodel.AppError) {
+func resolveChannelScheme(channel *mmmodel.Channel) (*mmmodel.Scheme, *mmmodel.Role, *mmmodel.Role, *mmmodel.Role, *mmmodel.AppError) {
 	if channel == nil || channel.SchemeId == nil || *channel.SchemeId == "" {
-		return "", "", "", nil
+		return nil, nil, nil, nil, &mmmodel.AppError{Id: "app.scheme.get.app_error", StatusCode: http.StatusNotFound}
 	}
 	roles, ok := rolesForScheme(*channel.SchemeId)
 	if !ok {
 		// Built as a literal, like the other stand-ins for this core error above: the id belongs to
 		// core, and constructing it through NewAppError would enter the plugin's own translation
 		// file as an untranslated string it never emits.
-		return "", "", "", &mmmodel.AppError{Id: "app.scheme.get.app_error", StatusCode: http.StatusNotFound}
+		return nil, nil, nil, nil, &mmmodel.AppError{Id: "app.scheme.get.app_error", StatusCode: http.StatusNotFound}
 	}
-	return roles.Guest, roles.User, roles.Admin, nil
+	return roles.Scheme, roles.GuestRole, roles.UserRole, roles.AdminRole, nil
 }
 
 // StubDefaultChannelScheme registers .Maybe() catch-all stubs resolving any channel not given its
@@ -353,9 +325,9 @@ func StubDefaultChannelScheme(mockAPI *plugintest.API) {
 		Return(func(channelID string, _ mmmodel.ChannelType) (*mmmodel.Channel, *mmmodel.AppError) {
 			return defaultChannel(channelID), nil
 		}).Maybe()
-	mockAPI.On("GetSchemeRolesForChannel", mock.AnythingOfType("string")).
-		Return(func(channelID string) (string, string, string, *mmmodel.AppError) {
-			return resolveChannelRoles(defaultChannel(channelID))
+	mockAPI.On("GetSchemeForChannel", mock.AnythingOfType("string")).
+		Return(func(channelID string) (*mmmodel.Scheme, *mmmodel.Role, *mmmodel.Role, *mmmodel.Role, *mmmodel.AppError) {
+			return resolveChannelScheme(defaultChannel(channelID))
 		}).Maybe()
 	// A backing-channel metadata sync (any UpdateSpace that writes the channel, e.g. a view_access
 	// flip) calls Channel.Update, and pluginapi's Update copies the returned channel back over the

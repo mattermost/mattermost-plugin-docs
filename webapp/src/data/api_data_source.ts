@@ -3,8 +3,9 @@
 
 import {RestError, apiUrl, listAll, restDelete, restGet, restPatch, restPost} from 'client/rest';
 
-import type {CreatePageInput, CreateSpaceInput, Page, Space, SpaceMember, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
+import type {CreatePageInput, CreateSpaceInput, Page, Space, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
 import type {Draft, DraftPatch, DraftSummary} from 'types/drafts';
+import type {SpaceMember} from 'types/permissions';
 
 import type {DocsDataSource} from './docs_data_source';
 import {asPublishConflict} from './publish_conflict';

@@ -14,9 +14,10 @@ import (
 // Every event is scoped to the space's backing channel. That is narrower than the read set — an
 // open space is also readable by non-members through the team read_public_channel fall-through,
 // and they receive no live updates until they explicitly self-join before writing. Accepted: the
-// same caller can always re-fetch. For the same reason a cross-space move publishes a separate
-// payload to each side — the source channel learns only the source space's half (source space and
-// old parent), the target channel only the target's half — rather than one payload naming both spaces.
+// read endpoints remain the reconciliation path for non-members. For the same reason a cross-space
+// move publishes a separate payload to each side — the source channel learns only the source
+// space's half (source space and old parent), the target channel only the target's half — rather
+// than one payload naming both spaces.
 //
 // Three cases are additionally delivered to the affected user directly, because the channel-scoped
 // broadcast cannot reach them: a removed user has already left the channel; a just-added or

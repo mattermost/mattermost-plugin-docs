@@ -10,7 +10,7 @@ import {DOCS_BASE_URL, DOCS_SWITCHER_LINK_URL} from 'routing/paths';
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
 import {SpaceTypes} from 'store/action_types';
-import {fetchSpace, fetchSpaceMembers, refreshSpaceAfterSelfRemoval, spaceMemberPermissionsChanged} from 'store/actions';
+import {fetchSpace, fetchSpaceMembers, refreshSpaceAfterMemberPermissionsChanged, refreshSpaceAfterSelfRemoval} from 'store/actions';
 import reducer from 'store/reducer';
 
 import DocsRootLazy from 'components/docs_root/docs_root_lazy';
@@ -28,31 +28,21 @@ const DocsHeaderCentre = () => null;
 
 const PAGE_PRESENCE_EVENT = `custom_${manifest.id}_page_presence_updated`;
 
-// The events the server publishes so a client learns its own access to a space changed without a
-// reload. The server sends the permissions one directly to the affected user precisely because
-// nothing else tells them; a space's other members get the add/remove pair on the space's channel.
-//
-// space_updated belongs here for the same reason the per-member events do: it is the only signal
-// that a space's own default permission set or its view access changed, and both move every
-// member's effective permissions without any member row changing.
+// Events that can change the current user's resolved space access.
 const SPACE_ACCESS_EVENTS = [
     `custom_${manifest.id}_space_member_permissions_updated`,
     `custom_${manifest.id}_space_updated`,
 ];
 
-// The one access event that also moves the per-member grant matrix, which is not store state.
+// This event also invalidates the hook-local grant matrix.
 const SPACE_MEMBER_PERMISSIONS_EVENT = `custom_${manifest.id}_space_member_permissions_updated`;
 
-// Not part of the re-resolve set: the space is gone, so there is nothing to re-read, and the
-// server publishes this to a member snapshot taken before the backing channel is archived.
+// A deleted space cannot be re-resolved.
 const SPACE_DELETED_EVENT = `custom_${manifest.id}_space_deleted`;
 
-// Handled apart from the re-resolve set: an addition changes the roster, and the roster is a
-// separate slice that nothing else refetches once the surface has mounted — the same reason the
-// removal below re-reads it.
+// Membership events also invalidate the roster slice.
 const SPACE_MEMBER_ADDED_EVENT = `custom_${manifest.id}_space_member_added`;
 
-// Handled apart from the re-resolve set: see the handler for why a removal cannot be one.
 const SPACE_MEMBER_REMOVED_EVENT = `custom_${manifest.id}_space_member_removed`;
 
 type SpaceAccessEvent = {space_id: string; user_id?: string};
@@ -80,29 +70,23 @@ export default class Plugin {
             publishPagePresence(msg.data);
         });
 
-        // Re-resolve the space rather than patching a field from the payload: the payload names
-        // which space changed, not what the caller may now do, and the answer to that is the
-        // server's to give. fetchSpace refreshes the same entry every permission-gated affordance
-        // reads — the caller's own tier, the space's default set, its view access — so one
-        // dispatch settles them all. The grant matrix is the exception: it is not store state, so
-        // the event that moves it additionally bumps the revision its surface watches.
+        // Refresh shared access before invalidating grants so a revoked manage tier is visible
+        // before the settings hook decides whether it may reload the matrix.
         for (const event of SPACE_ACCESS_EVENTS) {
             registry.registerWebSocketEventHandler<SpaceAccessEvent>(event, (msg) => {
                 const spaceId = msg.data?.space_id;
                 if (!spaceId) {
                     return;
                 }
-                store.dispatch(fetchSpace(spaceId) as never);
                 if (event === SPACE_MEMBER_PERMISSIONS_EVENT) {
-                    store.dispatch(spaceMemberPermissionsChanged(spaceId));
+                    store.dispatch(refreshSpaceAfterMemberPermissionsChanged(spaceId) as never);
+                    return;
                 }
+                store.dispatch(fetchSpace(spaceId) as never);
             });
         }
 
-        // A delete cascades to every page in the space but publishes only this one event, so the
-        // client has to treat it as an invalidation of the whole tree — which is what the reducer
-        // does with it. The deleting client has already pruned the same space; a repeat prunes
-        // nothing further.
+        // One delete event invalidates the space and its page subtree.
         registry.registerWebSocketEventHandler<SpaceAccessEvent>(SPACE_DELETED_EVENT, (msg) => {
             const spaceId = msg.data?.space_id;
             if (!spaceId) {
@@ -120,13 +104,7 @@ export default class Plugin {
             store.dispatch(fetchSpaceMembers(spaceId) as never);
         });
 
-        // The caller's own removal goes through its own re-resolve. A plain fetchSpace cannot serve
-        // it — that turns a denial into undefined without dispatching, leaving a private space the
-        // caller can no longer read on screen — but neither can evicting on the event alone, since
-        // an open space stays readable through the team fall-through and would vanish from a caller
-        // who still has access to it. refreshSpaceAfterSelfRemoval keeps the two apart, evicting
-        // only on the server's refusal. Another member's removal changes the roster, so it re-reads
-        // that as well as the space, exactly as the addition above does.
+        // Self-removal may leave an open space readable; evict only after a definitive denial.
         registry.registerWebSocketEventHandler<SpaceAccessEvent>(SPACE_MEMBER_REMOVED_EVENT, (msg) => {
             const spaceId = msg.data?.space_id;
             if (!spaceId) {

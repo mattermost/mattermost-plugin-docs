@@ -675,30 +675,30 @@ test.describe('space permissions', () => {
      * team scheme, so this fails if the UI substitutes membership, admin_space, or delete_space for
      * the manage tier.
      */
-    test('a team manager has only the manage-space UI tier', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
+    test('a team administrator with manage_space has only the manage-space UI tier', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
         await loginAs(page, server.adminUsername, server.adminPassword);
-        const manager = await createUser(page, 'docs-perms-manager');
-        const candidate = await createUser(page, 'docs-perms-manager-add');
-        await addUserToTeam(page, teamId, manager.id);
+        const manageOnlyAdmin = await createUser(page, 'docs-perms-manage-only');
+        const candidate = await createUser(page, 'docs-perms-manage-add');
+        await addUserToTeam(page, teamId, manageOnlyAdmin.id);
         await addUserToTeam(page, teamId, candidate.id);
         await setTeamAdminSpaceTiers(page, teamId, {manage: true, delete: false});
-        await promoteToTeamAdmin(page, teamId, manager.id);
+        await promoteToTeamAdmin(page, teamId, manageOnlyAdmin.id);
 
         const context = await newContext(browser, {baseURL: server.baseURL});
         try {
-            const managerPage = await context.newPage();
-            await loginAs(managerPage, manager.username, manager.password);
-            const sidebar = new SpacesSidebarPage(managerPage);
-            const space = new SpacePage(managerPage);
-            const settings = new SpaceSettingsModalPage(managerPage);
+            const manageOnlyPage = await context.newPage();
+            await loginAs(manageOnlyPage, manageOnlyAdmin.username, manageOnlyAdmin.password);
+            const sidebar = new SpacesSidebarPage(manageOnlyPage);
+            const space = new SpacePage(manageOnlyPage);
+            const settings = new SpaceSettingsModalPage(manageOnlyPage);
             await sidebar.goto(teamName);
             await sidebar.openSpace(spaceTitle);
 
             // * The two team tiers are independent in the header.
             await settings.openSpaceHeaderMenu(spaceTitle);
-            await expect(managerPage.getByRole('menuitem', {name: 'Space settings'})).toBeVisible();
-            await expect(managerPage.getByRole('menuitem', {name: 'Archive space'})).toBeHidden();
-            await managerPage.keyboard.press('Escape');
+            await expect(manageOnlyPage.getByRole('menuitem', {name: 'Space settings'})).toBeVisible();
+            await expect(manageOnlyPage.getByRole('menuitem', {name: 'Archive space'})).toBeHidden();
+            await manageOnlyPage.keyboard.press('Escape');
 
             // # Rename is a manage-tier operation and must complete.
             const renamed = `Managed ${uniqueSuffix()}`;

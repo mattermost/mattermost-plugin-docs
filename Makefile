@@ -386,7 +386,7 @@ endif
 
 ## Runs the Playwright E2E suite against a throwaway Mattermost container. Requires Docker.
 ##
-## Set MM_E2E_SPACE_PERMISSIONS=true to add the space-permission specs; they also need MM_IMAGE (a
+## Set MM_E2E_SPACE_PERMISSIONS=true to select the space-permission specs; they also need MM_IMAGE (a
 ## core image carrying the paired branch's work) and a license in MM_LICENSE/MM_LICENSE_FILE, and
 ## the suite names either as its own failure when unset. See e2e-tests/playwright/README.md.
 .PHONY: test-e2e

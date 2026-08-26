@@ -12,6 +12,7 @@ import {FormattedMessage, useIntl} from 'react-intl';
 import GlobeIcon from '@mattermost/compass-icons/components/globe';
 import LockOutlineIcon from '@mattermost/compass-icons/components/lock-outline';
 
+import {getLicense} from 'mattermost-redux/selectors/entities/general';
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
 import PublicPrivateSelector from 'components/form_controls/public_private_selector';
@@ -19,58 +20,75 @@ import {AddMembersField, MemberList} from 'components/space_members';
 import type {MemberListActions} from 'components/space_members';
 
 import type {Space} from 'types/docs';
+import type {Permission} from 'types/permissions';
 import {DEFAULT_PERMISSION_ORDER, MEMBER_PERMISSION_ORDER, Permissions} from 'types/permissions';
 
 import PermissionToggles from './permission_toggles';
 import {Section} from './space_settings_modal';
 import styles from './space_settings_modal.module.scss';
 
-/**
- * Space Settings → Permissions.
- *
- * The people section is the shared member core; around it sit the space's own two
- * exposure controls — who can find the space (view access) and what its members can do
- * (the default permission set). Both are admin-only and both apply immediately, as
- * membership changes do: each is already committed when its request returns, so
- * SaveChangesBar would imply a discard that cannot happen.
- *
- * External sharing remains scaffolding; there is no server surface for it yet.
- */
+type DefaultPermissionPreset = {
+    id: 'contribute' | 'comment' | 'read_only';
+    permissions: readonly Permission[];
+};
+
+// Core seeds these three schemes and resolves them without creating a licensed custom scheme.
+// Every other default-permission set goes through the custom-scheme pool.
+const DEFAULT_PERMISSION_PRESETS: readonly DefaultPermissionPreset[] = [
+    {
+        id: 'contribute',
+        permissions: [Permissions.CREATE_PAGE, Permissions.COMMENT_PAGE, Permissions.EDIT_PAGE, Permissions.DELETE_OWN_PAGE],
+    },
+    {
+        id: 'comment',
+        permissions: [Permissions.COMMENT_PAGE],
+    },
+    {
+        id: 'read_only',
+        permissions: [],
+    },
+];
+
+const samePermissionSet = (left: readonly Permission[], right: readonly Permission[]) =>
+    left.length === right.length && left.every((permission) => right.includes(permission));
+
+/** Immediate-write access, default-permission, and membership settings. */
 const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) => {
     const {formatMessage} = useIntl();
     const currentUserId = useAppSelector(getCurrentUserId);
+    const license = useAppSelector(getLicense);
     const members = useSpaceMemberProfiles(space.id);
     const {addMembers, removeMember, leave} = useManageSpaceMembers(space);
     const permissions = useSpacePermissions(space);
+    const customDefaultsAvailable = license.CustomPermissionsSchemes === 'true' || license.SkuShortName === 'professional';
 
-    // A non-admin, and anyone whose permission state has not loaded, sees the controls
-    // but cannot move them: rendering them read-only says what the space is configured
-    // to allow, which is worth showing even when you may not change it.
-    //
-    // busy is included so a save in flight locks the access control too, as it already does
-    // the permission toggles: both mutations send the same optimistic-lock baseline, so a
-    // second click before the first returns would race on a stale update_at.
-    // Two locks, because the server gates these controls at two different tiers. The space-wide
-    // knobs (view_access, the default permission set) admit a sysadmin or a space admin;
-    // the member roster additionally admits a team manage_space holder. Locking the roster on
-    // canAdminister would hide it from a team admin the roster routes would have served.
+    // Exposure and roster writes have different authority tiers. Disable both while the hook
+    // reports a write in flight to avoid overlapping reconciliation from this surface.
     const adminLocked = !permissions.canAdminister || permissions.loading || permissions.busy;
     const rosterLocked = !permissions.canManageMembers || permissions.loading || permissions.busy;
 
     const memberIds = useMemo(() => members.map((member) => member.id), [members]);
+    const defaultPermissionPresets = useMemo(() => [
+        {
+            ...DEFAULT_PERMISSION_PRESETS[0],
+            label: formatMessage({id: 'docs.spaceSettings.permissions.preset.contribute', defaultMessage: 'Contribute'}),
+            description: formatMessage({id: 'docs.spaceSettings.permissions.preset.contributeDescription', defaultMessage: 'Create, comment on, edit, and delete their own pages'}),
+        },
+        {
+            ...DEFAULT_PERMISSION_PRESETS[1],
+            label: formatMessage({id: 'docs.spaceSettings.permissions.preset.comment', defaultMessage: 'Comment'}),
+            description: formatMessage({id: 'docs.spaceSettings.permissions.preset.commentDescription', defaultMessage: 'View and comment on pages'}),
+        },
+        {
+            ...DEFAULT_PERMISSION_PRESETS[2],
+            label: formatMessage({id: 'docs.spaceSettings.permissions.preset.readOnly', defaultMessage: 'Read only'}),
+            description: formatMessage({id: 'docs.spaceSettings.permissions.preset.readOnlyDescription', defaultMessage: 'View pages'}),
+        },
+    ], [formatMessage]);
+    const selectedDefaultPreset = defaultPermissionPresets.find((preset) => samePermissionSet(preset.permissions, permissions.defaults));
 
-    /**
-     * The per-member half of the permission matrix: a row of toggles under each person,
-     * carrying what they hold *in addition* to the space default.
-     *
-     * Bound to granted_permissions, not the effective set, because that is what the write
-     * endpoint replaces — binding to effective would resend the space default as a
-     * per-member grant and pin it against a later default change.
-     *
-     * A guest's row is rendered locked rather than hidden: the server refuses to grant a
-     * guest anything (app.space.member.guest_not_assignable), and showing why is more
-     * useful than a row that silently offers nothing.
-     */
+    // Bind toggles to grants, not effective permissions, or defaults would become pinned as
+    // per-member overrides. Guest grants are invalid and remain visible but locked.
     const renderMemberPermissions = (profile: MemberProfile) => {
         const record = permissions.members.get(profile.id);
         if (!record) {
@@ -97,9 +115,7 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
             >
                 {record.auto_joined && (
 
-                    // Surfaced because privatizing a space does not remove members: an admin
-                    // pruning access needs to tell the people who let themselves in by writing to
-                    // the space while it was public from the ones who were deliberately added.
+                    // Surface the provenance marker recorded by the server; its cleanup is best-effort.
                     <span className={styles.autoJoinedNote}>
                         <FormattedMessage
                             id='docs.spaceSettings.permissions.autoJoined'
@@ -128,8 +144,7 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
         );
     };
 
-    // Leaving destroys your access to what is behind this tab, so the settings
-    // modal goes too (mirrors ShareSpaceModal's onLeave).
+    // Close settings after a successful self-removal.
     const actions: MemberListActions = {
         onRemove: removeMember,
         onLeave: async () => {
@@ -140,13 +155,9 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
         disabled: rosterLocked,
     };
 
-    // The option values are the server's own view_access vocabulary ('open'/'private')
-    // rather than the create-space flow's 'public', so no mapping sits between this
-    // control and the request it makes. The label stays "Public", which is what the
-    // setting means to a reader.
+    // Values use the server's view_access vocabulary; "Public" remains the user-facing label.
     const accessOptions = useMemo(() => {
-        // Separate calls rather than one formatMessage over a conditional descriptor:
-        // extraction reads the literal argument, so a conditional would produce no key.
+        // Keep descriptors literal for message extraction.
         const adminOnly = formatMessage({
             id: 'docs.spaceSettings.permissions.adminOnly',
             defaultMessage: 'Only a space administrator can change this',
@@ -156,11 +167,7 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
             defaultMessage: "Couldn't load this space's permissions. Close and reopen settings to try again.",
         });
 
-        // A read still in flight has nothing to explain, and a read that failed is not an
-        // answer about the caller's own role — only a resolved non-admin is told they are one.
-        // A save in flight is the same case as a read: adminLocked is true for the duration, but
-        // the lock is transient and says nothing about the caller's role, so telling an admin
-        // mid-save that they are not one would be false.
+        // Only a resolved authority denial uses the admin-only explanation.
         let lockedReason;
         if (permissions.loadFailed) {
             lockedReason = readFailed;
@@ -182,8 +189,7 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                 icon: <LockOutlineIcon size={20}/>,
                 title: formatMessage({id: 'docs.spaceSettings.permissions.private.title', defaultMessage: 'Private'}),
 
-                // An invitation is an individual grant and survives. A membership created only so
-                // somebody could author under the open-team grant is pruned with that grant.
+                // Self-join markers select removals; deliberate membership changes normally clear them.
                 description: formatMessage({id: 'docs.spaceSettings.permissions.private.description', defaultMessage: 'Only invited members can view. People who joined by authoring while public lose access.'}),
                 disabled: adminLocked,
                 disabledReason: lockedReason,
@@ -206,8 +212,7 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                     options={accessOptions}
                     value={permissions.viewAccess}
                     onChange={(value) => {
-                        // Rejections are already reported by the hook; nothing here can add to
-                        // them, and an unhandled rejection would surface as a console error.
+                        // The hook reports the rejection; consume it here to avoid an unhandled promise.
                         permissions.setViewAccess(value as typeof permissions.viewAccess).catch(() => {});
                     }}
                 />
@@ -221,22 +226,82 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                     />
                 )}
             >
-                <PermissionToggles
-                    options={DEFAULT_PERMISSION_ORDER}
-                    selected={permissions.defaults}
-                    disabled={adminLocked || permissions.busy}
-                    busy={permissions.busy}
-                    idPrefix='space-default'
-                    legend={(
-                        <FormattedMessage
-                            id='docs.spaceSettings.permissions.permissionsLegend'
-                            defaultMessage='Everyone with access to this space can:'
-                        />
-                    )}
-                    onChange={(next) => {
-                        permissions.setDefaults(next).catch(() => {});
-                    }}
-                />
+                {customDefaultsAvailable ? (
+                    <PermissionToggles
+                        options={DEFAULT_PERMISSION_ORDER}
+                        selected={permissions.defaults}
+                        disabled={adminLocked || permissions.busy}
+                        busy={permissions.busy}
+                        idPrefix='space-default'
+                        legend={(
+                            <FormattedMessage
+                                id='docs.spaceSettings.permissions.permissionsLegend'
+                                defaultMessage='Everyone with access to this space can:'
+                            />
+                        )}
+                        onChange={(next) => {
+                            permissions.setDefaults(next).catch(() => {});
+                        }}
+                    />
+                ) : (
+                    <>
+                        <fieldset
+                            className={styles.presets}
+                            aria-busy={permissions.busy}
+                        >
+                            <legend className={styles.togglesLegend}>
+                                <FormattedMessage
+                                    id='docs.spaceSettings.permissions.permissionsLegend'
+                                    defaultMessage='Everyone with access to this space can:'
+                                />
+                            </legend>
+                            {defaultPermissionPresets.map((preset) => {
+                                const id = `space-default-preset-${preset.id}`;
+                                return (
+                                    <div
+                                        key={preset.id}
+                                        className={styles.preset}
+                                    >
+                                        <input
+                                            id={id}
+                                            type='radio'
+                                            name={`space-default-preset-${space.id}`}
+                                            checked={selectedDefaultPreset?.id === preset.id}
+                                            disabled={adminLocked || permissions.busy}
+                                            aria-label={preset.label}
+                                            aria-describedby={`${id}-description`}
+                                            onChange={() => {
+                                                permissions.setDefaults([...preset.permissions]).catch(() => {});
+                                            }}
+                                        />
+                                        <label htmlFor={id}>
+                                            <span className={styles.presetTitle}>{preset.label}</span>
+                                            <span
+                                                id={`${id}-description`}
+                                                className={styles.presetDescription}
+                                            >
+                                                {preset.description}
+                                            </span>
+                                        </label>
+                                    </div>
+                                );
+                            })}
+                        </fieldset>
+                        <p className={styles.helper}>
+                            {selectedDefaultPreset ? (
+                                <FormattedMessage
+                                    id='docs.spaceSettings.permissions.preset.licenseRequired'
+                                    defaultMessage='Custom permission combinations require a Professional or Enterprise license.'
+                                />
+                            ) : (
+                                <FormattedMessage
+                                    id='docs.spaceSettings.permissions.preset.customCurrent'
+                                    defaultMessage='This space currently uses a custom permission combination. Choose a preset to replace it; custom combinations require a Professional or Enterprise license.'
+                                />
+                            )}
+                        </p>
+                    </>
+                )}
             </Section>
 
             <Section
@@ -257,6 +322,16 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                     avatarSize='sm'
                     spaceTitle={space.title}
                     actions={actions}
+                    roleForMember={(profile) => {
+                        const record = permissions.members.get(profile.id);
+                        if (!record) {
+                            return undefined;
+                        }
+                        if (record.is_guest) {
+                            return 'guest';
+                        }
+                        return record.is_admin ? 'admin' : 'member';
+                    }}
                     renderBelowMember={renderMemberPermissions}
                 />
             </Section>

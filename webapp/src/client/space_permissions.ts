@@ -29,7 +29,7 @@ export const listAllSpaceMembers = (spaceId: string): Promise<SpaceMember[]> =>
 
 // joinSpace joins the caller to an open space they can read but are not yet a member of, and
 // answers the same wrapper the single-space read does. Idempotent: a caller who is already a member
-// is answered with their current access rather than an error, so it is safe to call whenever the
+// is answered with server-resolved access rather than an error, so it is safe to call whenever the
 // store's answer might be stale.
 export const joinSpace = (spaceId: string): Promise<SpaceAccess> =>
     restPost<SpaceAccess>(`${apiUrl()}/spaces/${seg(spaceId)}/members/me`, {});

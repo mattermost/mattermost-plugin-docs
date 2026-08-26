@@ -815,9 +815,8 @@ func TestServiceBuildSpaceWithAccess_PlainMemberHasNoManageTier(t *testing.T) {
 
 // TestServiceSetSpaceDefaultPermissions_ResponseReflectsRequestedNotStaleReadback covers the
 // projection guard: the response is built from the permission set written under the lock, not
-// from a fresh read of the roles that write just committed. GetRoleByName here always answers with
-// a role frozen on a pre-update permission set, standing in for a lagging-replica read of the
-// caller's own committed change; the response must still report the requested set.
+// from a fresh read of the roles that write just committed. The response must report the requested
+// set even though the channel-scheme fixture still carries the pre-update permissions.
 func TestServiceSetSpaceDefaultPermissions_ResponseReflectsRequestedNotStaleReadback(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	sysadminID := mmmodel.NewId()
@@ -830,13 +829,6 @@ func TestServiceSetSpaceDefaultPermissions_ResponseReflectsRequestedNotStaleRead
 	channelID := mmmodel.NewId()
 	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
 
-	// Registered ahead of the pool stub so it wins the match: every role read answers with a
-	// permission set that is not the one requested below, standing in for a lagging-replica read
-	// of the caller's own committed change.
-	mockAPI.On("GetRoleByName", mock.AnythingOfType("string")).
-		Return(func(name string) (*mmmodel.Role, *mmmodel.AppError) {
-			return &mmmodel.Role{Id: mmmodel.NewId(), Name: name, Permissions: []string{mmmodel.PermissionCommentPage.Id}}, nil
-		})
 	testutil.StubSchemePool(mockAPI)
 
 	space := mustCreateSpace(t, h.store, channelID)
@@ -1013,6 +1005,114 @@ func TestServiceUpdateSpace_ViewAccessGuards(t *testing.T) {
 	})
 }
 
+// TestServiceUpdateSpace_PrivateFlipPrePrunes pins the open-to-private ordering and failure
+// contract. Auto-joined backing memberships are removed while the persisted space is still open;
+// only a complete prune permits the privacy update to commit.
+func TestServiceUpdateSpace_PrivateFlipPrePrunes(t *testing.T) {
+	privatePatch := func() *model.SpacePatch {
+		return &model.SpacePatch{ViewAccess: mmmodel.NewPointer(model.ViewAccessPrivate)}
+	}
+	setup := func(t *testing.T, mockAPI *plugintest.API) (*testHarness, *model.Space, string, string) {
+		t.Helper()
+		adminID := mmmodel.NewId()
+		memberID := mmmodel.NewId()
+		channelID := mmmodel.NewId()
+		h := openTestServiceWithAPI(t, mockAPI)
+		testutil.MustAddChannelAdmin(t, h.db, channelID, adminID)
+		space := mustCreateSpace(t, h.store, channelID)
+		require.NoError(t, h.store.MarkAutoJoined(space.Id, memberID))
+		return h, space, adminID, memberID
+	}
+
+	t.Run("prunes before committing private", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		h, space, adminID, memberID := setup(t, mockAPI)
+		mockAPI.On("DeleteChannelMember", space.ChannelId, memberID).
+			Run(func(mock.Arguments) {
+				live, err := h.store.GetSpace(space.Id, false)
+				require.NoError(t, err)
+				require.Equal(t, model.ViewAccessOpen, live.ViewAccess,
+					"the backing membership must be removed before view_access commits")
+			}).
+			Return(nil).
+			Once()
+		mockAPI.On("GetChannelOfType", space.ChannelId, mmmodel.ChannelTypeSpace).
+			Return((*mmmodel.Channel)(nil), nil).
+			Once()
+
+		updated, appErr := h.svc.UpdateSpace(space, privatePatch(), new(space.UpdateAt), false, adminID)
+		require.Nil(t, appErr)
+		require.Equal(t, model.ViewAccessPrivate, updated.ViewAccess)
+		marked, err := h.store.AutoJoinedIDs(space.Id)
+		require.NoError(t, err)
+		require.Empty(t, marked)
+	})
+
+	t.Run("a deletion failure leaves the space open", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		h, space, adminID, memberID := setup(t, mockAPI)
+		deleteErr := mmmodel.NewAppError("DeleteChannelMember", "test.delete.failed", nil, "", http.StatusInternalServerError)
+		mockAPI.On("DeleteChannelMember", space.ChannelId, memberID).Return(deleteErr).Once()
+
+		updated, appErr := h.svc.UpdateSpace(space, privatePatch(), new(space.UpdateAt), false, adminID)
+		require.Nil(t, updated)
+		require.NotNil(t, appErr)
+		require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
+		require.Equal(t, "app.space.prune_self_joined.failed.app_error", appErr.Id)
+
+		live, err := h.store.GetSpace(space.Id, false)
+		require.NoError(t, err)
+		require.Equal(t, model.ViewAccessOpen, live.ViewAccess)
+		require.Equal(t, space.UpdateAt, live.UpdateAt)
+		marked, err := h.store.AutoJoinedIDs(space.Id)
+		require.NoError(t, err)
+		require.Equal(t, []string{memberID}, marked,
+			"the failed member stays marked so a retry selects it again")
+		mockAPI.AssertNotCalled(t, "GetChannelOfType", mock.Anything, mock.Anything)
+		mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "space_updated", mock.Anything, mock.Anything)
+	})
+
+	t.Run("an already absent membership does not block the flip", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		h, space, adminID, memberID := setup(t, mockAPI)
+		notFound := mmmodel.NewAppError("DeleteChannelMember", "test.member.not_found", nil, "", http.StatusNotFound).
+			Wrap(pluginapi.ErrNotFound)
+		mockAPI.On("DeleteChannelMember", space.ChannelId, memberID).Return(notFound).Once()
+		mockAPI.On("GetChannelOfType", space.ChannelId, mmmodel.ChannelTypeSpace).
+			Return((*mmmodel.Channel)(nil), nil).
+			Once()
+
+		updated, appErr := h.svc.UpdateSpace(space, privatePatch(), new(space.UpdateAt), false, adminID)
+		require.Nil(t, appErr)
+		require.Equal(t, model.ViewAccessPrivate, updated.ViewAccess)
+		marked, err := h.store.AutoJoinedIDs(space.Id)
+		require.NoError(t, err)
+		require.Empty(t, marked, "a stale marker is cleared when core reports the membership absent")
+	})
+
+	t.Run("a stale baseline prunes nobody", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		h, space, adminID, memberID := setup(t, mockAPI)
+		fresh, err := h.store.UpdateSpace(space.Id,
+			&model.SpacePatch{Title: mmmodel.NewPointer("concurrent title")}, space.UpdateAt, false)
+		require.NoError(t, err)
+
+		updated, appErr := h.svc.UpdateSpace(space, privatePatch(), new(space.UpdateAt), false, adminID)
+		require.Nil(t, updated)
+		require.NotNil(t, appErr)
+		require.Equal(t, http.StatusConflict, appErr.StatusCode)
+		mockAPI.AssertNotCalled(t, "DeleteChannelMember", space.ChannelId, memberID)
+
+		live, err := h.store.GetSpace(space.Id, false)
+		require.NoError(t, err)
+		require.Equal(t, model.ViewAccessOpen, live.ViewAccess)
+		require.Equal(t, fresh.UpdateAt, live.UpdateAt)
+		marked, err := h.store.AutoJoinedIDs(space.Id)
+		require.NoError(t, err)
+		require.Equal(t, []string{memberID}, marked)
+	})
+}
+
 // TestGetSpaceWithDeleted verifies that GetSpaceWithDeleted returns both live and soft-deleted
 // spaces, unlike GetSpace which filters out deleted rows.
 func TestGetSpaceWithDeleted(t *testing.T) {
@@ -1117,11 +1217,9 @@ func TestServiceGetSpaceMembers_ListFails(t *testing.T) {
 	require.Equal(t, "app.space.get_members.failed.app_error", appErr.Id)
 }
 
-// TestServiceSpaceDefaultPermissions_ChannelWithoutScheme covers schemeRolesFromChannel's
-// fail-closed branch: a backing channel carrying no scheme (a space that lost its scheme) resolves
-// to not-found rather than falling through to the team scheme's channel roles, which grant no page
-// permissions and would read as a space whose defaults confer nothing. The lookup must
-// short-circuit before reaching GetSchemeRolesForChannel.
+// TestServiceSpaceDefaultPermissions_ChannelWithoutScheme covers the aggregate API's fail-closed
+// contract: a backing channel carrying no direct scheme resolves to not-found rather than falling
+// through to a team scheme.
 //
 // Reached through the roster's permission projection, which resolves the space's default set
 // without a read gate in front of it.
@@ -1130,13 +1228,11 @@ func TestServiceSpaceDefaultPermissions_ChannelWithoutScheme(t *testing.T) {
 	h := openTestServiceWithAPI(t, mockAPI)
 
 	channelID := mmmodel.NewId()
-	// The mock never sets a SchemeId, standing in for a space whose backing channel carries none.
-	mockAPI.On("GetChannelOfType", channelID, mmmodel.ChannelTypeSpace).
-		Return(&mmmodel.Channel{Id: channelID, Type: mmmodel.ChannelTypeSpace}, nil)
+	mockAPI.On("GetSchemeForChannel", channelID).
+		Return(nil, nil, nil, nil, &mmmodel.AppError{StatusCode: http.StatusNotFound})
 
 	_, _, appErr := h.svc.GetSpaceMembers(&model.Space{Id: mmmodel.NewId(), ChannelId: channelID}, 0, 60, true)
 	require.NotNil(t, appErr)
-	mockAPI.AssertNotCalled(t, "GetSchemeRolesForChannel", mock.Anything)
 }
 
 // TestServiceAddSpaceMember_AddFails verifies that a failed channel-member add propagates as a 500

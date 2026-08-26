@@ -160,8 +160,8 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 		defaultPermissions = defaults
 
 		if clearErr := s.store.ClearAutoJoined(space.Id, userID); clearErr != nil {
-			// Best-effort, matching the clear in RemoveSpaceMember: the marker only labels how a
-			// member got here, so a stale one degrades that label and grants nothing.
+			// Do not fail the core membership operation for provenance cleanup. A stale marker can
+			// affect a later private-space prune, so keep the warning visible.
 			s.log.Warn("failed to clear auto-join provenance marker", "space_id", space.Id, "user_id", userID, "err", clearErr)
 		}
 		added, addErr := s.client.Channel.AddMember(space.ChannelId, userID)
@@ -183,27 +183,11 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 	return toSpaceMember(member, defaultPermissions, false), nil
 }
 
-// PruneSelfJoinedMembers removes the members who joined space themselves through its open view
-// access, leaving every deliberately added member in place. Returns the ids actually removed.
-//
-// This is what makes "make this space private" mean something for the people already inside it.
-// Space access is a set of grants: view_access=open is a standing grant to the whole team, and a
-// membership created under it is held on the strength of that grant alone. Withdrawing the grant
-// therefore withdraws those memberships, while an invitation — a grant made to one person — is
-// untouched. Without this the flip changes who may discover the space and nobody who is already in
-// it, which is the opposite of what an administrator making a space private is asking for.
-//
-// The provenance markers are what separate the two, and they are only ever written by JoinOpenSpace
-// and cleared by every deliberate act on a membership (an admin add, a permission grant, a
-// removal). So a marked member has by construction never been administered, which is also why this
-// cannot strand the space without an admin: granting admin clears the marker, and the creator is
-// never marked.
-//
-// Runs after the flip has committed and outside the space membership lock, because it makes one
-// plugin call per member and the lock holds a dedicated connection for its whole duration. That is
-// safe in the direction that matters: a JoinOpenSpace already waiting on the lock re-reads the
-// space under it, finds it private, and aborts — so no membership this misses can be created after
-// the flip.
+// PruneSelfJoinedMembers removes memberships currently carrying auto-join provenance before an
+// open-to-private transition. Deliberate membership changes normally clear that marker. Callers
+// hold the space membership lock, so a genuine removal failure aborts the transition and leaves the
+// failed marker in place for a retry. Successfully removed memberships stay removed even if a later
+// removal fails; they are safe while the space remains open and their users can explicitly rejoin.
 func (s *Service) PruneSelfJoinedMembers(space *model.Space) ([]string, *mmmodel.AppError) {
 	if space == nil {
 		return nil, mmmodel.NewAppError("PruneSelfJoinedMembers", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -220,13 +204,9 @@ func (s *Service) PruneSelfJoinedMembers(space *model.Space) ([]string, *mmmodel
 	for _, userID := range selfJoined {
 		if delErr := s.client.Channel.DeleteMember(space.ChannelId, userID); delErr != nil {
 			if !errors.Is(delErr, pluginapi.ErrNotFound) {
-				// Logged rather than returned, and the loop continues: the remaining members are
-				// each their own withdrawal, so abandoning the walk would leave more access in place
-				// than finishing it. Error level, because what is left behind is a member who keeps
-				// write access to a space its administrator has made private.
-				s.log.Error("failed to remove a self-joined member while making the space private; they retain access",
+				s.log.Error("failed to remove a self-joined member; leaving the space open",
 					"space_id", space.Id, "user_id", userID, "err", delErr)
-				continue
+				return removed, mmmodel.NewAppError("PruneSelfJoinedMembers", "app.space.prune_self_joined.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(delErr)
 			}
 			// Already gone. The marker is stale and still needs clearing below.
 		}
@@ -339,10 +319,12 @@ func (s *Service) SetSpaceMemberPermissions(space *model.Space, targetUserID str
 		if newSchemeAdmin {
 			roles = roles + " " + resolvedRoles.AdminRoleName
 		}
-		// A deliberate admin act on this member's permissions supersedes whatever brought them into
-		// the space, so any auto-join provenance marker is now stale. Best-effort, as in
-		// AddSpaceMember: the marker only labels how a member got here.
+		// A deliberate permission change makes auto-join provenance stale. Provenance cleanup and
+		// the core role update are not one transaction; cleanup failure is logged without blocking
+		// the role mutation.
 		if clearErr := s.store.ClearAutoJoined(space.Id, targetUserID); clearErr != nil {
+			// A stale marker can affect a later private-space prune, but must not block the
+			// core role update.
 			s.log.Warn("failed to clear auto-join provenance marker", "space_id", space.Id, "user_id", targetUserID, "err", clearErr)
 		}
 		member, updErr := s.client.Channel.UpdateChannelMemberRoles(space.ChannelId, targetUserID, roles)
@@ -356,11 +338,9 @@ func (s *Service) SetSpaceMemberPermissions(space *model.Space, targetUserID str
 		return nil, membershipLockAppError("SetSpaceMemberPermissions", lockErr)
 	}
 
-	// The response is projected from the member the role update returned and the default
-	// permissions resolved inside the same lock, before the write committed. Re-reading either
-	// afterward would go to a replica, which on a lagging one still carries the pre-update state and
-	// would report the caller's own committed change as not having taken effect — and would leave a
-	// fallible lookup after the commit, able to turn a successful write into a reported failure.
+	// Project from the member returned by the role update and the defaults resolved under the same
+	// lock. A post-write replica read could return pre-update state or turn a committed write into a
+	// reported failure.
 	result := toSpaceMember(updatedMember, defaultPermissions, false)
 
 	payload := map[string]any{"space_id": space.Id, "user_id": targetUserID}
@@ -445,8 +425,7 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 			return mmmodel.NewAppError("RemoveSpaceMember", "app.space.remove_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 		}
 		if clearErr := s.store.ClearAutoJoined(space.Id, userID); clearErr != nil {
-			// Best-effort: the membership is already gone, which is what any later check acts on; a
-			// stale marker only degrades the provenance signal a future membership review reads.
+			// The membership is already gone; provenance cleanup must not reverse that success.
 			s.log.Warn("failed to clear auto-join provenance marker", "space_id", space.Id, "user_id", userID, "err", clearErr)
 		}
 		return nil

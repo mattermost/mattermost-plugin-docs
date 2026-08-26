@@ -14,7 +14,7 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
-// grantablePermissions is the full grant vocabulary (the five atomic per-page permissions plus
+// grantablePermissions is the full grant vocabulary (the five page capabilities plus
 // admin_space), used to enumerate every subset for the round-trip test below.
 var grantablePermissions = []string{
 	mmmodel.PermissionCreatePage.Id,
@@ -27,7 +27,7 @@ var grantablePermissions = []string{
 
 // TestRolesForPermissions_PermissionsFromMember_RoundTrip verifies that every subset of the
 // grantable permissions is unchanged after RolesForPermissions -> (core persistence, which
-// drops the base scheme-user token and keeps only the atomic role names) -> PermissionsFromMember.
+// drops the base scheme-user token and keeps only the capability role names) -> PermissionsFromMember.
 func TestRolesForPermissions_PermissionsFromMember_RoundTrip(t *testing.T) {
 	const schemeUserRole = "generated_scheme_user_role"
 
@@ -43,7 +43,7 @@ func TestRolesForPermissions_PermissionsFromMember_RoundTrip(t *testing.T) {
 		explicitRoles, schemeAdmin := model.RolesForPermissions(permissions, schemeUserRole)
 
 		// Simulate core's own persistence: the base scheme-user token is consumed into the
-		// SchemeUser flag and never stored; only the atomic role names survive in ExplicitRoles.
+		// SchemeUser flag and never stored; only the capability role names survive in ExplicitRoles.
 		tokens := strings.Fields(explicitRoles)
 		require.Equal(t, schemeUserRole, tokens[0], "the base scheme-user token must always be emitted first")
 		stored := strings.Join(tokens[1:], " ")
@@ -54,7 +54,7 @@ func TestRolesForPermissions_PermissionsFromMember_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestRolesForPermissions_AtomicRoleMapping pins each permission to the atomic role that carries it.
+// TestRolesForPermissions_AtomicRoleMapping pins each permission to the capability role that carries it.
 // The round-trip test above proves only that the permission/role maps agree with each other — the
 // reverse map is derived from the forward one — so any permutation of the pairing still round-trips
 // unchanged. Asserting the role name per permission is what catches a swap that would grant
@@ -83,7 +83,7 @@ func TestRolesForPermissions_AtomicRoleMapping(t *testing.T) {
 	}
 
 	t.Run(mmmodel.PermissionAdminSpace.Id, func(t *testing.T) {
-		// admin_space is carried by the SchemeAdmin flag rather than an atomic role, so it must emit
+		// admin_space is carried by the SchemeAdmin flag rather than a capability role, so it must emit
 		// the base scheme-user token alone.
 		explicitRoles, schemeAdmin := model.RolesForPermissions([]string{mmmodel.PermissionAdminSpace.Id}, schemeUserRole)
 		require.True(t, schemeAdmin)
@@ -217,7 +217,7 @@ func TestDefaultPermissionsFrom(t *testing.T) {
 // names, so it cannot see core changing which permission a role carries. That change would leave
 // every name matching while a grant silently started conferring a different authority.
 //
-// Core's roles are the authority: each atomic role grants read_page (the baseline every space role
+// Core's roles are the authority: each capability role grants read_page (the baseline every space role
 // carries) plus exactly the one permission it exists to confer. Reading them from
 // MakeDefaultRoles keeps this honest — it is the same table core seeds from.
 func TestAtomicRolesMatchCorePermissions(t *testing.T) {
@@ -225,13 +225,13 @@ func TestAtomicRolesMatchCorePermissions(t *testing.T) {
 
 	for _, permission := range grantablePermissions {
 		if permission == mmmodel.PermissionAdminSpace.Id {
-			// admin_space is carried by the SchemeAdmin flag, not an atomic role.
+			// admin_space is carried by the SchemeAdmin flag, not a capability role.
 			continue
 		}
 		t.Run(permission, func(t *testing.T) {
 			explicitRoles, _ := model.RolesForPermissions([]string{permission}, "base_role")
 			tokens := strings.Fields(explicitRoles)
-			require.Len(t, tokens, 2, "expected the base role plus one atomic role, got %q", explicitRoles)
+			require.Len(t, tokens, 2, "expected the base role plus one capability role, got %q", explicitRoles)
 			roleName := tokens[1]
 
 			coreRole, ok := coreRoles[roleName]
@@ -247,9 +247,9 @@ func TestAtomicRolesMatchCorePermissions(t *testing.T) {
 	}
 }
 
-// TestAtomicRoleVocabularyCoversCore checks the plugin's atomic-role vocabulary against core's
+// TestAtomicRoleVocabularyCoversCore checks the plugin's capability-role vocabulary against core's
 // canonical list. TestAtomicRolesMatchCorePermissions above verifies the roles the plugin already
-// knows about; this catches the other direction — core adding a sixth atomic role that the plugin
+// knows about; this catches the other direction — core adding a sixth capability role that the plugin
 // never maps, so the permission it confers would be ungrantable through this API and a member
 // carrying that role would reverse-project as holding nothing.
 func TestAtomicRoleVocabularyCoversCore(t *testing.T) {
@@ -263,7 +263,7 @@ func TestAtomicRoleVocabularyCoversCore(t *testing.T) {
 	}
 
 	require.ElementsMatch(t, mmmodel.SpaceCapabilityRoles, mapped,
-		"the plugin's atomic-role vocabulary must match core's SpaceCapabilityRoles exactly")
+		"the plugin's capability-role vocabulary must match core's SpaceCapabilityRoles exactly")
 }
 
 func TestGrantablePermissionSets(t *testing.T) {

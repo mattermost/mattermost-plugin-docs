@@ -24,13 +24,36 @@ const renderMenu = (props: Partial<React.ComponentProps<typeof MemberRowMenu>> =
 
 async function openMenu() {
     fireEvent.click(screen.getByRole('button', {name: /Ada/}));
-    await screen.findByText('Can edit');
+    await screen.findByRole('menu', {name: /Ada/});
 }
 
 describe('MemberRowMenu', () => {
+    it.each([
+        ['admin', 'Admin'],
+        ['member', 'Member'],
+        ['guest', 'Guest'],
+    ] as const)('renders the resolved %s role in the neutral actions trigger', (role, visibleLabel) => {
+        renderMenu({role});
+
+        const trigger = screen.getByRole('button', {name: 'More actions for Ada'});
+        expect(trigger).toHaveTextContent(visibleLabel);
+    });
+
+    it('uses an icon-only action menu when the caller has no role data', async () => {
+        renderMenu();
+
+        const trigger = screen.getByRole('button', {name: 'More actions for Ada'});
+        expect(trigger).toHaveTextContent('');
+
+        fireEvent.click(trigger);
+        await screen.findByRole('menuitem', {name: 'Remove from space'});
+        expect(screen.queryByRole('menuitem', {name: 'Admin'})).not.toBeInTheDocument();
+        expect(screen.queryByRole('menuitem', {name: 'Can edit'})).not.toBeInTheDocument();
+    });
+
     it('offers Remove for another member, and the role items are disabled', async () => {
         const onRemove = jest.fn();
-        renderMenu({onRemove});
+        renderMenu({role: 'member', onRemove});
 
         await openMenu();
 

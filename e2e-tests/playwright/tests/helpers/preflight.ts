@@ -82,6 +82,74 @@ export async function assertPluginActive(baseURL: string, username: string, pass
     }
 }
 
+/**
+ * Proves that the running Mattermost binary implements the scheme-read RPC used by the plugin
+ * binary. This is intentionally a runtime probe: a local go.mod replace can compile the plugin
+ * against a sibling core checkout while Testcontainers still boots an older published image.
+ * Both halves then look individually valid, but the first member mutation fails with an opaque
+ * 500 because the server cannot dispatch GetSchemeForChannel.
+ */
+export async function assertSpaceSchemeReadSupported(baseURL: string, username: string, password: string, remedy = '') {
+    const token = await adminToken(baseURL, username, password);
+    const suffix = Date.now().toString(36);
+
+    const teamResponse = await fetch(`${baseURL}/api/v4/teams`, {
+        method: 'POST',
+        headers: authed(token),
+        body: JSON.stringify({name: `docs-scheme-read-${suffix}`, display_name: `Docs scheme read ${suffix}`, type: 'O'}),
+        signal: AbortSignal.timeout(requestTimeoutMs),
+    });
+    if (!teamResponse.ok) {
+        throw new Error(`Scheme-read preflight could not create a probe team on ${baseURL} (${teamResponse.status}).`);
+    }
+    const team = await teamResponse.json() as {id: string};
+    let spaceID = '';
+
+    try {
+        // Omit defaults so this resolves a seeded preset and remains valid on an unlicensed server.
+        const createResponse = await fetch(`${baseURL}/plugins/${pluginId}/api/v1/teams/${team.id}/spaces`, {
+            method: 'POST',
+            headers: authed(token),
+            body: JSON.stringify({title: `Scheme read ${suffix}`}),
+            signal: AbortSignal.timeout(requestTimeoutMs),
+        });
+        if (!createResponse.ok) {
+            const body = await createResponse.text();
+            throw new Error(
+                `Scheme-read preflight could not create a preset-backed space (${createResponse.status}): ${body.slice(0, 400)}`,
+            );
+        }
+        const space = await createResponse.json() as {id: string};
+        spaceID = space.id;
+
+        const readResponse = await fetch(`${baseURL}/plugins/${pluginId}/api/v1/spaces/${spaceID}`, {
+            headers: authed(token),
+            signal: AbortSignal.timeout(requestTimeoutMs),
+        });
+        if (!readResponse.ok) {
+            const body = await readResponse.text();
+            throw new Error(
+                `The plugin and Mattermost server disagree on the channel-scheme API (${readResponse.status}). ` +
+                'The plugin requires GetSchemeForChannel, but the running server image does not answer it.\n' +
+                `Server said: ${body.slice(0, 400)}\n${remedy}`.trimEnd(),
+            );
+        }
+    } finally {
+        if (spaceID) {
+            await fetch(`${baseURL}/plugins/${pluginId}/api/v1/spaces/${spaceID}`, {
+                method: 'DELETE',
+                headers: authed(token),
+                signal: AbortSignal.timeout(requestTimeoutMs),
+            }).catch(() => undefined);
+        }
+        await fetch(`${baseURL}/api/v4/teams/${team.id}?permanent=true`, {
+            method: 'DELETE',
+            headers: authed(token),
+            signal: AbortSignal.timeout(requestTimeoutMs),
+        }).catch(() => undefined);
+    }
+}
+
 // Signs in and returns a session token, or throws naming the server and the account.
 async function adminToken(baseURL: string, username: string, password: string): Promise<string> {
     const login = await fetch(`${baseURL}/api/v4/users/login`, {

@@ -9,7 +9,7 @@ import {ClientError} from '@mattermost/client';
 import {makePage, makeSpace, makeTeam} from 'store/test_fixtures';
 
 import {DraftTypes, SpaceTypes} from './action_types';
-import {addSpaceMember, addSpaceMembers, createDraft, createSpace, ensureSpaceMembership, fetchAllSpaces, isLastSpaceAdminError, isLastSpaceMemberError, isNotTeamMemberError, isSpaceLockTimeoutError, leaveSpace, movePage, refreshSpaceAfterSelfRemoval, removeSpaceMember, saveDraft} from './actions';
+import {addSpaceMember, addSpaceMembers, createDraft, createSpace, ensureSpaceMembership, fetchAllSpaces, isLastSpaceAdminError, isLastSpaceMemberError, isNotTeamMemberError, isSpaceLockTimeoutError, leaveSpace, movePage, refreshSpaceAfterMemberPermissionsChanged, refreshSpaceAfterSelfRemoval, removeSpaceMember, saveDraft} from './actions';
 
 import {makeTestState} from '../../tests/react_testing_utils';
 
@@ -153,7 +153,7 @@ describe('leaveSpace', () => {
         expect(dispatch).toHaveBeenCalledWith({type: SpaceTypes.DELETED_SPACE, spaceId: 'space1'});
     });
 
-    // An open space stays readable through the team fall-through, so leaving it must not evict it.
+    // This caller remains eligible for the open-space fall-through, so leaving must not evict it.
     // Dispatching DELETED_SPACE unconditionally made the space vanish from a caller who could still
     // read it, until a reload or a WebSocket event happened to put it back.
     it('keeps a space that is still readable after the caller leaves', async () => {
@@ -318,9 +318,8 @@ describe('refreshSpaceAfterSelfRemoval', () => {
     const space = makeSpace('space1', 'One');
     const removed = {type: SpaceTypes.DELETED_SPACE, spaceId: 'space1'};
 
-    // An open space stays readable to any team member through the server's fall-through, so the
-    // removal narrows what the caller may do rather than ending their access. The re-read is the
-    // only thing that can tell those apart.
+    // The server may still admit this caller through the open-space fall-through, so the re-read
+    // decides whether removal narrowed or ended access.
     it('keeps a space the server still serves, and refreshes its roster', async () => {
         mockGetSpace.mockResolvedValue(space);
         mockListSpaceMembers.mockResolvedValue([{user_id: 'other'}]);
@@ -360,6 +359,39 @@ describe('refreshSpaceAfterSelfRemoval', () => {
         await result;
 
         expect(dispatch).not.toHaveBeenCalledWith(removed);
+    });
+});
+
+describe('refreshSpaceAfterMemberPermissionsChanged', () => {
+    beforeEach(() => {
+        jest.clearAllMocks();
+        jest.spyOn(console, 'error').mockImplementation(() => {});
+    });
+    afterEach(() => jest.restoreAllMocks());
+
+    it('stores fresh access before invalidating the local grant matrix', async () => {
+        const space = makeSpace('space1', 'One');
+        mockGetSpace.mockResolvedValue(space);
+
+        const {result, dispatch} = run((d, g) => refreshSpaceAfterMemberPermissionsChanged('space1')(d as never, g as never, undefined as never));
+        await result;
+
+        const actions = dispatch.mock.calls.
+            map(([action]) => action).
+            filter((action) => typeof action !== 'function');
+        expect(actions).toEqual([
+            {type: SpaceTypes.RECEIVED_SPACES, spaces: [space]},
+            {type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: 'space1'},
+        ]);
+    });
+
+    it('does not invalidate grants when access could not be refreshed', async () => {
+        mockGetSpace.mockRejectedValue(new Error('network down'));
+
+        const {result, dispatch} = run((d, g) => refreshSpaceAfterMemberPermissionsChanged('space1')(d as never, g as never, undefined as never));
+        await result;
+
+        expect(dispatch).not.toHaveBeenCalledWith({type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: 'space1'});
     });
 });
 

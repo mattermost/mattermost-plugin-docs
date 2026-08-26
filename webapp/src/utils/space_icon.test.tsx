@@ -15,7 +15,7 @@ jest.mock('@mattermost/compass-icons/components/lock-outline', () => () => <span
 
 // The glyph is the only thing telling a reader who can see a space, so it has to follow the
 // server's view_access. It once keyed off a client-only `visibility` field that no API response
-// populated, which drew a lock over every space the whole team could read.
+// populated, which drew a lock over every open space.
 describe('SpaceIcon', () => {
     it('shows the globe for an open space', () => {
         render(

@@ -1,8 +1,9 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import type {CreatePageInput, CreateSpaceInput, Page, Space, SpaceMember, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
+import type {CreatePageInput, CreateSpaceInput, Page, Space, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
 import type {Draft, DraftPatch, DraftSummary} from 'types/drafts';
+import type {SpaceMember} from 'types/permissions';
 
 // The seam between the store's thunks and the Docs server REST API. The
 // API-backed source implements this over the plugin's /api/v1 routes; the
@@ -13,8 +14,7 @@ import type {Draft, DraftPatch, DraftSummary} from 'types/drafts';
 // the server contract.
 export interface DocsDataSource {
 
-    // Spaces the caller is a member of in the given team (the server filters by
-    // backing-channel membership).
+    // Spaces the caller may read in the given team.
     listSpaces(teamId: string): Promise<Space[]>;
 
     // One space by id. This is how a space arrives when the URL names it directly
@@ -47,8 +47,8 @@ export interface DocsDataSource {
     // server rejects removing the last authorized member (409).
     removeSpaceMember(spaceId: string, userId: string): Promise<void>;
 
-    // Members of a space (user ids only). Backs the member count and, later,
-    // member avatars.
+    // Members of a space. This general-purpose source consumes only user_id for counts and
+    // avatars; the server redacts the permission fields when the caller lacks the manage tier.
     listSpaceMembers(spaceId: string): Promise<SpaceMember[]>;
 
     // Pages in a space. The server returns page summaries (no body); the source

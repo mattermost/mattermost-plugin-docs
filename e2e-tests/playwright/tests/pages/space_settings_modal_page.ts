@@ -79,6 +79,13 @@ export class SpaceSettingsModalPage {
             .getByRole('checkbox', {name: label});
     }
 
+    permissionPreset(label: string): Locator {
+        return this.dialog
+            .locator('fieldset')
+            .filter({hasText: 'Everyone with access to this space can:'})
+            .getByRole('radio', {name: label, exact: true});
+    }
+
     // A member's own toggle in the matrix. Addressed by the id the tab builds
     // (`member-<userId>-<permission>`) rather than by label: the same vocabulary is
     // rendered once for the space default and once per member, so a label match is
@@ -131,9 +138,9 @@ export class SpaceSettingsModalPage {
 
     private async openMemberMenu(username: string) {
         // Seeded E2E users use their username as their display name, which is also what the
-        // product places in this accessible label. Addressing the button directly avoids walking
-        // a CSS-module-dependent parent chain from the @handle.
-        await this.dialog.getByRole('button', {name: `Admin, manage ${username}`, exact: true}).click();
+        // product places in the neutral action label. It deliberately does not encode Admin,
+        // Member, or Guest: all three roles open the same actions menu.
+        await this.dialog.getByRole('button', {name: `More actions for ${username}`, exact: true}).click();
     }
 
     async removeMember(username: string) {
@@ -207,6 +214,16 @@ export class SpaceSettingsModalPage {
         // The server response is what flips it back, so this is the save completing —
         // not just the click landing.
         await expect(box).toBeChecked({checked: !wasChecked});
+    }
+
+    async choosePermissionPreset(label: string) {
+        const preset = this.permissionPreset(label);
+        await preset.click();
+        await expect(preset).toBeChecked();
+    }
+
+    async expectPermissionPreset(label: string) {
+        await expect(this.permissionPreset(label)).toBeChecked();
     }
 
     async chooseAccess(name: AccessOption) {

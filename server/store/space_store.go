@@ -131,8 +131,8 @@ func (s *Store) GetSpacesForTeam(teamID, userID string, callerHasOpenFallthrough
 	return spaces, nil
 }
 
-// UpdateSpace applies patch to a live space's mutable fields (Title, Description, Icon,
-// Props). The patch is merged into the row read under lock, so fields the patch leaves nil
+// UpdateSpace applies patch to a live space's mutable fields (Title, Description, Icon, Props,
+// ViewAccess). The patch is merged into the row read under lock, so fields the patch leaves nil
 // keep any concurrent writer's value rather than being overwritten by the caller's stale
 // snapshot. expectedUpdateAt is the optimistic-lock baseline: a mismatch returns ErrConflict,
 // so the first update to commit is the one kept. Passing force skips that check and applies the
@@ -378,8 +378,8 @@ const (
 // under this lock. The lock is session-scoped on a dedicated pooled connection with no open
 // transaction of its own.
 //
-// fn may do store work of its own, so each in-flight caller holds two pooled connections: this
-// lock's session connection plus whatever fn's own transaction acquires. fn must therefore never
+// fn may do store work of its own and require another plugin-pool connection in addition to this
+// lock's session connection. fn must therefore never
 // reach a store method that begins through beginUnboundedTx, or a saturated pool can leave every
 // holder waiting on a connection no other holder will release. fn must also stay short, since the
 // lock connection is held for its whole duration.
@@ -412,7 +412,7 @@ func (s *Store) withSpaceMembershipLock(spaceID string, acquireTimeout time.Dura
 	// Poll with pg_try_advisory_lock rather than blocking in pg_advisory_lock: a blocking wait
 	// canceled by the deadline races against the server granting the lock in the same instant,
 	// which would strand a granted lock on a connection headed back to the pool. Each try
-	// returns its verdict immediately, so a timed-out waiter provably holds nothing.
+	// returns its verdict immediately; error paths below avoid reusing a session that may hold it.
 	for {
 		var acquired bool
 		if lockErr := conn.GetContext(ctx, &acquired, `SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, key); lockErr != nil {

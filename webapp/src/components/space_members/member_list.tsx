@@ -28,6 +28,9 @@ type Props = {
     avatarSize: 'sm' | 'md';
     showYouBadge?: boolean;
 
+    /** The caller may supply a role only when its roster read resolved one. */
+    roleForMember?: (member: MemberProfile) => 'admin' | 'member' | 'guest' | undefined;
+
     /** Names the space in the leave confirmation. Only needed alongside `actions`. */
     spaceTitle?: string;
 
@@ -57,7 +60,7 @@ type Props = {
  * it — so both confirm first. Confirming here rather than in each surface keeps the
  * copy in one place and means a new surface cannot forget it.
  */
-const MemberList = ({members, avatarSize, showYouBadge = false, spaceTitle, comfortable = false, actions, renderBelowMember}: Props) => {
+const MemberList = ({members, avatarSize, showYouBadge = false, roleForMember, spaceTitle, comfortable = false, actions, renderBelowMember}: Props) => {
     const currentUserId = useAppSelector(getCurrentUserId);
 
     const confirmRemove = (member: MemberProfile) => openDocsModal((modal) => (
@@ -152,6 +155,7 @@ const MemberList = ({members, avatarSize, showYouBadge = false, spaceTitle, comf
                         trailing={hasAction && actions && (
                             <MemberRowMenu
                                 member={member}
+                                role={roleForMember?.(member)}
                                 isCurrentUser={isCurrentUser}
                                 disabled={actions.disabled}
                                 onRemove={() => confirmRemove(member)}

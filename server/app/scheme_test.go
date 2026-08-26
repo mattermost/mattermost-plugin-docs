@@ -90,76 +90,59 @@ func TestResolveSpaceScheme_PoolsByPermissionSet(t *testing.T) {
 	})
 }
 
-// TestSchemeRolesFromChannel_GenericRolesLookupErrorPropagates mirrors
-// TestRequireSpaceDraftWrite_LookupFailureIsNotADenial's coverage of getSchemeRolesForChannel's own
-// GetChannelOfType generic-error branch, but for the second lookup inside it: a non-404 failure of
-// Scheme.GetRolesForChannel must surface as itself, not collapse into the same not-found translation
-// its 404 case gets.
-func TestSchemeRolesFromChannel_GenericRolesLookupErrorPropagates(t *testing.T) {
+func TestGetSchemeRolesForChannel_GenericLookupErrorPropagates(t *testing.T) {
 	s, _ := testutil.OpenTestStore(t)
 	mockAPI := &plugintest.API{}
 
 	channelID := mmmodel.NewId()
-	schemeID := mmmodel.NewId()
-	channel := &mmmodel.Channel{Id: channelID, Type: mmmodel.ChannelTypeSpace, SchemeId: &schemeID}
-	mockAPI.On("GetSchemeRolesForChannel", channelID).
-		Return("", "", "", &mmmodel.AppError{Message: "boom", StatusCode: 500})
+	mockAPI.On("GetSchemeForChannel", channelID).
+		Return(nil, nil, nil, nil, &mmmodel.AppError{Message: "boom", StatusCode: 500})
 
 	client := pluginapi.NewClient(mockAPI, nil)
 	svc := New(s, nil, client)
 
-	_, err := svc.schemeRolesFromChannel(channelID, channel)
+	_, err := svc.getSchemeRolesForChannel(channelID)
 	require.Error(t, err)
 	require.False(t, store.IsErrNotFound(err), "a generic lookup failure must not be reported as not-found")
 }
 
-// TestSchemeRolesFromChannel_EmptyRoleNamesAreUnsupported pins the generated-RPC zero-value
-// answer: a channel with a scheme must resolve all three generated roles, and an absent plugin API
-// reports three strings without an error rather than a conventional not-found response.
-func TestSchemeRolesFromChannel_EmptyRoleNamesAreUnsupported(t *testing.T) {
-	tests := map[string][3]string{
-		"guest": {"", "user-role", "admin-role"},
-		"user":  {"guest-role", "", "admin-role"},
-		"admin": {"guest-role", "user-role", ""},
+func TestGetSchemeRolesForChannel_IncompleteAggregateIsUnsupported(t *testing.T) {
+	scheme := &mmmodel.Scheme{Id: mmmodel.NewId()}
+	guest := &mmmodel.Role{Name: "guest-role"}
+	user := &mmmodel.Role{Name: "user-role"}
+	admin := &mmmodel.Role{Name: "admin-role"}
+	tests := map[string][4]any{
+		"scheme": {nil, guest, user, admin},
+		"guest":  {scheme, nil, user, admin},
+		"user":   {scheme, guest, nil, admin},
+		"admin":  {scheme, guest, user, nil},
 	}
 
-	for name, roles := range tests {
+	for name, values := range tests {
 		t.Run(name, func(t *testing.T) {
 			s, _ := testutil.OpenTestStore(t)
 			mockAPI := &plugintest.API{}
 			channelID := mmmodel.NewId()
-			schemeID := mmmodel.NewId()
-			channel := &mmmodel.Channel{Id: channelID, Type: mmmodel.ChannelTypeSpace, SchemeId: &schemeID}
-			mockAPI.On("GetSchemeRolesForChannel", channelID).
-				Return(roles[0], roles[1], roles[2], nil)
+			mockAPI.On("GetSchemeForChannel", channelID).
+				Return(values[0], values[1], values[2], values[3], nil)
 
 			svc := New(s, nil, pluginapi.NewClient(mockAPI, nil))
-			_, err := svc.schemeRolesFromChannel(channelID, channel)
+			_, err := svc.getSchemeRolesForChannel(channelID)
 
 			require.ErrorIs(t, err, errUnsupportedSchemeAPI)
 		})
 	}
 }
 
-// TestSchemeRolesFromChannel_MissingSchemeVariants covers both shapes of "no scheme" the code
-// treats as distinct cases: a nil SchemeId and a non-nil SchemeId pointing at an empty string.
-// Either must resolve to not-found rather than falling through to a scheme lookup.
-func TestSchemeRolesFromChannel_MissingSchemeVariants(t *testing.T) {
+func TestGetSchemeRolesForChannel_MissingDirectSchemeIsNotFound(t *testing.T) {
 	s, _ := testutil.OpenTestStore(t)
-	svc := New(s, nil, nil)
+	mockAPI := &plugintest.API{}
+	channelID := mmmodel.NewId()
+	mockAPI.On("GetSchemeForChannel", channelID).
+		Return(nil, nil, nil, nil, &mmmodel.AppError{StatusCode: 404})
+	svc := New(s, nil, pluginapi.NewClient(mockAPI, nil))
 
-	t.Run("nil SchemeId", func(t *testing.T) {
-		channel := &mmmodel.Channel{Id: mmmodel.NewId(), Type: mmmodel.ChannelTypeSpace}
-		_, err := svc.schemeRolesFromChannel(channel.Id, channel)
-		require.Error(t, err)
-		require.True(t, store.IsErrNotFound(err))
-	})
-
-	t.Run("empty string SchemeId", func(t *testing.T) {
-		empty := ""
-		channel := &mmmodel.Channel{Id: mmmodel.NewId(), Type: mmmodel.ChannelTypeSpace, SchemeId: &empty}
-		_, err := svc.schemeRolesFromChannel(channel.Id, channel)
-		require.Error(t, err)
-		require.True(t, store.IsErrNotFound(err))
-	})
+	_, err := svc.getSchemeRolesForChannel(channelID)
+	require.Error(t, err)
+	require.True(t, store.IsErrNotFound(err))
 }

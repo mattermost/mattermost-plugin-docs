@@ -17,3 +17,6 @@ export const SPACE_LOCK_TIMEOUT_ERROR_ID = 'app.space.lock_timeout.app_error';
 
 // A guest cannot hold a per-member grant, so the grant was refused rather than applied.
 export const GUEST_NOT_ASSIGNABLE_ERROR_ID = 'app.space.member.guest_not_assignable.app_error';
+
+// Core refuses creation or reuse of a non-preset channel scheme without this entitlement.
+export const CUSTOM_PERMISSION_SCHEME_LICENSE_ERROR_ID = 'app.scheme.plugin_scheme.scheme_license.app_error';

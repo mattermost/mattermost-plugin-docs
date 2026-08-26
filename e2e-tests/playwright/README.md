@@ -19,8 +19,9 @@ the run the CI `e2e-playwright-tests` job takes.
 ### The space-permission specs
 
 They are excluded from that run (`testIgnore` in `playwright.config.ts`) because they additionally
-need an Enterprise license. `MM_E2E_SPACE_PERMISSIONS` selects both the specs and the container
-setup they require — see `tests/helpers/mode.ts`:
+need an Enterprise license. `MM_E2E_SPACE_PERMISSIONS` selects only the permission specs and the
+licensed container setup they require — see `tests/helpers/mode.ts`. Keeping the modes separate
+also ensures the unlicensed preset-only authoring scenario is not collected again just to skip:
 
 ```bash
 MM_E2E_SPACE_PERMISSIONS=true \

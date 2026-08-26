@@ -69,8 +69,7 @@ const pluginMaxIdleConns = 5
 // pluginConnMaxLifetime bounds how long a pooled connection is reused, as routine hygiene.
 const pluginConnMaxLifetime = 5 * time.Minute
 
-// migrationLockTimeout must exceed the statement timeout: an early expiry could drop the
-// distributed migration lock before DDL completes.
+// Bounds the total time spent acquiring the Morph lock and applying migrations.
 const migrationLockTimeout = 70 * time.Minute
 
 // Store holds the database handle used by the Docs plugin.
@@ -101,9 +100,8 @@ func New(db *sql.DB, driverName string, log *pluginapi.LogService) (*Store, erro
 	return s, nil
 }
 
-// RunMigrations applies all pending morph migrations. Concurrent runs across an HA
-// cluster are serialized internally by a distributed DB-table lock; no external cluster
-// mutex is required.
+// RunMigrations applies pending migrations using Morph's named database lock to coordinate
+// concurrent plugin activations.
 func (s *Store) RunMigrations() error {
 	ctx, cancel := context.WithTimeout(context.Background(), migrationLockTimeout)
 	defer cancel()
@@ -185,20 +183,11 @@ func (s *Store) finalizeTransaction(tx *sqlx.Tx, perr *error) {
 	}
 }
 
-// Every transaction in this package begins through one of the two helpers below, and which one it
-// picks declares whether the method may run inside a WithSpaceMembershipLock closure. Such a
-// closure already holds the lock's dedicated connection, so an unbounded acquisition there can
-// wait forever on a saturated pool while holding a connection that pool needs in order to drain.
-// The split makes that hazard greppable: beginUnboundedTx names exactly the methods a lock closure
-// must not reach.
+// Membership-lock closures already hold a pool connection. Transactions reachable from them must
+// use bounded acquisition so a saturated pool cannot deadlock while waiting for itself to drain.
 
-// beginBoundedTx starts a transaction bounded by defaultQueryTimeout, and must be used by any
-// transaction that can run while its caller already holds WithSpaceMembershipLock's dedicated
-// connection.
-//
-// The timeout spans the whole transaction, not just connection acquisition, so callers must finish
-// inside defaultQueryTimeout rather than merely start inside it. The returned cancel must be
-// deferred, and runs after the commit or rollback that the caller's own defer performs.
+// beginBoundedTx bounds the whole transaction, not only connection acquisition. Callers must defer
+// the returned cancel after arranging commit or rollback.
 func (s *Store) beginBoundedTx() (*sqlx.Tx, context.CancelFunc, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
 	tx, err := s.db.BeginTxx(ctx, nil)
@@ -209,13 +198,8 @@ func (s *Store) beginBoundedTx() (*sqlx.Tx, context.CancelFunc, error) {
 	return tx, cancel, nil
 }
 
-// beginUnboundedTx starts a transaction with no overall deadline, for work whose duration scales
-// with the data it touches — a page move or duplicate over a wide subtree — where a fixed cap would
-// fail the operation rather than protect anything. Individual statements still carry
-// defaultQueryTimeout.
-//
-// A method that begins here must never be called from inside a WithSpaceMembershipLock closure; see
-// the note above beginBoundedTx.
+// beginUnboundedTx is reserved for data-scaled work. Individual statements remain bounded, and
+// callers must not be reachable from a WithSpaceMembershipLock closure.
 func (s *Store) beginUnboundedTx() (*sqlx.Tx, error) {
 	return s.db.Beginx()
 }

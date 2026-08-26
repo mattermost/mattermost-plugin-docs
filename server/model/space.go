@@ -20,9 +20,9 @@ const (
 	// SpacePropsMaxBytes caps the serialized size of the opaque Props map.
 	SpacePropsMaxBytes = 64 * 1024
 
-	// ViewAccessOpen makes a space readable by any active member of its team, not just backing-
-	// channel members (see the app-layer read resolver). ViewAccessPrivate restricts reads to
-	// backing-channel members. There is no third value; PreSave deliberately does not default
+	// ViewAccessOpen allows the app-layer read resolver to admit eligible team non-members;
+	// ViewAccessPrivate restricts ordinary reads to backing-channel members. There is no third
+	// value; PreSave deliberately does not default
 	// ViewAccess — the caller (app layer) always decides it explicitly.
 	ViewAccessOpen    ViewAccess = "open"
 	ViewAccessPrivate ViewAccess = "private"
@@ -52,8 +52,8 @@ type Space struct {
 	Description string                  `json:"description,omitempty"`
 	Icon        string                  `json:"icon,omitempty"`
 	Props       mmmodel.StringInterface `json:"props"`
-	// ViewAccess is one of ViewAccessOpen/ViewAccessPrivate. It gates non-member reads only —
-	// a member's read is always settled by membership.
+	// ViewAccess is one of ViewAccessOpen/ViewAccessPrivate. It changes only the non-member branch
+	// of the read resolver; member reads still pass through its other team and permission checks.
 	ViewAccess ViewAccess `json:"view_access"`
 	CreateAt   int64      `json:"create_at"`
 	UpdateAt   int64      `json:"update_at"`
@@ -136,9 +136,8 @@ type SpaceMember struct {
 	GrantedPermissions []string `json:"granted_permissions"`
 	IsAdmin            bool     `json:"is_admin"`
 	IsGuest            bool     `json:"is_guest"`
-	// AutoJoined reports whether the member was added by the open-space auto-join pre-step rather
-	// than invited/added deliberately, so a membership review (e.g. after an open->private flip)
-	// can tell the two apart.
+	// AutoJoined reports whether the plugin currently holds an auto-join provenance marker for the
+	// member. Marker cleanup is best-effort, so it is not proof of present intent.
 	AutoJoined bool `json:"auto_joined"`
 }
 

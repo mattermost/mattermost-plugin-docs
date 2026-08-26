@@ -43,7 +43,15 @@ export class SystemSchemePermissionsPage {
 
     // The caret, not the row: the row's own click handler selects the whole group.
     async expandSpacesGroup() {
-        await this.spacesGroup.locator('.permission-arrow').click();
+        // PermissionGroup starts expanded in core. Clicking the caret unconditionally therefore
+        // collapses it on a fresh page, but the clipped child rows remain in the DOM and can still
+        // satisfy toBeVisible(); a later click then retries forever behind the group row. Make the
+        // operation idempotent by reading the container's actual open state.
+        const rows = this.spacesGroup.locator('xpath=..').locator(':scope > .permission-group-permissions');
+        if (!(await rows.evaluate((element) => element.classList.contains('open')))) {
+            await this.spacesGroup.locator('.permission-arrow').click();
+        }
+        await expect(rows).toHaveClass(/\bopen\b/);
         await expect(this.permissionRow('read_space')).toBeVisible();
     }
 
@@ -55,6 +63,10 @@ export class SystemSchemePermissionsPage {
     // of its checked marker rather than a form state.
     private checkedMarker(permission: string): Locator {
         return this.permissionRow(permission).getByTestId('permissionCheckbox-checked');
+    }
+
+    private permissionCheckbox(permission: string): Locator {
+        return this.page.getByTestId(`${SystemSchemePermissionsPage.allMembersRole}-spaces-${permission}-checkbox`);
     }
 
     async expectPermissionChecked(permission: string, checked: boolean) {
@@ -73,7 +85,9 @@ export class SystemSchemePermissionsPage {
 
         const wasChecked = await this.checkedMarker(permission).isVisible();
 
-        await this.permissionRow(permission).click();
+        // Click the checkbox inside the row. Its event bubbles to the row's real change handler,
+        // while avoiding the wide description area that can be covered by the console scroller.
+        await this.permissionCheckbox(permission).click();
 
         await this.expectPermissionChecked(permission, !wasChecked);
     }

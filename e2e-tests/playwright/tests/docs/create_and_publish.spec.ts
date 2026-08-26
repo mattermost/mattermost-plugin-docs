@@ -8,7 +8,7 @@
 
 import {expect, newContext, test} from '../fixtures';
 import {loginAs} from '../helpers/auth';
-import {uniqueSuffix} from '../helpers/client';
+import {readJsonOrThrow, requestedWith, uniqueSuffix} from '../helpers/client';
 import {addUserToTeam, createTeam} from '../helpers/team';
 import {createUser, type SeededUser} from '../helpers/user';
 import {richText, type RichText} from '../data/rich_text';
@@ -16,10 +16,11 @@ import {CreateSpaceModalPage} from '../pages/create_space_modal_page';
 import {DocsSwitcherPage} from '../pages/docs_switcher_page';
 import {ShareSpaceModalPage} from '../pages/share_space_modal_page';
 import {SpacePage} from '../pages/space_page';
+import {SpaceSettingsModalPage} from '../pages/space_settings_modal_page';
 import {SpacesSidebarPage} from '../pages/spaces_sidebar_page';
 
-// Serial: the second test opens the page the first publishes, and a plain describe
-// would retry it alone against a freshly seeded team.
+// Serial: later tests use the space and page the first test creates, and a plain describe would
+// retry them alone against a freshly seeded team.
 test.describe.serial('docs authoring', () => {
     let spaceTitle: string;
     let pageTitle: string;
@@ -180,5 +181,44 @@ test.describe.serial('docs authoring', () => {
         // * The reader gets the published page, not a draft or an editable surface
         await expect(page).not.toHaveURL(/\/drafts\//);
         await spacePage.expectBodyReadOnly();
+    });
+
+    /**
+     * @objective An unlicensed server offers only the three default-permission presets it can save.
+     * @precondition The first test created the space under the contribute preset.
+     */
+    test('changes among the included permission presets without a custom-scheme license', {tag: ['@docs', '@permissions']}, async ({page, server}) => {
+        const sidebar = new SpacesSidebarPage(page);
+        const settings = new SpaceSettingsModalPage(page);
+
+        await loginAs(page, server.adminUsername, server.adminPassword);
+
+        const licenseResponse = await page.request.get('/api/v4/license/client?format=old', requestedWith);
+        const license = await readJsonOrThrow<Record<string, string>>(licenseResponse, 'Unable to read the client license');
+        test.skip(
+            license.CustomPermissionsSchemes === 'true' || license.SkuShortName === 'professional',
+            'This scenario covers the unlicensed preset-only surface.',
+        );
+
+        // # Open the space's default permissions on an unlicensed server.
+        await sidebar.goto(teamName);
+        await sidebar.openSpace(spaceTitle);
+        await settings.openFromSpaceHeader(spaceTitle);
+        await settings.openPermissions();
+
+        // * The arbitrary checkbox matrix is replaced by the current included preset.
+        await expect(settings.permission('Create pages')).toHaveCount(0);
+        await settings.expectPermissionPreset('Contribute');
+
+        // # Move directly among all three presets.
+        await settings.choosePermissionPreset('Comment');
+        await settings.choosePermissionPreset('Read only');
+        await settings.choosePermissionPreset('Contribute');
+
+        // * The last preset survives a fresh settings read.
+        await settings.close();
+        await settings.openFromSpaceHeader(spaceTitle);
+        await settings.openPermissions();
+        await settings.expectPermissionPreset('Contribute');
     });
 });

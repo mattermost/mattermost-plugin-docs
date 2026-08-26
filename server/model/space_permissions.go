@@ -16,8 +16,8 @@ import (
 // speaks the same tokens core enforces — no invented level names.
 
 // grantableMemberPermissions is the wire vocabulary a caller may explicitly grant to a member:
-// the five atomic per-page permissions plus the admin permission. Atomic here and throughout
-// means indivisible — one generated role granting exactly one permission, never a bundle.
+// five independently grantable page capabilities plus the admin permission. Each page capability
+// maps to a core role that also carries the read_page baseline.
 var grantableMemberPermissions = map[string]bool{
 	mmmodel.PermissionCreatePage.Id:    true,
 	mmmodel.PermissionCommentPage.Id:   true,
@@ -35,8 +35,8 @@ func isGrantableDefault(p string) bool {
 	return p != mmmodel.PermissionAdminSpace.Id && grantableMemberPermissions[p]
 }
 
-// permissionAtomicRole maps each non-admin grantable permission to the core atomic role
-// that carries it in ExplicitRoles.
+// permissionAtomicRole maps each non-admin grantable permission to the core capability role
+// recorded in ExplicitRoles.
 var permissionAtomicRole = map[string]string{
 	mmmodel.PermissionCreatePage.Id:    mmmodel.SpacePageCreatorRoleId,
 	mmmodel.PermissionCommentPage.Id:   mmmodel.SpacePageCommenterRoleId,
@@ -112,7 +112,7 @@ func ValidateDefaultPermissions(permissions []string) *mmmodel.AppError {
 	return validatePermissions("ValidateDefaultPermissions", permissions, grantableMemberPermissions, true)
 }
 
-// RolesForPermissions maps the requested non-admin permissions to their atomic role names for
+// RolesForPermissions maps the requested non-admin permissions to their capability role names for
 // ExplicitRoles, and reports whether admin_space was requested (schemeAdmin). The base
 // schemeUserRole token is always emitted first — core rejects a member update that leaves the base
 // scheme role unset. Pure: schemeUserRole (the scheme's generated user-role name) comes from the
@@ -143,8 +143,7 @@ type MemberPermissions struct {
 
 // PermissionsFromMember reverse-projects a member's raw role state onto the permission vocabulary.
 // explicitRoles is the raw space-delimited ChannelMember.ExplicitRoles string; any token that is
-// not an atomic role (a generated per-scheme role granting exactly one page permission)
-// is ignored (harmless if the base scheme token is passed too).
+// not a recognized capability role is ignored (harmless if the base scheme token is passed too).
 // defaultPermissions is the space's default permission set (wire form, read_page-free).
 //
 // A SchemeGuest member's effective set is read_page alone — neither the space default nor its own

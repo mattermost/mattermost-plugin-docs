@@ -88,6 +88,16 @@ describe('ShareSpaceModal', () => {
         expect(screen.getByText('Ada')).toBeInTheDocument();
     });
 
+    it('uses an action-only menu without claiming a role the roster did not resolve', async () => {
+        renderModal();
+
+        fireEvent.click(screen.getByRole('button', {name: 'More actions for Ada'}));
+
+        expect(await screen.findByRole('menuitem', {name: 'Remove from space'})).toBeInTheDocument();
+        expect(screen.queryByRole('menuitem', {name: 'Admin'})).not.toBeInTheDocument();
+        expect(screen.queryByText('Manage')).not.toBeInTheDocument();
+    });
+
     it('removes another member through the hook once confirmed', async () => {
         renderModal();
 

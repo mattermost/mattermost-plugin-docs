@@ -110,13 +110,8 @@ func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 	if !p.decodeJSONBody(w, r, maxSpaceBodyBytes, &req, "handleUpdateSpace", false) {
 		return
 	}
-	// Answered with the same SpaceWithAccess wrapper the create and single-read routes return.
-	// Returning a bare space here would flatten to a body a client cannot tell apart from the
-	// wrapper, so refreshing a cached record from this response would silently drop the permission
-	// fields the other two routes supplied. Resolved BEFORE the mutation, on the pre-update space
-	// already in hand from the gate, so a failure here aborts with nothing committed and a still-valid
-	// baseline for the caller's retry — rather than leaving a fallible lookup after the commit that
-	// could turn a successful write into a reported failure.
+	// Resolve access before committing so response construction cannot turn a successful mutation
+	// into a reported failure. The update response keeps the same enriched shape as other writes.
 	preWrapper, wrapErr := p.service.BuildSpaceWithAccess(space, userID)
 	if wrapErr != nil {
 		p.writeAppError(w, wrapErr)
@@ -129,11 +124,8 @@ func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
-	// The permission fields resolved above still hold: this route's patch touches only
-	// title/description/icon/props/view_access, never member roles or the scheme's default
-	// permissions, and requireSpaceManage/UpdateSpace's stricter admin gate on a ViewAccess change
-	// mean the caller already held whatever permissions they hold now before this call — so
-	// carrying them over is exact, not an approximation, of a fresh post-commit resolution.
+	// This patch does not itself change member grants or defaults, so carry the pre-resolved access
+	// fields without a fallible post-commit read.
 	wrapper := &model.SpaceWithAccess{
 		Space:              *updated,
 		DefaultPermissions: preWrapper.DefaultPermissions,

@@ -160,7 +160,7 @@ func (s *Service) resolveGuest(userID string) (bool, error) {
 // already-resolved team-membership status.
 //
 // A guest is held to read_page whatever the composed channel permission says. Demoting a user to
-// guest clears SchemeUser/SchemeAdmin but leaves the atomic permission roles a prior grant wrote
+// guest clears SchemeUser/SchemeAdmin but leaves the capability roles a prior grant wrote
 // into ExplicitRoles, and core composes those into the member's channel permissions regardless of
 // guest standing — so a gate trusting the composed permission alone would let a demoted guest keep
 // writing.
@@ -334,8 +334,8 @@ func (s *Service) RequireSpaceAdminOrSysadmin(where string, space *model.Space, 
 // granted write authority over a space it cannot read — and then resolves perm against the
 // caller's membership.
 //
-// The read is resolved here rather than accepted from the caller, so the gate a route enforces is
-// always evaluated against the caller's standing at the moment of the write.
+// Resolve the read inside the service operation instead of accepting a reusable authorization
+// result from the caller.
 func (s *Service) RequireSpacePageWrite(where string, space *model.Space, userID string, perm *mmmodel.Permission) *mmmodel.AppError {
 	admittedVia, appErr := s.resolveReadForWrite(where, space, userID)
 	if appErr != nil {
@@ -409,8 +409,8 @@ func spaceIDOrEmpty(space *model.Space) string {
 // a member. It is the only path that turns a space's view access into a membership.
 //
 // Idempotent. A caller who can already read the space as a member — or as a sysadmin, who needs no
-// membership — is answered with their current access rather than an error, so a client that cannot
-// tell whether it has joined yet may simply call it.
+// membership — is answered with server-resolved access rather than an error, so a client that
+// cannot tell whether it has joined yet may simply call it.
 //
 // Admission is the open-space read fall-through and nothing else: the caller must be an active
 // team member whose read of this space resolved through ViewAccessOpen rather than through a

@@ -277,6 +277,7 @@ describe('useSpacePermissions', () => {
             const {result} = renderHook(() => useSpacePermissions(space), {wrapper: rosterWrapper});
             await waitFor(() => expect(result.current.loading).toBe(false));
             expect(result.current.members.get('u2')).toBeUndefined();
+            const accessReadsAfterLoad = mockGetSpaceAccess.mock.calls.length;
 
             mockListAllSpaceMembers.mockResolvedValue([member('u2')]);
             act(() => {
@@ -284,15 +285,16 @@ describe('useSpacePermissions', () => {
             });
 
             await waitFor(() => expect(result.current.members.get('u2')).toBeDefined());
+            expect(mockGetSpaceAccess).toHaveBeenCalledTimes(accessReadsAfterLoad);
         });
     });
 
-    // Another administrator's change reaches this client as a websocket event, which bumps the
-    // access revision. None of it moves a member row or a space record, so the revision is the
-    // only thing the hook can watch — without it the surface keeps showing what was true when it
-    // mounted.
+    // Another administrator's change reaches this client as a websocket event. Its thunk first
+    // stores the fresh space access, then bumps the grant revision so this hook only has to reload
+    // its local matrix. Without the revision the surface would keep showing what was true when it
+    // mounted; re-reading access here would duplicate the thunk's request.
     describe('an access change reported by the server', () => {
-        it('re-reads the space defaults and the grant matrix', async () => {
+        it('uses the refreshed space and re-reads only the grant matrix', async () => {
             const store = makeRosterStore();
             const revisionWrapper = ({children}: {children: React.ReactNode}) => (
                 <Provider store={store}>
@@ -308,15 +310,53 @@ describe('useSpacePermissions', () => {
             const {result} = renderHook(() => useSpacePermissions(space), {wrapper: revisionWrapper});
             await waitFor(() => expect(result.current.loading).toBe(false));
             expect(result.current.defaults).toEqual([]);
+            const accessReadsAfterLoad = mockGetSpaceAccess.mock.calls.length;
 
-            mockGetSpaceAccess.mockResolvedValue(access(['admin_space', 'manage_space'], ['create_page']));
             mockListAllSpaceMembers.mockResolvedValue([member('me', true), member('u2')]);
             act(() => {
+                store.dispatch({
+                    type: SpaceTypes.RECEIVED_SPACES,
+                    spaces: [access(['admin_space', 'manage_space'], ['create_page'])],
+                });
                 store.dispatch({type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: space.id});
             });
 
             await waitFor(() => expect(result.current.defaults).toEqual(['create_page']));
-            expect(result.current.members.get('u2')).toBeDefined();
+            await waitFor(() => expect(result.current.members.get('u2')).toBeDefined());
+            expect(mockGetSpaceAccess).toHaveBeenCalledTimes(accessReadsAfterLoad);
+        });
+
+        it('clears the matrix without reading a redacted roster after manage access is revoked', async () => {
+            const store = makeRosterStore();
+            const revisionWrapper = ({children}: {children: React.ReactNode}) => (
+                <Provider store={store}>
+                    <IntlProvider
+                        locale='en'
+                        messages={{}}
+                    >
+                        {children}
+                    </IntlProvider>
+                </Provider>
+            );
+
+            mockListAllSpaceMembers.mockResolvedValue([member('me', true)]);
+            const {result} = renderHook(() => useSpacePermissions(space), {wrapper: revisionWrapper});
+            await waitFor(() => expect(result.current.loading).toBe(false));
+            expect(result.current.members.get('me')).toBeDefined();
+            const rosterReadsAfterLoad = mockListAllSpaceMembers.mock.calls.length;
+
+            act(() => {
+                store.dispatch({
+                    type: SpaceTypes.RECEIVED_SPACES,
+                    spaces: [access(['read_page'])],
+                });
+                store.dispatch({type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: space.id});
+            });
+
+            await waitFor(() => expect(result.current.loadFailed).toBe(true));
+            expect(result.current.canManageMembers).toBe(false);
+            expect(result.current.members.size).toBe(0);
+            expect(mockListAllSpaceMembers).toHaveBeenCalledTimes(rosterReadsAfterLoad);
         });
 
         it('ignores a change reported for another space', async () => {
@@ -388,6 +428,7 @@ describe('useSpacePermissions', () => {
         it.each([
             ['a lock timeout', restError(409, 'app.space.lock_timeout.app_error'), 'This space is being changed right now. Try again in a moment.'],
             ['a concurrent edit', restError(409, 'app.store.conflict.app_error'), 'Someone else changed this space. Reopen settings and try again.'],
+            ['an expired custom-scheme entitlement', restError(501, 'app.scheme.plugin_scheme.scheme_license.app_error'), 'Custom permission combinations require a Professional or Enterprise license.'],
         ])('names %s', async (_case, error, message) => {
             mockSetDefaultPermissions.mockRejectedValue(error);
             const hook = await renderLoaded();

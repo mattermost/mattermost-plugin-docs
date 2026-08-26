@@ -382,8 +382,8 @@ func TestHandler_UpdateSpace_WrapperFailureAbortsBeforeCommit(t *testing.T) {
 	channelID := mmmodel.NewId()
 	// Registered before the harness so it wins over StubDefaultChannelScheme's catch-all: mock.Mock
 	// matches expectations in registration order.
-	mockAPI.On("GetSchemeRolesForChannel", channelID).
-		Return("", "", "", &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
+	mockAPI.On("GetSchemeForChannel", channelID).
+		Return(nil, nil, nil, nil, &mmmodel.AppError{Message: "boom", StatusCode: http.StatusInternalServerError})
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, channelID)
 
@@ -2719,8 +2719,8 @@ func TestHandler_UpdateSpace_ViewAccessForceRejected(t *testing.T) {
 }
 
 // TestHandler_UpdateSpace_ViewAccessAdminSucceedsMemberRetained verifies an admin-capable caller
-// can flip a space from open to private, and that an existing member can still read the space
-// afterwards (privatizing does not shed members).
+// can flip a space from open to private while retaining a deliberately added member. Only
+// auto-joined memberships are pruned by the transition.
 func TestHandler_UpdateSpace_ViewAccessAdminSucceedsMemberRetained(t *testing.T) {
 	channelID := mmmodel.NewId()
 	adminID := mmmodel.NewId()

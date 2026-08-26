@@ -8,9 +8,9 @@ import LockOutlineIcon from '@mattermost/compass-icons/components/lock-outline';
 
 import type {Space} from 'types/docs';
 
-// A space's icon: its custom emoji when set, otherwise a glyph for its read
-// access — a globe for a space the whole team can read, a lock for one only its
-// members can. An absent value reads as private, the fail-closed answer.
+// A space's icon: its custom emoji when set, otherwise a glyph for its view policy — a globe when
+// eligible team non-members may be admitted, a lock for members-only. An absent value reads as
+// private, the fail-closed answer.
 //
 // The glyph deliberately differs from a page's (file-text/folder): spaces and
 // pages sit side by side in the sidebar's favorites, so they must not look alike.

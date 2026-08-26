@@ -21,9 +21,8 @@ import {collectSubtreeIds} from './entities';
 import {getMustJoinSpace} from './permissions';
 import {getPage, getPagesById, getSpace} from './selectors';
 
-// Spaces the caller belongs to in the current team (the server scopes the list
-// by backing-channel membership). A failed load leaves the store empty rather
-// than crashing the product on mount.
+// Spaces the caller may read in the current team. The server combines membership with the eligible
+// open-space fall-through. A failed load leaves the store empty rather than crashing on mount.
 export function fetchSpaces(): DocsThunkAction<Promise<void>> {
     return async (dispatch, getState) => {
         const teamId = getCurrentTeamId(getState());
@@ -361,23 +360,28 @@ export function ensureSpaceMembership(spaceId: string): DocsThunkAction<Promise<
     };
 }
 
-/**
- * Puts a space read that already resolved the caller's own permissions and the space's default
- * permission set into the spaces slice, so every permission-gated affordance reads one answer
- * rather than each surface keeping its own. Plain action, not a thunk: the caller has the
- * response already.
- */
+/** Stores the server-resolved access record shared by permission-gated surfaces. */
 export function receivedSpaceAccess(space: SpaceAccess) {
     return {type: SpaceTypes.RECEIVED_SPACES, spaces: [space]};
 }
 
-/**
- * Records that the server reported a change to this space's per-member grant matrix. A plain
- * action rather than a thunk: the matrix is not stored here, so this only tells the surface
- * holding it that the answer moved.
- */
+/** Invalidates the hook-local per-member grant matrix. */
 export function spaceMemberPermissionsChanged(spaceId: string) {
     return {type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId};
+}
+
+/**
+ * Refreshes shared access before invalidating grants. On a failed refresh, retain the matrix
+ * rather than reload it under stale manage authority and mistake a redacted roster for grant data.
+ */
+export function refreshSpaceAfterMemberPermissionsChanged(spaceId: string): DocsThunkAction<Promise<void>> {
+    return async (dispatch) => {
+        const space = await dispatch(fetchSpace(spaceId));
+        if (!space) {
+            return;
+        }
+        dispatch(spaceMemberPermissionsChanged(spaceId));
+    };
 }
 
 export type FailedMemberAdd = {userId: string; error: unknown};
@@ -435,10 +439,9 @@ export function updateSpace(spaceId: string, patch: UpdateSpacePatch): DocsThunk
  * Re-resolves a space after the caller's own membership was removed, evicting it only once the
  * server has actually refused the read.
  *
- * Removal and loss of access are not the same event. An open space stays readable to any team
- * member through the server's read_public_channel fall-through, and the record that comes back
- * carries the narrowed permission set that fall-through resolves to — so the space belongs in the
- * store, showing what the caller may now do rather than disappearing.
+ * Removal and loss of access are not the same event. The open-space fall-through may still admit
+ * the caller, in which case the returned record carries their narrowed permission set and remains
+ * in the store.
  *
  * Only a definitive denial evicts. A request that never completed is not an answer about access,
  * and treating it as one would drop a space the caller can still read until some later listing
@@ -509,10 +512,8 @@ export function isNotTeamMemberError(error: unknown): boolean {
 // Leaving a space is removing yourself from its membership. The server rejects
 // removing the last authorized member (409); the caller surfaces that.
 //
-// Losing membership is not the same as losing the space: an open space stays readable through the
-// team fall-through, so what happens to the record is settled by re-resolving it rather than by
-// evicting outright. That is the same reconciliation the removal WebSocket event performs, done
-// here too so the outcome does not depend on the event arriving first.
+// Losing membership is not necessarily losing the space: the open-space fall-through may still
+// admit the caller. Re-resolve instead of assuming either outcome.
 export function leaveSpace(spaceId: string): DocsThunkAction<Promise<void>> {
     return async (dispatch, getState) => {
         const userId = getCurrentUserId(getState());

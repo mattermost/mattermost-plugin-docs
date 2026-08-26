@@ -10,7 +10,7 @@ import {DocsModalController, closeAllDocsModals} from 'components/modals';
 
 import PermissionsTab from './permissions_tab';
 
-import {renderWithContext} from '../../../tests/react_testing_utils';
+import {renderWithContext, type TestStateOptions} from '../../../tests/react_testing_utils';
 
 const mockAddMembers = jest.fn();
 const mockRemoveMember = jest.fn();
@@ -56,7 +56,7 @@ const space = makeSpace('space-1', 'Engineering');
 
 // Removing and leaving confirm first, and the confirmation is rendered by the
 // imperative modal layer rather than inline, so it needs the controller mounted.
-const renderTab = (onClose = jest.fn(), state?: Record<string, unknown>) => renderWithContext(
+const renderTab = (onClose = jest.fn(), state: TestStateOptions = {}) => renderWithContext(
     <>
         <PermissionsTab
             space={space}
@@ -64,7 +64,12 @@ const renderTab = (onClose = jest.fn(), state?: Record<string, unknown>) => rend
         />
         <DocsModalController/>
     </>,
-    state ? {state} : undefined,
+    {
+        state: {
+            license: {CustomPermissionsSchemes: 'true'},
+            ...state,
+        },
+    },
 );
 
 const confirm = async (name: RegExp) => {
@@ -187,6 +192,56 @@ describe('PermissionsTab', () => {
         expect(mockSetDefaults).toHaveBeenCalledWith(['edit_page']);
     });
 
+    describe('without the custom permission schemes entitlement', () => {
+        beforeEach(() => {
+            mockPermissionsState = {
+                ...mockPermissionsState,
+                defaults: ['create_page', 'comment_page', 'edit_page', 'delete_own_page'],
+            };
+        });
+
+        it('offers the three seeded presets instead of arbitrary combinations', () => {
+            renderTab(jest.fn(), {license: {}});
+
+            expect(screen.queryByRole('checkbox', {name: 'Create pages'})).not.toBeInTheDocument();
+            expect(screen.getByRole('radio', {name: 'Contribute'})).toBeChecked();
+            expect(screen.getByRole('radio', {name: 'Comment'})).not.toBeChecked();
+            expect(screen.getByRole('radio', {name: 'Read only'})).not.toBeChecked();
+            expect(screen.getByText('Custom permission combinations require a Professional or Enterprise license.')).toBeInTheDocument();
+        });
+
+        it('writes a preset atomically without passing through an unsupported combination', () => {
+            renderTab(jest.fn(), {license: {}});
+
+            fireEvent.click(screen.getByRole('radio', {name: 'Comment'}));
+
+            expect(mockSetDefaults).toHaveBeenCalledWith(['comment_page']);
+        });
+
+        it('allows a space left on a custom combination to return to a preset', () => {
+            mockPermissionsState = {...mockPermissionsState, defaults: ['create_page', 'edit_page']};
+            renderTab(jest.fn(), {license: {}});
+
+            expect(screen.getAllByRole('radio', {name: /Contribute|Comment|Read only/})).toHaveLength(3);
+            expect(screen.getByText(/This space currently uses a custom permission combination/)).toBeInTheDocument();
+
+            fireEvent.click(screen.getByRole('radio', {name: 'Read only'}));
+            expect(mockSetDefaults).toHaveBeenCalledWith([]);
+        });
+
+        it('keeps granular controls for the Professional SKU fallback', () => {
+            renderTab(jest.fn(), {
+                license: {
+                    CustomPermissionsSchemes: 'false',
+                    SkuShortName: 'professional',
+                },
+            });
+
+            expect(screen.getByRole('checkbox', {name: 'Create pages'})).toBeInTheDocument();
+            expect(screen.queryByRole('radio', {name: 'Contribute'})).not.toBeInTheDocument();
+        });
+    });
+
     // The controls stay visible for a non-admin: what the space allows is worth reading
     // even when you may not change it.
     it('locks both controls for a member who cannot administer the space', () => {
@@ -211,7 +266,7 @@ describe('PermissionsTab', () => {
     // manage_space holder is admitted by the roster routes but refused by the space-wide ones, so
     // the member matrix must stay live while view_access and the default set stay locked. Gating
     // both on canAdminister showed this caller a read-only tab for work the server would accept.
-    it('leaves the member matrix live for a team manager who cannot administer the space', () => {
+    it('leaves the member matrix live for a team administrator granted only manage_space', () => {
         mockPermissionsState = {
             ...mockPermissionsState,
             canAdminister: false,
@@ -234,8 +289,8 @@ describe('PermissionsTab', () => {
         fireEvent.click(memberEdit);
         expect(mockSetMemberGrants).toHaveBeenCalledWith('u2', ['create_page', 'edit_page']);
 
-        // Self-targeting also needs the stricter admin tier. A team manager can edit another
-        // person's row, but offering their own would only produce a 403.
+        // Self-targeting also needs the stricter admin tier. A team administrator granted
+        // manage_space can edit another person's row, but offering their own would produce a 403.
         expect(matrixCheckbox('member-me-create_page').disabled).toBe(true);
 
         // Promoting a space administrator is a stricter operation than managing the roster. The
@@ -284,6 +339,9 @@ describe('PermissionsTab', () => {
             withMembers();
             renderTab();
 
+            expect(screen.getByRole('button', {name: 'More actions for Caleb'})).toHaveTextContent('Admin');
+            expect(screen.getByRole('button', {name: 'More actions for Ada'})).toHaveTextContent('Member');
+
             // Ada holds edit_page as a per-member grant; nobody holds delete_page.
             // Addressed by id: the label alone is ambiguous now, since the same vocabulary
             // is rendered once for the space default and once per member — which is what
@@ -314,6 +372,7 @@ describe('PermissionsTab', () => {
             };
             renderTab();
 
+            expect(screen.getByRole('button', {name: 'More actions for Ada'})).toHaveTextContent('Guest');
             const guestEdit = matrixCheckbox('member-u2-edit_page');
             expect(guestEdit.disabled).toBe(true);
 

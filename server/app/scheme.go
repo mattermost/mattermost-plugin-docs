@@ -12,12 +12,12 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
-// errUnsupportedSchemeAPI tags a scheme or role plugin-API call that answered with neither a value
-// nor an error. The generated plugin RPC client logs a transport failure and returns the zero
+// errUnsupportedSchemeAPI tags a scheme plugin-API call that answered with neither a value nor an
+// error. The generated plugin RPC client logs a transport failure and returns the zero
 // values, so a server whose plugin API does not implement the call is indistinguishable from a
 // successful read of nothing. Dereferencing that nil crashes the plugin process for every request,
 // not just this one, so each call site turns it into this error instead.
-var errUnsupportedSchemeAPI = errors.New("the server's plugin API did not answer a scheme or role call; it does not carry the space permission support this plugin requires")
+var errUnsupportedSchemeAPI = errors.New("the server's plugin API did not answer a scheme call; it does not carry the space permission support this plugin requires")
 
 // The three functions below are the space tier model: what a plain member, an admin and a guest
 // of a space may do. Core creates the scheme with these permission sets but does not define them —
@@ -43,13 +43,14 @@ func spaceGuestRolePermissions() []string {
 	return []string{mmmodel.PermissionReadPage.Id}
 }
 
-// schemeRoles is the generated channel-scheme role names governing one backing channel's scheme.
-// Space permission grants reference these generated names, not the literal
-// channel_user/channel_admin roles: on a scheme-backed channel, core rejects the literal.
+// schemeRoles carries the generated role names used for grants and the user role's permissions used
+// to project defaults. On a scheme-backed channel, core rejects literal channel_user/channel_admin
+// grants.
 type schemeRoles struct {
-	UserRoleName  string
-	AdminRoleName string
-	GuestRoleName string
+	UserRoleName    string
+	AdminRoleName   string
+	GuestRoleName   string
+	UserPermissions []string
 }
 
 // getSchemeRolesForChannel resolves the generated role names of the scheme governing channelID's
@@ -60,46 +61,24 @@ func (s *Service) getSchemeRolesForChannel(channelID string) (*schemeRoles, erro
 		return nil, &store.ErrInvalidInput{Entity: "Channel", Field: "id", Value: channelID}
 	}
 
-	channel, err := s.client.Channel.GetChannelOfType(channelID, mmmodel.ChannelTypeSpace)
+	channelScheme, err := s.client.Scheme.GetForChannel(channelID)
 	if err != nil {
 		if errors.Is(err, pluginapi.ErrNotFound) {
 			return nil, &store.ErrNotFound{EntityName: "ChannelScheme", ID: channelID}
 		}
 		return nil, err
 	}
-	return s.schemeRolesFromChannel(channelID, channel)
-}
-
-// schemeRolesFromChannel is getSchemeRolesForChannel for a caller that already holds the backing
-// channel. channelID identifies the channel in the returned not-found errors independently of what
-// the channel object carries.
-func (s *Service) schemeRolesFromChannel(channelID string, channel *mmmodel.Channel) (*schemeRoles, error) {
-	// The scheme reference is checked here rather than inferred from the resolved role names: core's
-	// RolesForChannel falls back to the team scheme's channel roles for a channel carrying no scheme
-	// of its own, and a space that lost its scheme must report not-found instead of silently
-	// resolving to team roles that grant no page permissions.
-	if channel == nil || channel.SchemeId == nil || *channel.SchemeId == "" {
-		return nil, &store.ErrNotFound{EntityName: "ChannelScheme", ID: channelID}
-	}
-
-	guestRole, userRole, adminRole, err := s.client.Scheme.GetRolesForChannel(channelID)
-	if err != nil {
-		if errors.Is(err, pluginapi.ErrNotFound) {
-			return nil, &store.ErrNotFound{EntityName: "ChannelScheme", ID: channelID}
-		}
-		return nil, err
-	}
-	// The generated RPC client returns zero values with no error when this plugin API is absent.
-	// A channel carrying a scheme cannot legitimately resolve any of its generated role names to
-	// empty, so report the same actionable compatibility error as the other scheme lookups.
-	if guestRole == "" || userRole == "" || adminRole == "" {
+	// The generated RPC client returns nil with no error when this plugin API is absent.
+	if channelScheme == nil || channelScheme.Scheme == nil || channelScheme.GuestRole == nil ||
+		channelScheme.UserRole == nil || channelScheme.AdminRole == nil {
 		return nil, errUnsupportedSchemeAPI
 	}
 
 	return &schemeRoles{
-		UserRoleName:  userRole,
-		AdminRoleName: adminRole,
-		GuestRoleName: guestRole,
+		UserRoleName:    channelScheme.UserRole.Name,
+		AdminRoleName:   channelScheme.AdminRole.Name,
+		GuestRoleName:   channelScheme.GuestRole.Name,
+		UserPermissions: channelScheme.UserRole.Permissions,
 	}, nil
 }
 
@@ -116,21 +95,6 @@ func (s *Service) getSchemeByName(name string) (*mmmodel.Scheme, error) {
 		return nil, errUnsupportedSchemeAPI
 	}
 	return scheme, nil
-}
-
-// getRolePermissionsByName returns the permission ids granted by the named role.
-func (s *Service) getRolePermissionsByName(roleName string) ([]string, error) {
-	role, err := s.client.Role.GetByName(roleName)
-	if err != nil {
-		if errors.Is(err, pluginapi.ErrNotFound) {
-			return nil, &store.ErrNotFound{EntityName: "Role", ID: roleName}
-		}
-		return nil, err
-	}
-	if role == nil {
-		return nil, errUnsupportedSchemeAPI
-	}
-	return role.Permissions, nil
 }
 
 // rolesFromScheme names the three roles core generated for scheme.

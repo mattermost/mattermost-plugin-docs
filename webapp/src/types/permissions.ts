@@ -3,9 +3,7 @@
 
 import type {Space} from './docs';
 
-// The permission vocabulary is the server's permission ids verbatim
-// (server/model/space_permissions.go), so the client speaks the same tokens
-// the server enforces rather than inventing level names of its own.
+// Must stay byte-for-byte aligned with server/model/space_permissions.go.
 export const Permissions = {
     READ_PAGE: 'read_page',
     CREATE_PAGE: 'create_page',
@@ -45,9 +43,8 @@ export const MEMBER_PERMISSION_ORDER: readonly Permission[] = [
     Permissions.ADMIN_SPACE,
 ];
 
-// Mirrors server/model/space.go SpaceMember. permissions is the effective set
-// (space default union granted, read_page included); granted_permissions is
-// only what this member holds beyond the default.
+// Canonical SpaceMember wire model. Without manage authority, permission arrays and auto_joined
+// are redacted while identity and role flags remain meaningful.
 export type SpaceMember = {
     user_id: string;
     permissions: Permission[];
@@ -62,11 +59,8 @@ export type SpaceMember = {
 // and the server all speak these two tokens.
 export type SpaceViewAccess = 'open' | 'private';
 
-// Mirrors server/model/space.go SpaceWithAccess: the Space fields flattened into
-// the same object, plus the space's default permission set. Typed as a Space so the
-// response can be dispatched into the spaces slice directly — the caller's own
-// permissions then have one home, the store, rather than a second copy per surface.
-// permissions is required here, unlike on Space, because this read always resolves it.
+// Mirrors the flattened server SpaceWithAccess response. Access fields are required here even
+// though bare team-list Space records omit them.
 export type SpaceAccess = Space & {
     default_permissions: Permission[];
     permissions: Permission[];
