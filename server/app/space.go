@@ -84,7 +84,7 @@ func (s *Service) resolveSpaceScheme(permissions []string) (schemeID string, rol
 		spaceGuestRolePermissions(),
 	)
 	if poolErr != nil {
-		return "", nil, poolErr
+		return "", nil, normalizeUnsupportedSchemeAPI(poolErr)
 	}
 	if scheme == nil {
 		return "", nil, errUnsupportedSchemeAPI

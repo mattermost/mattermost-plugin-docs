@@ -1,7 +1,7 @@
 # The commit of the paired core branch (MM-69269-permissions-rbac-core-v2) that the e2e suite runs
 # against. CORE_IMAGE must be the image core CI published for it.
 #
-# Core PR: https://github.com/mattermost/mattermost/pull/37685
+# Core PR: https://github.com/mattermost/mattermost/pull/38145
 # The sha below is what CI compares against, not the PR head: a PR head moves with every push, so
 # pinning to it would re-point this suite at new core code without a commit in this repo.
 #
@@ -18,4 +18,4 @@
 #     https://hub.docker.com/v2/repositories/mattermostdevelopment/mattermost-team-edition/tags/<7-char-sha>/
 #
 # One sha, comments and blank lines ignored.
-8c922ed9ab8b6d4845cf9438c76b9916c2d716e8
+4a0b9bde1b925f0a9e51c333658cbc658dfe9c33

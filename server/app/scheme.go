@@ -12,12 +12,18 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
-// errUnsupportedSchemeAPI tags a scheme plugin-API call that answered with neither a value nor an
-// error. The generated plugin RPC client logs a transport failure and returns the zero
-// values, so a server whose plugin API does not implement the call is indistinguishable from a
-// successful read of nothing. Dereferencing that nil crashes the plugin process for every request,
-// not just this one, so each call site turns it into this error instead.
+// errUnsupportedSchemeAPI tags a scheme plugin-API call that the server does not implement. Newer
+// server/public clients report pluginapi.ErrNotSupported explicitly; the nil checks below also
+// protect older clients and incomplete responses. Keeping one local error gives callers the same
+// behavior across supported server versions.
 var errUnsupportedSchemeAPI = errors.New("the server's plugin API did not answer a scheme call; it does not carry the space permission support this plugin requires")
+
+func normalizeUnsupportedSchemeAPI(err error) error {
+	if errors.Is(err, pluginapi.ErrNotSupported) {
+		return errUnsupportedSchemeAPI
+	}
+	return err
+}
 
 // The three functions below are the space tier model: what a plain member, an admin and a guest
 // of a space may do. Core creates the scheme with these permission sets but does not define them —
@@ -66,9 +72,8 @@ func (s *Service) getSchemeRolesForChannel(channelID string) (*schemeRoles, erro
 		if errors.Is(err, pluginapi.ErrNotFound) {
 			return nil, &store.ErrNotFound{EntityName: "ChannelScheme", ID: channelID}
 		}
-		return nil, err
+		return nil, normalizeUnsupportedSchemeAPI(err)
 	}
-	// The generated RPC client returns nil with no error when this plugin API is absent.
 	if channelScheme == nil || channelScheme.Scheme == nil || channelScheme.GuestRole == nil ||
 		channelScheme.UserRole == nil || channelScheme.AdminRole == nil {
 		return nil, errUnsupportedSchemeAPI
@@ -89,7 +94,7 @@ func (s *Service) getSchemeByName(name string) (*mmmodel.Scheme, error) {
 		if errors.Is(err, pluginapi.ErrNotFound) {
 			return nil, &store.ErrNotFound{EntityName: "Scheme", ID: name}
 		}
-		return nil, err
+		return nil, normalizeUnsupportedSchemeAPI(err)
 	}
 	if scheme == nil {
 		return nil, errUnsupportedSchemeAPI

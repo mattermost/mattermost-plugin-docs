@@ -6,6 +6,7 @@ package app
 import (
 	"testing"
 
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -87,6 +88,37 @@ func TestResolveSpaceScheme_PoolsByPermissionSet(t *testing.T) {
 		schemeID, _, err := svc.resolveSpaceScheme(commentPreset)
 		require.NoError(t, err)
 		require.Equal(t, testutil.PresetSchemeID(mmmodel.SchemeNameSpaceComment), schemeID)
+	})
+}
+
+func TestSchemeAPIUnsupportedIsNormalized(t *testing.T) {
+	t.Run("channel scheme lookup", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		channelID := mmmodel.NewId()
+		mockAPI.On("GetSchemeForChannel", channelID).Return(nil, nil, nil, nil, nil)
+		svc := &Service{client: pluginapi.NewClient(mockAPI, nil)}
+
+		_, err := svc.getSchemeRolesForChannel(channelID)
+		require.ErrorIs(t, err, errUnsupportedSchemeAPI)
+	})
+
+	t.Run("scheme lookup by name", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		mockAPI.On("GetSchemeByName", "missing-api").Return(nil, nil)
+		svc := &Service{client: pluginapi.NewClient(mockAPI, nil)}
+
+		_, err := svc.getSchemeByName("missing-api")
+		require.ErrorIs(t, err, errUnsupportedSchemeAPI)
+	})
+
+	t.Run("pooled scheme lookup", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		mockAPI.On("GetOrCreatePluginChannelScheme", mock.Anything, mock.Anything, mock.Anything).
+			Return(nil, nil)
+		svc := &Service{client: pluginapi.NewClient(mockAPI, nil)}
+
+		_, _, err := svc.resolveSpaceScheme([]string{mmmodel.PermissionCreatePage.Id})
+		require.ErrorIs(t, err, errUnsupportedSchemeAPI)
 	})
 }
 
