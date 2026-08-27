@@ -46,8 +46,11 @@ const SlashMenu = ({editing, getEditor, surfaceRef}: Props) => {
     const {setReference, setFloating} = refs;
 
     useEffect(() => {
-        setReference(open ? {getBoundingClientRect: () => rect() ?? new DOMRect()} : null);
-    }, [setReference, open, rect]);
+        setReference(open ? {
+            contextElement: surfaceRef.current ?? undefined,
+            getBoundingClientRect: () => rect() ?? new DOMRect(),
+        } : null);
+    }, [setReference, open, rect, surfaceRef]);
 
     // The list scrolls, so keyboard navigation has to drag the viewport along with it.
     const setActiveItem = useCallback((node: HTMLButtonElement | null) => {

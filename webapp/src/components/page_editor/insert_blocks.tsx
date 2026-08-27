@@ -48,17 +48,19 @@ const messages = defineMessages({
 const ICON_SIZE = 18;
 
 // The host owns the extensions these commands come from, and the plugin doesn't depend on
-// them, so the chain is typed here rather than imported.
+// them, so the chain is typed here rather than imported. Setters rather than toggles: the
+// menu asks for a block type, and picking the type a block already has should leave it
+// alone, not strip it back to a paragraph.
 type HostChain = {
     focus: () => HostChain;
     deleteRange: (range: BlockRange) => HostChain;
     setParagraph: () => HostChain;
-    toggleHeading: (attributes: {level: number}) => HostChain;
+    setHeading: (attributes: {level: number}) => HostChain;
     toggleBulletList: () => HostChain;
     toggleOrderedList: () => HostChain;
-    toggleBlockquote: () => HostChain;
-    toggleCallout: (type: string) => HostChain;
-    toggleCodeBlock: () => HostChain;
+    setBlockquote: () => HostChain;
+    setCallout: (type: string) => HostChain;
+    setCodeBlock: () => HostChain;
     setHorizontalRule: () => HostChain;
     insertTable: (options: {rows: number; cols: number; withHeaderRow: boolean}) => HostChain;
     run: () => boolean;
@@ -71,7 +73,23 @@ const heading = (level: 1 | 2 | 3 | 4, icon: React.ReactNode, title: MessageDesc
     id: `heading${level}`,
     icon,
     title,
-    insert: (editor, range) => replacing(editor, range).toggleHeading({level}).run(),
+    insert: (editor, range) => replacing(editor, range).setHeading({level}).run(),
+});
+
+const list = (
+    id: string,
+    node: string,
+    toggle: (chain: HostChain) => HostChain,
+    icon: React.ReactNode,
+    title: MessageDescriptor,
+): InsertBlock => ({
+    id,
+    icon,
+    title,
+    insert: (editor, range) => {
+        const chain = replacing(editor, range);
+        (editor.isActive(node) ? chain : toggle(chain)).run();
+    },
 });
 
 // Ordered as the design's Basic blocks section is, so the muscle memory built there
@@ -87,35 +105,37 @@ export const INSERT_BLOCKS: InsertBlock[] = [
     heading(2, <FormatHeader2Icon size={ICON_SIZE}/>, messages.heading2),
     heading(3, <FormatHeader3Icon size={ICON_SIZE}/>, messages.heading3),
     heading(4, <FormatHeader4Icon size={ICON_SIZE}/>, messages.heading4),
-    {
-        id: 'bulletList',
-        icon: <FormatListBulletedIcon size={ICON_SIZE}/>,
-        title: messages.bulletList,
-        insert: (editor, range) => replacing(editor, range).toggleBulletList().run(),
-    },
-    {
-        id: 'orderedList',
-        icon: <FormatListNumberedIcon size={ICON_SIZE}/>,
-        title: messages.orderedList,
-        insert: (editor, range) => replacing(editor, range).toggleOrderedList().run(),
-    },
+    list(
+        'bulletList',
+        'bulletList',
+        (chain) => chain.toggleBulletList(),
+        <FormatListBulletedIcon size={ICON_SIZE}/>,
+        messages.bulletList,
+    ),
+    list(
+        'orderedList',
+        'orderedList',
+        (chain) => chain.toggleOrderedList(),
+        <FormatListNumberedIcon size={ICON_SIZE}/>,
+        messages.orderedList,
+    ),
     {
         id: 'quote',
         icon: <FormatQuoteOpenIcon size={ICON_SIZE}/>,
         title: messages.quote,
-        insert: (editor, range) => replacing(editor, range).toggleBlockquote().run(),
+        insert: (editor, range) => replacing(editor, range).setBlockquote().run(),
     },
     {
         id: 'callout',
         icon: <BullhornOutlineIcon size={ICON_SIZE}/>,
         title: messages.callout,
-        insert: (editor, range) => replacing(editor, range).toggleCallout('info').run(),
+        insert: (editor, range) => replacing(editor, range).setCallout('info').run(),
     },
     {
         id: 'codeBlock',
         icon: <CodeTagsIcon size={ICON_SIZE}/>,
         title: messages.codeBlock,
-        insert: (editor, range) => replacing(editor, range).toggleCodeBlock().run(),
+        insert: (editor, range) => replacing(editor, range).setCodeBlock().run(),
     },
     {
         id: 'divider',
