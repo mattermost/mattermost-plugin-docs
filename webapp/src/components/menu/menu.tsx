@@ -5,6 +5,7 @@ import {Menu as BaseMenu} from '@base-ui-components/react/menu';
 import classNames from 'classnames';
 import React from 'react';
 
+import CheckIcon from '@mattermost/compass-icons/components/check';
 import ChevronRightIcon from '@mattermost/compass-icons/components/chevron-right';
 import {WithTooltip} from '@mattermost/shared/components/tooltip';
 
@@ -39,6 +40,11 @@ type ItemProps = {
 type LinkItemProps = ItemProps & {
     href: string;
     external?: boolean;
+};
+
+type CheckboxItemProps = Pick<ItemProps, 'secondaryLabel' | 'disabled' | 'children'> & {
+    checked: boolean;
+    onCheckedChange: (checked: boolean) => void;
 };
 
 type SubmenuProps = {
@@ -95,6 +101,31 @@ const MenuItem = ({leadingIcon, trailingIcon, secondaryLabel, destructive, disab
             {children}
         </ItemBody>
     </BaseMenu.Item>
+);
+
+/** A checkbox menu item that remains open while a set of options is edited. */
+const MenuCheckboxItem = ({checked, secondaryLabel, disabled, onCheckedChange, children}: CheckboxItemProps) => (
+    <BaseMenu.CheckboxItem
+        className={classNames(styles.item, {[styles.disabled]: disabled})}
+        checked={checked}
+        disabled={disabled}
+        closeOnClick={false}
+        onCheckedChange={(next) => onCheckedChange(next)}
+    >
+        <ItemBody
+            leadingIcon={(
+                <BaseMenu.CheckboxItemIndicator
+                    className={styles.checkboxIndicator}
+                    keepMounted={true}
+                >
+                    <CheckIcon size={14}/>
+                </BaseMenu.CheckboxItemIndicator>
+            )}
+            secondaryLabel={secondaryLabel}
+        >
+            {children}
+        </ItemBody>
+    </BaseMenu.CheckboxItem>
 );
 
 /**
@@ -197,6 +228,7 @@ const Menu = ({ariaLabel, align = 'left', tooltip, trigger, open, onOpenChange, 
 );
 
 Menu.Item = MenuItem;
+Menu.CheckboxItem = MenuCheckboxItem;
 Menu.LinkItem = MenuLinkItem;
 Menu.Separator = MenuSeparator;
 Menu.Submenu = MenuSubmenu;

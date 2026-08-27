@@ -51,18 +51,53 @@ describe('MemberRowMenu', () => {
         expect(screen.queryByRole('menuitem', {name: 'Can edit'})).not.toBeInTheDocument();
     });
 
-    it('offers Remove for another member, and the role items are disabled', async () => {
+    it('offers Remove and edits granular grants without closing the menu', async () => {
         const onRemove = jest.fn();
-        renderMenu({role: 'member', onRemove});
+        const onChange = jest.fn();
+        renderMenu({
+            role: 'member',
+            onRemove,
+            permissionMenu: {
+                options: ['create_page', 'edit_page'],
+                selected: ['edit_page'],
+                effective: ['read_page', 'edit_page'],
+                disabled: false,
+                onChange,
+            },
+        });
 
         await openMenu();
 
-        // Roles are PR #10 scaffolding: shown so the menu keeps its shape, but inert.
-        expect(screen.getByRole('menuitem', {name: 'Admin'})).toHaveAttribute('aria-disabled', 'true');
-        expect(screen.getByRole('menuitem', {name: 'Can edit'})).toHaveAttribute('aria-disabled', 'true');
+        expect(screen.getByRole('menuitemcheckbox', {name: 'Create pages'})).toHaveAttribute('aria-checked', 'false');
+        expect(screen.getByRole('menuitemcheckbox', {name: 'Edit pages'})).toHaveAttribute('aria-checked', 'true');
+
+        fireEvent.click(screen.getByRole('menuitemcheckbox', {name: 'Create pages'}));
+        expect(onChange).toHaveBeenCalledWith(['create_page', 'edit_page']);
+        expect(screen.getByRole('menu', {name: /Ada/})).toBeInTheDocument();
 
         fireEvent.click(screen.getByRole('menuitem', {name: 'Remove from space'}));
         expect(onRemove).toHaveBeenCalled();
+    });
+
+    it('locks the capability matrix for a guest', async () => {
+        const onChange = jest.fn();
+        renderMenu({
+            role: 'guest',
+            permissionMenu: {
+                options: ['comment_page'],
+                selected: [],
+                effective: ['read_page'],
+                disabled: true,
+                onChange,
+            },
+        });
+
+        await openMenu();
+
+        const comment = screen.getByRole('menuitemcheckbox', {name: 'Comment on pages'});
+        expect(comment).toHaveAttribute('aria-disabled', 'true');
+        fireEvent.click(comment);
+        expect(onChange).not.toHaveBeenCalled();
     });
 
     it('offers Leave space on your own row instead of Remove', async () => {

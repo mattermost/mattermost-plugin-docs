@@ -17,6 +17,7 @@ import {pluginId} from '../helpers/preflight';
 import {readState} from '../helpers/state';
 import {addUserToTeam, createTeam, promoteToTeamAdmin, removeUserFromTeam, setTeamAdminSpaceTiers} from '../helpers/team';
 import {createUser, type SeededUser, suppressOnboarding} from '../helpers/user';
+import {ShareSpaceModalPage} from '../pages/share_space_modal_page';
 import {SpacePage} from '../pages/space_page';
 import {SpaceSettingsModalPage} from '../pages/space_settings_modal_page';
 import {SpacesSidebarPage} from '../pages/spaces_sidebar_page';
@@ -294,22 +295,24 @@ test.describe('space permissions', () => {
             await expect(memberSpace.addPageButton).toBeVisible();
             const memberURL = memberPage.url();
 
-            // # Revoke the create_page default through the administrator's real checkbox.
+            // # Revoke the create_page default through the compact Share capability menu.
             await loginAs(page, server.adminUsername, server.adminPassword);
             const adminSidebar = new SpacesSidebarPage(page);
-            const settings = new SpaceSettingsModalPage(page);
+            const adminSpace = new SpacePage(page);
+            const share = new ShareSpaceModalPage(page);
             await adminSidebar.goto(teamName);
             await adminSidebar.openSpace(spaceTitle);
-            await settings.openFromSpaceHeader(spaceTitle);
-            await settings.openPermissions();
-            await settings.togglePermission('Create pages');
+            await adminSpace.openShare();
+            await share.expectOpen();
+            await share.expectDefaultCapability('Create pages', true);
+            await share.toggleDefaultCapability('Create pages');
 
             // * The untouched member page loses Add page without a reload or navigation.
             await expect(memberSpace.addPageButton).toBeHidden();
             await expect(memberPage).toHaveURL(memberURL);
 
             // # Restore the same default.
-            await settings.togglePermission('Create pages');
+            await share.toggleDefaultCapability('Create pages');
 
             // * The same live page offers authoring again.
             await expect(memberSpace.addPageButton).toBeVisible();
@@ -384,33 +387,31 @@ test.describe('space permissions', () => {
             await expect(memberSpace.editButton).toBeHidden();
             const memberURL = memberPage.url();
 
-            // # Grant Edit pages in the member's additional-grants row.
+            // # Grant Edit pages from the member's compact capability menu in Share.
             const adminSidebar = new SpacesSidebarPage(page);
-            const settings = new SpaceSettingsModalPage(page);
+            const adminSpace = new SpacePage(page);
+            const share = new ShareSpaceModalPage(page);
             await adminSidebar.goto(teamName);
             await adminSidebar.openSpace(spaceTitle);
-            await settings.openFromSpaceHeader(spaceTitle);
-            await settings.openPermissions();
-            await settings.expectPermission('Edit pages', false);
-            await settings.expectMemberPermission(member.id, 'edit_page', false);
-            await settings.expectMemberEffectivePermission(member.id, 'View pages', true);
-            await settings.expectMemberEffectivePermission(member.id, 'Edit pages', false);
-            await settings.toggleMemberPermission(member.id, 'edit_page');
+            await adminSpace.openShare();
+            await share.expectOpen();
+            await share.expectDefaultSummary('Can view');
+            await share.expectMemberSummary(member.username, 'Can view');
+            await share.expectMemberCapability(member.username, 'Edit pages', false);
+            await share.toggleMemberCapability(member.username, 'Edit pages');
 
-            // * The grant is visibly separate from the unchanged default, while the resolved
-            // effective set and the member's untouched page both gain Edit pages.
-            await settings.expectPermission('Edit pages', false);
-            await settings.expectMemberPermission(member.id, 'edit_page', true);
-            await settings.expectMemberEffectivePermission(member.id, 'Edit pages', true);
+            // * The grant is visibly separate from the unchanged default; its custom summary and
+            // the member's untouched page both gain the new authority.
+            await share.expectDefaultSummary('Can view');
+            await share.expectMemberSummary(member.username, 'Custom');
             await expect(memberSpace.editButton).toBeVisible();
             await expect(memberPage).toHaveURL(memberURL);
 
-            // # Revoke the individual grant through the same row.
-            await settings.toggleMemberPermission(member.id, 'edit_page');
+            // # Revoke the individual grant through the same open menu.
+            await share.toggleMemberCapability(member.username, 'Edit pages');
 
-            // * Both the resolved display and the already-open member page lose it live.
-            await settings.expectMemberPermission(member.id, 'edit_page', false);
-            await settings.expectMemberEffectivePermission(member.id, 'Edit pages', false);
+            // * Both the compact summary and the already-open member page lose it live.
+            await share.expectMemberSummary(member.username, 'Can view');
             await expect(memberSpace.editButton).toBeHidden();
             await expect(memberPage).toHaveURL(memberURL);
         } finally {
@@ -494,37 +495,38 @@ test.describe('space permissions', () => {
      */
     test('view access can be changed in both directions and reads back', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
         const sidebar = new SpacesSidebarPage(page);
-        const settings = new SpaceSettingsModalPage(page);
+        const space = new SpacePage(page);
+        const share = new ShareSpaceModalPage(page);
 
         await loginAs(page, server.adminUsername, server.adminPassword);
         await sidebar.goto(teamName);
         await sidebar.openSpace(spaceTitle);
-        await settings.openFromSpaceHeader(spaceTitle);
-        await settings.openPermissions();
+        await space.openShare();
+        await share.expectOpen();
 
         // * Verify a space created without an explicit view access starts public
-        await settings.expectAccess('Public');
+        await share.expectAccess('Public');
         await expectNonMemberAccess(server.baseURL, browser, true);
 
         // # Make it private
-        await settings.chooseAccess('Private');
+        await share.chooseAccess('Private');
 
         // # Reopen so the value comes from the server rather than from the click
-        await settings.close();
-        await settings.openFromSpaceHeader(spaceTitle);
-        await settings.openPermissions();
+        await share.close();
+        await space.openShare();
+        await share.expectOpen();
 
         // * Verify the space is private
-        await settings.expectAccess('Private');
+        await share.expectAccess('Private');
         await expectNonMemberAccess(server.baseURL, browser, false);
 
         // # Restore Public and re-read again. This catches a one-way implementation that can
         // privatize a space but cannot restore the team-wide read grant.
-        await settings.chooseAccess('Public');
-        await settings.close();
-        await settings.openFromSpaceHeader(spaceTitle);
-        await settings.openPermissions();
-        await settings.expectAccess('Public');
+        await share.chooseAccess('Public');
+        await share.close();
+        await space.openShare();
+        await share.expectOpen();
+        await share.expectAccess('Public');
 
         // * The inverse transition restores actual discovery and known-space access for an
         //   eligible team member who was never invited to the space.

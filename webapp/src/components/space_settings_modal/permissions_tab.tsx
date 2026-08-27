@@ -3,11 +3,13 @@
 
 import type {MemberProfile} from 'hooks/members';
 import {useSpaceMemberProfiles} from 'hooks/members';
+import {usePermissionLabels} from 'hooks/permission_labels';
 import {useAppSelector} from 'hooks/redux';
 import {useManageSpaceMembers} from 'hooks/space_members';
 import {useSpacePermissions} from 'hooks/space_permissions';
 import React, {useMemo} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
+import {DEFAULT_PERMISSION_PRESETS, samePermissionSet} from 'utils/space_permission_sets';
 
 import GlobeIcon from '@mattermost/compass-icons/components/globe';
 import LockOutlineIcon from '@mattermost/compass-icons/components/lock-outline';
@@ -23,37 +25,9 @@ import type {Space} from 'types/docs';
 import type {Permission} from 'types/permissions';
 import {DEFAULT_PERMISSION_ORDER, MEMBER_PERMISSION_ORDER, Permissions} from 'types/permissions';
 
-import PermissionToggles, {usePermissionLabels} from './permission_toggles';
+import PermissionToggles from './permission_toggles';
 import {Section} from './space_settings_modal';
 import styles from './space_settings_modal.module.scss';
-
-type DefaultPermissionPreset = {
-    id: 'contribute' | 'comment' | 'read_only';
-    permissions: readonly Permission[];
-};
-
-// Core seeds these three schemes and resolves them without creating a licensed custom scheme.
-// Every other default-permission set goes through the custom-scheme pool.
-const DEFAULT_PERMISSION_PRESETS: readonly DefaultPermissionPreset[] = [
-    {
-        id: 'contribute',
-        permissions: [Permissions.CREATE_PAGE, Permissions.COMMENT_PAGE, Permissions.EDIT_PAGE, Permissions.DELETE_OWN_PAGE],
-    },
-    {
-        id: 'comment',
-        permissions: [Permissions.COMMENT_PAGE],
-    },
-    {
-        id: 'read_only',
-        permissions: [],
-    },
-];
-
-const samePermissionSet = (left: readonly Permission[], right: readonly Permission[]) => {
-    const leftSet = new Set(left);
-    const rightSet = new Set(right);
-    return leftSet.size === rightSet.size && [...leftSet].every((permission) => rightSet.has(permission));
-};
 
 // The server returns the complete authority in `permissions`, separately from the direct
 // `granted_permissions` that the checkboxes edit. Keep the complete set in a stable, readable
@@ -344,7 +318,7 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                 title={(
                     <FormattedMessage
                         id='docs.spaceSettings.permissions.peopleHeading'
-                        defaultMessage='People and groups with access'
+                        defaultMessage='People with access'
                     />
                 )}
             >

@@ -13,6 +13,7 @@ import {openDocsModal} from 'components/modals';
 
 import MemberRow from './member_row';
 import MemberRowMenu from './member_row_menu';
+import type {MemberPermissionMenu} from './member_row_menu';
 import styles from './space_members.module.scss';
 
 export type MemberListActions = {
@@ -30,6 +31,9 @@ type Props = {
 
     /** The caller may supply a role only when its roster read resolved one. */
     roleForMember?: (member: MemberProfile) => 'admin' | 'member' | 'guest' | undefined;
+
+    /** Granular grants shown in the existing role dropdown. */
+    permissionMenuForMember?: (member: MemberProfile) => MemberPermissionMenu | undefined;
 
     /** Names the space in the leave confirmation. Only needed alongside `actions`. */
     spaceTitle?: string;
@@ -60,7 +64,7 @@ type Props = {
  * it — so both confirm first. Confirming here rather than in each surface keeps the
  * copy in one place and means a new surface cannot forget it.
  */
-const MemberList = ({members, avatarSize, showYouBadge = false, roleForMember, spaceTitle, comfortable = false, actions, renderBelowMember}: Props) => {
+const MemberList = ({members, avatarSize, showYouBadge = false, roleForMember, permissionMenuForMember, spaceTitle, comfortable = false, actions, renderBelowMember}: Props) => {
     const currentUserId = useAppSelector(getCurrentUserId);
 
     const confirmRemove = (member: MemberProfile) => openDocsModal((modal) => (
@@ -156,6 +160,7 @@ const MemberList = ({members, avatarSize, showYouBadge = false, roleForMember, s
                             <MemberRowMenu
                                 member={member}
                                 role={roleForMember?.(member)}
+                                permissionMenu={permissionMenuForMember?.(member)}
                                 isCurrentUser={isCurrentUser}
                                 disabled={actions.disabled}
                                 onRemove={() => confirmRemove(member)}

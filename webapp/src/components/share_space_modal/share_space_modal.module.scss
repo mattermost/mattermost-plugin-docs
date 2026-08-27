@@ -47,8 +47,8 @@
     color: rgba(var(--center-channel-color-rgb), 0.75);
 }
 
-// Compact 24px dropdown chrome — not a padded `.btn`. Disabled until public
-// spaces exist; keep full opacity so Private still reads as the current state.
+// Compact 24px dropdown chrome — not a padded `.btn`. Keep the current access
+// state legible when editing is unavailable.
 .accessTrigger {
     display: inline-flex;
     height: 24px;

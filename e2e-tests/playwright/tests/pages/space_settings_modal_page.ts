@@ -143,7 +143,7 @@ export class SpaceSettingsModalPage {
     }
 
     async addMember(username: string) {
-        const input = this.dialog.getByLabel('Add people or groups');
+        const input = this.dialog.getByLabel('Add people');
         await input.fill(username);
         await this.page.getByRole('option', {name: new RegExp(username)}).first().click();
         await this.dialog.getByRole('button', {name: 'Add', exact: true}).click();

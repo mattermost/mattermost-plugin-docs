@@ -75,6 +75,24 @@
     color: rgba(var(--center-channel-color-rgb), 0.64);
 }
 
+.checkboxIndicator {
+    display: flex;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 16px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.48);
+    border-radius: 2px;
+    color: transparent;
+
+    &[data-checked] {
+        border-color: var(--button-bg);
+        background: var(--button-bg);
+        color: var(--button-color);
+    }
+}
+
 .destructive .itemIcon {
     color: var(--error-text);
 }

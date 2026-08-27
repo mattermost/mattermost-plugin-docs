@@ -16,7 +16,6 @@ import {CreateSpaceModalPage} from '../pages/create_space_modal_page';
 import {DocsSwitcherPage} from '../pages/docs_switcher_page';
 import {ShareSpaceModalPage} from '../pages/share_space_modal_page';
 import {SpacePage} from '../pages/space_page';
-import {SpaceSettingsModalPage} from '../pages/space_settings_modal_page';
 import {SpacesSidebarPage} from '../pages/spaces_sidebar_page';
 
 // Serial: later tests use the space and page the first test creates, and a plain describe would
@@ -254,7 +253,8 @@ test.describe.serial('docs authoring', () => {
         test.setTimeout(120_000);
 
         const sidebar = new SpacesSidebarPage(page);
-        const settings = new SpaceSettingsModalPage(page);
+        const spacePage = new SpacePage(page);
+        const share = new ShareSpaceModalPage(page);
 
         await loginAs(page, server.adminUsername, server.adminPassword);
 
@@ -265,15 +265,15 @@ test.describe.serial('docs authoring', () => {
             'This scenario covers the unlicensed preset-only surface.',
         );
 
-        // # Open the space's default permissions on an unlicensed server.
+        // # Open the space's compact sharing and permission surface on an unlicensed server.
         await sidebar.goto(teamName);
         await sidebar.openSpace(spaceTitle);
-        await settings.openFromSpaceHeader(spaceTitle);
-        await settings.openPermissions();
+        await spacePage.openShare();
+        await share.expectOpen();
 
-        // * The arbitrary checkbox matrix is replaced by the current included preset.
-        await expect(settings.permission('Create pages')).toHaveCount(0);
-        await settings.expectPermissionPreset('Contribute');
+        // * The arbitrary checkbox matrix is replaced by the three included presets.
+        await share.expectDefaultSummary('Can edit');
+        await share.expectDefaultPresetOptions();
 
         // # Start a draft while Contribute still grants creation. Keep this one browser stale so
         // its already-rendered Publish button can submit to the live gate after the preset changes.
@@ -291,12 +291,12 @@ test.describe.serial('docs authoring', () => {
             await staleSpace.writeBody('This draft must not publish under the Comment preset.');
             await staleSpace.expectDraftSaved();
 
-            // # Select Comment, then close and reopen settings to force a server-backed read.
-            await settings.choosePermissionPreset('Comment');
-            await settings.close();
-            await settings.openFromSpaceHeader(spaceTitle);
-            await settings.openPermissions();
-            await settings.expectPermissionPreset('Comment');
+            // # Select Comment, then close and reopen Share to force a server-backed read.
+            await share.chooseDefaultPreset('Comment');
+            await share.close();
+            await spacePage.openShare();
+            await share.expectOpen();
+            await share.expectDefaultSummary('Can comment');
 
             // * The stale authoring UI reaches the real enforcement point and is rejected.
             const deniedResponsePromise = stalePage.waitForResponse((response) => (
@@ -333,20 +333,20 @@ test.describe.serial('docs authoring', () => {
         await expectMemberCanOnlyRead();
 
         // # Select Read only and prove both persistence and its effective read-only outcome.
-        await settings.choosePermissionPreset('Read only');
-        await settings.close();
-        await settings.openFromSpaceHeader(spaceTitle);
-        await settings.openPermissions();
-        await settings.expectPermissionPreset('Read only');
+        await share.chooseDefaultPreset('Read only');
+        await share.close();
+        await spacePage.openShare();
+        await share.expectOpen();
+        await share.expectDefaultSummary('Can view');
         await expectMemberCanOnlyRead();
 
-        // # Restore Contribute and force another fresh settings read.
-        await settings.choosePermissionPreset('Contribute');
-        await settings.close();
-        await settings.openFromSpaceHeader(spaceTitle);
-        await settings.openPermissions();
-        await settings.expectPermissionPreset('Contribute');
-        await settings.close();
+        // # Restore Contribute and force another fresh Share read.
+        await share.chooseDefaultPreset('Contribute');
+        await share.close();
+        await spacePage.openShare();
+        await share.expectOpen();
+        await share.expectDefaultSummary('Can edit');
+        await share.close();
 
         // * A fresh member now completes a real Add page → autosave → Publish journey.
         const contributeTitle = `Preset publish ${uniqueSuffix()}`;
