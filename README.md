@@ -39,12 +39,20 @@ Runs the Playwright suite in `e2e-tests/playwright/`. **Requires Docker**: the s
 its own throwaway Mattermost and Postgres via testcontainers, installs the freshly built
 plugin into it, and tears everything down afterwards. Nothing touches your local dev server.
 
-The Docs plugin needs a server built with Docs core support — the `EnableDocs` feature flag
-and the Space channel type — which stock releases do not yet ship. The suite therefore defaults
-to the image core CI published for the commit in `build/core-commit.txt`,
-`mattermostdevelopment/mattermost-team-edition:<7-char-sha>`, and checks on startup that the
-server is new enough and has the flag, so an image that cannot run Docs fails with a message
-saying so.
+The Docs plugin needs a server built with Docs core support — the `EnableDocs` feature flag and the
+Space channel type — which stock releases do not yet ship. The suite defaults to
+`mattermostdevelopment/mattermost-enterprise-edition:master`. Set `MM_IMAGE` locally when testing
+plugin work that depends on an unmerged core image.
+
+Cloud CI has the same default. A feature PR can select its own core commit for both E2E jobs by
+adding this exact marker to that PR's description:
+
+```html
+<!-- e2e-core-commit: 0123456789abcdef0123456789abcdef01234567 -->
+```
+
+The SHA is scoped to that PR event. PRs without their own marker, and all runs on `master`, continue
+to use the master image.
 
 Set `MM_IMAGE` to override that default — to reproduce a run against another build, or to
 bisect a server-side regression:
@@ -52,9 +60,6 @@ bisect a server-side regression:
 ```bash
 MM_IMAGE=mattermostdevelopment/mattermost-team-edition:<tag> make test-e2e
 ```
-
-Core CI does not retain its per-commit images indefinitely. When the pinned tag stops
-resolving, bump `build/core-commit.txt` to a commit whose image is still published.
 
 To run against a Mattermost server you are already running instead of a container:
 
@@ -72,12 +77,12 @@ default run without them:
 
 ```bash
 MM_E2E_SPACE_PERMISSIONS=true \
-MM_IMAGE=mattermostdevelopment/mattermost-team-edition:<7-char-sha> \
+MM_IMAGE=mattermostdevelopment/mattermost-team-edition:<paired-core-tag> \
 MM_LICENSE_FILE=/path/to/license \
 make test-e2e
 ```
 
-See `e2e-tests/playwright/README.md` for the image pin and the license.
+See `e2e-tests/playwright/README.md` for the paired image and the license.
 
 Other useful scripts, run from `e2e-tests/playwright/`:
 

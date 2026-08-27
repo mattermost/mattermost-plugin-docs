@@ -116,7 +116,9 @@ export async function assertSpaceSchemeReadSupported(baseURL: string, username: 
         if (!createResponse.ok) {
             const body = await createResponse.text();
             throw new Error(
-                `Scheme-read preflight could not create a preset-backed space (${createResponse.status}): ${body.slice(0, 400)}`,
+                `Scheme-read preflight could not create a preset-backed space (${createResponse.status}): ` +
+                `${body.slice(0, 400)}\nThe running Mattermost image may predate the plugin's channel-scheme API. ` +
+                remedy,
             );
         }
         const space = await createResponse.json() as {id: string};

@@ -10,11 +10,16 @@ the team, and installs the bundle before the first spec runs.
 make test-e2e
 ```
 
-That runs the authoring specs unlicensed against the core image named by the commit in
-`build/core-commit.txt` — `mattermostdevelopment/mattermost-team-edition:<7-char-sha>`, derived by
-`resolveImage()` and overridable with `MM_IMAGE`. It is the paired core branch's image rather than
-a release tag because `CreateSpace` resolves a preset space scheme core seeds only there. This is
-the run the CI `e2e-playwright-tests` job takes.
+That runs the authoring specs unlicensed against
+`mattermostdevelopment/mattermost-enterprise-edition:master`, overridable locally with `MM_IMAGE`.
+In cloud CI, a PR can select an unmerged core build for both E2E jobs with a description marker:
+
+```html
+<!-- e2e-core-commit: 0123456789abcdef0123456789abcdef01234567 -->
+```
+
+The marker is read only from the current PR event. Without it — including pushes to `master` and
+later PRs — CI uses the master image.
 
 ### The space-permission specs
 
@@ -25,6 +30,7 @@ also ensures the unlicensed preset-only authoring scenario is not collected agai
 
 ```bash
 MM_E2E_SPACE_PERMISSIONS=true \
+MM_IMAGE=mattermostdevelopment/mattermost-team-edition:<paired-core-tag> \
 MM_LICENSE_FILE=/path/to/license \
 make test-e2e
 ```
@@ -43,36 +49,28 @@ helper detects that and requests `linux/amd64` itself, so nothing needs setting 
 runners are amd64 and take the native path. Expect the emulated server to boot slowly — the
 migration wait has room for it.
 
-Core CI's per-commit images are **not retained indefinitely** — if the pull 404s, bump the pin in
-`build/core-commit.txt` to a commit whose image is still published:
-
-```bash
-curl -s -o /dev/null -w '%{http_code}' \
-  https://hub.docker.com/v2/repositories/mattermostdevelopment/mattermost-team-edition/tags/<7-char-sha>/
-```
-
-In CI this run is its own job, `e2e-playwright-space-permissions`, using the same image resolution
-as the authoring job and additionally requiring the license secret. The suite is **not
-parallel-safe**: `setGuestAccountsEnabled` (`tests/helpers/guest.ts`) and the System Console cases
-mutate server-wide state. Permission mode therefore uses one worker locally as well as in CI; see
-`workers` in `playwright.config.ts`.
+In CI this run is its own job, `e2e-playwright-space-permissions`. It resolves the same core selector
+as the current authoring job; unlike authoring, it additionally requires the license secret. The
+suite is **not parallel-safe**: `setGuestAccountsEnabled`
+(`tests/helpers/guest.ts`) and the System Console cases mutate server-wide state. Permission mode
+therefore uses one worker locally as well as in CI; see `workers` in `playwright.config.ts`.
 
 ## What the harness carries for the paired core branch
 
 All of it should be revisited once the core changes ship in a release.
 
-What the permission run adds, under `MM_E2E_SPACE_PERMISSIONS` alone:
+Permission mode and its CI job add:
 
 | Where | What | Why |
 |---|---|---|
 | `tests/helpers/mmcontainer.ts` | `resolveLicense()` + `applyLicense()` (`mmctl license upload-string`) | The guest scenarios demote a user to a guest, which needs `GuestAccountsSettings.Enable` — a licensed feature. Accepts the license as `MM_LICENSE` or `MM_LICENSE_FILE`. |
+| `tests/helpers/mmcontainer.ts` | `assertSupportsSpacePermissions()` probes the `docs_pg_create` role | Neither the version check nor the `EnableDocs` check can tell a core image that predates the RBAC work — the flag exists on master. Turns unexplained 403s into one named setup failure. |
 
 These apply to every run, permission specs or not:
 
 | Where | What | Why |
 |---|---|---|
-| `tests/helpers/mmcontainer.ts` | The image is derived from `build/core-commit.txt` (`resolveImage()`), not a release tag | `CreateSpace` resolves a preset space scheme seeded only on the paired core branch. A stock image boots, passes the `EnableDocs` check, then fails the first space for a reason nothing names. |
-| `tests/helpers/mmcontainer.ts` | `assertSupportsSpacePermissions()` probes the `docs_pg_create` role | Neither the version check nor the `EnableDocs` check can tell a core image that predates the RBAC work — the flag exists on master. Turns unexplained 403s into one named setup failure. |
+| `.github/actions/resolve-e2e-core-image/action.yaml` | A per-PR core-SHA marker resolved for both cloud jobs | Feature PRs can test their own unmerged core commit, while PRs without a marker and all master runs use the current master image. |
 | `tests/helpers/mmcontainer.ts` | `waitForPhase2Migration()` before the first spec runs | The advanced-permissions phase-2 migration runs as a post-boot job, and core reads a scheme through that gate whichever route asks — until it finishes, the first `CreateSpace` fails with `app.schemes.is_phase_2_migration_completed.not_completed`. |
 | `tests/helpers/mmcontainer.ts` | `MM_SERVICEENVIRONMENT: 'test'` in the container env | The published core images are production builds, which default to the production service environment and reject a test/development license outright. Without this the license step fails, not a spec. |
 | `tests/helpers/mmcontainer.ts` | `exec()` takes a `displayCommand` override; `applyLicense` passes a redacted form | The failure message is built from the whole command, so a rejected license would otherwise print itself into the terminal and into the CI job log. |

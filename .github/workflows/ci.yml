@@ -7,7 +7,9 @@ on:
       - master
     tags:
       - "v*"
+  # `edited` makes changing a PR's optional e2e-core-commit marker start a run immediately.
   pull_request:
+    types: [opened, synchronize, reopened, edited]
 
 # Superseded pull request runs are cancelled. Every other run gets a group of its own,
 # because a shared group keeps only the newest pending run: a second push to master
@@ -126,10 +128,6 @@ jobs:
     permissions:
       contents: read
     env:
-      # Left to the container helper, which derives the image from build/core-commit.txt: the
-      # specs create a space, and CreateSpace resolves a preset scheme only the paired core branch
-      # seeds, so :master fails them all. `vars` still overrides it from repository settings.
-      MM_IMAGE: ${{ vars.MM_IMAGE }}
       # Lifted to env because the secrets context is not available in a step-level `if`.
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -140,6 +138,13 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+
+      # A PR may opt both E2E jobs into its own unmerged core build. Without the marker — including
+      # every push to master and every later PR — the action selects the normal master image.
+      - name: ci/resolve-e2e-core-image
+        uses: ./.github/actions/resolve-e2e-core-image
+        with:
+          pull-request-body: ${{ github.event.pull_request.body || '' }}
 
       # Authenticated so the core image pull is billed to the org's Docker Hub quota rather than
       # the shared anonymous per-IP limit, which GitHub-hosted runners exhaust as a pull failure
@@ -167,9 +172,6 @@ jobs:
     permissions:
       contents: read
     env:
-      # Resolve the server image exactly like the authoring job: use the repository override when
-      # present, otherwise let the container helper derive it from build/core-commit.txt.
-      MM_IMAGE: ${{ vars.MM_IMAGE }}
       # Selects both the specs and the licensed container setup they need; see tests/helpers/mode.ts.
       MM_E2E_SPACE_PERMISSIONS: "true"
       # Lifted to env because the secrets context is not available in a step-level `if`.
@@ -180,6 +182,13 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+
+      # Resolve independently because jobs do not share environment, but from the same PR marker
+      # as authoring so the two suites can never drift to different core commits.
+      - name: ci/resolve-e2e-core-image
+        uses: ./.github/actions/resolve-e2e-core-image
+        with:
+          pull-request-body: ${{ github.event.pull_request.body || '' }}
 
       # Fails here, by name, rather than inside a spec: the suite's own error would otherwise arrive
       # only after a container boot and a browser install.

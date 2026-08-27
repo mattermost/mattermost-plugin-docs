@@ -14,33 +14,10 @@ import {adminToken, assertServerSupportsDocs, pluginId} from './preflight';
 const projectRoot = resolve(__dirname, '../..');
 const repoRoot = resolve(projectRoot, '../..');
 
-// Core CI publishes one image per commit of the paired branch, tagged with the commit's first
-// seven characters.
-const coreImageRepo = 'mattermostdevelopment/mattermost-team-edition';
-const corePinFile = join(repoRoot, 'build/core-commit.txt');
+const defaultImage = 'mattermostdevelopment/mattermost-enterprise-edition:master';
 
-// Every spec needs a server carrying the paired core branch's work, not only the permission ones:
-// CreateSpace resolves a preset space scheme that core seeds there, so on :master even the
-// authoring specs fail at the first space. The image is therefore derived from one tracked pin,
-// which keeps a reviewed commit naming the server both suites run against. Once those core changes
-// ship in a release, this can go back to a release tag.
 function resolveImage(): string {
-    const image = process.env.MM_IMAGE;
-
-    if (image) {
-        return image;
-    }
-
-    const pinned = readFileSync(corePinFile, 'utf8').
-        split('\n').
-        map((line) => line.trim()).
-        find((line) => line !== '' && !line.startsWith('#'));
-
-    if (!pinned || !(/^[0-9a-f]{7,40}$/).test(pinned)) {
-        throw new Error(`${corePinFile} must hold one core commit sha; got '${pinned ?? ''}'.`);
-    }
-
-    return `${coreImageRepo}:${pinned.slice(0, 7)}`;
+    return process.env.MM_IMAGE || defaultImage;
 }
 
 // The images core CI publishes are built for amd64 only, so on an arm64 host the pull fails with
@@ -187,12 +164,13 @@ export class DocsServerContainer {
 
             await this.createAdmin();
 
-            // After createAdmin: both need a session. Both run for every spec, not only the
-            // permission ones — core reads a scheme through the same phase-2 gate whichever route
-            // asks, and CreateSpace resolves a preset scheme, so an authoring run that skipped
-            // these would fail at its first space with the migration error or a nil scheme.
+            // After createAdmin: the migration check needs a session and every CreateSpace route
+            // reads through that gate. The role probe is permission-specific; keeping it behind
+            // the same mode switch as those specs lets generic authoring jobs follow core master.
             await this.waitForPhase2Migration();
-            await this.assertSupportsSpacePermissions();
+            if (spacePermissionsMode) {
+                await this.assertSupportsSpacePermissions();
+            }
 
             await this.createTeam(defaultTeamName, defaultTeamDisplayName);
             await this.addUserToTeam(adminUsername, defaultTeamName);
@@ -338,8 +316,8 @@ export class DocsServerContainer {
         if (!response.ok) {
             throw new Error(
                 `Mattermost image does not define the ${spacePermissionProbeRole} role (HTTP ${response.status}), ` +
-                'so it predates the paired core branch\'s space-permission work. Point MM_IMAGE at the image core ' +
-                'CI published for the commit named in build/core-commit.txt.',
+                'so it predates the paired core branch\'s space-permission work. Point MM_IMAGE at a compatible ' +
+                'paired-core image.',
             );
         }
     }

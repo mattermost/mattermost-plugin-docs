@@ -60,12 +60,9 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     const server = await new DocsServerContainer().start();
 
     try {
-        // The image is pinned by build/core-commit.txt, so a pin that predates a core capability this
-        // suite needs is a setup problem, not a product one — and it is the reader's first question.
         await assertReadyForSpecs(server.url(), adminUsername, adminPassword,
-            'The core image is pinned by build/core-commit.txt. Bump it to a commit whose published image ' +
-            'carries the plugin scheme API (core PR mattermost/mattermost#37685), or run against a dev server ' +
-            'built from the paired core branch: ./scripts/run-tests.sh e2e-ui-local');
+            'Set MM_IMAGE locally, add an e2e-core-commit marker to the PR description in cloud CI, or run ' +
+            'against a compatible existing server with MM_E2E_USE_EXISTING_SERVER=true.');
 
         writeState({
             baseURL: server.url(),

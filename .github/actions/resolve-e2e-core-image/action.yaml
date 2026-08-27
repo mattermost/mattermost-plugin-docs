@@ -1,0 +1,41 @@
+name: "resolve-e2e-core-image"
+description: Resolves the Mattermost image for an E2E job from an optional per-PR core commit
+
+inputs:
+  pull-request-body:
+    description: Pull request body containing an optional e2e-core-commit marker
+    required: false
+    default: ""
+
+outputs:
+  image:
+    description: The Mattermost image selected for this E2E run
+    value: ${{ steps.resolve.outputs.image }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: resolve
+      name: ci/resolve-e2e-core-image
+      shell: bash
+      env:
+        PR_BODY: ${{ inputs.pull-request-body }}
+      run: |
+        image="mattermostdevelopment/mattermost-enterprise-edition:master"
+        marker="e2e-core-commit:"
+
+        if [[ "$PR_BODY" == *"$marker"* ]]; then
+          pattern='<!--[[:space:]]*e2e-core-commit:[[:space:]]*([0-9a-f]{40})[[:space:]]*-->'
+          if [[ ! "$PR_BODY" =~ $pattern ]]; then
+            echo "The PR's e2e-core-commit marker must contain one full lowercase 40-character SHA." >&2
+            echo "Use: <!-- e2e-core-commit: 0123456789abcdef0123456789abcdef01234567 -->" >&2
+            exit 1
+          fi
+
+          core_commit="${BASH_REMATCH[1]}"
+          image="mattermostdevelopment/mattermost-team-edition:${core_commit:0:7}"
+        fi
+
+        echo "MM_IMAGE=$image" >> "$GITHUB_ENV"
+        echo "image=$image" >> "$GITHUB_OUTPUT"
+        echo "Mattermost E2E image: $image"
