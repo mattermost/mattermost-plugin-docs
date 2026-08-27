@@ -39,4 +39,10 @@ describe('apiDataSource.createSpace', () => {
 
         expect(bodyOf()).toHaveProperty('view_access');
     });
+
+    it('omits default_permissions so the server applies the configured new-space template', async () => {
+        await apiDataSource.createSpace('team1', {title: 'Docs', view_access: 'private'});
+
+        expect(bodyOf()).not.toHaveProperty('default_permissions');
+    });
 });

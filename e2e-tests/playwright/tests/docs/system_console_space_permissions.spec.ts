@@ -12,9 +12,10 @@ import {expect, newContext, test} from '../fixtures';
 import {loginAs} from '../helpers/auth';
 import {readJsonOrThrow, requestedWith} from '../helpers/client';
 import {addSpaceMember, createSpace} from '../helpers/docs';
-import {restoreBaselineTeamPermissions} from '../helpers/preflight';
+import {pluginId, restoreBaselineTeamPermissions} from '../helpers/preflight';
 import {addUserToTeam, createTeam} from '../helpers/team';
 import {createUser, type SeededUser} from '../helpers/user';
+import {CreateSpaceModalPage} from '../pages/create_space_modal_page';
 import {SpacePage} from '../pages/space_page';
 import {SpaceSettingsModalPage} from '../pages/space_settings_modal_page';
 import {SpacesSidebarPage} from '../pages/spaces_sidebar_page';
@@ -165,20 +166,42 @@ test.describe('system console space permissions', () => {
      */
     test('revoking create_space stops a member creating a space', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
         const scheme = new SystemSchemePermissionsPage(page);
+        const staleContext = await newContext(browser, {baseURL: server.baseURL});
+        const stalePage = await staleContext.newPage();
+        await stalePage.routeWebSocket(/\/api\/v4\/websocket/, () => {});
         let revoked = false;
 
         try {
-            // * Verify an ordinary team member starts with the browser entry point.
+            // * Verify an ordinary team member can complete the product's create flow before
+            //   the grant is withdrawn. This makes the later rejection discriminating.
             const beforeContext = await newContext(browser, {baseURL: server.baseURL});
             try {
                 const memberPage = await beforeContext.newPage();
                 await loginAs(memberPage, member.username, member.password);
                 const sidebar = new SpacesSidebarPage(memberPage);
+                const createModal = new CreateSpaceModalPage(memberPage);
+                const createdTitle = `Before revoke ${member.username}`;
                 await sidebar.goto(teamName);
                 await expect(sidebar.createSpaceButton).toBeVisible();
+                await sidebar.openCreateSpace();
+                await createModal.expectOpen();
+                await createModal.createSpace(createdTitle);
+                await new SpacePage(memberPage).expectOpen(createdTitle);
             } finally {
                 await beforeContext.close();
             }
+
+            // # Open and fill a second real create form while the member still has permission.
+            // It remains open across the admin change so submitting it exercises the server gate,
+            // rather than manufacturing a request outside the UI.
+            await loginAs(stalePage, member.username, member.password);
+            const staleSidebar = new SpacesSidebarPage(stalePage);
+            const staleModal = new CreateSpaceModalPage(stalePage);
+            await staleSidebar.goto(teamName);
+            await staleSidebar.openCreateSpace();
+            await staleModal.expectOpen();
+            await staleModal.nameInput.fill(`After revoke ${member.username}`);
+            await expect(staleModal.createButton).toBeEnabled();
 
             // # Revoke create_space from All Members and save
             await loginAs(page, server.adminUsername, server.adminPassword);
@@ -188,6 +211,20 @@ test.describe('system console space permissions', () => {
             await scheme.togglePermission('create_space');
             revoked = true;
             await scheme.save();
+
+            // # Submit the already-open product form after revocation.
+            const deniedResponsePromise = stalePage.waitForResponse((response) =>
+                response.request().method() === 'POST' &&
+                response.url().includes(`/plugins/${pluginId}/api/v1/teams/${teamId}/spaces`),
+            );
+            await staleModal.createButton.click();
+            const deniedResponse = await deniedResponsePromise;
+
+            // * The UI receives the live route's denial, reports it, and does not navigate or
+            //   close as though a space had been created.
+            expect(deniedResponse.status()).toBe(403);
+            await expect(staleModal.dialog).toBeVisible();
+            await expect(stalePage.getByRole('alert').getByText('Could not create the space. Please try again.', {exact: true})).toBeVisible();
 
             // * Verify a fresh member session no longer offers any create journey.
             const afterContext = await newContext(browser, {baseURL: server.baseURL});
@@ -201,6 +238,7 @@ test.describe('system console space permissions', () => {
                 await memberPage.getByRole('button', {name: 'Add or browse spaces'}).click();
                 await expect(memberPage.getByRole('menuitem', {name: 'Create a space'})).toBeHidden();
                 await expect(memberPage.getByRole('menuitem', {name: 'Browse spaces'})).toBeVisible();
+
             } finally {
                 await afterContext.close();
             }
@@ -215,6 +253,7 @@ test.describe('system console space permissions', () => {
             //   permission, not the whole group
             await scheme.expectPermissionChecked('read_space', true);
         } finally {
+            await staleContext.close();
             if (revoked) {
                 restoreRoleAfterTest = true;
             }
@@ -278,6 +317,10 @@ test.describe('system console space permissions', () => {
         const scheme = new SystemSchemePermissionsPage(page);
         let granted = false;
 
+        await loginAs(page, server.adminUsername, server.adminPassword);
+        const candidate = await createUser(page, 'docs-sysconsole-manage-candidate');
+        await addUserToTeam(page, teamId, candidate.id);
+
         try {
             // * The ordinary member starts without either privileged header entry.
             const beforeContext = await newContext(browser, {baseURL: server.baseURL});
@@ -304,6 +347,7 @@ test.describe('system console space permissions', () => {
 
             // * The exact tier appears in a fresh session: settings yes, archive still no.
             const afterContext = await newContext(browser, {baseURL: server.baseURL});
+            const renamedSpace = `Managed ${member.username.slice(-8)}`;
             try {
                 const memberPage = await afterContext.newPage();
                 await loginAs(memberPage, member.username, member.password);
@@ -314,8 +358,36 @@ test.describe('system console space permissions', () => {
                 await settings.openSpaceHeaderMenu(spaceTitle);
                 await expect(memberPage.getByRole('menuitem', {name: 'Space settings'})).toBeVisible();
                 await expect(memberPage.getByRole('menuitem', {name: 'Archive space'})).toBeHidden();
+                await memberPage.keyboard.press('Escape');
+
+                // # Exercise the manage tier itself: rename, add, and remove another member.
+                await settings.openFromSpaceHeader(spaceTitle);
+                await settings.renameSpace(renamedSpace);
+                await settings.openPermissions();
+                await settings.addMember(candidate.username);
+                await settings.removeMember(candidate.username);
+                await settings.close();
+                await new SpacePage(memberPage).expectOpen(renamedSpace);
             } finally {
                 await afterContext.close();
+            }
+            spaceTitle = renamedSpace;
+
+            // * A separately authenticated administrator re-reads both persisted outcomes.
+            const verifyContext = await newContext(browser, {baseURL: server.baseURL});
+            try {
+                const verifyPage = await verifyContext.newPage();
+                await loginAs(verifyPage, server.adminUsername, server.adminPassword);
+                const sidebar = new SpacesSidebarPage(verifyPage);
+                const settings = new SpaceSettingsModalPage(verifyPage);
+                await sidebar.goto(teamName);
+                await sidebar.expectSpaceListed(spaceTitle);
+                await sidebar.openSpace(spaceTitle);
+                await settings.openFromSpaceHeader(spaceTitle);
+                await settings.openPermissions();
+                await settings.expectMemberListed(candidate.username, false);
+            } finally {
+                await verifyContext.close();
             }
 
             await page.reload();
@@ -357,6 +429,21 @@ test.describe('system console space permissions', () => {
                 await space.archiveFromHeader(spaceTitle);
             } finally {
                 await context.close();
+            }
+
+            // * A new member session re-reads the archived state rather than trusting the
+            //   optimistic removal in the session that clicked Archive.
+            const verifyContext = await newContext(browser, {baseURL: server.baseURL});
+            try {
+                const memberPage = await verifyContext.newPage();
+                await loginAs(memberPage, member.username, member.password);
+                const sidebar = new SpacesSidebarPage(memberPage);
+                await sidebar.goto(teamName);
+                await expect(sidebar.spaceLink(spaceTitle)).toBeHidden();
+                await memberPage.goto(`/${teamName}/spaces/${spaceId}`);
+                await expect(memberPage).not.toHaveURL(new RegExp(`/spaces/${spaceId}(?:[/?#]|$)`));
+            } finally {
+                await verifyContext.close();
             }
 
             await page.reload();

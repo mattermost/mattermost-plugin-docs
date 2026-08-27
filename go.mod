@@ -2,10 +2,10 @@ module github.com/mattermost/mattermost-plugin-docs
 
 go 1.26.7
 
-// Pre-release pins: server/public is pinned to the exact commit from the paired core PR:
-// https://github.com/mattermost/mattermost/pull/37685. That commit supplies the Space
-// backing-channel and plugin-scheme APIs this plugin uses. Keep this pin CI-resolvable; local
-// paired-core development may add an uncommitted absolute-path replace directive.
+// Pre-release pin: server/public supplies the core APIs this plugin compiles against. Keep this
+// dependency CI-resolvable; local paired-core development may still use an explicit temporary
+// replace. Runtime E2E image selection is deliberately independent: CI defaults to core master,
+// and each plugin PR may opt into its own paired core commit through the PR-scoped marker.
 // server/v8 is the test harness only (storetest helpers); it does not contribute any runtime
 // symbols and is pinned independently to an older commit. The two modules live in the same
 // monorepo but are versioned independently, so their pseudo-version timestamps will always
@@ -15,7 +15,7 @@ require (
 	github.com/gorilla/mux v1.8.1
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.12.3
-	github.com/mattermost/mattermost/server/public v0.4.5-0.20260826214334-4a0b9bde1b92
+	github.com/mattermost/mattermost/server/public v0.4.5-0.20260827130449-01f989d57d70
 	github.com/mattermost/mattermost/server/v8 v8.0.0-20260623200446-ba033eae4704
 	github.com/mattermost/morph v1.1.0
 	github.com/mattermost/squirrel v0.5.0

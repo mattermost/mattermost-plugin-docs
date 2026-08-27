@@ -13,6 +13,7 @@ import {loginAs} from '../helpers/auth';
 import {requestedWith, uniqueSuffix} from '../helpers/client';
 import {addSpaceMember, createPage, createSpace} from '../helpers/docs';
 import {demoteToGuest, ensureGuestAccountsEnabled, setGuestAccountsEnabled} from '../helpers/guest';
+import {pluginId} from '../helpers/preflight';
 import {readState} from '../helpers/state';
 import {addUserToTeam, createTeam, promoteToTeamAdmin, removeUserFromTeam, setTeamAdminSpaceTiers} from '../helpers/team';
 import {createUser, type SeededUser, suppressOnboarding} from '../helpers/user';
@@ -127,6 +128,57 @@ test.describe('space permissions', () => {
         return title;
     };
 
+    const setSpaceDefaultPermissions = async (page: Page, permissions: string[]) => {
+        const response = await page.request.put(`/plugins/${pluginId}/api/v1/spaces/${spaceId}/default-permissions`, {
+            ...requestedWith,
+            data: {default_permissions: permissions},
+        });
+        expect(response.ok()).toBe(true);
+    };
+
+    const expectPageDeleted = async (
+        baseURL: string,
+        browser: Browser,
+        username: string,
+        password: string,
+        pageId: string,
+    ) => {
+        const context = await newContext(browser, {baseURL});
+        try {
+            const verifyPage = await context.newPage();
+            await loginAs(verifyPage, username, password);
+            const response = await verifyPage.request.get(
+                `/plugins/${pluginId}/api/v1/spaces/${spaceId}/pages/${pageId}`,
+                requestedWith,
+            );
+            expect(response.status()).toBe(404);
+        } finally {
+            await context.close();
+        }
+    };
+
+    const expectNonMemberAccess = async (baseURL: string, browser: Browser, accessible: boolean) => {
+        const context = await newContext(browser, {baseURL});
+        try {
+            const probePage = await context.newPage();
+            await loginAs(probePage, nonMember.username, nonMember.password);
+            const sidebar = new SpacesSidebarPage(probePage);
+            await sidebar.goto(teamName);
+
+            if (accessible) {
+                await sidebar.expectSpaceListed(spaceTitle);
+                await sidebar.openSpace(spaceTitle);
+                await new SpacePage(probePage).expectOpen(spaceTitle);
+            } else {
+                await expect(sidebar.spaceLink(spaceTitle)).toBeHidden();
+                await probePage.goto(`/${teamName}/spaces/${spaceId}`);
+                await expect(probePage).not.toHaveURL(new RegExp(`/spaces/${spaceId}(?:[/?#]|$)`));
+            }
+        } finally {
+            await context.close();
+        }
+    };
+
     const expectRosterEntry = async (
         baseURL: string,
         browser: Browser,
@@ -167,31 +219,64 @@ test.describe('space permissions', () => {
     test('revoking a space default removes a member\'s authority', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
         const sidebar = new SpacesSidebarPage(page);
         const settings = new SpaceSettingsModalPage(page);
+        const staleContext = await newContext(browser, {baseURL: server.baseURL});
 
-        // * Verify the member can complete authoring in the browser before the revocation.
-        const memberContext = await newContext(browser, {baseURL: server.baseURL});
         try {
-            await authorInBrowser(await memberContext.newPage(), member, 'Before revoke');
+            // * Verify the member can complete authoring in the browser before the revocation.
+            const memberContext = await newContext(browser, {baseURL: server.baseURL});
+            try {
+                await authorInBrowser(await memberContext.newPage(), member, 'Before revoke');
+            } finally {
+                await memberContext.close();
+            }
+
+            // # Start a second page through the real authoring UI. Suppress WebSocket delivery in
+            // this one deliberately stale client so the already-rendered Publish control remains
+            // available after the administrator changes authority.
+            const stalePage = await staleContext.newPage();
+            await stalePage.routeWebSocket(/\/api\/v4\/websocket/, () => {});
+            await loginAs(stalePage, member.username, member.password);
+            const staleSidebar = new SpacesSidebarPage(stalePage);
+            const staleSpace = new SpacePage(stalePage);
+            await staleSidebar.goto(teamName);
+            await staleSidebar.openSpace(spaceTitle);
+            await staleSpace.addPage(`Denied publish ${uniqueSuffix()}`);
+            await staleSpace.expectDraftRoute();
+            await staleSpace.writeBody('This page must remain an unpublished draft.');
+            await staleSpace.expectDraftSaved();
+
+            // # Open the space's permissions as its admin
+            await loginAs(page, server.adminUsername, server.adminPassword);
+            await sidebar.goto(teamName);
+            await sidebar.openSpace(spaceTitle);
+            await settings.openFromSpaceHeader(spaceTitle);
+            await settings.openPermissions();
+
+            // * Verify the UI shows the seeded contribute default
+            await settings.expectPermission('Create pages', true);
+            await settings.expectPermission('Delete any page', false);
+
+            // # Revoke page creation
+            await settings.togglePermission('Create pages');
+
+            // * Verify a fresh member session is no longer offered the authoring journey.
+            expect(await memberIsOfferedAuthoring(server.baseURL, browser)).toBe(false);
+
+            // # Submit the already-open Publish control after revocation.
+            const deniedResponsePromise = stalePage.waitForResponse((response) =>
+                response.request().method() === 'POST' && response.url().includes('/draft/publish'),
+            );
+            await staleSpace.publish();
+            const deniedResponse = await deniedResponsePromise;
+
+            // * The product flow reaches the live gate, reports the denial, and leaves the page
+            // unpublished. This is not a synthetic request standing in for the UI.
+            expect(deniedResponse.status()).toBe(403);
+            await staleSpace.expectDraftRoute();
+            await expect(stalePage.getByRole('alert').getByText('Could not publish the page. Please try again.', {exact: true})).toBeVisible();
         } finally {
-            await memberContext.close();
+            await staleContext.close();
         }
-
-        // # Open the space's permissions as its admin
-        await loginAs(page, server.adminUsername, server.adminPassword);
-        await sidebar.goto(teamName);
-        await sidebar.openSpace(spaceTitle);
-        await settings.openFromSpaceHeader(spaceTitle);
-        await settings.openPermissions();
-
-        // * Verify the UI shows the seeded contribute default
-        await settings.expectPermission('Create pages', true);
-        await settings.expectPermission('Delete any page', false);
-
-        // # Revoke page creation
-        await settings.togglePermission('Create pages');
-
-        // * Verify the member is no longer offered the authoring journey.
-        expect(await memberIsOfferedAuthoring(server.baseURL, browser)).toBe(false);
     });
 
     /**
@@ -200,12 +285,14 @@ test.describe('space permissions', () => {
      * Catches a control that writes successfully but renders from local state: the second
      * open re-reads from the server, so a stale write shows up as the old value.
      */
-    test('every space-default permission can be changed and reads back', {tag: ['@docs', '@permissions']}, async ({page, server}) => {
+    test('every space-default permission can be changed and reads back', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
         const sidebar = new SpacesSidebarPage(page);
         const settings = new SpaceSettingsModalPage(page);
         const labels = ['Create pages', 'Comment on pages', 'Edit pages', 'Delete own pages', 'Delete any page'];
+        const seededTitle = `Custom default victim ${uniqueSuffix()}`;
 
         await loginAs(page, server.adminUsername, server.adminPassword);
+        const seededPage = await createPage(page, spaceId, seededTitle);
         await sidebar.goto(teamName);
         await sidebar.openSpace(spaceTitle);
         await settings.openFromSpaceHeader(spaceTitle);
@@ -229,6 +316,24 @@ test.describe('space permissions', () => {
             await settings.expectPermission(label, !initial.get(label));
         }
 
+        // * The inverse of Contribute is the deliberately non-preset combination containing only
+        //   delete_page. Prove that pooled scheme changes effective authority, not just metadata:
+        //   an ordinary member can now delete somebody else's seeded page.
+        const memberContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const memberPage = await memberContext.newPage();
+            await loginAs(memberPage, member.username, member.password);
+            const memberSidebar = new SpacesSidebarPage(memberPage);
+            const memberSpace = new SpacePage(memberPage);
+            await memberSidebar.goto(teamName);
+            await memberSidebar.openSpace(spaceTitle);
+            await memberSpace.openPageFromTree(seededTitle);
+            await memberSpace.deletePage(seededTitle);
+        } finally {
+            await memberContext.close();
+        }
+        await expectPageDeleted(server.baseURL, browser, server.adminUsername, server.adminPassword, seededPage.id);
+
         // # Flip every control back and force a second fresh read. This exercises both grant
         // and revoke paths for all five controls, not merely five variations of one direction.
         for (const label of labels) {
@@ -248,7 +353,7 @@ test.describe('space permissions', () => {
      * The option was inert scaffolding ("Coming soon") until the permissions work landed,
      * so this pins that it is now a real control.
      */
-    test('view access can be changed in both directions and reads back', {tag: ['@docs', '@permissions']}, async ({page, server}) => {
+    test('view access can be changed in both directions and reads back', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
         const sidebar = new SpacesSidebarPage(page);
         const settings = new SpaceSettingsModalPage(page);
 
@@ -260,6 +365,7 @@ test.describe('space permissions', () => {
 
         // * Verify a space created without an explicit view access starts public
         await settings.expectAccess('Public');
+        await expectNonMemberAccess(server.baseURL, browser, true);
 
         // # Make it private
         await settings.chooseAccess('Private');
@@ -271,6 +377,7 @@ test.describe('space permissions', () => {
 
         // * Verify the space is private
         await settings.expectAccess('Private');
+        await expectNonMemberAccess(server.baseURL, browser, false);
 
         // # Restore Public and re-read again. This catches a one-way implementation that can
         // privatize a space but cannot restore the team-wide read grant.
@@ -279,6 +386,10 @@ test.describe('space permissions', () => {
         await settings.openFromSpaceHeader(spaceTitle);
         await settings.openPermissions();
         await settings.expectAccess('Public');
+
+        // * The inverse transition restores actual discovery and known-space access for an
+        //   eligible team member who was never invited to the space.
+        await expectNonMemberAccess(server.baseURL, browser, true);
     });
 
     /**
@@ -390,79 +501,291 @@ test.describe('space permissions', () => {
         } finally {
             await afterContext.close();
         }
+
+        // * A separately authenticated browser re-reads the tree after the delete.
+        const verifyContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const verifyPage = await verifyContext.newPage();
+            await loginAs(verifyPage, server.adminUsername, server.adminPassword);
+            const verifySidebar = new SpacesSidebarPage(verifyPage);
+            const verifySpace = new SpacePage(verifyPage);
+            await verifySidebar.goto(teamName);
+            await verifySidebar.openSpace(spaceTitle);
+            await expect(verifySpace.pageTreeLink(seededTitle)).toBeHidden();
+        } finally {
+            await verifyContext.close();
+        }
     });
 
-    /**
-     * @objective Every per-member matrix cell writes the permission named by its column.
-     *
-     * The delete-any test above proves one grant changes real authority. This matrix test covers
-     * the remaining wiring cheaply while still crossing the browser/server boundary twice: every
-     * cell is granted, freshly read, revoked, and freshly read again. Swapping any two ids, dropping
-     * a cell from the replace payload, or making either direction local-only is observable.
-     */
-    test('every per-member permission can be granted and revoked', {tag: ['@docs', '@permissions']}, async ({page, server}) => {
+    /** @objective The create_page member cell enables that member's real publish flow. */
+    test('a per-member create grant lets that member publish a page', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
         const sidebar = new SpacesSidebarPage(page);
         const settings = new SpaceSettingsModalPage(page);
-        const permissions = ['create_page', 'comment_page', 'edit_page', 'delete_own_page', 'delete_page', 'admin_space'];
 
         await loginAs(page, server.adminUsername, server.adminPassword);
+        await setSpaceDefaultPermissions(page, []);
+
+        // * With no space default and no member grant, the member cannot start authoring.
+        expect(await memberIsOfferedAuthoring(server.baseURL, browser)).toBe(false);
+
+        // # Grant the exact create_page cell in the member's row.
         await sidebar.goto(teamName);
         await sidebar.openSpace(spaceTitle);
         await settings.openFromSpaceHeader(spaceTitle);
         await settings.openPermissions();
-
-        for (const permission of permissions) {
-            await settings.expectMemberPermission(member.id, permission, false);
-            await settings.toggleMemberPermission(member.id, permission);
-        }
-
+        await settings.toggleMemberPermission(member.id, 'create_page');
         await settings.close();
-        await settings.openFromSpaceHeader(spaceTitle);
-        await settings.openPermissions();
-        for (const permission of permissions) {
-            await settings.expectMemberPermission(member.id, permission, true);
+
+        // * A fresh member session completes Add page, body entry, autosave, and Publish.
+        let authoredTitle = '';
+        const memberContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            authoredTitle = await authorInBrowser(await memberContext.newPage(), member, 'Member create grant', false);
+        } finally {
+            await memberContext.close();
         }
 
-        for (const permission of permissions) {
-            await settings.toggleMemberPermission(member.id, permission);
-        }
-
-        await settings.close();
-        await settings.openFromSpaceHeader(spaceTitle);
-        await settings.openPermissions();
-        for (const permission of permissions) {
-            await settings.expectMemberPermission(member.id, permission, false);
+        // * Another browser reads the published title and body from the product UI.
+        const verifyContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const verifyPage = await verifyContext.newPage();
+            await loginAs(verifyPage, server.adminUsername, server.adminPassword);
+            const verifySidebar = new SpacesSidebarPage(verifyPage);
+            const verifySpace = new SpacePage(verifyPage);
+            await verifySidebar.goto(teamName);
+            await verifySidebar.openSpace(spaceTitle);
+            await verifySpace.openPageFromTree(authoredTitle);
+            await verifySpace.expectPageTitle(authoredTitle);
+            await verifySpace.expectBody(`Authored by ${member.username}.`);
+        } finally {
+            await verifyContext.close();
         }
     });
 
-    /**
-     * @objective A page action the space default withholds is not offered on the page.
-     *
-     * The contribute default grants delete_own_page but not delete_page, so a member may
-     * delete what they wrote and nothing else. The page menu must use the resolved permission
-     * set too, so it does not offer an action the server will refuse.
-     */
-    test('a member is not offered page actions the space default withholds', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
+    /** @objective The edit_page member cell enables that member's real update flow. */
+    test('a per-member edit grant lets that member update a page', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
         const sidebar = new SpacesSidebarPage(page);
-        const space = new SpacePage(page);
-        const seededTitle = `Seed ${uniqueSuffix()}`;
+        const settings = new SpaceSettingsModalPage(page);
+        const seededTitle = `Edit grant target ${uniqueSuffix()}`;
+        const marker = `Edited through member cell ${uniqueSuffix()}`;
 
-        // # Seed a page the member did not author, so removing it needs delete_page
-        const adminContext = await newContext(browser, {baseURL: server.baseURL});
+        await loginAs(page, server.adminUsername, server.adminPassword);
+        await createPage(page, spaceId, seededTitle, 'Initial body. ');
+        await setSpaceDefaultPermissions(page, []);
+
+        // * The member can read the fixture but cannot enter Edit before the grant.
+        const beforeContext = await newContext(browser, {baseURL: server.baseURL});
         try {
-            const adminPage = await adminContext.newPage();
-            await loginAs(adminPage, server.adminUsername, server.adminPassword);
-            await createPage(adminPage, spaceId, seededTitle);
+            const memberPage = await beforeContext.newPage();
+            await loginAs(memberPage, member.username, member.password);
+            const memberSidebar = new SpacesSidebarPage(memberPage);
+            const memberSpace = new SpacePage(memberPage);
+            await memberSidebar.goto(teamName);
+            await memberSidebar.openSpace(spaceTitle);
+            await memberSpace.openPageFromTree(seededTitle);
+            await expect(memberSpace.editButton).toBeHidden();
         } finally {
-            await adminContext.close();
+            await beforeContext.close();
         }
 
-        // # Open that page as the member and open its menu
-        await loginAs(page, member.username, member.password);
+        // # Grant the exact edit_page cell in the member's row.
         await sidebar.goto(teamName);
         await sidebar.openSpace(spaceTitle);
-        await space.openPageFromTree(seededTitle);
-        await space.expectPageAction(seededTitle, 'Delete page', false);
+        await settings.openFromSpaceHeader(spaceTitle);
+        await settings.openPermissions();
+        await settings.toggleMemberPermission(member.id, 'edit_page');
+        await settings.close();
+
+        // * A fresh member session completes Edit, autosave, and Update.
+        const memberContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const memberPage = await memberContext.newPage();
+            await loginAs(memberPage, member.username, member.password);
+            const memberSidebar = new SpacesSidebarPage(memberPage);
+            const memberSpace = new SpacePage(memberPage);
+            await memberSidebar.goto(teamName);
+            await memberSidebar.openSpace(spaceTitle);
+            await memberSpace.openPageFromTree(seededTitle);
+            await memberSpace.editButton.click();
+            await memberSpace.expectPublishedPageEditing();
+            await memberSpace.writePublishedBody(marker);
+            await memberSpace.expectDraftSaved();
+            await memberSpace.update();
+            await memberSpace.expectPublished();
+        } finally {
+            await memberContext.close();
+        }
+
+        // * Another browser reads the persisted edit from the rendered page.
+        const verifyContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const verifyPage = await verifyContext.newPage();
+            await loginAs(verifyPage, server.adminUsername, server.adminPassword);
+            const verifySidebar = new SpacesSidebarPage(verifyPage);
+            const verifySpace = new SpacePage(verifyPage);
+            await verifySidebar.goto(teamName);
+            await verifySidebar.openSpace(spaceTitle);
+            await verifySpace.openPageFromTree(seededTitle);
+            await verifySpace.expectBody(marker);
+        } finally {
+            await verifyContext.close();
+        }
+    });
+
+    /** @objective The delete_own_page member cell enables deletion of that member's page. */
+    test('a per-member delete-own grant lets that member delete their page', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
+        const sidebar = new SpacesSidebarPage(page);
+        const settings = new SpaceSettingsModalPage(page);
+
+        // # Publish the owned fixture through the member's UI while the contribute default is live.
+        let ownedTitle = '';
+        const authorContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            ownedTitle = await authorInBrowser(await authorContext.newPage(), member, 'Owned grant target');
+        } finally {
+            await authorContext.close();
+        }
+
+        await loginAs(page, server.adminUsername, server.adminPassword);
+        await setSpaceDefaultPermissions(page, []);
+
+        // * Clearing the default removes the owned-page delete action.
+        const beforeContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const memberPage = await beforeContext.newPage();
+            await loginAs(memberPage, member.username, member.password);
+            const memberSidebar = new SpacesSidebarPage(memberPage);
+            const memberSpace = new SpacePage(memberPage);
+            await memberSidebar.goto(teamName);
+            await memberSidebar.openSpace(spaceTitle);
+            await memberSpace.openPageFromTree(ownedTitle);
+            await memberSpace.expectPageAction(ownedTitle, 'Delete page', false);
+        } finally {
+            await beforeContext.close();
+        }
+
+        // # Grant the exact delete_own_page cell in the member's row.
+        await sidebar.goto(teamName);
+        await sidebar.openSpace(spaceTitle);
+        await settings.openFromSpaceHeader(spaceTitle);
+        await settings.openPermissions();
+        await settings.toggleMemberPermission(member.id, 'delete_own_page');
+        await settings.close();
+
+        // * A fresh member session completes the page-menu deletion and confirmation.
+        const memberContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const memberPage = await memberContext.newPage();
+            await loginAs(memberPage, member.username, member.password);
+            const memberSidebar = new SpacesSidebarPage(memberPage);
+            const memberSpace = new SpacePage(memberPage);
+            await memberSidebar.goto(teamName);
+            await memberSidebar.openSpace(spaceTitle);
+            await memberSpace.openPageFromTree(ownedTitle);
+            await memberSpace.deletePage(ownedTitle);
+        } finally {
+            await memberContext.close();
+        }
+
+        // * Another browser re-reads the tree and confirms the page stayed deleted.
+        const verifyContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const verifyPage = await verifyContext.newPage();
+            await loginAs(verifyPage, server.adminUsername, server.adminPassword);
+            const verifySidebar = new SpacesSidebarPage(verifyPage);
+            const verifySpace = new SpacePage(verifyPage);
+            await verifySidebar.goto(teamName);
+            await verifySidebar.openSpace(spaceTitle);
+            await expect(verifySpace.pageTreeLink(ownedTitle)).toBeHidden();
+        } finally {
+            await verifyContext.close();
+        }
+    });
+
+    /** @objective Revoking delete_page blocks an already-open product delete flow. */
+    test('withheld deletion is hidden and rejected when submitted from stale UI', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
+        const sidebar = new SpacesSidebarPage(page);
+        const settings = new SpaceSettingsModalPage(page);
+        const seededTitle = `Seed ${uniqueSuffix()}`;
+
+        // # Seed somebody else's page, then grant delete_page through the exact member cell.
+        await loginAs(page, server.adminUsername, server.adminPassword);
+        const seededPage = await createPage(page, spaceId, seededTitle, 'Must survive the denied delete.');
+        await sidebar.goto(teamName);
+        await sidebar.openSpace(spaceTitle);
+        await settings.openFromSpaceHeader(spaceTitle);
+        await settings.openPermissions();
+        await settings.toggleMemberPermission(member.id, 'delete_page');
+        await settings.close();
+
+        // # Open the real delete confirmation as the member. Keep this client deliberately stale
+        // across revocation so the confirmation can still submit to the live permission gate.
+        const staleContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const memberPage = await staleContext.newPage();
+            await memberPage.routeWebSocket(/\/api\/v4\/websocket/, () => {});
+            await loginAs(memberPage, member.username, member.password);
+            const memberSidebar = new SpacesSidebarPage(memberPage);
+            const memberSpace = new SpacePage(memberPage);
+            await memberSidebar.goto(teamName);
+            await memberSidebar.openSpace(spaceTitle);
+            await memberSpace.openPageFromTree(seededTitle);
+            await memberSpace.openPageMenu(seededTitle);
+            await memberPage.getByRole('menuitem', {name: 'Delete page'}).click();
+            const deleteDialog = memberPage.getByRole('dialog', {name: 'Delete page'});
+            await expect(deleteDialog).toBeVisible();
+
+            // # Revoke delete_page in the administrator's real settings UI.
+            await settings.openFromSpaceHeader(spaceTitle);
+            await settings.openPermissions();
+            await settings.toggleMemberPermission(member.id, 'delete_page');
+            await settings.close();
+
+            // # Confirm deletion in the already-open product dialog.
+            const deniedResponsePromise = memberPage.waitForResponse((response) =>
+                response.request().method() === 'DELETE' &&
+                response.url().includes(`/spaces/${spaceId}/pages/${seededPage.id}`),
+            );
+            await deleteDialog.getByRole('button', {name: 'Delete', exact: true}).click();
+            const deniedResponse = await deniedResponsePromise;
+
+            // * The live route denies the UI action, the dialog remains, and the user sees the
+            // failure rather than an optimistic disappearance.
+            expect(deniedResponse.status()).toBe(403);
+            await expect(deleteDialog).toBeVisible();
+            await expect(memberPage.getByRole('alert').getByText(`Could not delete “${seededTitle}”.`, {exact: true})).toBeVisible();
+        } finally {
+            await staleContext.close();
+        }
+
+        // * Fresh member UI withholds the action, while a fresh admin UI still reads the page.
+        const memberContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const memberPage = await memberContext.newPage();
+            await loginAs(memberPage, member.username, member.password);
+            const memberSidebar = new SpacesSidebarPage(memberPage);
+            const memberSpace = new SpacePage(memberPage);
+            await memberSidebar.goto(teamName);
+            await memberSidebar.openSpace(spaceTitle);
+            await memberSpace.openPageFromTree(seededTitle);
+            await memberSpace.expectPageAction(seededTitle, 'Delete page', false);
+        } finally {
+            await memberContext.close();
+        }
+
+        const verifyContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const verifyPage = await verifyContext.newPage();
+            await loginAs(verifyPage, server.adminUsername, server.adminPassword);
+            const verifySidebar = new SpacesSidebarPage(verifyPage);
+            const verifySpace = new SpacePage(verifyPage);
+            await verifySidebar.goto(teamName);
+            await verifySidebar.openSpace(spaceTitle);
+            await verifySpace.openPageFromTree(seededTitle);
+            await verifySpace.expectBody('Must survive the denied delete.');
+        } finally {
+            await verifyContext.close();
+        }
     });
 
     /**
@@ -501,6 +824,24 @@ test.describe('space permissions', () => {
         await space.update();
         await space.expectPublished();
         await space.renamePage(seededTitle, renamedTitle);
+
+        // * A fresh administrator session confirms all three outcomes persisted: the owned page
+        // is gone, and the other page has both its new title and edited body.
+        const verifyContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const verifyPage = await verifyContext.newPage();
+            await loginAs(verifyPage, server.adminUsername, server.adminPassword);
+            const verifySidebar = new SpacesSidebarPage(verifyPage);
+            const verifySpace = new SpacePage(verifyPage);
+            await verifySidebar.goto(teamName);
+            await verifySidebar.openSpace(spaceTitle);
+            await expect(verifySpace.pageTreeLink(ownedTitle)).toBeHidden();
+            await verifySpace.openPageFromTree(renamedTitle);
+            await verifySpace.expectPageTitle(renamedTitle);
+            await verifySpace.expectBody('Edited by the member.');
+        } finally {
+            await verifyContext.close();
+        }
 
         // # Revoke Edit pages and Delete own pages through Space Settings.
         const adminContext = await newContext(browser, {baseURL: server.baseURL});
@@ -594,6 +935,16 @@ test.describe('space permissions', () => {
         }
         spaceTitle = renamedSpace;
 
+        // * A fresh administrator session confirms the renamed space and removed candidate.
+        await expectRosterEntry(
+            server.baseURL,
+            browser,
+            server.adminUsername,
+            server.adminPassword,
+            candidate.username,
+            false,
+        );
+
         // # Revoke admin_space and prove a fresh session loses both privileged entries.
         await sidebar.goto(teamName);
         await sidebar.openSpace(spaceTitle);
@@ -639,6 +990,16 @@ test.describe('space permissions', () => {
         } finally {
             await leavingContext.close();
         }
+
+        // * Leaving is persisted in the roster another authenticated session reads.
+        await expectRosterEntry(
+            server.baseURL,
+            browser,
+            server.adminUsername,
+            server.adminPassword,
+            member.username,
+            false,
+        );
     });
 
     /** @objective The UI reports and preserves the last-space-administrator invariant. */
@@ -683,8 +1044,10 @@ test.describe('space permissions', () => {
         await addUserToTeam(page, teamId, candidate.id);
         await setTeamAdminSpaceTiers(page, teamId, {manage: true, delete: false});
         await promoteToTeamAdmin(page, teamId, manageOnlyAdmin.id);
+        await setSpaceDefaultPermissions(page, []);
 
         const context = await newContext(browser, {baseURL: server.baseURL});
+        const renamed = `Managed ${uniqueSuffix()}`;
         try {
             const manageOnlyPage = await context.newPage();
             await loginAs(manageOnlyPage, manageOnlyAdmin.username, manageOnlyAdmin.password);
@@ -701,7 +1064,6 @@ test.describe('space permissions', () => {
             await manageOnlyPage.keyboard.press('Escape');
 
             // # Rename is a manage-tier operation and must complete.
-            const renamed = `Managed ${uniqueSuffix()}`;
             await settings.openFromSpaceHeader(spaceTitle);
             await settings.renameSpace(renamed);
             await settings.openPermissions();
@@ -713,7 +1075,7 @@ test.describe('space permissions', () => {
             // * Ordinary member grants and roster changes are live, but promotion is not.
             await settings.expectMemberPermissionEnabled(member.id, 'create_page', true);
             await settings.expectMemberPermissionEnabled(member.id, 'admin_space', false);
-            await settings.toggleMemberPermission(member.id, 'comment_page');
+            await settings.toggleMemberPermission(member.id, 'create_page');
             await settings.addMember(candidate.username);
             await settings.expectMemberPermissionEnabled(candidate.id, 'create_page', true);
             await settings.removeMember(candidate.username);
@@ -722,6 +1084,26 @@ test.describe('space permissions', () => {
         } finally {
             await context.close();
         }
+        spaceTitle = renamed;
+
+        // * The manage-only administrator's member grant has a real UI consequence: the member
+        // can publish even though the space default remains empty.
+        const authorContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            await authorInBrowser(await authorContext.newPage(), member, 'Managed grant', false);
+        } finally {
+            await authorContext.close();
+        }
+
+        // * The rename and removal survive into a fresh administrator session.
+        await expectRosterEntry(
+            server.baseURL,
+            browser,
+            server.adminUsername,
+            server.adminPassword,
+            candidate.username,
+            false,
+        );
     });
 
     /** @objective delete_space unlocks archive without accidentally unlocking manage_space. */
@@ -752,17 +1134,38 @@ test.describe('space permissions', () => {
         } finally {
             await context.close();
         }
+
+        // * A fresh deleter session re-reads the archived state.
+        const verifyContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const verifyPage = await verifyContext.newPage();
+            await loginAs(verifyPage, deleter.username, deleter.password);
+            const verifySidebar = new SpacesSidebarPage(verifyPage);
+            await verifySidebar.goto(teamName);
+            await expect(verifySidebar.spaceLink(spaceTitle)).toBeHidden();
+            await verifyPage.goto(`/${teamName}/spaces/${spaceId}`);
+            await expect(verifyPage).not.toHaveURL(new RegExp(`/spaces/${spaceId}(?:[/?#]|$)`));
+        } finally {
+            await verifyContext.close();
+        }
     });
 
     /** @objective Removing a space member from the team removes all browser-visible access. */
-    test('a former team member cannot discover or deep-link the space', {tag: ['@docs', '@permissions']}, async ({page, server}) => {
+    test('a former team member cannot discover or deep-link the space', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
         await loginAs(page, server.adminUsername, server.adminPassword);
         await removeUserFromTeam(page, teamId, member.id);
 
-        await loginAs(page, member.username, member.password);
-        await page.goto(`/${teamName}/spaces/${spaceId}`);
-        await expect(page).not.toHaveURL(new RegExp(`/spaces/${spaceId}(?:[/?#]|$)`));
-        await expect(page.getByRole('main').getByRole('button', {name: spaceTitle, exact: true})).toBeHidden();
+        // * A separately authenticated session re-reads team and space membership.
+        const context = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const formerMemberPage = await context.newPage();
+            await loginAs(formerMemberPage, member.username, member.password);
+            await formerMemberPage.goto(`/${teamName}/spaces/${spaceId}`);
+            await expect(formerMemberPage).not.toHaveURL(new RegExp(`/spaces/${spaceId}(?:[/?#]|$)`));
+            await expect(formerMemberPage.getByRole('main').getByRole('button', {name: spaceTitle, exact: true})).toBeHidden();
+        } finally {
+            await context.close();
+        }
     });
 
     /**
@@ -932,10 +1335,8 @@ test.describe('space permissions', () => {
      * guest and an ordinary member on the *identical* space differ in what they may do. That
      * contrast is the point of seeding them here rather than on a space of their own.
      *
-     * The guest API invariants (read 200, create 403, edit 403, permission grant 400) are
-     * asserted far more cheaply by the handler tests. What is left for a browser, and asserted
-     * below, is that the UI agrees with them: a guest who may not author is not shown the
-     * affordances for it.
+     * The browser cases below read a real page and submit a real Publish control across a guest
+     * demotion. They therefore pin both the rendered affordance and the server-enforced outcome.
      */
     test.describe('a guest', () => {
         let guest: SeededUser;
@@ -999,17 +1400,27 @@ test.describe('space permissions', () => {
          * The read half of the guest invariant, through the browser: the demotion converts the
          * space membership rather than removing it, so the space still opens.
          */
-        test('can open and read the space it belongs to', {tag: ['@docs', '@permissions']}, async ({page}) => {
+        test('can open and read the space it belongs to', {tag: ['@docs', '@permissions']}, async ({page, server}) => {
             const sidebar = new SpacesSidebarPage(page);
             const space = new SpacePage(page);
+            const readableTitle = `Guest-readable ${uniqueSuffix()}`;
+            const readableBody = `Visible to guest ${uniqueSuffix()}`;
+
+            // # Seed published content as the administrator; guest reading is the journey under test.
+            await loginAs(page, server.adminUsername, server.adminPassword);
+            await createPage(page, spaceId, readableTitle, readableBody);
 
             // # Open the space as the guest
             await loginAs(page, guest.username, guest.password);
             await sidebar.goto(teamName);
             await sidebar.openSpace(spaceTitle);
+            await space.openPageFromTree(readableTitle);
 
-            // * Verify the space renders for a guest
+            // * Verify the guest reads the actual published title and body in read-only mode.
             await space.expectOpen(spaceTitle);
+            await space.expectPageTitle(readableTitle);
+            await space.expectBody(readableBody);
+            await space.expectBodyReadOnly();
         });
 
         /**
@@ -1046,43 +1457,63 @@ test.describe('space permissions', () => {
         /**
          * @objective A guest is not offered page authoring it cannot perform.
          *
-         * The space view withholds the control that would create a page: page creation is gated on
-         * the caller's own create_page, resolved by the same single-space read the view already
-         * performs. Server enforcement is pinned by the Go suites rather than duplicated here.
-         *
-         * Not guest-specific — a member of a space whose default has had create_page revoked
-         * is in the same position, which is why the gate keys on the permission rather than on
-         * guest standing.
+         * The test prepares a draft through the UI before demotion, then submits that same
+         * Publish control afterward. That makes the live 403 observable through the product
+         * flow even though a freshly loaded guest correctly has no Add page control.
          */
-        test('is not offered page authoring it cannot perform', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
-            // * Verify the member IS offered it on this same space, so the guest's absence
-            //   below is the gate discriminating rather than the control being gone for
-            //   everyone — which a guest-only assertion cannot tell apart.
-            const memberContext = await newContext(browser, {baseURL: server.baseURL});
-            try {
-                const memberPage = await memberContext.newPage();
-                await loginAs(memberPage, member.username, member.password);
-                await new SpacesSidebarPage(memberPage).goto(teamName);
-                await new SpacesSidebarPage(memberPage).openSpace(spaceTitle);
+        test('cannot publish from an authoring flow opened before becoming a guest', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
+            await loginAs(page, server.adminUsername, server.adminPassword);
+            const futureGuest = await createUser(page, 'docs-perms-future-guest');
+            await addUserToTeam(page, teamId, futureGuest.id);
+            await addSpaceMember(page, spaceId, futureGuest.id);
 
-                const memberSpace = new SpacePage(memberPage);
-                await memberSpace.expectOpen(spaceTitle);
-                await expect(memberSpace.addPageButton).toBeVisible();
+            // # Start a page in the real UI while the actor is still an ordinary member. Block
+            // WebSocket delivery only in this client so its already-rendered Publish survives
+            // the demotion and can exercise the server boundary.
+            const staleContext = await newContext(browser, {baseURL: server.baseURL});
+            try {
+                const stalePage = await staleContext.newPage();
+                await stalePage.routeWebSocket(/\/api\/v4\/websocket/, () => {});
+                await loginAs(stalePage, futureGuest.username, futureGuest.password);
+                const staleSidebar = new SpacesSidebarPage(stalePage);
+                const staleSpace = new SpacePage(stalePage);
+                await staleSidebar.goto(teamName);
+                await staleSidebar.openSpace(spaceTitle);
+                await staleSpace.addPage(`Guest denied ${uniqueSuffix()}`);
+                await staleSpace.expectDraftRoute();
+                await staleSpace.writeBody('This must not become a published page.');
+                await staleSpace.expectDraftSaved();
+
+                // # Demote the actor, then click Publish in the already-open UI.
+                await demoteToGuest(page, futureGuest.id);
+                const deniedResponsePromise = stalePage.waitForResponse((response) =>
+                    response.request().method() === 'POST' && response.url().includes('/draft/publish'),
+                );
+                await staleSpace.publish();
+                const deniedResponse = await deniedResponsePromise;
+
+                // * Guest enforcement rejects the UI submission and leaves it unpublished.
+                expect(deniedResponse.status()).toBe(403);
+                await staleSpace.expectDraftRoute();
+                await expect(stalePage.getByRole('alert').getByText('Could not publish the page. Please try again.', {exact: true})).toBeVisible();
             } finally {
-                await memberContext.close();
+                await staleContext.close();
             }
 
-            const sidebar = new SpacesSidebarPage(page);
-            const space = new SpacePage(page);
-
-            // # Open the same space as the guest
-            await loginAs(page, guest.username, guest.password);
-            await sidebar.goto(teamName);
-            await sidebar.openSpace(spaceTitle);
-            await space.expectOpen(spaceTitle);
-
-            // * Verify page creation is not offered
-            await expect(space.addPageButton).toBeHidden();
+            // * A fresh guest session also withholds the authoring entry point.
+            const guestContext = await newContext(browser, {baseURL: server.baseURL});
+            try {
+                const guestPage = await guestContext.newPage();
+                await loginAs(guestPage, guest.username, guest.password);
+                const guestSidebar = new SpacesSidebarPage(guestPage);
+                const guestSpace = new SpacePage(guestPage);
+                await guestSidebar.goto(teamName);
+                await guestSidebar.openSpace(spaceTitle);
+                await guestSpace.expectOpen(spaceTitle);
+                await expect(guestSpace.addPageButton).toBeHidden();
+            } finally {
+                await guestContext.close();
+            }
         });
 
         test('cannot discover an open space without an invitation', {tag: ['@docs', '@permissions']}, async ({page}) => {
