@@ -84,6 +84,7 @@ These apply to every run, permission specs or not:
 |---|---|
 | `tests/docs/space_permissions.spec.ts` | All default and per-member toggles in both directions; public/private; page create/edit/rename/delete; roster add/remove/leave; archive; and system admin, space admin, manage-only, delete-only, member, non-member, former member, and invited/uninvited guest personas. |
 | `tests/docs/system_console_space_permissions.spec.ts` | All four core `Spaces` controls, with browser-observed consequences for discovery, creation, management, and archive. Also `tests/pages/system_scheme_permissions_page.ts`. |
+| `tests/docs/new_space_default_space_permissions.spec.ts` | The plugin's System Console preset selector; omitted create defaults, future-space-only changes, and explicit per-space override precedence. Also `tests/pages/docs_plugin_settings_page.ts`. |
 
 The System Console group is core's code, on the paired branch. It is driven from here because the
 *consequence* of changing it is only observable with the plugin installed — core alone has no route

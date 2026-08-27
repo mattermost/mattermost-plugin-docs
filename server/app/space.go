@@ -94,8 +94,9 @@ func (s *Service) resolveSpaceScheme(permissions []string) (schemeID string, rol
 
 // CreateSpace creates a ChannelTypeSpace ("S") backing channel via pluginapi, saves the
 // space row pointing at it, and adds the creator as a member with SchemeAdmin. space.ChannelId
-// must be empty — it is set from the created channel. defaultPermissions nil defaults to the
-// contribute preset; viewAccess nil defaults to open. If any step after the backing channel's
+// must be empty — it is set from the created channel. defaultPermissions nil uses the live
+// site-level new-space template supplied to the service (contribute by default); viewAccess nil
+// defaults to open. If any step after the backing channel's
 // creation fails, the backing channel is archived to avoid an orphan. Any scheme resolved along the
 // way is left alone: presets and pooled schemes are shared, so none is this space's to remove.
 //
@@ -164,7 +165,7 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultPermissi
 	}
 	space.ViewAccess = va
 
-	permissions, _ := model.DefaultPermissionsForSchemeName(mmmodel.SchemeNameSpaceContribute)
+	permissions := s.newSpaceDefaultPermissions()
 	if defaultPermissions != nil {
 		permissions = *defaultPermissions
 	}

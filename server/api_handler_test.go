@@ -86,7 +86,8 @@ func openTestPlugin(t *testing.T, mockAPI *plugintest.API) *apiTestHarness {
 	client = pluginapi.NewClient(mockAPI, nil)
 	t.Cleanup(func() { mockAPI.AssertExpectations(t) })
 
-	p := &Plugin{store: s, service: app.New(s, nil, client)}
+	p := &Plugin{store: s, configuration: defaultConfiguration()}
+	p.service = app.New(s, nil, client, app.WithNewSpaceDefaultPermissions(p.newSpaceDefaultPermissions))
 	p.API = mockAPI
 	p.snapshotFeatureFlags(p.API.GetConfig())
 	p.router = p.initRouter()
@@ -231,6 +232,34 @@ func TestHandler_CreateSpace(t *testing.T) {
 	require.Contains(t, created.Permissions, mmmodel.PermissionAdminSpace.Id)
 	require.Contains(t, created.Permissions, mmmodel.PermissionManageSpace.Id)
 	require.Contains(t, created.Permissions, mmmodel.PermissionDeleteSpace.Id)
+}
+
+// TestHandler_CreateSpaceUsesConfiguredSiteDefault verifies the plugin configuration is wired
+// into the service rather than leaving CreateSpace's built-in contribute fallback in effect.
+func TestHandler_CreateSpaceUsesConfiguredSiteDefault(t *testing.T) {
+	mockAPI := newEnabledMockAPI()
+	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+		Return(&mmmodel.TeamMember{}, nil)
+	backingChannelID := mmmodel.NewId()
+	readOnlySchemeID := testutil.PresetSchemeID(mmmodel.SchemeNameSpaceReadOnly)
+	mockAPI.On("CreateChannel", mock.MatchedBy(func(channel *mmmodel.Channel) bool {
+		return channel.SchemeId != nil && *channel.SchemeId == readOnlySchemeID
+	})).Return(&mmmodel.Channel{Id: backingChannelID, Type: mmmodel.ChannelTypeSpace}, nil)
+	mockAPI.On("AddChannelMember", backingChannelID, mock.AnythingOfType("string")).
+		Return(&mmmodel.ChannelMember{}, nil)
+	mockAPI.On("UpdateChannelMemberRoles", backingChannelID, mock.Anything, mock.Anything).
+		Return(&mmmodel.ChannelMember{}, nil)
+	h := openTestPlugin(t, mockAPI)
+	h.plugin.setConfiguration(&configuration{NewSpaceDefaultPreset: newSpaceDefaultPresetReadOnly})
+
+	rec := h.do(t, http.MethodPost, "/api/v1/teams/"+mmmodel.NewId()+"/spaces", mmmodel.NewId(), map[string]any{
+		"title": "Knowledge Base",
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var created model.SpaceWithAccess
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	require.Empty(t, created.DefaultPermissions)
 }
 
 // TestHandler_CreateSpace_IgnoresServerOwnedFields ensures the create handler does not trust

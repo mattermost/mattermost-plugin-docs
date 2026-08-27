@@ -14,6 +14,7 @@ export interface Space {
     id: string;
     title: string;
     team_id: string;
+    default_permissions?: string[];
 }
 
 export interface DocsPage {
@@ -26,10 +27,13 @@ export interface SpaceMember {
     user_id: string;
 }
 
-export async function createSpace(page: Page, teamId: string, title: string): Promise<Space> {
+export async function createSpace(page: Page, teamId: string, title: string, defaultPermissions?: string[]): Promise<Space> {
     const response = await page.request.post(`${apiRoot}/teams/${teamId}/spaces`, {
         ...requestedWith,
-        data: {title},
+        data: {
+            title,
+            ...(defaultPermissions === undefined ? {} : {default_permissions: defaultPermissions}),
+        },
     });
 
     return readJsonOrThrow<Space>(response, `Unable to create space "${title}"`);

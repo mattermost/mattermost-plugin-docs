@@ -21,6 +21,28 @@
     "settings_schema": {
         "header": "",
         "footer": "",
-        "settings": []
+        "settings": [
+            {
+                "key": "newSpaceDefaultPreset",
+                "display_name": "Default permissions for new spaces",
+                "type": "dropdown",
+                "help_text": "Applied when a new space does not specify its own default permissions. Changing this setting affects only spaces created afterward.",
+                "default": "contribute",
+                "options": [
+                    {
+                        "display_name": "Contribute",
+                        "value": "contribute"
+                    },
+                    {
+                        "display_name": "Comment",
+                        "value": "comment"
+                    },
+                    {
+                        "display_name": "Read only",
+                        "value": "read_only"
+                    }
+                ]
+            }
+        ]
     }
 }

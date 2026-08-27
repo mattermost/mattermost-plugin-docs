@@ -27,7 +27,7 @@ import (
 // pluginapi client backed by a plugintest.API mock, so channel operations can be exercised.
 // pluginapi.Channel.Create polls for replica-DSN config internally before returning; stub
 // GetConfig with an empty config so it returns immediately instead of hanging/erroring.
-func openTestServiceWithAPI(t *testing.T, mockAPI *plugintest.API) *testHarness {
+func openTestServiceWithAPI(t *testing.T, mockAPI *plugintest.API, options ...app.Option) *testHarness {
 	t.Helper()
 	h := openTestService(t)
 	testutil.StubDefaultSpacePermissions(mockAPI)
@@ -72,8 +72,37 @@ func openTestServiceWithAPI(t *testing.T, mockAPI *plugintest.API) *testHarness 
 	// test asserts the exact roles argument, so a wildcard catch-all covers every create.
 	mockAPI.On("UpdateChannelMemberRoles", mock.Anything, mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil).Maybe()
 	client := pluginapi.NewClient(mockAPI, nil)
-	h.svc = app.New(h.store, &client.Log, client)
+	h.svc = app.New(h.store, &client.Log, client, options...)
 	return h
+}
+
+// TestServiceCreateSpace_ExplicitDefaultOverridesSiteTemplate verifies the site setting is a
+// creation template, not an enforced policy: a caller that supplies a per-space default keeps it.
+func TestServiceCreateSpace_ExplicitDefaultOverridesSiteTemplate(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI, app.WithNewSpaceDefaultPermissions(func() []string {
+		permissions, _ := model.DefaultPermissionsForSchemeName(mmmodel.SchemeNameSpaceReadOnly)
+		return permissions
+	}))
+
+	backingChannelID := mmmodel.NewId()
+	commentSchemeID := testutil.PresetSchemeID(mmmodel.SchemeNameSpaceComment)
+	mockAPI.On("CreateChannel", mock.MatchedBy(func(channel *mmmodel.Channel) bool {
+		return channel.SchemeId != nil && *channel.SchemeId == commentSchemeID
+	})).Return(&mmmodel.Channel{Id: backingChannelID, Type: mmmodel.ChannelTypeSpace}, nil)
+	mockAPI.On("AddChannelMember", backingChannelID, mock.AnythingOfType("string")).
+		Return(&mmmodel.ChannelMember{}, nil)
+
+	permissions, ok := model.DefaultPermissionsForSchemeName(mmmodel.SchemeNameSpaceComment)
+	require.True(t, ok)
+	created, appErr := h.svc.CreateSpace(
+		&model.Space{TeamId: mmmodel.NewId(), Title: "Discussion"},
+		mmmodel.NewId(),
+		&permissions,
+		nil,
+	)
+	require.Nil(t, appErr)
+	require.Equal(t, permissions, created.DefaultPermissions)
 }
 
 // TestServiceCreateSpace_BackingChannel verifies CreateSpace creates a ChannelTypeSpace

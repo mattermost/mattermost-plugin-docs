@@ -36,9 +36,10 @@ func (noopLogger) Error(_ string, _ ...any) {}
 
 // Service is the central service struct for the Docs plugin.
 type Service struct {
-	store  *store.Store
-	log    Logger
-	client *pluginapi.Client
+	store                      *store.Store
+	log                        Logger
+	client                     *pluginapi.Client
+	newSpaceDefaultPermissions func() []string
 
 	// presenceBroadcastTimes records the last channel-wide presence broadcast time (ms) per
 	// (pageID, userID). Autosave cadence is client-driven and unbounded server-side, and every autosave
@@ -58,22 +59,48 @@ type Service struct {
 	lastPresenceSweepAt atomic.Int64
 }
 
+// Option customizes a Service dependency.
+type Option func(*Service)
+
+// WithNewSpaceDefaultPermissions supplies the live site-level template used when CreateSpace is
+// called without an explicit default-permission set. The provider is evaluated once per creation
+// so a plugin configuration change applies to future spaces without mutating existing ones.
+func WithNewSpaceDefaultPermissions(provider func() []string) Option {
+	return func(s *Service) {
+		if provider != nil {
+			s.newSpaceDefaultPermissions = provider
+		}
+	}
+}
+
+func contributeSpaceDefaultPermissions() []string {
+	permissions, _ := model.DefaultPermissionsForSchemeName(mmmodel.SchemeNameSpaceContribute)
+	return permissions
+}
+
 // New creates a Service wired to the given store, logger, and optional pluginapi client.
 // Passing nil for store panics immediately; passing nil for log installs a no-op logger.
 // client may be nil: WS publish methods become no-ops, and channel/team-backed operations
 // (membership checks, member management, space listing) return a client-not-wired error.
-func New(s *store.Store, log Logger, client *pluginapi.Client) *Service {
+func New(s *store.Store, log Logger, client *pluginapi.Client, options ...Option) *Service {
 	if s == nil {
 		panic("app.New: store must not be nil")
 	}
 	if log == nil {
 		log = noopLogger{}
 	}
-	return &Service{
-		store:  s,
-		log:    log,
-		client: client,
+	service := &Service{
+		store:                      s,
+		log:                        log,
+		client:                     client,
+		newSpaceDefaultPermissions: contributeSpaceDefaultPermissions,
 	}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service
 }
 
 // validateTitle sanitizes and validates an entity title, returning the normalized form.
