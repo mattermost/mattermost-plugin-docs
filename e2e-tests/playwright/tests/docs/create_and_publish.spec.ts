@@ -186,6 +186,7 @@ test.describe.serial('docs authoring', () => {
         await expect(formats.orderedItems).toHaveText(body.ordered);
         await expect(formats.rule).toBeVisible();
         await expect(formats.codeBlock).toHaveText(body.code);
+        await spacePage.expectCodeHighlighted();
 
         // * The reader gets the published page, not a draft or an editable surface
         await expect(page).not.toHaveURL(/\/drafts\//);
