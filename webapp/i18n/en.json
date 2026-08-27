@@ -299,6 +299,8 @@
   "docs.spaceSettings.permissions.externalSharing.title": "External sharing",
   "docs.spaceSettings.permissions.guestLocked": "Guests can only view pages",
   "docs.spaceSettings.permissions.loadFailed": "Couldn't load this space's permissions. Close and reopen settings to try again.",
+  "docs.spaceSettings.permissions.memberEffective": "Effective permissions:",
+  "docs.spaceSettings.permissions.memberEffectiveLabel": "Effective permissions for {username}",
   "docs.spaceSettings.permissions.memberLegend": "In addition to what everyone can do:",
   "docs.spaceSettings.permissions.peopleHeading": "People and groups with access",
   "docs.spaceSettings.permissions.permissionsHeading": "What members can do",

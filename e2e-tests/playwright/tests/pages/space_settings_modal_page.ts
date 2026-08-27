@@ -94,6 +94,20 @@ export class SpaceSettingsModalPage {
         return this.dialog.locator(`#member-${userId}-${permission}`);
     }
 
+    memberEffectivePermissions(userId: string): Locator {
+        return this.dialog.locator(`#member-${userId}-effective-permissions`);
+    }
+
+    async expectMemberEffectivePermission(userId: string, label: string, included: boolean) {
+        const effective = this.memberEffectivePermissions(userId);
+        await expect(effective).toBeVisible();
+        if (included) {
+            await expect(effective).toContainText(label);
+        } else {
+            await expect(effective).not.toContainText(label);
+        }
+    }
+
     async expectMemberPermission(userId: string, permission: string, checked: boolean) {
         await expect(this.memberPermission(userId, permission)).toBeChecked({checked});
     }

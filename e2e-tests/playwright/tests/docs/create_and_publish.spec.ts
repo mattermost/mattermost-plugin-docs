@@ -184,10 +184,75 @@ test.describe.serial('docs authoring', () => {
     });
 
     /**
+     * @objective The visibility selected in the create modal controls another team member's access.
+     * @precondition A second user belongs to the team but is not invited to either new space.
+     */
+    test('creates private and public spaces with their selected access', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
+        const sidebar = new SpacesSidebarPage(page);
+        const createSpaceModal = new CreateSpaceModalPage(page);
+        const privateTitle = `Private ${uniqueSuffix()}`;
+        const publicTitle = `Public ${uniqueSuffix()}`;
+
+        await loginAs(page, server.adminUsername, server.adminPassword);
+
+        // # Create without changing the initial selection.
+        await sidebar.goto(teamName);
+        await sidebar.openCreateSpace();
+        await createSpaceModal.expectOpen();
+        await createSpaceModal.expectVisibility('Private');
+        const privateResponsePromise = page.waitForResponse((response) => (
+            response.request().method() === 'POST' && /\/api\/v1\/teams\/[^/]+\/spaces$/.test(response.url())
+        ));
+        await createSpaceModal.createSpace(privateTitle);
+        const privateResponse = await privateResponsePromise;
+        expect(privateResponse.ok()).toBe(true);
+        const privateSpace = await privateResponse.json() as {id: string; view_access: string};
+        expect(privateSpace.view_access).toBe('private');
+        await new SpacePage(page).expectOpen(privateTitle);
+
+        // # Create another space after explicitly selecting Public.
+        await sidebar.goto(teamName);
+        await sidebar.openCreateSpace();
+        await createSpaceModal.expectOpen();
+        await createSpaceModal.chooseVisibility('Public');
+        const publicResponsePromise = page.waitForResponse((response) => (
+            response.request().method() === 'POST' && /\/api\/v1\/teams\/[^/]+\/spaces$/.test(response.url())
+        ));
+        await createSpaceModal.createSpace(publicTitle);
+        const publicResponse = await publicResponsePromise;
+        expect(publicResponse.ok()).toBe(true);
+        const publicSpace = await publicResponse.json() as {id: string; view_access: string};
+        expect(publicSpace.view_access).toBe('open');
+        await new SpacePage(page).expectOpen(publicTitle);
+
+        // * A fresh teammate who was never invited cannot discover or deep-link the private
+        // space, but can discover and open the public one.
+        const memberContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const memberPage = await memberContext.newPage();
+            const memberSidebar = new SpacesSidebarPage(memberPage);
+            await loginAs(memberPage, member.username, member.password);
+            await memberSidebar.goto(teamName);
+            await expect(memberSidebar.spaceLink(privateTitle)).toBeHidden();
+            await memberPage.goto(`/${teamName}/spaces/${privateSpace.id}`);
+            await expect(memberPage).not.toHaveURL(new RegExp(`/spaces/${privateSpace.id}(?:[/?#]|$)`));
+
+            await memberSidebar.goto(teamName);
+            await memberSidebar.expectSpaceListed(publicTitle);
+            await memberSidebar.openSpace(publicTitle);
+            await new SpacePage(memberPage).expectOpen(publicTitle);
+        } finally {
+            await memberContext.close();
+        }
+    });
+
+    /**
      * @objective An unlicensed server offers only the three default-permission presets it can save.
      * @precondition The first test created the space under the contribute preset.
      */
-    test('changes among the included permission presets without a custom-scheme license', {tag: ['@docs', '@permissions']}, async ({page, server}) => {
+    test('changes among the included permission presets without a custom-scheme license', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
+        test.setTimeout(120_000);
+
         const sidebar = new SpacesSidebarPage(page);
         const settings = new SpaceSettingsModalPage(page);
 
@@ -210,15 +275,114 @@ test.describe.serial('docs authoring', () => {
         await expect(settings.permission('Create pages')).toHaveCount(0);
         await settings.expectPermissionPreset('Contribute');
 
-        // # Move directly among all three presets.
-        await settings.choosePermissionPreset('Comment');
-        await settings.choosePermissionPreset('Read only');
-        await settings.choosePermissionPreset('Contribute');
+        // # Start a draft while Contribute still grants creation. Keep this one browser stale so
+        // its already-rendered Publish button can submit to the live gate after the preset changes.
+        const staleContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const stalePage = await staleContext.newPage();
+            await stalePage.routeWebSocket(/\/api\/v4\/websocket/, () => {});
+            await loginAs(stalePage, member.username, member.password);
+            const staleSidebar = new SpacesSidebarPage(stalePage);
+            const staleSpace = new SpacePage(stalePage);
+            await staleSidebar.goto(teamName);
+            await staleSidebar.openSpace(spaceTitle);
+            await staleSpace.addPage(`Comment denied ${uniqueSuffix()}`);
+            await staleSpace.expectDraftRoute();
+            await staleSpace.writeBody('This draft must not publish under the Comment preset.');
+            await staleSpace.expectDraftSaved();
 
-        // * The last preset survives a fresh settings read.
+            // # Select Comment, then close and reopen settings to force a server-backed read.
+            await settings.choosePermissionPreset('Comment');
+            await settings.close();
+            await settings.openFromSpaceHeader(spaceTitle);
+            await settings.openPermissions();
+            await settings.expectPermissionPreset('Comment');
+
+            // * The stale authoring UI reaches the real enforcement point and is rejected.
+            const deniedResponsePromise = stalePage.waitForResponse((response) => (
+                response.request().method() === 'POST' && response.url().includes('/draft/publish')
+            ));
+            await staleSpace.publish();
+            expect((await deniedResponsePromise).status()).toBe(403);
+            await staleSpace.expectDraftRoute();
+            await expect(stalePage.getByRole('alert').getByText('Could not publish the page. Please try again.', {exact: true})).toBeVisible();
+        } finally {
+            await staleContext.close();
+        }
+
+        const expectMemberCanOnlyRead = async () => {
+            const context = await newContext(browser, {baseURL: server.baseURL});
+            try {
+                const memberPage = await context.newPage();
+                const memberSidebar = new SpacesSidebarPage(memberPage);
+                const memberSpace = new SpacePage(memberPage);
+                await loginAs(memberPage, member.username, member.password);
+                await memberSidebar.goto(teamName);
+                await memberSidebar.openSpace(spaceTitle);
+                await memberSpace.openPageFromTree(pageTitle);
+                await memberSpace.expectPageTitle(pageTitle);
+                await memberSpace.expectBody(body.heading1);
+                await memberSpace.expectBodyReadOnly();
+                await expect(memberSpace.addPageButton).toBeHidden();
+            } finally {
+                await context.close();
+            }
+        };
+
+        // * Comment still permits reading the existing page but withholds page creation.
+        await expectMemberCanOnlyRead();
+
+        // # Select Read only and prove both persistence and its effective read-only outcome.
+        await settings.choosePermissionPreset('Read only');
+        await settings.close();
+        await settings.openFromSpaceHeader(spaceTitle);
+        await settings.openPermissions();
+        await settings.expectPermissionPreset('Read only');
+        await expectMemberCanOnlyRead();
+
+        // # Restore Contribute and force another fresh settings read.
+        await settings.choosePermissionPreset('Contribute');
         await settings.close();
         await settings.openFromSpaceHeader(spaceTitle);
         await settings.openPermissions();
         await settings.expectPermissionPreset('Contribute');
+        await settings.close();
+
+        // * A fresh member now completes a real Add page → autosave → Publish journey.
+        const contributeTitle = `Preset publish ${uniqueSuffix()}`;
+        const contributeBody = 'Published through the restored Contribute preset.';
+        const contributeContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const memberPage = await contributeContext.newPage();
+            const memberSidebar = new SpacesSidebarPage(memberPage);
+            const memberSpace = new SpacePage(memberPage);
+            await loginAs(memberPage, member.username, member.password);
+            await memberSidebar.goto(teamName);
+            await memberSidebar.openSpace(spaceTitle);
+            await memberSpace.addPage(contributeTitle);
+            await memberSpace.expectDraftRoute();
+            await memberSpace.writeBody(contributeBody);
+            await memberSpace.expectDraftSaved();
+            await memberSpace.publish();
+            await memberSpace.expectPublished();
+        } finally {
+            await contributeContext.close();
+        }
+
+        // * Another authenticated browser reads the persisted page and body.
+        const verifyContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            const verifyPage = await verifyContext.newPage();
+            const verifySidebar = new SpacesSidebarPage(verifyPage);
+            const verifySpace = new SpacePage(verifyPage);
+            await loginAs(verifyPage, server.adminUsername, server.adminPassword);
+            await verifySidebar.goto(teamName);
+            await verifySidebar.openSpace(spaceTitle);
+            await verifySpace.openPageFromTree(contributeTitle);
+            await verifySpace.expectPageTitle(contributeTitle);
+            await verifySpace.expectBody(contributeBody);
+        } finally {
+            await verifyContext.close();
+        }
     });
 });

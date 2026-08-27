@@ -279,6 +279,145 @@ test.describe('space permissions', () => {
         }
     });
 
+    /** @objective A scheme/default change refreshes an already-open member browser over WebSocket. */
+    test('refreshes page actions live when the space default changes', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
+        const memberContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            // # Keep the member on the space throughout the administrator's mutations.
+            const memberPage = await memberContext.newPage();
+            const memberSidebar = new SpacesSidebarPage(memberPage);
+            const memberSpace = new SpacePage(memberPage);
+            await loginAs(memberPage, member.username, member.password);
+            await memberSidebar.goto(teamName);
+            await memberSidebar.openSpace(spaceTitle);
+            await memberSpace.expectOpen(spaceTitle);
+            await expect(memberSpace.addPageButton).toBeVisible();
+            const memberURL = memberPage.url();
+
+            // # Revoke the create_page default through the administrator's real checkbox.
+            await loginAs(page, server.adminUsername, server.adminPassword);
+            const adminSidebar = new SpacesSidebarPage(page);
+            const settings = new SpaceSettingsModalPage(page);
+            await adminSidebar.goto(teamName);
+            await adminSidebar.openSpace(spaceTitle);
+            await settings.openFromSpaceHeader(spaceTitle);
+            await settings.openPermissions();
+            await settings.togglePermission('Create pages');
+
+            // * The untouched member page loses Add page without a reload or navigation.
+            await expect(memberSpace.addPageButton).toBeHidden();
+            await expect(memberPage).toHaveURL(memberURL);
+
+            // # Restore the same default.
+            await settings.togglePermission('Create pages');
+
+            // * The same live page offers authoring again.
+            await expect(memberSpace.addPageButton).toBeVisible();
+            await expect(memberPage).toHaveURL(memberURL);
+        } finally {
+            await memberContext.close();
+        }
+    });
+
+    /** @objective Membership changes refresh another administrator's already-open roster. */
+    test('refreshes the permissions roster live when membership changes', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
+        await loginAs(page, server.adminUsername, server.adminPassword);
+        const candidate = await createUser(page, 'docs-ws-member');
+        await addUserToTeam(page, teamId, candidate.id);
+
+        const observerContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            // # Open Permissions in a second administrator browser before either mutation.
+            const observerPage = await observerContext.newPage();
+            await loginAs(observerPage, server.adminUsername, server.adminPassword);
+            const observerSidebar = new SpacesSidebarPage(observerPage);
+            const observerSettings = new SpaceSettingsModalPage(observerPage);
+            await observerSidebar.goto(teamName);
+            await observerSidebar.openSpace(spaceTitle);
+            await observerSettings.openFromSpaceHeader(spaceTitle);
+            await observerSettings.openPermissions();
+            await observerSettings.expectMemberListed(candidate.username, false);
+            const observerURL = observerPage.url();
+
+            // # Add the candidate through the first administrator browser.
+            const actorSidebar = new SpacesSidebarPage(page);
+            const actorSettings = new SpaceSettingsModalPage(page);
+            await actorSidebar.goto(teamName);
+            await actorSidebar.openSpace(spaceTitle);
+            await actorSettings.openFromSpaceHeader(spaceTitle);
+            await actorSettings.openPermissions();
+            await actorSettings.addMember(candidate.username);
+
+            // * The untouched observer modal gains the member row over WebSocket.
+            await observerSettings.expectMemberListed(candidate.username);
+            await expect(observerPage).toHaveURL(observerURL);
+
+            // # Remove the candidate through the first browser.
+            await actorSettings.removeMember(candidate.username);
+
+            // * The same observer modal loses the persisted row without reopening.
+            await observerSettings.expectMemberListed(candidate.username, false);
+            await expect(observerPage).toHaveURL(observerURL);
+        } finally {
+            await observerContext.close();
+        }
+    });
+
+    /** @objective An individual grant refreshes that member's already-open page actions. */
+    test('refreshes page actions live when an individual grant changes', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
+        await loginAs(page, server.adminUsername, server.adminPassword);
+        await setSpaceDefaultPermissions(page, []);
+        const seededTitle = `Grant websocket ${uniqueSuffix()}`;
+        await createPage(page, spaceId, seededTitle, 'A page whose edit action follows a live grant.');
+
+        const memberContext = await newContext(browser, {baseURL: server.baseURL});
+        try {
+            // # Open the page as the affected member before the grant exists.
+            const memberPage = await memberContext.newPage();
+            const memberSidebar = new SpacesSidebarPage(memberPage);
+            const memberSpace = new SpacePage(memberPage);
+            await loginAs(memberPage, member.username, member.password);
+            await memberSidebar.goto(teamName);
+            await memberSidebar.openSpace(spaceTitle);
+            await memberSpace.openPageFromTree(seededTitle);
+            await memberSpace.expectPageTitle(seededTitle);
+            await expect(memberSpace.editButton).toBeHidden();
+            const memberURL = memberPage.url();
+
+            // # Grant Edit pages in the member's additional-grants row.
+            const adminSidebar = new SpacesSidebarPage(page);
+            const settings = new SpaceSettingsModalPage(page);
+            await adminSidebar.goto(teamName);
+            await adminSidebar.openSpace(spaceTitle);
+            await settings.openFromSpaceHeader(spaceTitle);
+            await settings.openPermissions();
+            await settings.expectPermission('Edit pages', false);
+            await settings.expectMemberPermission(member.id, 'edit_page', false);
+            await settings.expectMemberEffectivePermission(member.id, 'View pages', true);
+            await settings.expectMemberEffectivePermission(member.id, 'Edit pages', false);
+            await settings.toggleMemberPermission(member.id, 'edit_page');
+
+            // * The grant is visibly separate from the unchanged default, while the resolved
+            // effective set and the member's untouched page both gain Edit pages.
+            await settings.expectPermission('Edit pages', false);
+            await settings.expectMemberPermission(member.id, 'edit_page', true);
+            await settings.expectMemberEffectivePermission(member.id, 'Edit pages', true);
+            await expect(memberSpace.editButton).toBeVisible();
+            await expect(memberPage).toHaveURL(memberURL);
+
+            // # Revoke the individual grant through the same row.
+            await settings.toggleMemberPermission(member.id, 'edit_page');
+
+            // * Both the resolved display and the already-open member page lose it live.
+            await settings.expectMemberPermission(member.id, 'edit_page', false);
+            await settings.expectMemberEffectivePermission(member.id, 'Edit pages', false);
+            await expect(memberSpace.editButton).toBeHidden();
+            await expect(memberPage).toHaveURL(memberURL);
+        } finally {
+            await memberContext.close();
+        }
+    });
+
     /**
      * @objective A permission change survives reopening the modal.
      *

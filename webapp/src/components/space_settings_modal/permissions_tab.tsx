@@ -23,7 +23,7 @@ import type {Space} from 'types/docs';
 import type {Permission} from 'types/permissions';
 import {DEFAULT_PERMISSION_ORDER, MEMBER_PERMISSION_ORDER, Permissions} from 'types/permissions';
 
-import PermissionToggles from './permission_toggles';
+import PermissionToggles, {usePermissionLabels} from './permission_toggles';
 import {Section} from './space_settings_modal';
 import styles from './space_settings_modal.module.scss';
 
@@ -55,9 +55,21 @@ const samePermissionSet = (left: readonly Permission[], right: readonly Permissi
     return leftSet.size === rightSet.size && [...leftSet].every((permission) => rightSet.has(permission));
 };
 
+// The server returns the complete authority in `permissions`, separately from the direct
+// `granted_permissions` that the checkboxes edit. Keep the complete set in a stable, readable
+// order so inherited/default authority is visible without making those permissions look like
+// individual grants.
+const EFFECTIVE_PERMISSION_ORDER: readonly Permission[] = [
+    Permissions.READ_PAGE,
+    ...MEMBER_PERMISSION_ORDER,
+    Permissions.MANAGE_SPACE,
+    Permissions.DELETE_SPACE,
+];
+
 /** Immediate-write access, default-permission, and membership settings. */
 const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) => {
     const {formatMessage} = useIntl();
+    const permissionLabels = usePermissionLabels();
     const currentUserId = useAppSelector(getCurrentUserId);
     const license = useAppSelector(getLicense);
     const members = useSpaceMemberProfiles(space.id);
@@ -111,6 +123,10 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
             });
         }
 
+        const effectivePermissions = EFFECTIVE_PERMISSION_ORDER.
+            filter((permission) => record.permissions.includes(permission)).
+            map((permission) => permissionLabels[permission]);
+
         return (
             <div
                 className={styles.memberPermissions}
@@ -126,6 +142,23 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                         />
                     </span>
                 )}
+                <div
+                    id={`member-${profile.id}-effective-permissions`}
+                    className={styles.effectivePermissions}
+                    role='group'
+                    aria-label={formatMessage({
+                        id: 'docs.spaceSettings.permissions.memberEffectiveLabel',
+                        defaultMessage: 'Effective permissions for {username}',
+                    }, {username: profile.username})}
+                >
+                    <span className={styles.effectivePermissionsLabel}>
+                        <FormattedMessage
+                            id='docs.spaceSettings.permissions.memberEffective'
+                            defaultMessage='Effective permissions:'
+                        />
+                    </span>
+                    <span>{effectivePermissions.join(', ')}</span>
+                </div>
                 <PermissionToggles
                     options={MEMBER_PERMISSION_ORDER}
                     selected={record.granted_permissions}

@@ -338,7 +338,7 @@ describe('PermissionsTab', () => {
                 ...mockPermissionsState,
                 members: new Map([
                     ['me', {user_id: 'me', permissions: ['read_page'], granted_permissions: [], is_admin: true, is_guest: false, auto_joined: false}],
-                    ['u2', {user_id: 'u2', permissions: ['read_page', 'edit_page'], granted_permissions: ['edit_page'], is_admin: false, is_guest: false, auto_joined: false}],
+                    ['u2', {user_id: 'u2', permissions: ['read_page', 'create_page', 'edit_page'], granted_permissions: ['edit_page'], is_admin: false, is_guest: false, auto_joined: false}],
                 ]),
             };
         };
@@ -355,9 +355,19 @@ describe('PermissionsTab', () => {
             // is rendered once for the space default and once per member — which is what
             // makes this a matrix rather than a single row.
             const adaEdit = matrixCheckbox('member-u2-edit_page');
+            const adaCreate = matrixCheckbox('member-u2-create_page');
             const adaDelete = matrixCheckbox('member-u2-delete_page');
             expect(adaEdit.checked).toBe(true);
+            expect(adaCreate.checked).toBe(false);
             expect(adaDelete.checked).toBe(false);
+
+            // Effective authority is shown separately from the additional-grant controls:
+            // create_page comes from the space default, while edit_page is Ada's direct grant.
+            const effective = screen.getByRole('group', {name: 'Effective permissions for ada'});
+            expect(effective).toHaveTextContent('Effective permissions:');
+            expect(effective).toHaveTextContent('View pages');
+            expect(effective).toHaveTextContent('Create pages');
+            expect(effective).toHaveTextContent('Edit pages');
         });
 
         // The write endpoint replaces granted_permissions wholesale, so the whole set goes.

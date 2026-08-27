@@ -78,7 +78,7 @@ func (s *Service) resolveSpaceScheme(permissions []string) (schemeID string, rol
 		}
 		return scheme.Id, rolesFromScheme(scheme), nil
 	}
-	scheme, poolErr := s.client.Scheme.GetOrCreateChannelScheme(
+	scheme, poolErr := s.client.Scheme.GetOrCreatePluginChannelScheme(
 		spaceUserRolePermissions(permissions),
 		spaceAdminRolePermissions(),
 		spaceGuestRolePermissions(),
