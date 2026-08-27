@@ -21,9 +21,9 @@ const corePinFile = join(repoRoot, 'build/core-commit.txt');
 
 // Every spec needs a server carrying the paired core branch's work, not only the permission ones:
 // CreateSpace resolves a preset space scheme that core seeds there, so on :master even the
-// authoring specs fail at the first space. The image is therefore derived from the same pin the Go
-// suite verifies CORE_IMAGE against, which keeps one commit naming the server both suites run
-// against. Once those core changes ship in a release, this can go back to a release tag.
+// authoring specs fail at the first space. The image is therefore derived from one tracked pin,
+// which keeps a reviewed commit naming the server both suites run against. Once those core changes
+// ship in a release, this can go back to a release tag.
 function resolveImage(): string {
     const image = process.env.MM_IMAGE;
 

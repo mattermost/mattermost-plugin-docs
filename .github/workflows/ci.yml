@@ -157,24 +157,19 @@ jobs:
 
 
   # The space-permission specs, which the job above deliberately does not collect: they need the
-  # Enterprise license secret, which fork runs cannot see, on top of the core image both jobs run
-  # against. Kept as its own job so the authoring suite above keeps running on every PR, license or
-  # not.
-  #
-  # DO NOT add to required status checks while CORE_IMAGE is unset: a job skipped by a top-level
-  # `if:` reports as "skipped", and branch protection counts that as satisfied.
+  # Enterprise license secret, which fork runs cannot see. Kept as its own job so the authoring
+  # suite above keeps running on every PR, license or not.
   e2e-playwright-space-permissions:
-    if: ${{ vars.CORE_IMAGE != '' && (github.repository_owner == 'mattermost' || github.event_name != 'schedule') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ (github.repository_owner == 'mattermost' || github.event_name != 'schedule') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     needs: [build]
     timeout-minutes: 45
     permissions:
       contents: read
     env:
-      # The container helper reads MM_IMAGE; CI supplies the pinned core image so the specs always
-      # assert against the core commit build/core-commit.txt names.
-      MM_IMAGE: ${{ vars.CORE_IMAGE }}
-      CORE_IMAGE: ${{ vars.CORE_IMAGE }}
+      # Resolve the server image exactly like the authoring job: use the repository override when
+      # present, otherwise let the container helper derive it from build/core-commit.txt.
+      MM_IMAGE: ${{ vars.MM_IMAGE }}
       # Selects both the specs and the licensed container setup they need; see tests/helpers/mode.ts.
       MM_E2E_SPACE_PERMISSIONS: "true"
       # Lifted to env because the secrets context is not available in a step-level `if`.
@@ -185,11 +180,6 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-
-      - name: ci/verify-core-image-pin
-        uses: ./.github/actions/verify-core-image-pin
-        with:
-          CORE_IMAGE: ${{ env.CORE_IMAGE }}
 
       # Fails here, by name, rather than inside a spec: the suite's own error would otherwise arrive
       # only after a container boot and a browser install.

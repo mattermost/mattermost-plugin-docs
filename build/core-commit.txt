@@ -1,5 +1,5 @@
-# The commit of the paired core branch (MM-69269-permissions-rbac-core-v2) that the e2e suite runs
-# against. CORE_IMAGE must be the image core CI published for it.
+# The commit of the paired core branch (MM-69269-permissions-rbac-core-v2) that both e2e jobs run
+# against when MM_IMAGE is unset. The harness derives the core CI image tag from this sha.
 #
 # Core PR: https://github.com/mattermost/mattermost/pull/38145
 # The sha below is what CI compares against, not the PR head: a PR head moves with every push, so

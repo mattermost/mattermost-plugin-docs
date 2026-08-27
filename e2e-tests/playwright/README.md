@@ -51,11 +51,11 @@ curl -s -o /dev/null -w '%{http_code}' \
   https://hub.docker.com/v2/repositories/mattermostdevelopment/mattermost-team-edition/tags/<7-char-sha>/
 ```
 
-In CI this run is its own job, `e2e-playwright-space-permissions`, gated on the `CORE_IMAGE`
-repository variable and the license secret — so the authoring job above keeps running on every PR
-regardless. The suite is **not parallel-safe**: `setGuestAccountsEnabled` (`tests/helpers/guest.ts`)
-and the System Console cases mutate server-wide state. Permission mode therefore uses one worker
-locally as well as in CI; see `workers` in `playwright.config.ts`.
+In CI this run is its own job, `e2e-playwright-space-permissions`, using the same image resolution
+as the authoring job and additionally requiring the license secret. The suite is **not
+parallel-safe**: `setGuestAccountsEnabled` (`tests/helpers/guest.ts`) and the System Console cases
+mutate server-wide state. Permission mode therefore uses one worker locally as well as in CI; see
+`workers` in `playwright.config.ts`.
 
 ## What the harness carries for the paired core branch
 
