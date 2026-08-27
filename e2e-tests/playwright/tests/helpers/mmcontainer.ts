@@ -52,11 +52,9 @@ function resolveImage(): string {
 // Only the Mattermost image needs this. The Postgres image publishes an arm64 manifest, and
 // pinning it to amd64 would make it emulate for nothing.
 //
-// A locally built image is the exception, and pinning it is worse than not pinning:
-// build/build-core-image.sh targets the Docker daemon's own architecture, so on an arm64 host it
-// produces an arm64 image, and asking for amd64 fails the boot outright with "does not provide the
-// specified platform" — there is no manifest to fall back on and nothing to pull. A bare tag means
-// locally built here for the same reason it does in the Go suite: a published image is namespaced.
+// A caller-supplied single-segment image may be local and native to the Docker daemon. Do not force
+// that override to amd64: unlike the namespaced core-CI images, it may have no multi-arch manifest
+// or remote image to fall back on.
 function resolvePlatform(image: string): string | undefined {
     const explicit = (process.env.MM_E2E_PLATFORM ?? process.env.DOCKER_DEFAULT_PLATFORM ?? '').trim();
 

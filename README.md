@@ -54,9 +54,7 @@ MM_IMAGE=mattermostdevelopment/mattermost-team-edition:<tag> make test-e2e
 ```
 
 Core CI does not retain its per-commit images indefinitely. When the pinned tag stops
-resolving, bump `build/core-commit.txt` to a commit whose image is still published, or build
-one locally from the `mattermost` repository with `build/build-core-image.sh` and point
-`MM_IMAGE` at it.
+resolving, bump `build/core-commit.txt` to a commit whose image is still published.
 
 To run against a Mattermost server you are already running instead of a container:
 

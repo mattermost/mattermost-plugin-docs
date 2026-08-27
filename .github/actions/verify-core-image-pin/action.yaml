@@ -37,7 +37,7 @@ runs:
         # scheme guards and role composition the suite asserts on without moving the pin.
         # Wrapped so a missing or comment-only pin file cannot abort the step under this shell's
         # `-eo pipefail` (grep's no-match exit 1, or its SIGPIPE when head closes the pipe first),
-        # which would skip the named diagnostic below. Same guard as build/build-core-image.sh.
+        # which would skip the named diagnostic below.
         pinned_commit="$( { grep -vE '^\s*(#|$)' build/core-commit.txt || true; } | head -1 | tr -d '[:space:]')"
         if [[ ! "$pinned_commit" =~ ^[0-9a-f]{7,40}$ ]]; then
           echo "build/core-commit.txt must hold one core commit sha; got '${pinned_commit}'." >&2
