@@ -1,19 +1,12 @@
-# The commit of the paired core branch (MM-69269-permissions-rbac-core-v2) that both e2e jobs run
-# against when MM_IMAGE is unset. The harness derives the core CI image tag from this sha.
+# Core commit whose published Mattermost image all E2E jobs use when MM_IMAGE is unset. The
+# harness derives the image tag from the first seven characters of this sha.
 #
-# Core PR: https://github.com/mattermost/mattermost/pull/38145
-# The sha below is what CI compares against, not the PR head: a PR head moves with every push, so
-# pinning to it would re-point this suite at new core code without a commit in this repo.
+# Keep the pin in this repository because E2E behavior can depend on integrated Mattermost changes
+# outside the server/public Go module. Update it whenever the E2E suite requires newer core
+# behavior.
 #
-# This is tracked here rather than derived from the go.mod server/public pin, because most of the
-# server-side RBAC implementation lives outside the public module: a core commit can change scheme
-# guards, role composition, or the migrations this suite exercises without moving the pin at all.
-# Bump this line in the same PR that depends on the newer core behaviour.
-#
-# Core CI's per-commit images are not retained indefinitely: the previous pin
-# (102b12d804d3135deb7ed261db944020d799d89b) no longer resolves to a published tag, which makes both
-# e2e suites unrunnable rather than merely stale. When a pin stops resolving, bump it to a commit
-# whose image is still published — verify with
+# Core CI's per-commit images are not retained indefinitely. When this tag stops resolving, update
+# the pin to a commit whose image is still published — verify with
 #   curl -s -o /dev/null -w '%{http_code}' \
 #     https://hub.docker.com/v2/repositories/mattermostdevelopment/mattermost-team-edition/tags/<7-char-sha>/
 #
