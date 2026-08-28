@@ -4,6 +4,11 @@
 import {expect, type Locator, type Page} from '@playwright/test';
 
 import type {RichText} from '../data/rich_text';
+import {DRAFTS_SEGMENT} from '../data/url_segments';
+
+// A draft is addressed by the reserved segment, never by a page id; see
+// webapp/src/routing/paths.ts for why that segment cannot be one.
+const DRAFT_ROUTE = new RegExp(`/${DRAFTS_SEGMENT}/`);
 
 export class SpacePage {
     readonly page: Page;
@@ -17,6 +22,7 @@ export class SpacePage {
     readonly publishButton: Locator;
     readonly editButton: Locator;
     readonly shareButton: Locator;
+    readonly overviewItem: Locator;
 
     constructor(page: Page) {
         this.page = page;
@@ -40,6 +46,10 @@ export class SpacePage {
         this.publishButton = page.getByRole('button', {name: 'Publish', exact: true});
         this.editButton = page.getByRole('button', {name: 'Edit', exact: true});
         this.shareButton = page.getByRole('button', {name: 'Share', exact: true});
+
+        // The space's front door, above the page tree. A button rather than a treeitem:
+        // it isn't a page, which is also why it has a reserved segment of its own.
+        this.overviewItem = page.getByRole('button', {name: 'Overview', exact: true});
     }
 
     // The space header's title trigger, exact so the sidebar's "Space options for
@@ -73,7 +83,20 @@ export class SpacePage {
     }
 
     async expectDraftRoute() {
-        await expect(this.page).toHaveURL(/\/drafts\//);
+        await expect(this.page).toHaveURL(DRAFT_ROUTE);
+    }
+
+    async openOverview() {
+        await this.overviewItem.click();
+    }
+
+    // The front door renders the space itself, not a page: its hero carries the space
+    // title, and the Overview item reads as current because no page is routed. Both are
+    // asserted so a page that merely failed to load could not pass for it.
+    async expectFrontDoor(spaceTitle: string) {
+        await expect(this.overviewItem).toHaveAttribute('aria-current', 'page');
+        await expect(this.page.getByRole('heading', {name: spaceTitle, level: 1})).toBeVisible();
+        await expect(this.publishedEditor).toBeHidden();
     }
 
     // Keystrokes, not fill(): ProseMirror builds its document from input events.
@@ -159,7 +182,7 @@ export class SpacePage {
 
     // Read from the URL so a caller can address the page over the API.
     routedIds(): {spaceId: string; pageId: string} {
-        const match = (/\/spaces\/([^/]+)\/(?:drafts\/)?([^/?#]+)/).exec(this.page.url());
+        const match = new RegExp(`/spaces/([^/]+)/(?:${DRAFTS_SEGMENT}/)?([^/?#]+)`).exec(this.page.url());
 
         if (!match) {
             throw new Error(`Not on a page route: ${this.page.url()}`);
@@ -193,7 +216,7 @@ export class SpacePage {
 
     // Positive signals: a missing or renamed Publish button would satisfy its absence.
     async expectPublished() {
-        await expect(this.page).not.toHaveURL(/\/drafts\//);
+        await expect(this.page).not.toHaveURL(DRAFT_ROUTE);
         await expect(this.editButton).toBeVisible();
     }
 

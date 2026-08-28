@@ -13,6 +13,7 @@ import {getPageDraft} from '../helpers/docs';
 import {addUserToTeam, createTeam} from '../helpers/team';
 import {createUser, type SeededUser} from '../helpers/user';
 import {richText, type RichText} from '../data/rich_text';
+import {DRAFTS_SEGMENT} from '../data/url_segments';
 import {CreateSpaceModalPage} from '../pages/create_space_modal_page';
 import {DocsSwitcherPage} from '../pages/docs_switcher_page';
 import {ShareSpaceModalPage} from '../pages/share_space_modal_page';
@@ -189,7 +190,7 @@ test.describe.serial('docs authoring', () => {
         await spacePage.expectCodeHighlighted();
 
         // * The reader gets the published page, not a draft or an editable surface
-        await expect(page).not.toHaveURL(/\/drafts\//);
+        await expect(page).not.toHaveURL(new RegExp(`/${DRAFTS_SEGMENT}/`));
         await spacePage.expectBodyReadOnly();
     });
 });
