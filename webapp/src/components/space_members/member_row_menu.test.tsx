@@ -107,7 +107,7 @@ describe('MemberRowMenu', () => {
             expect.stringContaining('Admin'),
         ]);
 
-        // Admin rides the admin_space grant, which this caller may not hand out.
+        // Admin requires the admin_space grant, which this caller may not grant.
         expect(screen.getByRole('menuitemradio', {name: /^Admin/})).toHaveAttribute('aria-disabled', 'true');
 
         fireEvent.click(screen.getByRole('menuitemradio', {name: /^Can edit/}));

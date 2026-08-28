@@ -160,20 +160,12 @@ func (s *Service) CreateSpace(space *model.Space, userID string, defaultPermissi
 	if fieldErr := validateSpaceMutableFields("CreateSpace", space.Description, space.Icon); fieldErr != nil {
 		return nil, fieldErr
 	}
-	// Reject a creator who isn't an active member of the target team before standing up a backing
-	// channel there — otherwise any authenticated user could create a real, visible channel in any
-	// team by supplying its id.
-	member, memberErr := s.activeTeamMember(space.TeamId, userID)
-	if memberErr != nil {
-		// A transient/backend failure must not be misreported as "not a team member".
-		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memberErr)
-	}
-	if member == nil {
-		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.not_team_member.app_error", nil, "", http.StatusForbidden)
-	}
-	// Team membership alone does not authorize creating a space in it: the caller must also hold
-	// create_space on the team (or be sysadmin). Unlike the read/manage/delete gates, no space
-	// exists yet here, so there is nothing to existence-hide behind — a plain 403 is correct.
+	// The caller must hold create_space on the target team (or be sysadmin) before a backing
+	// channel is stood up there. Core grants a team permission only through an active membership
+	// in that team or a system role, so this also rejects a non-member supplying a team id —
+	// otherwise any authenticated user could create a real, visible channel in any team. Unlike
+	// the read/manage/delete gates, no space exists yet here, so there is nothing to
+	// existence-hide behind — a plain 403 is correct.
 	if !s.client.User.HasPermissionTo(userID, mmmodel.PermissionManageSystem) &&
 		!s.client.User.HasPermissionToTeam(userID, space.TeamId, mmmodel.PermissionCreateSpace) {
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.forbidden.app_error", nil, "", http.StatusForbidden)
@@ -482,9 +474,9 @@ func (s *Service) SetSpaceDefaultPermissions(space *model.Space, permissions []s
 // space_members.go alongside the escalation and last-admin guards.
 
 // GetSpacesForTeam returns one page of a team's live spaces, plus whether more exist beyond it.
-// userID must be an active team member holding team read_space (the list-entry gate; every
-// team_user holds it by default); unlike single-space read, sysadmin does not exempt the caller
-// from either requirement here. The result is the union of spaces the caller is a backing-channel
+// userID must be an active team member; a sysadmin is not exempt from that requirement. A
+// non-sysadmin must also hold team read_space (the list-entry gate; every team_user holds it by
+// default). The result is the union of spaces the caller is a backing-channel
 // member of and open spaces the caller can reach through the same non-member fall-through
 // single-space read uses: team read_public_channel held, and compliance mode off.
 func (s *Service) GetSpacesForTeam(teamID, userID string, page, perPage int) ([]*model.Space, bool, *mmmodel.AppError) {
@@ -497,14 +489,6 @@ func (s *Service) GetSpacesForTeam(teamID, userID string, page, perPage int) ([]
 	offset, limit := paginationOffsetLimit(page, perPage)
 	if appErr := s.requireClient("GetSpacesForTeam", "team_id", teamID, "user_id", userID); appErr != nil {
 		return nil, false, appErr
-	}
-	// The membership resolved here answers all three questions below.
-	member, memberErr := s.activeTeamMember(teamID, userID)
-	if memberErr != nil {
-		return nil, false, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memberErr)
-	}
-	if member == nil {
-		return nil, false, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.not_team_member.app_error", nil, "", http.StatusForbidden)
 	}
 	if !s.client.User.HasPermissionTo(userID, mmmodel.PermissionManageSystem) &&
 		!s.client.User.HasPermissionToTeam(userID, teamID, mmmodel.PermissionReadSpace) {
@@ -559,17 +543,10 @@ func normalizeAndValidateSpacePatch(where string, patch *model.SpacePatch) *mmmo
 // A patch that changes ViewAccess requires RequireSpaceAdminOrSysadmin against the live row and is
 // rejected when force=true. actingUserID is used only for that escalation check.
 //
-// Every patch takes the space advisory lock at least once, serializing metadata projection between
-// updates and keeping an open-to-private transition ordered with self-join and membership
-// operations. A transition that is not that flip needs only the one acquisition, writing the row
-// and syncing the channel while it holds it, same as before. An open-to-private flip splits across
-// two acquisitions instead: the first validates the CAS baseline and snapshots the auto-joined
-// memberships to remove; those removals then run with the lock released, since each is its own
-// Channel.DeleteMember RPC and WithSpaceMembershipLock's contract requires its closure to stay
-// short; a second, short acquisition re-validates the same baseline and that the space is still
-// open before writing the row, rejecting a concurrent change the same way a stale baseline is
-// rejected. A removal failure aborts the flip and leaves the space open; every membership removed
-// before the failure stays removed and its owner is still notified.
+// Every patch is serialized against other mutations of the same space. An open-to-private
+// transition also removes every auto-joined member. A removal failure aborts the transition and
+// leaves the space open; every membership removed before the failure stays removed and its owner
+// is still notified.
 func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expectedUpdateAt *int64, force bool, actingUserID string) (*model.Space, *mmmodel.AppError) {
 	if space == nil {
 		return nil, mmmodel.NewAppError("UpdateSpace", "app.space.update.invalid_id.app_error", nil, "", http.StatusBadRequest)
@@ -646,13 +623,18 @@ func (s *Service) UpdateSpace(space *model.Space, patch *model.SpacePatch, expec
 	prunedSpace := &model.Space{Id: space.Id, ChannelId: flipChannelID}
 	prunedUserIDs, pruneErr := s.removeAutoJoinedMembers(prunedSpace, flipAutoJoinedIDs)
 	publishPrunedMemberships := func() {
-		for _, userID := range prunedUserIDs {
-			// Delivered to each removed user directly as well as to the channel: they have just
-			// left it, so the channel-scoped broadcast can no longer reach them — and they are
-			// exactly who has to learn their access changed.
-			s.publishMembershipEvent(wsEventSpaceMemberRemoved,
-				map[string]any{"space_id": space.Id, "user_id": userID}, flipChannelID, userID)
+		if len(prunedUserIDs) == 0 {
+			return
 		}
+		// Each removed user is told directly: they have just left the channel, so a channel-scoped
+		// broadcast can no longer reach them — and they are exactly who has to learn their access
+		// changed. The remaining members are told once, with no user id, that the roster changed:
+		// a channel broadcast resolves the audience and makes every recipient refetch the roster,
+		// so sending one per removed user would cost that work once per removal.
+		for _, userID := range prunedUserIDs {
+			s.publishToUser(wsEventSpaceMemberRemoved, map[string]any{"space_id": space.Id, "user_id": userID}, userID)
+		}
+		s.publishToChannels(wsEventSpaceMemberRemoved, map[string]any{"space_id": space.Id}, flipChannelID)
 	}
 	if pruneErr != nil {
 		publishPrunedMemberships()
@@ -793,15 +775,20 @@ func (s *Service) DeleteSpace(space *model.Space) *mmmodel.AppError {
 	return nil
 }
 
-// snapshotSpaceMemberIDs returns the user IDs of the backing-channel members of space who are
-// still active members of its team — the audience the space's events may reach. Former team
-// members keep their channel rows but fail the read gate, so they are not delivered to. A nil
-// client or a space with no backing channel yields no members and no error.
+// snapshotSpaceMemberIDs returns the user IDs of the backing-channel members of space who still
+// pass the team half of the read gate — the audience the space's events may reach. A row can
+// survive for a member the gate rejects (a team departure whose channel cleanup stopped partway,
+// or a team scheme that withholds read_space), so its user is not delivered to. A nil client or a
+// space with no backing channel yields no members and no error.
 func (s *Service) snapshotSpaceMemberIDs(space *model.Space) ([]string, error) {
 	if s.client == nil || space.ChannelId == "" {
 		return nil, nil
 	}
-	return s.store.GetActiveTeamChannelMembers(space.ChannelId)
+	audience, err := s.resolveSpaceAudience(space.ChannelId)
+	if err != nil {
+		return nil, err
+	}
+	return audience.admittedIDs(), nil
 }
 
 // RestoreSpace un-deletes a soft-deleted space by ID and un-archives its backing channel, returning

@@ -26,6 +26,6 @@ export const CUSTOM_PERMISSION_SCHEME_LICENSE_ERROR_ID = 'app.scheme.plugin_sche
 export const GUEST_PERMISSIONS_LICENSE_ERROR_ID = 'app.scheme.plugin_scheme.guest_license.app_error';
 
 // The add route answers 403 for two different rules: the target isn't an active member of the
-// space's team, or the caller lacks manage authority over the space. The id is what tells them
-// apart, the same way the removal routes' 409s are told apart above.
+// space's team, or the caller lacks manage authority over the space. Only the first has an id the
+// client matches on; a manage-authority 403 is reported as a generic add failure.
 export const NOT_TEAM_MEMBER_ERROR_ID = 'app.space.member.not_team_member.app_error';

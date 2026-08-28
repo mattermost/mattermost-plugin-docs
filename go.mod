@@ -15,7 +15,7 @@ require (
 	github.com/gorilla/mux v1.8.1
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.12.3
-	github.com/mattermost/mattermost/server/public v0.4.5-0.20260828132623-88e8bbe9ff4c
+	github.com/mattermost/mattermost/server/public v0.4.5-0.20260828203305-8701197087f4
 	github.com/mattermost/mattermost/server/v8 v8.0.0-20260623200446-ba033eae4704
 	github.com/mattermost/morph v1.1.0
 	github.com/mattermost/squirrel v0.5.0
@@ -87,3 +87,5 @@ require (
 )
 
 // Repin server/public to a released version once mattermost/mattermost#37685 merges.
+
+replace github.com/mattermost/mattermost/server/public => /Users/catalintomai/mattermost/MM-69269-core/server/public

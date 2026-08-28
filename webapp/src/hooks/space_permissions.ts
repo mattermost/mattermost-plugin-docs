@@ -185,14 +185,14 @@ export function useSpacePermissions(space: Space): SpacePermissions {
                     accessResolvedFor.current = space.id;
                 }
 
-                // A non-manager receives a redacted roster; it is not a usable empty matrix.
-                const roster = canManage ? await listAllSpaceMembers(space.id) : null;
-                if (cancelled) {
+                // A non-manager receives a redacted roster, which is not a usable matrix, so the
+                // matrix stays empty. That is a resolved authority state, not a failed read.
+                if (!canManage) {
+                    clearResolved();
                     return;
                 }
-                if (!roster) {
-                    clearResolved();
-                    setLoadFailed(true);
+                const roster = await listAllSpaceMembers(space.id);
+                if (cancelled) {
                     return;
                 }
 

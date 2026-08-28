@@ -55,13 +55,15 @@ const (
 // WS events are best-effort and must not fail the primary mutation; a nil client (store-only unit
 // tests) makes this a no-op.
 //
-// Core's hub delivers a channel broadcast to every raw ChannelMembers row with no team check, and
-// former team members keep their backing-channel rows after leaving the team — so each broadcast
-// carries a freshly resolved omit list of the members failing the team half of the access gate.
-// When the list cannot be resolved the event is dropped for the channel rather than delivered
-// unfiltered: a missed refresh signal only degrades liveness, while unfiltered delivery leaks space
-// activity. Resolving on every publish keeps a team departure effective for the next event; there is
-// no plugin-visible team-membership hook that could safely invalidate a cache.
+// Core's hub delivers a channel broadcast to every raw ChannelMembers row with no team check. A
+// member can fail the team half of the read gate while that row survives: core removes a departing
+// user's space-channel rows on team leave, but that cleanup stops at its first failed removal, and
+// a team scheme can withhold read_space from a member who never left. So each broadcast carries a
+// freshly resolved omit list of the members core reports as failing that half.
+// When the audience cannot be resolved the event is dropped for that channel: a missed refresh
+// signal only degrades liveness, while an unfiltered broadcast leaks space activity to members the
+// read gate rejects. Resolving on every publish keeps a departure or a scheme change effective for
+// the next event; there is no plugin-visible hook that could safely invalidate a cache.
 func (s *Service) publishToChannels(event string, payload map[string]any, channelIDs ...string) {
 	if s.client == nil {
 		return
@@ -72,15 +74,15 @@ func (s *Service) publishToChannels(event string, payload map[string]any, channe
 			continue
 		}
 		seen[chID] = struct{}{}
-		omitted, err := s.store.GetInactiveTeamChannelMembers(chID)
+		audience, err := s.resolveSpaceAudience(chID)
 		if err != nil {
-			s.log.Warn("failed to resolve the WS omit list; dropping the event for this channel", "event", event, "channel_id", chID, "err", err)
+			s.log.Warn("failed to resolve the WS audience; dropping the event for this channel", "event", event, "channel_id", chID, "err", err)
 			continue
 		}
 		broadcast := &mmmodel.WebsocketBroadcast{ChannelId: chID}
-		if len(omitted) > 0 {
-			broadcast.OmitUsers = make(map[string]bool, len(omitted))
-			for _, id := range omitted {
+		if len(audience.omitted) > 0 {
+			broadcast.OmitUsers = make(map[string]bool, len(audience.omitted))
+			for _, id := range audience.omitted {
 				broadcast.OmitUsers[id] = true
 			}
 		}

@@ -10,21 +10,15 @@ import (
 	"github.com/pkg/errors"
 )
 
-// This file reads core's membership tables (ChannelMembers, TeamMembers, Channels) directly on
-// the plugin's master DB handle, following the ChannelMembers EXISTS in GetSpacesForTeam. The
-// plugin API's membership reads are answered by core's store from a read replica, but the callers
-// here back invariants — last-admin and last-reachable-member protection, auto-join idempotency,
-// WS recipient filtering — that must observe a membership write committed on the primary an
-// instant earlier; under replica lag a replica read can miss it even while the space membership
-// lock serializes the writers. Reads only: membership writes keep going through the plugin API so
-// core's caching and events stay correct.
-
-// activeTeamMemberJoin is the TeamMembers join shared by every query in this file that counts
-// only active team members, so the predicate cannot drift between copies. teamRef is the SQL
-// expression supplying the team id — a bind placeholder or a joined column reference.
-func activeTeamMemberJoin(teamRef string) string {
-	return "TeamMembers tm ON tm.UserId = cm.UserId AND tm.TeamId = " + teamRef + " AND tm.DeleteAt = 0"
-}
+// This file reads core's ChannelMembers and Channels tables directly on the plugin's master DB
+// handle, following the ChannelMembers EXISTS in GetSpacesForTeam. The plugin API's membership
+// reads are answered by core's store from a read replica, but the callers here back invariants —
+// last-admin and last-reachable-member protection, auto-join idempotency, WS recipient filtering —
+// that must observe a membership write committed on the primary an instant earlier; under replica
+// lag a replica read can miss it even while the space membership lock serializes the writers.
+// Reads only, and structural only: membership writes keep going through the plugin API so core's
+// caching and events stay correct, and whether a member still holds team read_space is asked of
+// core rather than derived from TeamMembers here.
 
 // GetMemberSchemeFlags returns the SchemeAdmin and SchemeGuest flags of userID's ChannelMembers row
 // for channelID, answered from the master. Both flags are nullable in core's schema; NULL reads
@@ -75,90 +69,65 @@ func (s *Store) IsChannelMember(channelID, userID string) (bool, error) {
 	return isMember, nil
 }
 
-// GetOtherAuthorizedMembers reports whether channelID has, disregarding excludeUserID, a member who
-// is an active member of teamID (anyMember), and whether any such member is a channel scheme
-// admin (anyAdmin). Former team members keep their channel-member rows, so the team join — with
-// the same DeleteAt=0 predicate as the app layer's activeTeamMember — is what makes a row count.
+// ChannelMemberRef is one backing-channel membership row reduced to what audience resolution and
+// the last-admin guard need.
+type ChannelMemberRef struct {
+	UserID      string
+	SchemeAdmin bool
+}
+
+// ChannelMembership is a backing channel's whole membership together with the channel's team,
+// which the caller needs next to ask core which of the members hold team read_space.
+type ChannelMembership struct {
+	TeamID  string
+	Members []ChannelMemberRef
+}
+
+// GetChannelMembership lists every ChannelMembers row of channelID with its SchemeAdmin flag, and
+// the channel's team resolved through the Channels row so a caller holding only a channel id can
+// use it. The Channels join is outer so a membership row is still listed when its channel row is
+// missing; the team then reads as empty and core admits nobody for it, which fails closed.
 // SchemeAdmin is nullable in core's schema; a NULL reads as not-admin, matching core's own
 // scan-time handling.
-func (s *Store) GetOtherAuthorizedMembers(channelID, teamID, excludeUserID string) (anyMember, anyAdmin bool, err error) {
-	if channelID == "" || teamID == "" {
-		return false, false, &ErrInvalidInput{Entity: "ChannelMember", Field: "channel_id", Value: channelID}
+//
+// Structural only: whether a listed member may still reach the space — an active team membership
+// whose team scheme grants read_space — is core's decision, asked per audience through the plugin
+// API, never a TeamMembers predicate here.
+//
+// Deliberately unpaginated, and it must stay that way. The result feeds a WebSocket omit list
+// (publishToChannels), so a partial answer does not degrade a listing — it delivers the event to
+// members the read gate rejects, which is the leak the omit list exists to prevent. The row count
+// is bounded by the channel's own membership (the predicate is cm.ChannelId), not by team size, so
+// it is the same order as the broadcast's own fan-out.
+func (s *Store) GetChannelMembership(channelID string) (*ChannelMembership, error) {
+	if channelID == "" {
+		return nil, &ErrInvalidInput{Entity: "ChannelMember", Field: "channel_id", Value: channelID}
 	}
 
 	builder := s.getQueryBuilder().
 		Select(
-			"COUNT(*) > 0 AS AnyMember",
-			"COALESCE(BOOL_OR(COALESCE(cm.SchemeAdmin, FALSE)), FALSE) AS AnyAdmin",
+			"COALESCE(c.TeamId, '') AS TeamId",
+			"cm.UserId AS UserId",
+			"COALESCE(cm.SchemeAdmin, FALSE) AS SchemeAdmin",
 		).
 		From("ChannelMembers cm").
-		Join(activeTeamMemberJoin("?"), teamID).
-		Where(sq.Eq{"cm.ChannelId": channelID}).
-		Where(sq.NotEq{"cm.UserId": excludeUserID})
-
-	var row struct {
-		AnyMember bool `db:"anymember"`
-		AnyAdmin  bool `db:"anyadmin"`
-	}
-	if qErr := s.getBuilder(s.db, &row, builder); qErr != nil {
-		return false, false, errors.Wrap(qErr, "unable_to_count_authorized_members")
-	}
-	return row.AnyMember, row.AnyAdmin, nil
-}
-
-// GetInactiveTeamChannelMembers returns the members of channelID holding no active membership in the
-// channel's own team — the rows that survive a team departure. The channel's team is resolved
-// through the Channels row rather than taken as a parameter, so a caller holding only a channel
-// id can use it.
-//
-// Deliberately unpaginated, and it must stay that way. The result is a WebSocket omit list
-// (publishToChannels), so a partial answer does not degrade a listing — it delivers the event to
-// members the read gate rejects, which is the leak the omit list exists to prevent. The row count
-// is bounded by the channel's own membership (the predicate is cm.ChannelId), not by team size, so
-// it is the same order as the broadcast's own fan-out. The query runs for every broadcast because
-// core team-membership changes provide no plugin-visible invalidation hook; caching this
-// authorization-derived audience would keep a departed user eligible for later events.
-func (s *Store) GetInactiveTeamChannelMembers(channelID string) ([]string, error) {
-	if channelID == "" {
-		return nil, &ErrInvalidInput{Entity: "ChannelMember", Field: "channel_id", Value: channelID}
-	}
-
-	builder := s.getQueryBuilder().
-		Select("cm.UserId").
-		From("ChannelMembers cm").
-		Join("Channels c ON c.Id = cm.ChannelId").
-		LeftJoin(activeTeamMemberJoin("c.TeamId")).
-		Where(sq.Eq{"cm.ChannelId": channelID}).
-		Where("tm.UserId IS NULL")
-
-	var ids []string
-	if err := s.selectBuilder(s.db, &ids, builder); err != nil {
-		return nil, errors.Wrap(err, "unable_to_list_inactive_channel_members")
-	}
-	return ids, nil
-}
-
-// GetActiveTeamChannelMembers returns the members of channelID who are active members of the
-// channel's own team — the audience a space's events may reach. Unpaginated for the reason
-// GetInactiveTeamChannelMembers is: callers need the whole audience or none of it, and the count is
-// bounded by the channel's membership rather than the team's.
-func (s *Store) GetActiveTeamChannelMembers(channelID string) ([]string, error) {
-	if channelID == "" {
-		return nil, &ErrInvalidInput{Entity: "ChannelMember", Field: "channel_id", Value: channelID}
-	}
-
-	builder := s.getQueryBuilder().
-		Select("cm.UserId").
-		From("ChannelMembers cm").
-		Join("Channels c ON c.Id = cm.ChannelId").
-		Join(activeTeamMemberJoin("c.TeamId")).
+		LeftJoin("Channels c ON c.Id = cm.ChannelId").
 		Where(sq.Eq{"cm.ChannelId": channelID})
 
-	var ids []string
-	if err := s.selectBuilder(s.db, &ids, builder); err != nil {
-		return nil, errors.Wrap(err, "unable_to_list_active_channel_members")
+	var rows []struct {
+		TeamID      string `db:"teamid"`
+		UserID      string `db:"userid"`
+		SchemeAdmin bool   `db:"schemeadmin"`
 	}
-	return ids, nil
+	if err := s.selectBuilder(s.db, &rows, builder); err != nil {
+		return nil, errors.Wrap(err, "unable_to_list_channel_membership")
+	}
+	membership := &ChannelMembership{Members: make([]ChannelMemberRef, 0, len(rows))}
+	for _, row := range rows {
+		membership.TeamID = row.TeamID
+		membership.Members = append(membership.Members, ChannelMemberRef{UserID: row.UserID, SchemeAdmin: row.SchemeAdmin})
+	}
+	return membership, nil
 }
 
 // MarkAutoJoined records userID as auto-joined to spaceID. Marking an already-marked pair is a

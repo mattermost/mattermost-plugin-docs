@@ -10,6 +10,7 @@ package app_test
 
 import (
 	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -88,6 +89,36 @@ func TestServiceRemoveSpaceMember_OtherAdminAllowsRemoval(t *testing.T) {
 	appErr := h.svc.RemoveSpaceMember(space, targetAdminID, sysadminID)
 	require.Nil(t, appErr)
 	mockAPI.AssertCalled(t, "DeleteChannelMember", space.ChannelId, targetAdminID)
+}
+
+// TestServiceRemoveSpaceMember_LastAdminIgnoresAdminWithoutTeamReadSpace pins that the last-admin
+// invariant counts only admins who can still reach the space: a second admin whose team scheme
+// withholds read_space — an active team row, a ChannelMembers row, SchemeAdmin set — is not one,
+// because core's team-permission filter drops them, so removing the other admin is refused.
+func TestServiceRemoveSpaceMember_LastAdminIgnoresAdminWithoutTeamReadSpace(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	sysadminID := mmmodel.NewId()
+	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true).Maybe()
+	unreachableAdminID := mmmodel.NewId()
+	// Registered before the harness's admit-everyone default so it answers first.
+	mockAPI.On("FilterUsersWithTeamPermission", mock.Anything, mock.Anything, mmmodel.PermissionReadSpace).
+		Return(func(_ string, ids []string, _ *mmmodel.Permission) ([]string, *mmmodel.AppError) {
+			return slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return id == unreachableAdminID }), nil
+		})
+	h := openTestServiceWithAPI(t, mockAPI)
+	space, _ := createSpaceForMemberTests(t, h, mockAPI)
+
+	targetAdminID := mmmodel.NewId()
+	testutil.MustAddChannelAdmin(t, h.db, space.ChannelId, targetAdminID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, targetAdminID, 0)
+	testutil.MustAddChannelAdmin(t, h.db, space.ChannelId, unreachableAdminID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, unreachableAdminID, 0)
+
+	appErr := h.svc.RemoveSpaceMember(space, targetAdminID, sysadminID)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusConflict, appErr.StatusCode)
+	require.Equal(t, "app.space.member.last_admin.app_error", appErr.Id)
+	mockAPI.AssertNotCalled(t, "DeleteChannelMember", space.ChannelId, targetAdminID)
 }
 
 // TestServiceAddSpaceMember_ReAddSkipsEvent verifies AddSpaceMember does not publish

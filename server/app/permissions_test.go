@@ -5,6 +5,7 @@ package app_test
 
 import (
 	"net/http"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -255,7 +256,7 @@ func TestAddSpaceMember_ClearsProvenanceMarker(t *testing.T) {
 	require.Nil(t, appErr)
 
 	// Added deliberately on top of the auto-join: an existing member is a no-op for core, so what
-	// this exercises is the clear that rides with the add.
+	// this exercises is the auto-join marker clear that runs alongside the add.
 	_, appErr = h.svc.AddSpaceMember(space, userID)
 	require.Nil(t, appErr)
 
@@ -612,17 +613,16 @@ func TestSpaceFallthroughAdmitsRead(t *testing.T) {
 
 // TestRequireSpacePagePermission_FormerTeamMemberDenied verifies the same team-membership guard
 // evaluatePagePermission applies as readResolutionFrom (see
-// TestResolveSpaceRead_FormerTeamMemberDenied): a user who left the space's team is denied even
-// though their backing-channel ChannelMember row still exists, because active is false and the
-// `active &&` conjunct on the channel-permission check short-circuits before it is ever consulted.
+// TestResolveSpaceRead_FormerTeamMemberDenied). The test simulates a backing-channel ChannelMember
+// row that remained after the user's team departure: active is false, so the `active &&` conjunct
+// on the channel-permission check short-circuits before the row is ever consulted.
 func TestRequireSpacePagePermission_FormerTeamMemberDenied(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	teamID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	// Registered before the harness, whose GetTeamMember catch-all returns an active membership:
-	// mock.Mock matches expectations in registration order.
-	mockAPI.On("GetTeamMember", teamID, userID).
-		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: userID, DeleteAt: 1}, nil)
+	// Registered before the harness, whose read_space catch-all grants it to everyone: mock.Mock
+	// matches expectations in registration order.
+	mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionReadSpace).Return(false)
 	h := openTestServiceWithAPI(t, mockAPI)
 
 	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
@@ -651,8 +651,8 @@ func TestResolveSpaceRead_ComplianceModeSuppressesOpenFallthrough(t *testing.T) 
 	// resolution stops consulting the config at all.
 	t.Cleanup(func() { mockAPI.AssertExpectations(t) })
 
-	// The default space fixture is open, and the harness stubs GetTeamMember to an active
-	// membership, so the stranger clears the team gate and reaches the open-space fall-through.
+	// The default space fixture is open, and the harness grants team read_space to everyone, so
+	// the stranger clears the team gate and reaches the open-space fall-through.
 	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), mmmodel.NewId())
 
 	resolution, appErr := h.svc.ResolveSpaceRead("test", space, strangerID)
@@ -677,8 +677,8 @@ func TestResolveSpaceRead_UnreadableConfigSuppressesOpenFallthrough(t *testing.T
 	// resolution stops consulting the config at all.
 	t.Cleanup(func() { mockAPI.AssertExpectations(t) })
 
-	// The default space fixture is open, and the harness stubs GetTeamMember to an active
-	// membership, so the stranger clears the team gate and reaches the open-space fall-through.
+	// The default space fixture is open, and the harness grants team read_space to everyone, so
+	// the stranger clears the team gate and reaches the open-space fall-through.
 	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), mmmodel.NewId())
 
 	resolution, appErr := h.svc.ResolveSpaceRead("test", space, strangerID)
@@ -750,8 +750,7 @@ func formerAdminHarness(t *testing.T) (*testHarness, *model.Space, string, *plug
 	teamID := mmmodel.NewId()
 	// All registered before the harness, whose catch-alls would otherwise answer first: mock.Mock
 	// matches expectations in registration order.
-	mockAPI.On("GetTeamMember", teamID, userID).
-		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: userID, DeleteAt: 1}, nil)
+	mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionReadSpace).Return(false).Maybe()
 	mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionAdminSpace).Return(true).Maybe()
 	mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionManageSpace).Return(true).Maybe()
 	h := openTestServiceWithAPI(t, mockAPI)
@@ -809,10 +808,6 @@ func TestRequireSpaceAdminOrSysadmin_ReadsSchemeAdminFromMaster(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	userID := mmmodel.NewId()
 	teamID := mmmodel.NewId()
-	// An active team member, so the gate reaches its admin branch rather than stopping at the
-	// membership guard. Registered before the harness, whose catch-alls match otherwise.
-	mockAPI.On("GetTeamMember", teamID, userID).
-		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: userID}, nil).Maybe()
 	// The cached composition says yes. The master says nothing — there is no ChannelMembers row.
 	mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionAdminSpace).Return(true).Maybe()
 	h := openTestServiceWithAPI(t, mockAPI)
@@ -835,8 +830,6 @@ func TestRequireSpaceAdminOrSysadmin_SchemeAdminRowAdmits(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	userID := mmmodel.NewId()
 	teamID := mmmodel.NewId()
-	mockAPI.On("GetTeamMember", teamID, userID).
-		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: userID}, nil).Maybe()
 	// Deliberately denied on the cached path, to show the row alone carries the admission.
 	mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionAdminSpace).Return(false).Maybe()
 	h := openTestServiceWithAPI(t, mockAPI)
@@ -988,10 +981,16 @@ func TestAutoJoin_PublishOmitsFormerTeamMembers(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	userID := mmmodel.NewId()
 	stubNonMember(mockAPI, userID)
+	// Core's team-permission filter is what reports the departure: registered before the harness's
+	// admit-everyone default, it drops the former member from whatever audience it is asked about.
+	former := mmmodel.NewId()
+	mockAPI.On("FilterUsersWithTeamPermission", mock.Anything, mock.Anything, mmmodel.PermissionReadSpace).
+		Return(func(_ string, ids []string, _ *mmmodel.Permission) ([]string, *mmmodel.AppError) {
+			return slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return id == former }), nil
+		})
 	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
 
-	// The omit query resolves the channel's team through its Channels row; one member left the team.
-	former := mmmodel.NewId()
+	// The audience resolves the channel's team through its Channels row; one member left the team.
 	testutil.MustAddChannel(t, h.db, space.ChannelId, space.TeamId)
 	testutil.MustAddChannelMember(t, h.db, space.ChannelId, former)
 	testutil.MustAddTeamMember(t, h.db, space.TeamId, former, 1)

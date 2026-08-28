@@ -495,9 +495,6 @@ test.describe('space permissions', () => {
 
     /**
      * @objective A space admin can flip the space to Private, and it reads back.
-     *
-     * The option was inert scaffolding ("Coming soon") until the permissions work landed,
-     * so this pins that it is now a real control.
      */
     test('view access can be changed in both directions and reads back', {tag: ['@docs', '@permissions']}, async ({page, server, browser}) => {
         const sidebar = new SpacesSidebarPage(page);

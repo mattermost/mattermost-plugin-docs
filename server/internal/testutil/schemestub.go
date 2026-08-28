@@ -270,9 +270,9 @@ func MustSeedChannelScheme(t *testing.T, mockAPI *plugintest.API, channelID, sch
 // stubChannelScheme wires the three calls that resolve one channel's scheme: the channel read, the
 // scheme-role resolution that follows the channel's current SchemeId, and the metadata-sync write.
 //
-// UpdateChannel must return the SAME shared object GetChannelOfType hands out, because pluginapi's
-// Channel.Update copies the returned channel back over the passed one — returning a fresh channel
-// would wipe SchemeId and 404 the next scheme-resolving read.
+// UpdateChannel must return the SAME shared object GetChannelOfType returns: pluginapi's
+// Channel.Update copies the returned channel back over the passed one, so a fresh channel clears
+// SchemeId and 404s the next scheme-resolving read.
 func stubChannelScheme(mockAPI *plugintest.API, channelID string, channel *mmmodel.Channel) {
 	mockAPI.On("GetChannelOfType", channelID, mmmodel.ChannelTypeSpace).Return(channel, nil).Maybe()
 	mockAPI.On("UpdateChannel", channel).Return(channel, nil).Maybe()

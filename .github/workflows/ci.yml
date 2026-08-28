@@ -142,12 +142,27 @@ jobs:
         with:
           pull-request-body: ${{ github.event.pull_request.body || '' }}
 
+      # The secrets context is not readable from a step-level `if`, so credential presence is
+      # exported as a step output. Fork PRs and repositories without the org secrets resolve to
+      # false and pull anonymously.
+      - name: ci/check-docker-credentials
+        id: docker-credentials
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [[ -n "$DOCKERHUB_USERNAME" && -n "$DOCKERHUB_TOKEN" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Authenticated so the core image pull is billed to the org's Docker Hub quota rather than
       # the shared anonymous per-IP limit, which GitHub-hosted runners exhaust as a pull failure
-      # that is indistinguishable from a test failure. Skipped for fork PRs, which carry no
-      # secrets and must still be able to pull anonymously.
+      # that is indistinguishable from a test failure. Skipped when the credentials are not
+      # available to the run; the pull then proceeds anonymously.
       - name: ci/docker-login
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        if: steps.docker-credentials.outputs.available == 'true'
         uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -200,8 +215,7 @@ jobs:
             echo "supported=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # Fails here, by name, before a container boot and browser install, rather than surfacing
-      # later as an in-spec failure.
+      # Fails here, by name, before the container boot and browser install.
       - name: ci/verify-license-available
         if: steps.check-image.outputs.supported == 'true'
         run: |
@@ -214,11 +228,26 @@ jobs:
         env:
           MM_LICENSE: ${{ secrets.MM_E2E_TEST_LICENSE_ONPREM_ENT }}
 
+      # See the `e2e-playwright-tests` job above: credential presence is exported as a step output
+      # because the secrets context is not readable from a step-level `if`.
+      - name: ci/check-docker-credentials
+        id: docker-credentials
+        if: steps.check-image.outputs.supported == 'true'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [[ -n "$DOCKERHUB_USERNAME" && -n "$DOCKERHUB_TOKEN" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # See the `e2e-playwright-tests` job above: authenticated so the core image pull is billed to
-      # the org's Docker Hub quota rather than the shared anonymous per-IP limit. Skipped for fork
-      # PRs, which carry no secrets.
+      # the org's Docker Hub quota rather than the shared anonymous per-IP limit. Skipped when the
+      # credentials are not available to the run; the pull then proceeds anonymously.
       - name: ci/docker-login
-        if: steps.check-image.outputs.supported == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        if: steps.check-image.outputs.supported == 'true' && steps.docker-credentials.outputs.available == 'true'
         uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}

@@ -473,11 +473,12 @@ function draftsInSpace(state: Record<string, Set<string>> = {}, action: UnknownA
 // A counter per space, bumped each time the server says that space's per-member grant matrix
 // changed.
 //
-// The matrix itself is not held here: only the space settings surface displays it, and only a
-// caller holding the manage tier may read it at all, so the surface fetches it and keeps its own
-// snapshot. Everything else about a space's permission state — its default set, its view access,
-// the caller's own tier — lives in the spaces slice and re-renders on its own. A grant change
-// moves none of that, which is why this counter exists and why it covers nothing else.
+// The matrix itself is not held here: only the Share modal and Space Settings → Permissions display
+// it (via useSpaceAccessEditor), and only a caller holding the manage tier may read it at all, so
+// those surfaces fetch it and keep their own snapshot. Everything else about a space's permission
+// state — its default set, its view access, the caller's own tier — lives in the spaces slice and
+// re-renders on its own. A grant change moves none of that, which is why this counter exists and
+// why it covers nothing else.
 function spaceMemberPermissionsRevision(state: Record<string, number> = {}, action: UnknownAction): Record<string, number> {
     switch (action.type) {
     case SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED: {

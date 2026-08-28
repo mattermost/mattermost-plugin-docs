@@ -318,10 +318,10 @@ func (s *Service) PublishPageDraft(space *model.Space, userID, pageID string, fo
 		return nil, false, targetErr
 	}
 
-	// Authorization runs here rather than in the handler because it depends on the classification
-	// above: publishing a new page needs create_page, publishing over a live one needs edit_page.
-	// The draft write that produced this content was gated only on the looser create-or-edit pair,
-	// so this check must precede the writes below.
+	// Authorization runs here, after the create/edit classification above and before the writes
+	// below: RequireSpacePublish needs isNewPage, and the draft writes that produced this content
+	// were gated by RequireSpaceDraftWrite, which requires only create-or-edit authority; the exact
+	// permission the content needs is enforced here.
 	if permErr := s.RequireSpacePublish("PublishPageDraft", space, userID, isNewPage); permErr != nil {
 		return nil, false, permErr
 	}

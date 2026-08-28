@@ -19,11 +19,10 @@ const seg = encodeURIComponent;
 export const getSpaceAccess = (spaceId: string): Promise<SpaceAccess> =>
     restGet<SpaceAccess>(`${apiUrl()}/spaces/${seg(spaceId)}`);
 
-// listAllSpaceMembers reads every page of a space's members. The whole roster, not a
-// page of it: the permissions surface edits a grant per row, so a page boundary would
-// hide members whose grants the caller is there to change. The route serves every reader,
-// but emits each member's permission set only to a caller holding manage authority over
-// the space — so only call this behind that tier.
+// listAllSpaceMembers reads every page of a space's members — the whole roster, since the
+// permissions surface edits a grant per member row and needs every member visible to do so.
+// The route serves every reader, but emits each member's permission set only to a caller
+// holding manage authority over the space — so only call this behind that tier.
 export const listAllSpaceMembers = (spaceId: string): Promise<SpaceMember[]> =>
     listAll<SpaceMember>((query) => `${apiUrl()}/spaces/${seg(spaceId)}/members?${query}`);
 

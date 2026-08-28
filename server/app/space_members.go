@@ -127,17 +127,13 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 	if appErr := s.requireClient("AddSpaceMember", "space_id", space.Id, "user_id", userID); appErr != nil {
 		return nil, appErr
 	}
-	// Reject a target who is not an active member of the space's team before touching the
-	// backing channel. Core's channel-member add enforces the same integrity check but surfaces
-	// it as an opaque failure; checking here makes the status code report the real cause, and
-	// guarantees every space member can pass the team half of the access gate — which the
-	// last-authorized-member guard in RemoveSpaceMember relies on when deciding who can still
-	// reach the space.
-	active, memberErr := s.isActiveTeamMember(space.TeamId, userID)
-	if memberErr != nil {
-		return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.member.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memberErr)
-	}
-	if !active {
+	// Reject a target who cannot pass the team half of the access gate — team read_space, which
+	// core grants only through an active membership in the space's team — before touching the
+	// backing channel. Core's channel-member add enforces the membership half of that check but
+	// surfaces it as an opaque failure; checking here makes the status code report the real
+	// cause, and guarantees every space member can reach the space — which the
+	// last-authorized-member guard in RemoveSpaceMember relies on when deciding who still can.
+	if !s.client.User.HasPermissionToTeam(userID, space.TeamId, mmmodel.PermissionReadSpace) {
 		return nil, mmmodel.NewAppError("AddSpaceMember", "app.space.member.not_team_member.app_error", nil, "", http.StatusForbidden)
 	}
 	// Adding an already-existing member is a no-op for core, which returns their membership
@@ -364,11 +360,11 @@ func (s *Service) removeAutoJoinedMembers(space *model.Space, userIDs []string) 
 // the space-keyed membership lock, alongside the mutation it guards. where attributes both the
 // lookup failure and the rejection to the calling operation.
 func (s *Service) requireNotLastAdmin(where string, space *model.Space, excludeUserID string) *mmmodel.AppError {
-	_, otherAdmin, err := s.store.GetOtherAuthorizedMembers(space.ChannelId, space.TeamId, excludeUserID)
+	audience, err := s.resolveSpaceAudience(space.ChannelId)
 	if err != nil {
 		return mmmodel.NewAppError(where, "app.space.member.admin_count_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
-	if !otherAdmin {
+	if _, otherAdmin := audience.others(excludeUserID); !otherAdmin {
 		return mmmodel.NewAppError(where, "app.space.member.last_admin.app_error", nil, "", http.StatusConflict)
 	}
 	return nil
@@ -537,9 +533,9 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 				return e
 			}
 		}
-		// The last-admin and last-member invariants are answered from one walk: removing an admin
-		// needs both, and the admin set is a subset of the reachable set.
-		hasOther, hasOtherAdmin, guardErr := s.store.GetOtherAuthorizedMembers(space.ChannelId, space.TeamId, userID)
+		// The last-admin and last-member invariants are answered from one audience resolution:
+		// removing an admin needs both, and the admin set is a subset of the reachable set.
+		audience, guardErr := s.resolveSpaceAudience(space.ChannelId)
 		if guardErr != nil {
 			// Attributed to whichever invariant the caller is actually being held to, so the failure
 			// of the shared walk reports the same id each guard reported when it walked alone.
@@ -548,6 +544,7 @@ func (s *Service) RemoveSpaceMember(space *model.Space, userID, actingUserID str
 			}
 			return mmmodel.NewAppError("RemoveSpaceMember", "app.space.remove_member.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(guardErr)
 		}
+		hasOther, hasOtherAdmin := audience.others(userID)
 		if targetAdmin && !hasOtherAdmin {
 			return mmmodel.NewAppError("RemoveSpaceMember", "app.space.member.last_admin.app_error", nil, "", http.StatusConflict)
 		}

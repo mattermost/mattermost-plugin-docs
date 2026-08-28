@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -31,8 +30,6 @@ func TestHandler_RemoveSpaceMember_AdminTargetRequiresAdminOrSysadmin(t *testing
 
 	mockAPI := newEnabledMockAPI()
 	grantSpaceManage(mockAPI, callerID)
-	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
-		Return(&mmmodel.TeamMember{}, nil)
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, channelID)
 	// The escalation guard reads the target's and caller's flags from the master DB.
@@ -56,8 +53,6 @@ func TestHandler_RemoveSpaceMember_LastAdminConflict(t *testing.T) {
 	// master, so a space-admin caller would need a ChannelMembers row of its own — and that row
 	// would itself be the "other admin" this scenario must not have.
 	grantSysadmin(mockAPI, adminID)
-	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
-		Return(&mmmodel.TeamMember{}, nil).Maybe()
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, channelID)
 	testutil.MustAddChannelAdmin(t, h.db, channelID, targetUserID)
@@ -87,8 +82,6 @@ func TestHandler_RemoveSpaceMember_OtherAdminAllowsRemoval(t *testing.T) {
 
 	mockAPI := newEnabledMockAPI()
 	grantSysadmin(mockAPI, adminID)
-	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
-		Return(&mmmodel.TeamMember{}, nil).Maybe()
 	mockAPI.On("DeleteChannelMember", channelID, targetUserID).Return(nil)
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, channelID)

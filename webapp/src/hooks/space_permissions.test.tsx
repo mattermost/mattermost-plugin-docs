@@ -213,10 +213,10 @@ describe('useSpacePermissions', () => {
             expect(result.current.canAdminister).toBe(true);
         });
 
-        // The default set goes with the authority: left standing, the surface would attribute the
+        // The default set is reset together with the authority, so the surface never attributes the
         // previous space's defaults to a space it never read. View access is not in that set — it
-        // rides on the space record itself, so a space whose read failed shows its own stored value
-        // rather than the previous space's, which is what the second assertion pins.
+        // is part of the space record itself, so a space whose read failed shows its own stored
+        // value rather than the previous space's, which is what the second assertion pins.
         it('drops the previously resolved policy when a later space fails to load', async () => {
             mockGetSpaceAccess.mockResolvedValue(access(['admin_space', 'manage_space'], ['create_page']));
             const {result, reloadWith} = await renderSwitchable();
@@ -257,17 +257,19 @@ describe('useSpacePermissions', () => {
             expect(mockListAllSpaceMembers).not.toHaveBeenCalled();
         });
 
-        // Reported the way a failed read is, rather than as an empty roster: an all-empty grid
-        // would state that every member holds nothing.
-        it('reports it as a failed read rather than an empty roster', async () => {
+        // A resolved authority state, not a failed read: the surfaces render the per-member
+        // grid only for a manager, so the empty matrix is never shown as "every member holds
+        // nothing", and a plain member must not see the load-failure notice.
+        it('leaves the matrix empty without reporting a failed read', async () => {
             mockGetSpaceAccess.mockResolvedValue(access(['read_page', 'create_page']));
 
             const hook = await renderLoaded();
 
-            expect(hook.current.loadFailed).toBe(true);
+            expect(hook.current.loadFailed).toBe(false);
             expect(hook.current.members.size).toBe(0);
             expect(hook.current.canManageMembers).toBe(false);
             expect(hook.current.canAdminister).toBe(false);
+            expect(mockListAllSpaceMembers).not.toHaveBeenCalled();
         });
     });
 
@@ -366,9 +368,9 @@ describe('useSpacePermissions', () => {
                 store.dispatch({type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: space.id});
             });
 
-            await waitFor(() => expect(result.current.loadFailed).toBe(true));
+            await waitFor(() => expect(result.current.members.size).toBe(0));
+            expect(result.current.loadFailed).toBe(false);
             expect(result.current.canManageMembers).toBe(false);
-            expect(result.current.members.size).toBe(0);
             expect(mockListAllSpaceMembers).toHaveBeenCalledTimes(rosterReadsAfterLoad);
         });
 

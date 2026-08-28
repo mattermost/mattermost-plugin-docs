@@ -39,9 +39,9 @@ const PermissionToggles = ({options, selected, disabled, disabledOptions = [], d
     const labels = usePermissionLabels();
 
     const toggle = (permission: Permission) => {
-        // Checked here as well as on the input: `disabled` also covers a save in
-        // flight, and a click dispatched just before that re-render would otherwise
-        // send a second set built from the pre-save selection.
+        // Checked here as well as on the input, since the input's `disabled` re-renders
+        // after a save starts; this keeps a click in that window from sending a second
+        // set built from the pre-save selection.
         if (disabled || disabledOptions.includes(permission)) {
             return;
         }

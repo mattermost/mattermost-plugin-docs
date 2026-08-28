@@ -425,7 +425,7 @@ describe('ensureSpaceMembership', () => {
     });
 
     // Every case but a non-member of an open space, which is the overwhelming majority of calls:
-    // this runs on every autosave, so a member must not pay a round trip per keystroke batch.
+    // this runs on every autosave, so a member must not make a network request per keystroke batch.
     it('does not call the server when there is nothing to join', async () => {
         const {result} = run((d, g) => ensureSpaceMembership('space1')(d as never, g as never, undefined as never), joinableState(false));
         await result;

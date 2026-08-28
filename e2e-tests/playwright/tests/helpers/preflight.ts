@@ -83,13 +83,16 @@ export async function assertPluginActive(baseURL: string, username: string, pass
 }
 
 /**
- * Proves that the running Mattermost binary implements the scheme-read RPC used by the plugin
- * binary. This is intentionally a runtime probe: a local go.mod replace can compile the plugin
- * against a sibling core checkout while Testcontainers still boots an older published image.
- * Both halves then look individually valid, but the first member mutation fails with an opaque
- * 500 because the server cannot dispatch GetSchemeForChannel.
+ * Proves that the running Mattermost binary implements the two plugin RPCs every space read and
+ * membership mutation depends on: GetSchemeForChannel and FilterUsersWithTeamPermission. This is
+ * intentionally a runtime probe: a local go.mod replace can compile the plugin against a sibling
+ * core checkout while Testcontainers still boots an older published image. Both halves then look
+ * individually valid, but a server that cannot dispatch an RPC does not report it — the generated
+ * plugin RPC client logs a transport failure and hands back zero values — so the first space read
+ * fails with an opaque 500, every member removal is refused as a last-member conflict, and every
+ * channel-scoped WebSocket event omits its whole audience.
  */
-export async function assertSpaceSchemeReadSupported(baseURL: string, username: string, password: string, remedy = '') {
+export async function assertSpaceRPCsSupported(baseURL: string, username: string, password: string, remedy = '') {
     const token = await adminToken(baseURL, username, password);
     const suffix = Date.now().toString(36);
 
@@ -100,10 +103,11 @@ export async function assertSpaceSchemeReadSupported(baseURL: string, username: 
         signal: AbortSignal.timeout(requestTimeoutMs),
     });
     if (!teamResponse.ok) {
-        throw new Error(`Scheme-read preflight could not create a probe team on ${baseURL} (${teamResponse.status}).`);
+        throw new Error(`Space-RPC preflight could not create a probe team on ${baseURL} (${teamResponse.status}).`);
     }
     const team = await teamResponse.json() as {id: string};
     let spaceID = '';
+    let probeUserID = '';
 
     try {
         // Omit defaults so this resolves a seeded preset and remains valid on an unlicensed server.
@@ -116,7 +120,7 @@ export async function assertSpaceSchemeReadSupported(baseURL: string, username: 
         if (!createResponse.ok) {
             const body = await createResponse.text();
             throw new Error(
-                `Scheme-read preflight could not create a preset-backed space (${createResponse.status}): ` +
+                `Space-RPC preflight could not create a preset-backed space (${createResponse.status}): ` +
                 `${body.slice(0, 400)}\nThe running Mattermost image may predate the plugin's channel-scheme API. ` +
                 remedy,
             );
@@ -136,7 +140,53 @@ export async function assertSpaceSchemeReadSupported(baseURL: string, username: 
                 `Server said: ${body.slice(0, 400)}\n${remedy}`.trimEnd(),
             );
         }
+
+        // Every member removal and every channel-scoped WebSocket publish resolves the space
+        // audience through FilterUsersWithTeamPermission. Removing a second, ordinary member is the
+        // smallest request whose outcome differs: with the RPC the creator remains and the removal
+        // succeeds; without it the zero-value answer leaves the audience empty and the plugin
+        // refuses the removal as the last-member conflict (409).
+        const probeUser = await createProbeUser(baseURL, token, suffix);
+        probeUserID = probeUser.id;
+        for (const [label, url] of [
+            ['join the probe team', `${baseURL}/api/v4/teams/${team.id}/members`],
+            ['join the probe space', `${baseURL}/plugins/${pluginId}/api/v1/spaces/${spaceID}/members`],
+        ] as const) {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: authed(token),
+                body: JSON.stringify({team_id: team.id, user_id: probeUserID}),
+                signal: AbortSignal.timeout(requestTimeoutMs),
+            });
+            if (!response.ok) {
+                throw new Error(`Space-RPC preflight could not ${label} on ${baseURL} (${response.status}).`);
+            }
+        }
+
+        const removeResponse = await fetch(`${baseURL}/plugins/${pluginId}/api/v1/spaces/${spaceID}/members/${probeUserID}`, {
+            method: 'DELETE',
+            headers: authed(token),
+            signal: AbortSignal.timeout(requestTimeoutMs),
+        });
+        if (!removeResponse.ok) {
+            const body = await removeResponse.text();
+            throw new Error(
+                `The plugin and Mattermost server disagree on the team-permission filter API (${removeResponse.status}). ` +
+                'The plugin requires FilterUsersWithTeamPermission, but the running server image does not answer it: ' +
+                'every member removal is refused and no space WebSocket event reaches anyone.\n' +
+                `Server said: ${body.slice(0, 400)}\n${remedy}`.trimEnd(),
+            );
+        }
     } finally {
+        if (probeUserID) {
+            // Deactivated, not removed: API user deletion is off by default, and the probe user
+            // holds nothing once its team is gone.
+            await fetch(`${baseURL}/api/v4/users/${probeUserID}`, {
+                method: 'DELETE',
+                headers: authed(token),
+                signal: AbortSignal.timeout(requestTimeoutMs),
+            }).catch(() => undefined);
+        }
         if (spaceID) {
             await fetch(`${baseURL}/plugins/${pluginId}/api/v1/spaces/${spaceID}`, {
                 method: 'DELETE',
@@ -150,6 +200,22 @@ export async function assertSpaceSchemeReadSupported(baseURL: string, username: 
             signal: AbortSignal.timeout(requestTimeoutMs),
         }).catch(() => undefined);
     }
+}
+
+// A throwaway ordinary user for the RPC probe. The password only has to satisfy the server's
+// default policy; nothing signs in as this user.
+async function createProbeUser(baseURL: string, token: string, suffix: string): Promise<{id: string}> {
+    const username = `docs-rpc-probe-${suffix}`;
+    const response = await fetch(`${baseURL}/api/v4/users`, {
+        method: 'POST',
+        headers: authed(token),
+        body: JSON.stringify({email: `${username}@sample.mattermost.com`, username, password: `Probe-${suffix}-Aa1!`}),
+        signal: AbortSignal.timeout(requestTimeoutMs),
+    });
+    if (!response.ok) {
+        throw new Error(`Space-RPC preflight could not create a probe user on ${baseURL} (${response.status}).`);
+    }
+    return await response.json() as {id: string};
 }
 
 // Signs in and returns a session token, or throws naming the server and the account.

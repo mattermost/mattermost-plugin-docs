@@ -73,15 +73,14 @@ type Space struct {
 // is the plugin's own answer, not a projection of a channel's permission set, and a caller's
 // authority over a space legitimately arrives from outside it. SpaceMember.Permissions is the
 // narrower per-member statement — what the space itself grants that member — and does not resolve
-// team-level authority, which would cost a lookup per row.
+// team-level authority.
 //
 // An endpoint returns this wrapper when it establishes access state (CreateSpace), changes it
 // (SetSpaceDefaultPermissions), reads a space directly (GET /spaces/{id}), or patches one
 // (PATCH /spaces/{id}): a patch may alter view_access, which moves who may read the space, and
 // answering with the wrapper keeps a client refreshing its cached entry from dropping the
 // permission fields. The endpoints that return a bare Space are the restore route, which alters
-// neither field, and the team listing, which omits them because resolving a permission set per
-// space would cost a scheme-and-role lookup per row.
+// neither field, and the team listing, which omits them.
 //
 // Because the embed is flat, a bare Space and this wrapper are indistinguishable to a client that
 // types them alike: a client caching a space must merge a bare-Space response into its cached

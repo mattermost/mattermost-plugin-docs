@@ -72,8 +72,8 @@ export const getMustJoinSpace = (state: GlobalState, spaceId: string): boolean =
     getSpace(state, spaceId)?.can_join === true;
 
 // Whether a space default may be any combination rather than one of the named tiers. Mirrors the
-// two entitlements the server checks before it mints a custom scheme: custom permission schemes
-// (which the Professional SKU carries without the feature flag), and guest account permissions,
+// two entitlements the server checks before it creates a custom scheme: custom permission schemes
+// (which the Professional SKU includes without the feature flag), and guest account permissions,
 // because every custom scheme also defines what a guest may do. Offering the combination controls
 // without both would offer a write the server refuses.
 export const getCustomDefaultsAvailable = (state: GlobalState): boolean => {

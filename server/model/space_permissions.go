@@ -199,10 +199,10 @@ func AdminEffectivePermissions() []string {
 	return slices.Clone(spaceAdminEffectivePermissions)
 }
 
-// DefaultPermissionsFrom projects a pooled scheme's stored user-role permission set
+// DefaultPermissionsFrom projects a backing-channel scheme's stored user-role permission set
 // (raw core permission ids) onto the wire default-permission vocabulary: read_page (the implicit
 // baseline) and any non-default permission are stripped; only the grantable default
-// permission tokens survive.
+// permission tokens remain.
 func DefaultPermissionsFrom(permissions []string) []string {
 	out := make([]string, 0, len(permissions))
 	for _, p := range permissions {

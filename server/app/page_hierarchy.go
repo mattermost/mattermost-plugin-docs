@@ -168,11 +168,9 @@ type MovePageToSpaceParams struct {
 	// UserID is the acting user and must be a valid ID: the store scopes the target-space draft
 	// quota to the drafts it owns. It does not change the page's LastModifiedBy.
 	UserID string
-	// RequiredOwnerID, when non-empty, requires every live page in the moved subtree to be owned by
-	// it — the gate resolves this to UserID on the delete_own_page-only path and "" on the
-	// delete_page (any) path — and the move is rejected as a whole if any page has a different
-	// owner. A same-space request requires only the reparented root to be owned, since no other
-	// page leaves the space.
+	// RequiredOwnerID, when non-empty, is the owner every live page in the moved subtree must have.
+	// A same-space request requires only the reparented root to be owned, since no other page
+	// leaves the space.
 	RequiredOwnerID string
 }
 

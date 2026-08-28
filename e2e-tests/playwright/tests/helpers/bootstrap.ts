@@ -3,7 +3,7 @@
 
 import {DocsServerContainer, adminPassword, adminUsername, defaultTeamName} from './mmcontainer';
 import {spacePermissionsMode} from './mode';
-import {assertPluginActive, assertServerSupportsDocs, assertSpacePermissionsSupported, assertSpaceSchemeReadSupported, restoreBaselineTeamPermissions} from './preflight';
+import {assertPluginActive, assertServerSupportsDocs, assertSpacePermissionsSupported, assertSpaceRPCsSupported, restoreBaselineTeamPermissions} from './preflight';
 import {clearState, writeState} from './state';
 
 // Deliberately not keyed off MM_SERVICESETTINGS_SITEURL: most dev shells export it, and
@@ -15,7 +15,7 @@ const useExistingServer = process.env.MM_E2E_USE_EXISTING_SERVER === 'true';
 // like a product bug.
 async function assertReadyForSpecs(baseURL: string, username: string, password: string, remedy = '') {
     await assertPluginActive(baseURL, username, password);
-    await assertSpaceSchemeReadSupported(baseURL, username, password, remedy);
+    await assertSpaceRPCsSupported(baseURL, username, password, remedy);
 
     if (!spacePermissionsMode) {
         return;

@@ -57,13 +57,13 @@ func (s *Service) hasOpenTeamFallthrough(userID, teamID string) bool {
 }
 
 // readResolutionFrom evaluates the read gate against space for userID, given the caller's
-// already-resolved sysadmin status and team membership. A nil member means the caller has no
+// already-resolved sysadmin status and team standing. active=false means the caller has no
 // standing in the space's team: not an active member, or a member without team read_space.
-func (s *Service) readResolutionFrom(sysadmin bool, member *mmmodel.TeamMember, space *model.Space, userID string) ReadResolution {
+func (s *Service) readResolutionFrom(sysadmin bool, active bool, space *model.Space, userID string) ReadResolution {
 	if sysadmin {
 		return ReadViaSysadmin
 	}
-	if member == nil {
+	if !active {
 		return ReadDenied
 	}
 	if s.client.User.HasPermissionToChannel(userID, space.ChannelId, mmmodel.PermissionReadPage) {
@@ -76,56 +76,48 @@ func (s *Service) readResolutionFrom(sysadmin bool, member *mmmodel.TeamMember, 
 }
 
 // ResolveSpaceRead resolves the read gate for space against userID, reporting how the read was
-// admitted so callers can tell the fall-through case apart. where identifies the
-// calling operation for the 500 an activeTeamMember lookup failure surfaces as. On that
-// failure the returned resolution is ReadDenied but the error is non-nil, so callers must check
-// the error before trusting the resolution.
+// admitted so callers can tell the fall-through case apart. where identifies the calling
+// operation for the errors requireActiveMemberGate reports. On such an error the returned
+// resolution is ReadDenied but the error is non-nil, so callers must check the error before
+// trusting the resolution.
 func (s *Service) ResolveSpaceRead(where string, space *model.Space, userID string) (ReadResolution, *mmmodel.AppError) {
-	member, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
+	active, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
 	if appErr != nil {
 		return ReadDenied, appErr
 	}
-	return s.readResolutionFrom(sysadmin, member, space, userID), nil
+	return s.readResolutionFrom(sysadmin, active, space, userID), nil
 }
 
 // requireActiveMemberGate performs the checks that precede the permission-specific branches of
 // every exported gate: client wiring, a malformed-user-id 400, existence-hiding on a nil space,
-// the sysadmin override, and active-team-membership resolution with its 500 on a genuine lookup
-// failure.
+// the sysadmin override, and the caller's team standing.
 //
 // A non-nil appErr must be returned by the caller immediately; sysadmin=true means the caller may
-// admit without further checks. A nil member means the caller has no standing in the space's
-// team. The membership itself is returned rather than a bool so a caller needing a team
-// permission resolves it from these roles instead of re-reading the row.
+// admit without further checks. active reports whether the caller holds team read_space, which
+// core resolves from an active membership in the space's team (a removed membership grants
+// nothing) or a system role; callers branch on it.
 //
 // Team read_space gates both branches below, the same permission the team listing requires: it is
 // what keeps a space and its pages unreachable by id once read_space is revoked, even for a caller
 // who still holds read_page on the backing channel. Resolved here, ahead of every gate, so a space
 // read and a page read in the same space cannot disagree about it. Both team_user and team_guest
 // hold it by default.
-func (s *Service) requireActiveMemberGate(where string, space *model.Space, userID string) (member *mmmodel.TeamMember, sysadmin bool, appErr *mmmodel.AppError) {
+func (s *Service) requireActiveMemberGate(where string, space *model.Space, userID string) (active bool, sysadmin bool, appErr *mmmodel.AppError) {
 	if appErr = s.requireClient(where, "space_id", spaceIDOrEmpty(space), "user_id", userID); appErr != nil {
-		return nil, false, appErr
+		return false, false, appErr
 	}
 	// A malformed user id is a caller fault, not a denial: it reports as a 400 so it stays
 	// distinguishable from the existence-hiding 403 every genuine denial returns.
 	if !mmmodel.IsValidId(userID) {
-		return nil, false, mmmodel.NewAppError(where, "app.space.access.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
+		return false, false, mmmodel.NewAppError(where, "app.space.access.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
 	if space == nil {
-		return nil, false, ExistenceHidingForbidden(where)
+		return false, false, ExistenceHidingForbidden(where)
 	}
 	if s.client.User.HasPermissionTo(userID, mmmodel.PermissionManageSystem) {
-		return nil, true, nil
+		return false, true, nil
 	}
-	member, err := s.activeTeamMember(space.TeamId, userID)
-	if err != nil {
-		return nil, false, mmmodel.NewAppError(where, "app.space.access.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
-	}
-	if member != nil && !s.client.User.HasPermissionToTeam(userID, space.TeamId, mmmodel.PermissionReadSpace) {
-		return nil, false, nil
-	}
-	return member, false, nil
+	return s.client.User.HasPermissionToTeam(userID, space.TeamId, mmmodel.PermissionReadSpace), false, nil
 }
 
 // RequireSpacePagePermission gates a page-scoped operation on perm: sysadmin override, then
@@ -134,14 +126,14 @@ func (s *Service) requireActiveMemberGate(where string, space *model.Space, user
 // (including a nil space, mirroring a lookup miss upstream) yields the shared existence-hiding
 // 403.
 func (s *Service) RequireSpacePagePermission(where string, space *model.Space, userID string, perm *mmmodel.Permission) *mmmodel.AppError {
-	member, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
+	active, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
 	if appErr != nil {
 		return appErr
 	}
 	if sysadmin {
 		return nil
 	}
-	return s.evaluatePagePermission(where, space, userID, perm, member != nil)
+	return s.evaluatePagePermission(where, space, userID, perm, active)
 }
 
 // resolveGuest reports whether userID holds core's system-wide guest role.
@@ -164,8 +156,8 @@ func (s *Service) resolveGuest(userID string) (bool, error) {
 //
 // A guest is held to read_page whatever the composed channel permission says: demoting a user to
 // guest clears SchemeUser/SchemeAdmin, but the capability roles a prior grant wrote into
-// ExplicitRoles remain, and core composes those into the member's channel permissions regardless
-// of guest standing.
+// ExplicitRoles remain (a capability role is a core role carrying exactly one page permission),
+// and core composes those into the member's channel permissions regardless of guest standing.
 func (s *Service) evaluatePagePermission(where string, space *model.Space, userID string, perm *mmmodel.Permission, active bool) *mmmodel.AppError {
 	if active && s.client.User.HasPermissionToChannel(userID, space.ChannelId, perm) {
 		if perm.Id == mmmodel.PermissionReadPage.Id {
@@ -195,9 +187,9 @@ func (s *Service) evaluatePagePermission(where string, space *model.Space, userI
 //
 // Unexported, and every caller resolves admittedVia itself rather than accepting one from its own
 // caller: the team-active status it stands for is carried forward rather than re-verified, so the
-// resolution must be spent in the same breath it was taken. A resolution handed across a request —
-// taken at one gate and spent at another after the handler has done other work — widens that into a
-// window a revocation can land in.
+// resolution must be used in the same call that obtained it. A resolution obtained at one gate and
+// used at another, after the handler has done other work, opens a window in which a revocation is
+// missed.
 func (s *Service) requireSpacePagePermissionFrom(where string, space *model.Space, userID string, perm *mmmodel.Permission, admittedVia ReadResolution) *mmmodel.AppError {
 	if admittedVia == ReadDenied {
 		return ExistenceHidingForbidden(where)
@@ -256,28 +248,28 @@ func (s *Service) ResolveSpaceRemovePage(space *model.Space, userID, anyWhere, o
 // the caller can already read. Callers pass the operation's own team permission: manage_space for
 // the manage tier, delete_space for delete/restore.
 func (s *Service) RequireSpaceAdminOrTeamPerm(where string, space *model.Space, userID string, teamPerm *mmmodel.Permission) *mmmodel.AppError {
-	member, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
+	active, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
 	if appErr != nil {
 		return appErr
 	}
-	if s.adminOrTeamPermFrom(sysadmin, member, space, userID, teamPerm) {
+	if s.adminOrTeamPermFrom(sysadmin, active, space, userID, teamPerm) {
 		return nil
 	}
 	return ExistenceHidingForbidden(where)
 }
 
 // adminOrTeamPermFrom is RequireSpaceAdminOrTeamPerm's decision, evaluated against an
-// already-resolved sysadmin status and team membership so a caller answering two questions about
-// the same space resolves that membership once. Ordered so the team lookup only runs for a caller
+// already-resolved sysadmin status and team standing so a caller answering two questions about
+// the same space resolves that standing once. Ordered so the team lookup only runs for a caller
 // who is neither sysadmin nor space admin.
-func (s *Service) adminOrTeamPermFrom(sysadmin bool, member *mmmodel.TeamMember, space *model.Space, userID string, teamPerm *mmmodel.Permission) bool {
+func (s *Service) adminOrTeamPermFrom(sysadmin bool, active bool, space *model.Space, userID string, teamPerm *mmmodel.Permission) bool {
 	if sysadmin {
 		return true
 	}
-	if member != nil && s.client.User.HasPermissionToChannel(userID, space.ChannelId, mmmodel.PermissionAdminSpace) {
+	if active && s.client.User.HasPermissionToChannel(userID, space.ChannelId, mmmodel.PermissionAdminSpace) {
 		return true
 	}
-	return s.readResolutionFrom(false, member, space, userID) != ReadDenied &&
+	return s.readResolutionFrom(false, active, space, userID) != ReadDenied &&
 		s.client.User.HasPermissionToTeam(userID, space.TeamId, teamPerm)
 }
 
@@ -289,33 +281,32 @@ func (s *Service) adminOrTeamPermFrom(sysadmin bool, member *mmmodel.TeamMember,
 // A denied read is the shared existence-hiding 403. A caller admitted for the read but short of the
 // manage tier is not an error — canManage=false selects the redacted projection.
 func (s *Service) ResolveSpaceRosterAccess(where string, space *model.Space, userID string) (canManage bool, appErr *mmmodel.AppError) {
-	member, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
+	active, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
 	if appErr != nil {
 		return false, appErr
 	}
-	if s.readResolutionFrom(sysadmin, member, space, userID) == ReadDenied {
+	if s.readResolutionFrom(sysadmin, active, space, userID) == ReadDenied {
 		return false, ExistenceHidingForbidden(where)
 	}
-	return s.adminOrTeamPermFrom(sysadmin, member, space, userID, mmmodel.PermissionManageSpace), nil
+	return s.adminOrTeamPermFrom(sysadmin, active, space, userID, mmmodel.PermissionManageSpace), nil
 }
 
 // RequireSpaceAdminOrSysadmin gates the space-wide exposure-policy knobs (ViewAccess, default
 // permissions) and admin-affecting member changes: sysadmin, or channel admin_space plus active
 // team membership. No team-manage_space branch — those knobs are stricter than ordinary manage.
 func (s *Service) RequireSpaceAdminOrSysadmin(where string, space *model.Space, userID string) *mmmodel.AppError {
-	member, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
+	active, sysadmin, appErr := s.requireActiveMemberGate(where, space, userID)
 	if appErr != nil {
 		return appErr
 	}
 	if sysadmin {
 		return nil
 	}
-	if member != nil {
-		// The SchemeAdmin flag is read from the master rather than composed through
-		// HasPermissionToChannel, which can still report the pre-demotion roles from a cached
-		// composition. Every caller that re-runs this gate inside the space-membership lock does so
-		// to catch a demotion that landed while it waited, so the re-check would admit exactly the
-		// actor it exists to exclude.
+	if active {
+		// The SchemeAdmin flag is read from the master row, not composed through
+		// HasPermissionToChannel: composition can still reflect the cached, pre-demotion roles.
+		// Re-running this gate inside the space-membership lock catches a demotion that took
+		// effect while the caller was waiting.
 		//
 		// The flag is the whole signal for admin_space: RolesForPermissions turns an admin_space
 		// grant into SchemeAdmin rather than an ExplicitRoles token, PermissionsFromMember derives

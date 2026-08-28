@@ -9,7 +9,7 @@ import {makeSpace} from './test_fixtures';
 import {makeTestState} from '../../tests/react_testing_utils';
 
 describe('getCanManageSpaceMembers', () => {
-    // The manage tier rides in the caller's effective permission set, so a space resolved without
+    // The manage tier is part of the caller's effective permission set, so a space resolved without
     // it is a space the caller may not manage.
     const spaceWithManage = (canManage?: boolean) => ({
         ...makeSpace('space-1', 'Engineering'),
@@ -38,10 +38,9 @@ describe('getCanManageSpaceMembers', () => {
         expect(getCanManageSpaceMembers(state, 'space-1')).toBe(false);
     });
 
-    // The rule this replaced was membership: "is the caller in the member list". That was wrong in
-    // both directions — the roster routes refuse an ordinary member, and admit a team manage_space
-    // holder or a sysadmin who need not appear in the list at all. Membership is deliberately not
-    // consulted here any more, so a space full of members answers false without the server's word.
+    // Membership alone is not authority: the roster routes refuse an ordinary member and admit a
+    // team manage_space holder or a sysadmin who need not appear in the list at all. Membership is
+    // not consulted here, so a space full of members answers false without the server's word.
     it('does not infer authority from membership', () => {
         const state = makeTestState({
             currentUser: {id: 'me'},

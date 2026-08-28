@@ -167,14 +167,14 @@ func membershipLockAppError(where string, lockErr error) *mmmodel.AppError {
 // the pluginapi client rather than the plugin's own store, so the error may already be an
 // *AppError carrying the status core chose — a license denial for a custom scheme, or the refusal
 // the scheme API returns until core finishes the asynchronous permissions migration it runs at
-// startup, during which no scheme can be resolved or created. Those are surfaced
-// unchanged; storeAppError would collapse both to a 500 because neither is a store sentinel. A
-// corrupt pooled scheme is also surfaced unchanged, but its row-level repair message is logged so
-// an operator sees the action required even when the request's response is not visible to them.
+// startup, during which no scheme can be resolved or created. Neither is a store sentinel, so both
+// are surfaced unchanged. A pooled scheme is a scheme in the shared pool that non-preset
+// permission sets resolve to, shared by every space configured with that set; a corrupt pooled
+// scheme is also surfaced unchanged, but its row-level repair message is logged so an operator
+// sees the action required even when the request's response is not visible to them.
 //
-// A missing preset scheme is separated out because storeAppError renders every not-found with the
-// shared key ordinary row lookups use, which would report an unseeded server as though the caller
-// had asked for a space that does not exist.
+// A missing preset scheme has its own message key, distinct from the shared not-found key
+// storeAppError uses for ordinary row lookups, so the response identifies an unseeded server.
 func (s *Service) schemeAppError(where string, err error) *mmmodel.AppError {
 	if errors.Is(err, errPresetSchemeMissing) {
 		return mmmodel.NewAppError(where, "app.space.preset_scheme_missing.app_error", nil, "", http.StatusInternalServerError).Wrap(err)

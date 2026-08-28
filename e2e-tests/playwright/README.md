@@ -82,7 +82,7 @@ These apply to every run, permission specs or not:
 | `.github/actions/resolve-e2e-core-image/action.yaml` | A per-PR core-SHA marker resolved for both cloud jobs | Feature PRs can test their own unmerged core commit, while PRs without a marker and all master runs use the current master image. |
 | `tests/helpers/mmcontainer.ts` | `waitForPhase2Migration()` before the first spec runs | The advanced-permissions phase-2 migration runs as a post-boot job, and core reads a scheme through that gate whichever route asks — until it finishes, the first `CreateSpace` fails with `app.schemes.is_phase_2_migration_completed.not_completed`. |
 | `tests/helpers/mmcontainer.ts` | `MM_SERVICEENVIRONMENT: 'test'` in the container env | The published core images are production builds, which default to the production service environment and reject a test/development license outright. Without this the license step fails, not a spec. |
-| `tests/helpers/mmcontainer.ts` | `exec()` takes a `displayCommand` override; `applyLicense` passes a redacted form | The failure message is built from the whole command, so a rejected license would otherwise print itself into the terminal and into the CI job log. |
+| `tests/helpers/mmcontainer.ts` | `exec()` takes a `displayCommand` override; `applyLicense` passes a redacted form | The failure message embeds the whole command and is printed to the terminal and the CI job log, so the license must not appear in the command it reports. |
 | `tests/helpers/docs.ts` | Fixture-only Docs helpers | APIs arrange prerequisite spaces, pages, and memberships; every permission outcome is observed through the browser. |
 
 ## Permission specs

@@ -408,10 +408,6 @@
     "translation": "Failed to verify space membership."
   },
   {
-    "id": "app.space.access.team_lookup_failed.app_error",
-    "translation": "Failed to verify team membership."
-  },
-  {
     "id": "app.space.access.user_lookup_failed.app_error",
     "translation": "Failed to verify the user's account type."
   },
@@ -472,14 +468,6 @@
     "translation": "A space must be supplied."
   },
   {
-    "id": "app.space.create.not_team_member.app_error",
-    "translation": "You must be a member of the team to create a space in it."
-  },
-  {
-    "id": "app.space.create.team_lookup_failed.app_error",
-    "translation": "Unable to verify team membership."
-  },
-  {
     "id": "app.space.default_permissions.channel_scheme_missing.app_error",
     "translation": "The space has no permission scheme."
   },
@@ -506,14 +494,6 @@
   {
     "id": "app.space.get_for_team.invalid_user_id.app_error",
     "translation": "Invalid user ID."
-  },
-  {
-    "id": "app.space.get_for_team.not_team_member.app_error",
-    "translation": "You must be a member of the team to list its spaces."
-  },
-  {
-    "id": "app.space.get_for_team.team_lookup_failed.app_error",
-    "translation": "Unable to verify team membership."
   },
   {
     "id": "app.space.get_members.failed.app_error",
@@ -550,10 +530,6 @@
   {
     "id": "app.space.member.not_team_member.app_error",
     "translation": "The specified user is not a member of the space's team."
-  },
-  {
-    "id": "app.space.member.team_lookup_failed.app_error",
-    "translation": "Unable to verify the user's team membership."
   },
   {
     "id": "app.space.member.update_permissions_failed.app_error",

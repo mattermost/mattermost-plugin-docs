@@ -148,7 +148,6 @@ describe('PermissionsTab', () => {
         expect(screen.getByRole('checkbox', {name: 'Delete any page'})).not.toBeChecked();
     });
 
-    // Private is a real option now; it used to be disabled with a "Coming soon" reason.
     it('changes view access through the hook', () => {
         renderTab();
 
@@ -232,7 +231,7 @@ describe('PermissionsTab', () => {
             expect(screen.getByRole('radio', {name: 'Can edit'})).toBeChecked();
         });
 
-        // Every custom scheme also defines a guest role, which the server refuses to mint without
+        // Every custom scheme also defines a guest role, which the server refuses to create without
         // the guest-permissions entitlement — so the combination controls are withheld with it.
         it('withholds the granular controls when the license lacks guest account permissions', () => {
             renderTab(jest.fn(), {license: {CustomPermissionsSchemes: 'true'}});

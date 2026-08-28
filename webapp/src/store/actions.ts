@@ -337,17 +337,16 @@ export function removeSpaceMember(spaceId: string, userId: string): DocsThunkAct
  *
  * This is what the authoring affordances on an open space are offered on the strength of: the
  * caller holds read_page and nothing else, and the space's defaults are what they would hold as a
- * member. The write itself is gated on their real membership and nothing else — no gate joins
- * anybody — so this has to land first or the write is refused.
+ * member. The write itself is gated on real membership alone — nothing else grants it — so this
+ * call must run first.
  *
  * A no-op when the store says there is nothing to join, which is every case but a non-member of an
  * open space. Idempotent server-side, so a stale "yes" costs a round trip rather than an error.
  *
  * Called from the draft writes themselves (createDraft, saveDraft), never from the affordance that
- * leads to them. Joining when the editor opens would make a membership out of an intention: someone
- * who clicks Edit, types nothing and navigates away would be a member of the space for good. Joining
- * on the write keeps membership a record of a contribution, which is also what makes removing a
- * member worth doing — a removed user rejoins by writing again, not by opening an editor.
+ * leads to them. Joining on the write keeps membership a record of a contribution, which is also
+ * what makes removing a member worth doing — a removed user rejoins by writing again, not by
+ * opening an editor.
  *
  * Rejects on failure so the caller can abandon the write rather than send one that will be refused.
  */
@@ -478,10 +477,9 @@ export function deleteSpace(spaceId: string): DocsThunkAction<Promise<void>> {
     };
 }
 
-// The removal routes answer 409 for three different rules, so the id is what tells them apart —
-// the status no longer does. The REST layer lifts the AppError id into server_error_id (see
-// client/rest.ts), which is what makes this possible; matching on the status alone reported a
-// sole-admin refusal and a retryable lock timeout as "the space needs another member".
+// The removal routes answer 409 for three different rules — last member, sole admin, and a
+// retryable lock timeout — so the id, not the status, tells them apart. The REST layer lifts the
+// AppError id into server_error_id (see client/rest.ts).
 
 const spaceErrorId = (error: unknown): string | undefined =>
     (error instanceof ClientError ? error.server_error_id : undefined);

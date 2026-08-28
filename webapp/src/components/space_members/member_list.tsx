@@ -50,7 +50,7 @@ type Props = {
      * permissions-shaped prop because the only caller that needs it is Space Settings →
      * Permissions, and this roster is shared with the Share modal and the info panel:
      * taking the rendered node keeps the toggle component (and the permission vocabulary
-     * it speaks) out of the shared roster entirely.
+     * it uses) out of the shared roster entirely.
      */
     renderBelowMember?: (member: MemberProfile) => React.ReactNode;
 };

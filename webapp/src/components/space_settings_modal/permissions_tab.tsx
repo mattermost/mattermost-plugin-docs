@@ -57,8 +57,8 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
 
     const defaultTier = summarizePermissions(permissions.defaults);
 
-    // Bind toggles to grants, not effective permissions, or defaults would become pinned as
-    // per-member overrides. Guest grants are invalid and remain visible but locked.
+    // Bind toggles to grants, not effective permissions, so per-member overrides stay independent
+    // of the space defaults. Guest grants are invalid and remain visible but locked.
     const renderMemberPermissions = (profile: MemberProfile) => {
         const record = permissions.members.get(profile.id);
         if (!record) {

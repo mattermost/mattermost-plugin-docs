@@ -5,6 +5,7 @@ package app_test
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -45,26 +46,22 @@ func openTestServiceWithAPI(t *testing.T, mockAPI *plugintest.API, options ...ap
 	// MovePage logs message plus three pairs; MovePageToSpace logs message plus four.
 	mockAPI.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	mockAPI.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
-	// CreateSpace requires the creator to be a team member; default every test to a live
-	// membership so tests that aren't specifically exercising the rejection don't need their own
-	// stub. TestServiceCreateSpace_NotTeamMember overrides this to exercise the rejection path.
-	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
-		Return(&mmmodel.TeamMember{}, nil).Maybe()
 	// The page-write gate reads the acting user to hold guests to read_page. Defaults to an
 	// ordinary (non-guest) user; a test exercising the guest refusal registers its own stub first.
 	mockAPI.On("GetUser", mock.Anything).Return(&mmmodel.User{}, nil).Maybe()
 	// plugintest flattens a log call's variadic pairs into the mock's argument list, so a stub only
 	// matches calls with exactly that many arguments. Cover each shape the service emits: LogWarn
 	// with message plus two key/value pairs (ResolveSpaceRead/GetSpacesForTeam client-not-wired
-	// denials), LogWarn with message plus three pairs (DeleteSpace, restoreSpaceChannel), LogWarn
-	// with message plus five (adoptableSharedScheme's refusal, which names both permission sets),
-	// and LogError with message plus four (archiveOrphanChannel).
+	// denials), LogWarn with message plus three pairs (DeleteSpace, restoreSpaceChannel), and
+	// LogError with message plus four (archiveOrphanChannel). A LogWarn with message plus five pairs
+	// is also stubbed.
 	mockAPI.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	mockAPI.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	mockAPI.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
 		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
-	// LogError shapes: message plus two pairs (the custom-scheme retire failures), plus three
-	// pairs (UpdateSpace's channel-metadata sync failure) and plus four (archiveOrphanChannel).
+	// LogError shapes: message plus three pairs (the scheme-conflict log in schemeAppError,
+	// UpdateSpace's channel-metadata sync failure, and a failed self-joined member removal) and
+	// plus four (archiveOrphanChannel). A LogError with message plus two pairs is also stubbed.
 	mockAPI.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	mockAPI.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	mockAPI.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
@@ -256,8 +253,6 @@ func TestServiceCreateSpace_ReplicaConfiguredSucceeds(t *testing.T) {
 		Return(&mmmodel.Config{SqlSettings: mmmodel.SqlSettings{DataSourceReplicas: []string{"replica"}}}).Maybe()
 	mockAPI.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	mockAPI.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
-	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
-		Return(&mmmodel.TeamMember{}, nil)
 
 	channelID := mmmodel.NewId()
 	userID := mmmodel.NewId()
@@ -309,50 +304,6 @@ func TestServiceCreateSpace_InvalidInput(t *testing.T) {
 	})
 }
 
-// TestServiceCreateSpace_NotTeamMember verifies CreateSpace rejects a creator who is not a member
-// of the target team, before any backing-channel side effect — otherwise any authenticated user
-// could create a real channel in a team they don't belong to.
-func TestServiceCreateSpace_NotTeamMember(t *testing.T) {
-	h := openTestService(t)
-	mockAPI := &plugintest.API{}
-	mockAPI.On("GetConfig").Return(&mmmodel.Config{}).Maybe()
-	client := pluginapi.NewClient(mockAPI, nil)
-	h.svc = app.New(h.store, &client.Log, client)
-
-	teamID := mmmodel.NewId()
-	userID := mmmodel.NewId()
-	mockAPI.On("GetTeamMember", teamID, userID).
-		Return(nil, &mmmodel.AppError{Message: "not a member", StatusCode: http.StatusNotFound})
-
-	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Not Allowed"}, userID, nil, nil)
-	require.NotNil(t, appErr)
-	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
-	require.Equal(t, "app.space.create.not_team_member.app_error", appErr.Id)
-	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
-}
-
-// TestServiceCreateSpace_FormerTeamMemberBlocked verifies that a user who left the team is
-// rejected: core keeps removed team members as rows with DeleteAt set, and GetTeamMember returns
-// such a row without error, so the gate must inspect DeleteAt rather than rely on a not-found.
-func TestServiceCreateSpace_FormerTeamMemberBlocked(t *testing.T) {
-	h := openTestService(t)
-	mockAPI := &plugintest.API{}
-	mockAPI.On("GetConfig").Return(&mmmodel.Config{}).Maybe()
-	client := pluginapi.NewClient(mockAPI, nil)
-	h.svc = app.New(h.store, &client.Log, client)
-
-	teamID := mmmodel.NewId()
-	userID := mmmodel.NewId()
-	mockAPI.On("GetTeamMember", teamID, userID).
-		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: userID, DeleteAt: 1}, nil)
-
-	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: teamID, Title: "Not Allowed"}, userID, nil, nil)
-	require.NotNil(t, appErr)
-	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
-	require.Equal(t, "app.space.create.not_team_member.app_error", appErr.Id)
-	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
-}
-
 // TestServiceCreateSpace_CreateSpaceGate pins the create_space authorization gate, which team
 // membership alone does not satisfy. Both directions are covered because they fail to different
 // mutants: the denial catches the gate being dropped, and the sysadmin override catches the two
@@ -398,17 +349,16 @@ func TestServiceCreateSpace_CreateSpaceGate(t *testing.T) {
 }
 
 // TestResolveSpaceRead_FormerTeamMemberDenied verifies that access to a team's space ends with
-// team membership: leaving a team does not remove the user from the space's backing channel, so a
-// former team member still holds a ChannelMember row — the team gate (which must read DeleteAt,
-// since core returns removed memberships without error) is what blocks them.
+// team membership. The test simulates a backing-channel ChannelMember row that remained after the
+// user's team departure: core resolves team read_space from the active membership, so the
+// departed user no longer holds it and the team gate blocks them.
 func TestResolveSpaceRead_FormerTeamMemberDenied(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	teamID := mmmodel.NewId()
 	userID := mmmodel.NewId()
-	// Registered before the harness, whose GetTeamMember catch-all returns an active membership:
-	// mock.Mock matches expectations in registration order.
-	mockAPI.On("GetTeamMember", teamID, userID).
-		Return(&mmmodel.TeamMember{TeamId: teamID, UserId: userID, DeleteAt: 1}, nil)
+	// Registered before the harness, whose read_space catch-all grants it to everyone: mock.Mock
+	// matches expectations in registration order.
+	mockAPI.On("HasPermissionToTeam", userID, teamID, mmmodel.PermissionReadSpace).Return(false)
 	h := openTestServiceWithAPI(t, mockAPI)
 
 	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
@@ -904,6 +854,35 @@ func TestServiceSetSpaceDefaultPermissions_ResponseReflectsRequestedNotStaleRead
 		"the response must report the requested set, not a stale role read-back")
 }
 
+// TestServiceSetSpaceDefaultPermissions_PublishesSpaceUpdated pins the event a default-permission
+// change emits: exactly one space_updated carrying the space id, broadcast to the backing channel,
+// and none when the requested set already matches the scheme the channel carries.
+func TestServiceSetSpaceDefaultPermissions_PublishesSpaceUpdated(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	sysadminID := mmmodel.NewId()
+	// Registered before the harness so the response's own-permission projection resolves via
+	// sysadmin, sidestepping the channel-member lookup this test does not otherwise stub.
+	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true)
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
+	space := mustCreateSpace(t, h.store, channelID)
+	contribute, ok := model.DefaultPermissionsForSchemeName(mmmodel.SchemeNameSpaceContribute)
+	require.True(t, ok)
+
+	// The channel is seeded at the contribute preset, so resubmitting that set is a no-op.
+	_, appErr := h.svc.SetSpaceDefaultPermissions(space, contribute, sysadminID)
+	require.Nil(t, appErr)
+	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "space_updated", mock.Anything, mock.Anything)
+
+	_, appErr = h.svc.SetSpaceDefaultPermissions(space, []string{mmmodel.PermissionCommentPage.Id}, sysadminID)
+	require.Nil(t, appErr)
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_updated",
+		map[string]any{"space_id": space.Id}, &mmmodel.WebsocketBroadcast{ChannelId: channelID})
+	mockAPI.AssertNumberOfCalls(t, "PublishWebSocketEvent", 1)
+}
+
 // TestServiceRestoreSpace_UnarchivesBackingChannel verifies a create→delete→restore round trip
 // un-archives the backing channel and brings the space back live.
 func TestServiceRestoreSpace_UnarchivesBackingChannel(t *testing.T) {
@@ -1250,7 +1229,7 @@ func TestResolveSpaceRead_MemberAdmitted(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
 
-	// The harness stubs GetTeamMember to an active membership and read_page to true.
+	// The harness grants team read_space to everyone and read_page to true.
 	teamID := mmmodel.NewId()
 	userID := mmmodel.NewId()
 	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
@@ -1271,8 +1250,8 @@ func TestResolveSpaceRead_NonMemberDeniedOnPrivateSpace(t *testing.T) {
 	mockAPI.On("HasPermissionToChannel", strangerID, mock.Anything, mmmodel.PermissionReadPage).Return(false)
 	h := openTestServiceWithAPI(t, mockAPI)
 
-	// The harness stubs GetTeamMember to an active membership, so the stranger clears the team
-	// gate and is denied purely on the channel-scoped check.
+	// The harness grants team read_space to everyone, so the stranger clears the team gate and is
+	// denied purely on the channel-scoped check.
 	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), mmmodel.NewId())
 	space.ViewAccess = model.ViewAccessPrivate
 
@@ -1442,6 +1421,12 @@ func TestServiceRemoveSpaceMember_LastActiveMemberRejected(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	activeID := mmmodel.NewId()
 	formerID := mmmodel.NewId()
+	// Core's team-permission filter is what reports the departure: registered before the harness's
+	// admit-everyone default, it drops the former member from the audience.
+	mockAPI.On("FilterUsersWithTeamPermission", mock.Anything, mock.Anything, mmmodel.PermissionReadSpace).
+		Return(func(_ string, ids []string, _ *mmmodel.Permission) ([]string, *mmmodel.AppError) {
+			return slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return id == formerID }), nil
+		})
 	h := openTestServiceWithAPI(t, mockAPI)
 	space, _ := createSpaceForMemberTests(t, h, mockAPI)
 
@@ -1485,11 +1470,9 @@ func TestServiceRemoveSpaceMember_FormerTeamMemberRemovable(t *testing.T) {
 func TestServiceAddSpaceMember_FormerTeamMemberRejected(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	targetID := mmmodel.NewId()
-	// Registered before the harness's catch-all active-member GetTeamMember stub because
-	// testify matches expectations first-registered-first; keyed on targetID so the creator's
-	// lookup stays on the catch-all.
-	mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), targetID).
-		Return(&mmmodel.TeamMember{UserId: targetID, DeleteAt: 1}, nil)
+	// Registered before the harness's read_space catch-all because testify matches expectations
+	// first-registered-first; keyed on targetID so the creator's grant stays on the catch-all.
+	mockAPI.On("HasPermissionToTeam", targetID, mock.AnythingOfType("string"), mmmodel.PermissionReadSpace).Return(false)
 	h := openTestServiceWithAPI(t, mockAPI)
 	space, _ := createSpaceForMemberTests(t, h, mockAPI)
 

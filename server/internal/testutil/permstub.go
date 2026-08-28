@@ -76,6 +76,12 @@ func StubDefaultSpacePermissions(mockAPI *plugintest.API) {
 	// read_space is team_guest's as well as team_user's, so it is granted to everyone. The other
 	// two are team_user's alone, and are withheld from any user registered as a guest.
 	mockAPI.On("HasPermissionToTeam", mock.Anything, mock.Anything, mmmodel.PermissionReadSpace).Return(true).Maybe()
+	// The audience filter agrees with the read_space grant above: every listed member holds it. A
+	// test exercising a member whose team scheme withholds it registers its own answer first.
+	mockAPI.On("FilterUsersWithTeamPermission", mock.Anything, mock.Anything, mmmodel.PermissionReadSpace).
+		Return(func(_ string, userIDs []string, _ *mmmodel.Permission) ([]string, *mmmodel.AppError) {
+			return userIDs, nil
+		}).Maybe()
 	notGuest := mock.MatchedBy(func(userID string) bool { return !isStubbedGuest(mockAPI, userID) })
 	for _, p := range []*mmmodel.Permission{mmmodel.PermissionCreateSpace, mmmodel.PermissionReadPublicChannel} {
 		mockAPI.On("HasPermissionToTeam", notGuest, mock.Anything, p).Return(true).Maybe()

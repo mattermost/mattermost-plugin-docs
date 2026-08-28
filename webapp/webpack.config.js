@@ -133,8 +133,9 @@ const config = {
         path: path.join(__dirname, '/dist'),
 
         // Content-hashed backstage chunks are replaced on every build. Without cleaning, every
-        // historical permission UI remains in dist and is packed into the plugin tarball, making
-        // local/CI artifacts larger and leaving stale implementations available to be served.
+        // historical build of the Docs product UI (the `docs-backstage` chunk) remains in dist and
+        // is packed into the plugin tarball, making local/CI artifacts larger and leaving stale
+        // implementations available to be served.
         clean: true,
 
         // 'auto' makes webpack resolve async-chunk and asset/resource URLs at
