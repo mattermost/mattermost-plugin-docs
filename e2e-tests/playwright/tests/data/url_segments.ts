@@ -14,7 +14,14 @@ export const IMPORT_SEGMENT = '_import';
 
 export const RESERVED_SEGMENTS = [DRAFTS_SEGMENT, OVERVIEW_SEGMENT, IMPORT_SEGMENT] as const;
 
-// SPACE_OR_PAGE_ID from routing/paths.ts, anchored: a lowercase alphanumeric, then
-// lowercase alphanumerics, dashes, or underscores. A leading underscore is what it
-// refuses, and that refusal is the whole reason the segments above are safe.
-export const SPACE_OR_PAGE_ID_PATTERN = /^[a-z0-9][a-z0-9\-_]*$/;
+// SPACE_OR_PAGE_ID from routing/paths.ts: a lowercase alphanumeric, then lowercase
+// alphanumerics, dashes, or underscores. Kept as source text and anchored separately,
+// as paths.ts keeps it, so a URL assertion and the membership test below are built from
+// one grammar rather than two that can drift. Server ids are alphanumeric today, but a
+// spec that assumed only that would fail the day custom slugs arrive — which the scheme
+// is designed to allow.
+export const SPACE_OR_PAGE_ID = '[a-z0-9][a-z0-9\\-_]*';
+
+// A leading underscore is what the grammar refuses, and that refusal is the whole reason
+// the segments above are safe.
+export const SPACE_OR_PAGE_ID_PATTERN = new RegExp(`^${SPACE_OR_PAGE_ID}$`);

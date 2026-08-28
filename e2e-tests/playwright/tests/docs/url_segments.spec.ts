@@ -11,7 +11,7 @@ import {loginAs} from '../helpers/auth';
 import {uniqueSuffix} from '../helpers/client';
 import {createPage, createSpace, getPageDraft, setSpaceLandingPage, type DocsPage, type Space} from '../helpers/docs';
 import {createTeam} from '../helpers/team';
-import {DRAFTS_SEGMENT, OVERVIEW_SEGMENT, RESERVED_SEGMENTS, SPACE_OR_PAGE_ID_PATTERN} from '../data/url_segments';
+import {DRAFTS_SEGMENT, OVERVIEW_SEGMENT, RESERVED_SEGMENTS, SPACE_OR_PAGE_ID, SPACE_OR_PAGE_ID_PATTERN} from '../data/url_segments';
 import {SpacePage} from '../pages/space_page';
 import {SpacesSidebarPage} from '../pages/spaces_sidebar_page';
 
@@ -65,9 +65,11 @@ test.describe('docs URL segments', () => {
         await spacePage.addPage(pageTitle);
 
         // * The whole URL is asserted, so the draft's own page id has to survive as a
-        // segment of its own rather than the reserved segment being read as the page
+        // segment of its own rather than the reserved segment being read as the page.
+        // The id is matched by its declared grammar, not by what ids happen to look like
+        // today, so a slug carrying a dash would still be read as the page it names
         await expect(page).toHaveURL(
-            new RegExp(`/${teamName}/spaces/${draftSpace.id}/${DRAFTS_SEGMENT}/[a-z0-9]+\\?edit=1$`),
+            new RegExp(`/${teamName}/spaces/${draftSpace.id}/${DRAFTS_SEGMENT}/${SPACE_OR_PAGE_ID}\\?edit=1$`),
         );
 
         // # Let the title reach the server before reloading, so a reload race cannot be
