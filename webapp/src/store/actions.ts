@@ -13,7 +13,7 @@ import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 import type {CreatePageInput, CreateSpaceInput, Page, Space, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
 import type {Draft, DraftPatch} from 'types/drafts';
 import type {SpaceAccess} from 'types/permissions';
-import {LAST_SPACE_ADMIN_ERROR_ID, LAST_SPACE_MEMBER_ERROR_ID, SPACE_LOCK_TIMEOUT_ERROR_ID} from 'types/server_errors';
+import {LAST_SPACE_ADMIN_ERROR_ID, LAST_SPACE_MEMBER_ERROR_ID, NOT_TEAM_MEMBER_ERROR_ID, SPACE_LOCK_TIMEOUT_ERROR_ID} from 'types/server_errors';
 import type {DocsThunkAction} from 'types/store';
 
 import {DraftTypes, PageTypes, SpaceTypes} from './action_types';
@@ -502,11 +502,8 @@ export function isSpaceLockTimeoutError(error: unknown): boolean {
     return spaceErrorId(error) === SPACE_LOCK_TIMEOUT_ERROR_ID;
 }
 
-// The add route answers 403 when the target isn't an active member of the space's
-// team. That is the one add failure a user can act on, so it gets its own message.
-// Still keyed on the status: 403 is the only one this route emits.
 export function isNotTeamMemberError(error: unknown): boolean {
-    return error instanceof ClientError && error.status_code === 403;
+    return spaceErrorId(error) === NOT_TEAM_MEMBER_ERROR_ID;
 }
 
 // Leaving a space is removing yourself from its membership. The server rejects

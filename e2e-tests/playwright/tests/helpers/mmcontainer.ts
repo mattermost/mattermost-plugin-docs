@@ -94,6 +94,8 @@ const spacePermissionProbeRole = 'docs_pg_create';
 // competes with first-boot schema work, and more so on an emulated architecture.
 const phase2MigrationTimeoutMs = 120_000;
 
+const probeRequestTimeoutMs = 30_000;
+
 export const adminUsername = 'sysadmin';
 export const adminPassword = 'Sys@dmin-sample1';
 const adminEmail = 'sysadmin@sample.mattermost.com';
@@ -276,7 +278,7 @@ export class DocsServerContainer {
         while (Date.now() < deadline) {
             const response = await fetch(`${this.url()}/api/v4/schemes?page=0&per_page=1`, {
                 headers: {Authorization: `Bearer ${token}`},
-                signal: AbortSignal.timeout(30_000),
+                signal: AbortSignal.timeout(probeRequestTimeoutMs),
             });
 
             if (response.ok) {
@@ -310,7 +312,7 @@ export class DocsServerContainer {
 
         const response = await fetch(`${this.url()}/api/v4/roles/name/${spacePermissionProbeRole}`, {
             headers: {Authorization: `Bearer ${token}`},
-            signal: AbortSignal.timeout(30_000),
+            signal: AbortSignal.timeout(probeRequestTimeoutMs),
         });
 
         if (!response.ok) {

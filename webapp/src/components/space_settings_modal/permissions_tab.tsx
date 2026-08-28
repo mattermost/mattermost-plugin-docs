@@ -2,29 +2,24 @@
 // See LICENSE.txt for license information.
 
 import type {MemberProfile} from 'hooks/members';
-import {useSpaceMemberProfiles} from 'hooks/members';
 import {usePermissionLabels} from 'hooks/permission_labels';
-import {useAppSelector} from 'hooks/redux';
-import {useManageSpaceMembers} from 'hooks/space_members';
-import {useSpacePermissions} from 'hooks/space_permissions';
+import {useCustomDefaultsAvailable} from 'hooks/permissions';
+import {useSpaceAccessEditor} from 'hooks/space_access_editor';
 import React, {useMemo} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
-import {DEFAULT_PERMISSION_PRESETS, samePermissionSet} from 'utils/space_permission_sets';
+import {summarizePermissions} from 'utils/space_permission_sets';
 
 import GlobeIcon from '@mattermost/compass-icons/components/globe';
 import LockOutlineIcon from '@mattermost/compass-icons/components/lock-outline';
 
-import {getLicense} from 'mattermost-redux/selectors/entities/general';
-import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
-
 import PublicPrivateSelector from 'components/form_controls/public_private_selector';
 import {AddMembersField, MemberList} from 'components/space_members';
-import type {MemberListActions} from 'components/space_members';
 
 import type {Space} from 'types/docs';
 import type {Permission} from 'types/permissions';
 import {DEFAULT_PERMISSION_ORDER, MEMBER_PERMISSION_ORDER, Permissions} from 'types/permissions';
 
+import DefaultPermissionTierSelector from './default_permission_tier_selector';
 import PermissionToggles from './permission_toggles';
 import {Section} from './space_settings_modal';
 import styles from './space_settings_modal.module.scss';
@@ -44,37 +39,23 @@ const EFFECTIVE_PERMISSION_ORDER: readonly Permission[] = [
 const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) => {
     const {formatMessage} = useIntl();
     const permissionLabels = usePermissionLabels();
-    const currentUserId = useAppSelector(getCurrentUserId);
-    const license = useAppSelector(getLicense);
-    const members = useSpaceMemberProfiles(space.id);
-    const {addMembers, removeMember, leave} = useManageSpaceMembers(space);
-    const permissions = useSpacePermissions(space);
-    const customDefaultsAvailable = license.CustomPermissionsSchemes === 'true' || license.SkuShortName === 'professional';
+    const {
+        permissions,
+        members,
+        memberIds,
+        adminLocked,
+        rosterLocked,
+        adminLockedReason,
+        adminSpaceLockedReason,
+        roleForMember,
+        memberLockedReason,
+        isMemberLocked,
+        actions,
+        addMembers,
+    } = useSpaceAccessEditor(space, {onClose});
+    const customDefaultsAvailable = useCustomDefaultsAvailable();
 
-    // Exposure and roster writes have different authority tiers. Disable both while the hook
-    // reports a write in flight to avoid overlapping reconciliation from this surface.
-    const adminLocked = !permissions.canAdminister || permissions.loading || permissions.busy;
-    const rosterLocked = !permissions.canManageMembers || permissions.loading || permissions.busy;
-
-    const memberIds = useMemo(() => members.map((member) => member.id), [members]);
-    const defaultPermissionPresets = useMemo(() => [
-        {
-            ...DEFAULT_PERMISSION_PRESETS[0],
-            label: formatMessage({id: 'docs.spaceSettings.permissions.preset.contribute', defaultMessage: 'Contribute'}),
-            description: formatMessage({id: 'docs.spaceSettings.permissions.preset.contributeDescription', defaultMessage: 'Create, comment on, edit, and delete their own pages'}),
-        },
-        {
-            ...DEFAULT_PERMISSION_PRESETS[1],
-            label: formatMessage({id: 'docs.spaceSettings.permissions.preset.comment', defaultMessage: 'Comment'}),
-            description: formatMessage({id: 'docs.spaceSettings.permissions.preset.commentDescription', defaultMessage: 'View and comment on pages'}),
-        },
-        {
-            ...DEFAULT_PERMISSION_PRESETS[2],
-            label: formatMessage({id: 'docs.spaceSettings.permissions.preset.readOnly', defaultMessage: 'Read only'}),
-            description: formatMessage({id: 'docs.spaceSettings.permissions.preset.readOnlyDescription', defaultMessage: 'View pages'}),
-        },
-    ], [formatMessage]);
-    const selectedDefaultPreset = defaultPermissionPresets.find((preset) => samePermissionSet(preset.permissions, permissions.defaults));
+    const defaultTier = summarizePermissions(permissions.defaults);
 
     // Bind toggles to grants, not effective permissions, or defaults would become pinned as
     // per-member overrides. Guest grants are invalid and remain visible but locked.
@@ -84,18 +65,7 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
             return null;
         }
 
-        let lockedReason;
-        if (record.is_guest) {
-            lockedReason = formatMessage({
-                id: 'docs.spaceSettings.permissions.guestLocked',
-                defaultMessage: 'Guests can only view pages',
-            });
-        } else if (profile.id === currentUserId && !permissions.canAdminister) {
-            lockedReason = formatMessage({
-                id: 'docs.spaceSettings.permissions.selfLocked',
-                defaultMessage: 'Only a space administrator can change their own permissions',
-            });
-        }
+        const lockedReason = memberLockedReason(profile);
 
         const effectivePermissions = EFFECTIVE_PERMISSION_ORDER.
             filter((permission) => record.permissions.includes(permission)).
@@ -106,7 +76,7 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                 className={styles.memberPermissions}
                 title={lockedReason}
             >
-                {record.auto_joined && (
+                {record.is_auto_joined && (
 
                     // Surface the provenance marker recorded by the server; its cleanup is best-effort.
                     <span className={styles.autoJoinedNote}>
@@ -136,8 +106,10 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                 <PermissionToggles
                     options={MEMBER_PERMISSION_ORDER}
                     selected={record.granted_permissions}
-                    disabled={rosterLocked || permissions.busy || record.is_guest || (profile.id === currentUserId && !permissions.canAdminister)}
+                    disabled={isMemberLocked(profile)}
+                    disabledReason={lockedReason}
                     disabledOptions={permissions.canAdminister ? undefined : [Permissions.ADMIN_SPACE]}
+                    disabledOptionsReason={adminSpaceLockedReason}
                     busy={permissions.busy}
                     idPrefix={`member-${profile.id}`}
                     legend={(
@@ -154,58 +126,41 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
         );
     };
 
-    // Close settings after a successful self-removal.
-    const actions: MemberListActions = {
-        onRemove: removeMember,
-        onLeave: async () => {
-            if (await leave()) {
-                onClose();
-            }
-        },
-        disabled: rosterLocked,
-    };
-
     // Values use the server's view_access vocabulary; "Public" remains the user-facing label.
-    const accessOptions = useMemo(() => {
-        // Keep descriptors literal for message extraction.
-        const adminOnly = formatMessage({
-            id: 'docs.spaceSettings.permissions.adminOnly',
-            defaultMessage: 'Only a space administrator can change this',
-        });
-        const readFailed = formatMessage({
-            id: 'docs.spaceSettings.permissions.loadFailed',
-            defaultMessage: "Couldn't load this space's permissions. Close and reopen settings to try again.",
-        });
+    const accessOptions = useMemo(() => [
+        {
+            value: 'open',
+            icon: <GlobeIcon size={20}/>,
+            title: formatMessage({id: 'docs.spaceSettings.permissions.public.title', defaultMessage: 'Public'}),
+            description: formatMessage({id: 'docs.spaceSettings.permissions.public.description', defaultMessage: 'Anyone in the team can find and view this space.'}),
+            disabled: adminLocked,
+            disabledReason: adminLockedReason,
+        },
+        {
+            value: 'private',
+            icon: <LockOutlineIcon size={20}/>,
+            title: formatMessage({id: 'docs.spaceSettings.permissions.private.title', defaultMessage: 'Private'}),
 
-        // Only a resolved authority denial uses the admin-only explanation.
-        let lockedReason;
-        if (permissions.loadFailed) {
-            lockedReason = readFailed;
-        } else if (!permissions.loading && !permissions.busy) {
-            lockedReason = adminOnly;
-        }
+            // Self-join markers select removals; deliberate membership changes normally clear them.
+            description: formatMessage({id: 'docs.spaceSettings.permissions.private.description', defaultMessage: 'Only invited members can view. People who joined by authoring while public lose access.'}),
+            disabled: adminLocked,
+            disabledReason: adminLockedReason,
+        },
+    ], [formatMessage, adminLocked, adminLockedReason]);
 
-        return [
-            {
-                value: 'open',
-                icon: <GlobeIcon size={20}/>,
-                title: formatMessage({id: 'docs.spaceSettings.permissions.public.title', defaultMessage: 'Public'}),
-                description: formatMessage({id: 'docs.spaceSettings.permissions.public.description', defaultMessage: 'Anyone in the team can find and view this space.'}),
-                disabled: adminLocked,
-                disabledReason: lockedReason,
-            },
-            {
-                value: 'private',
-                icon: <LockOutlineIcon size={20}/>,
-                title: formatMessage({id: 'docs.spaceSettings.permissions.private.title', defaultMessage: 'Private'}),
-
-                // Self-join markers select removals; deliberate membership changes normally clear them.
-                description: formatMessage({id: 'docs.spaceSettings.permissions.private.description', defaultMessage: 'Only invited members can view. People who joined by authoring while public lose access.'}),
-                disabled: adminLocked,
-                disabledReason: lockedReason,
-            },
-        ];
-    }, [formatMessage, adminLocked, permissions.loading, permissions.loadFailed, permissions.busy]);
+    // The named tiers come first on every surface; a licensed install may refine the set below
+    // them, permission by permission.
+    const defaultTiers = (
+        <DefaultPermissionTierSelector
+            spaceId={space.id}
+            selected={permissions.defaults}
+            disabled={adminLocked || permissions.busy}
+            customDefaultsAvailable={customDefaultsAvailable}
+            onChange={(next) => {
+                permissions.setDefaults(next).catch(() => {});
+            }}
+        />
+    );
 
     return (
         <>
@@ -236,81 +191,38 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                     />
                 )}
             >
-                {customDefaultsAvailable ? (
-                    <PermissionToggles
-                        options={DEFAULT_PERMISSION_ORDER}
-                        selected={permissions.defaults}
-                        disabled={adminLocked || permissions.busy}
-                        busy={permissions.busy}
-                        idPrefix='space-default'
-                        legend={(
+                <PermissionToggles
+                    options={customDefaultsAvailable ? DEFAULT_PERMISSION_ORDER : []}
+                    selected={permissions.defaults}
+                    disabled={adminLocked || permissions.busy}
+                    disabledReason={adminLockedReason}
+                    busy={permissions.busy}
+                    idPrefix='space-default'
+                    legend={(
+                        <FormattedMessage
+                            id='docs.spaceSettings.permissions.permissionsLegend'
+                            defaultMessage='Everyone with access to this space can:'
+                        />
+                    )}
+                    header={defaultTiers}
+                    onChange={(next) => {
+                        permissions.setDefaults(next).catch(() => {});
+                    }}
+                />
+                {!customDefaultsAvailable && (
+                    <p className={styles.helper}>
+                        {defaultTier === 'custom' ? (
                             <FormattedMessage
-                                id='docs.spaceSettings.permissions.permissionsLegend'
-                                defaultMessage='Everyone with access to this space can:'
+                                id='docs.spaceSettings.permissions.preset.customCurrent'
+                                defaultMessage='This space currently uses a custom permission combination. Choose a tier to replace it; custom combinations require a Professional or Enterprise license that includes guest account permissions.'
+                            />
+                        ) : (
+                            <FormattedMessage
+                                id='docs.spaceSettings.permissions.preset.licenseRequired'
+                                defaultMessage='Custom permission combinations require a Professional or Enterprise license that includes guest account permissions.'
                             />
                         )}
-                        onChange={(next) => {
-                            permissions.setDefaults(next).catch(() => {});
-                        }}
-                    />
-                ) : (
-                    <>
-                        <fieldset
-                            className={styles.presets}
-                            aria-busy={permissions.busy}
-                        >
-                            <legend className={styles.togglesLegend}>
-                                <FormattedMessage
-                                    id='docs.spaceSettings.permissions.permissionsLegend'
-                                    defaultMessage='Everyone with access to this space can:'
-                                />
-                            </legend>
-                            {defaultPermissionPresets.map((preset) => {
-                                const id = `space-default-preset-${preset.id}`;
-                                return (
-                                    <div
-                                        key={preset.id}
-                                        className={styles.preset}
-                                    >
-                                        <input
-                                            id={id}
-                                            type='radio'
-                                            name={`space-default-preset-${space.id}`}
-                                            checked={selectedDefaultPreset?.id === preset.id}
-                                            disabled={adminLocked || permissions.busy}
-                                            aria-label={preset.label}
-                                            aria-describedby={`${id}-description`}
-                                            onChange={() => {
-                                                permissions.setDefaults([...preset.permissions]).catch(() => {});
-                                            }}
-                                        />
-                                        <label htmlFor={id}>
-                                            <span className={styles.presetTitle}>{preset.label}</span>
-                                            <span
-                                                id={`${id}-description`}
-                                                className={styles.presetDescription}
-                                            >
-                                                {preset.description}
-                                            </span>
-                                        </label>
-                                    </div>
-                                );
-                            })}
-                        </fieldset>
-                        <p className={styles.helper}>
-                            {selectedDefaultPreset ? (
-                                <FormattedMessage
-                                    id='docs.spaceSettings.permissions.preset.licenseRequired'
-                                    defaultMessage='Custom permission combinations require a Professional or Enterprise license.'
-                                />
-                            ) : (
-                                <FormattedMessage
-                                    id='docs.spaceSettings.permissions.preset.customCurrent'
-                                    defaultMessage='This space currently uses a custom permission combination. Choose a preset to replace it; custom combinations require a Professional or Enterprise license.'
-                                />
-                            )}
-                        </p>
-                    </>
+                    </p>
                 )}
             </Section>
 
@@ -332,44 +244,10 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                     avatarSize='sm'
                     spaceTitle={space.title}
                     actions={actions}
-                    roleForMember={(profile) => {
-                        const record = permissions.members.get(profile.id);
-                        if (!record) {
-                            return undefined;
-                        }
-                        if (record.is_guest) {
-                            return 'guest';
-                        }
-                        return record.is_admin ? 'admin' : 'member';
-                    }}
+                    roleForMember={roleForMember}
                     renderBelowMember={renderMemberPermissions}
                 />
             </Section>
-
-            <section className={styles.section}>
-                <div className={styles.toggleRow}>
-                    <span className={styles.toggleText}>
-                        <span className={styles.toggleTitle}>
-                            <FormattedMessage
-                                id='docs.spaceSettings.permissions.externalSharing.title'
-                                defaultMessage='External sharing'
-                            />
-                        </span>
-                        <span className={styles.helper}>
-                            <FormattedMessage
-                                id='docs.spaceSettings.permissions.externalSharing.description'
-                                defaultMessage='Let people outside the team access this space with a link.'
-                            />
-                        </span>
-                    </span>
-                    <span className={styles.comingSoonPill}>
-                        <FormattedMessage
-                            id='docs.spaceSettings.permissions.externalSharing.comingSoon'
-                            defaultMessage='Coming soon'
-                        />
-                    </span>
-                </div>
-            </section>
         </>
     );
 };

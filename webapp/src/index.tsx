@@ -10,13 +10,14 @@ import {DOCS_BASE_URL, DOCS_SWITCHER_LINK_URL} from 'routing/paths';
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
 import {SpaceTypes} from 'store/action_types';
-import {fetchSpace, fetchSpaceMembers, refreshSpaceAfterMemberPermissionsChanged, refreshSpaceAfterSelfRemoval} from 'store/actions';
+import {fetchSpace, fetchSpaceMembers, fetchSpaces, refreshSpaceAfterMemberPermissionsChanged, refreshSpaceAfterSelfRemoval} from 'store/actions';
 import reducer from 'store/reducer';
 
 import DocsRootLazy from 'components/docs_root/docs_root_lazy';
 import DocsSettingsButton from 'components/docs_settings_button/docs_settings_button';
 
 import type {PluginRegistry} from 'types/mattermost-webapp';
+import type {DocsDispatch} from 'types/store';
 
 // Compass glyph for the product-switcher icon. The host resolves this name
 // through its glyph map and renders it at size 24 (and accent-colored in the
@@ -31,11 +32,17 @@ const PAGE_PRESENCE_EVENT = `custom_${manifest.id}_page_presence_updated`;
 // This event also invalidates the hook-local grant matrix.
 const SPACE_MEMBER_PERMISSIONS_EVENT = `custom_${manifest.id}_space_member_permissions_updated`;
 
+// A team's space list has no other live signal that a space was added to it.
+const SPACE_CREATED_EVENT = `custom_${manifest.id}_space_created`;
+
 // This event changes the current user's resolved space access.
 const SPACE_UPDATED_EVENT = `custom_${manifest.id}_space_updated`;
 
 // A deleted space cannot be re-resolved.
 const SPACE_DELETED_EVENT = `custom_${manifest.id}_space_deleted`;
+
+// Reverses a prior SPACE_DELETED_EVENT eviction.
+const SPACE_RESTORED_EVENT = `custom_${manifest.id}_space_restored`;
 
 // Membership events also invalidate the roster slice.
 const SPACE_MEMBER_ADDED_EVENT = `custom_${manifest.id}_space_member_added`;
@@ -63,6 +70,10 @@ export default class Plugin {
         // out).
         registry.registerReducer(reducer as Reducer);
 
+        // The host's bare Store type only accepts plain actions; this plugin's thunks need the
+        // store's own action-aware dispatch type.
+        const dispatch = store.dispatch as unknown as DocsDispatch;
+
         registry.registerWebSocketEventHandler<PagePresenceEvent>(PAGE_PRESENCE_EVENT, (msg) => {
             publishPagePresence(msg.data);
         });
@@ -72,14 +83,18 @@ export default class Plugin {
         registry.registerWebSocketEventHandler<SpaceAccessEvent>(SPACE_MEMBER_PERMISSIONS_EVENT, (msg) => {
             const spaceId = msg.data?.space_id;
             if (spaceId) {
-                store.dispatch(refreshSpaceAfterMemberPermissionsChanged(spaceId) as never);
+                dispatch(refreshSpaceAfterMemberPermissionsChanged(spaceId));
             }
+        });
+
+        registry.registerWebSocketEventHandler<SpaceAccessEvent>(SPACE_CREATED_EVENT, () => {
+            dispatch(fetchSpaces());
         });
 
         registry.registerWebSocketEventHandler<SpaceAccessEvent>(SPACE_UPDATED_EVENT, (msg) => {
             const spaceId = msg.data?.space_id;
             if (spaceId) {
-                store.dispatch(fetchSpace(spaceId) as never);
+                dispatch(fetchSpace(spaceId));
             }
         });
 
@@ -89,7 +104,16 @@ export default class Plugin {
             if (!spaceId) {
                 return;
             }
-            store.dispatch({type: SpaceTypes.DELETED_SPACE, spaceId});
+            dispatch({type: SpaceTypes.DELETED_SPACE, spaceId});
+        });
+
+        // Re-fetches rather than just un-evicting: a restore can also change what the caller
+        // may now do with the space, not just whether it exists.
+        registry.registerWebSocketEventHandler<SpaceAccessEvent>(SPACE_RESTORED_EVENT, (msg) => {
+            const spaceId = msg.data?.space_id;
+            if (spaceId) {
+                dispatch(fetchSpace(spaceId));
+            }
         });
 
         registry.registerWebSocketEventHandler<SpaceAccessEvent>(SPACE_MEMBER_ADDED_EVENT, (msg) => {
@@ -97,8 +121,8 @@ export default class Plugin {
             if (!spaceId) {
                 return;
             }
-            store.dispatch(fetchSpace(spaceId) as never);
-            store.dispatch(fetchSpaceMembers(spaceId) as never);
+            dispatch(fetchSpace(spaceId));
+            dispatch(fetchSpaceMembers(spaceId));
         });
 
         // Self-removal may leave an open space readable; evict only after a definitive denial.
@@ -108,11 +132,16 @@ export default class Plugin {
                 return;
             }
             if (msg.data?.user_id === getCurrentUserId(store.getState())) {
-                store.dispatch(refreshSpaceAfterSelfRemoval(spaceId) as never);
+                dispatch(refreshSpaceAfterSelfRemoval(spaceId));
                 return;
             }
-            store.dispatch(fetchSpace(spaceId) as never);
-            store.dispatch(fetchSpaceMembers(spaceId) as never);
+            dispatch(fetchSpace(spaceId));
+            dispatch(fetchSpaceMembers(spaceId));
+        });
+
+        // Reconciles any of the above events missed while the connection was down.
+        registry.registerReconnectHandler(() => {
+            dispatch(fetchSpaces());
         });
 
         registry.registerProduct({

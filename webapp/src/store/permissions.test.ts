@@ -3,7 +3,7 @@
 
 import type {Permission} from 'types/permissions';
 
-import {getCanCreatePage, getCanDeletePage, getCanDeleteSpace, getCanEditPage, getCanManageSpaceMembers, getMustJoinSpace} from './permissions';
+import {getCanCreatePage, getCanDeletePage, getCanDeleteSpace, getCanEditPage, getCanManageSpaceMembers, getCustomDefaultsAvailable, getMustJoinSpace} from './permissions';
 import {makeSpace} from './test_fixtures';
 
 import {makeTestState} from '../../tests/react_testing_utils';
@@ -264,5 +264,22 @@ describe('getCanEditPage', () => {
 
         expect(getCanEditPage(state, 'space-1')).toBe(true);
         expect(getCanEditPage(state, 'never-loaded')).toBe(true);
+    });
+});
+
+describe('getCustomDefaultsAvailable', () => {
+    // Mirrors the server: a custom scheme needs the custom-schemes entitlement (or the
+    // Professional SKU, which carries it without the flag) and, because every Docs scheme also
+    // defines a guest role, the guest account permissions entitlement.
+    it.each([
+        ['both entitlements', {CustomPermissionsSchemes: 'true', GuestAccountsPermissions: 'true'}, true],
+        ['the Professional SKU with guest permissions', {SkuShortName: 'professional', GuestAccountsPermissions: 'true'}, true],
+        ['custom schemes without guest permissions', {CustomPermissionsSchemes: 'true'}, false],
+        ['guest permissions without custom schemes', {GuestAccountsPermissions: 'true'}, false],
+        ['no license', {}, false],
+    ])('is %s → %s', (_case, license, expected) => {
+        const state = makeTestState({license});
+
+        expect(getCustomDefaultsAvailable(state)).toBe(expected);
     });
 });

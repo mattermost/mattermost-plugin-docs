@@ -18,7 +18,7 @@ import {toast} from 'components/toast';
 import type {Space} from 'types/docs';
 import {Permissions} from 'types/permissions';
 import type {Permission, SpaceMember, SpaceViewAccess} from 'types/permissions';
-import {CUSTOM_PERMISSION_SCHEME_LICENSE_ERROR_ID, GUEST_NOT_ASSIGNABLE_ERROR_ID, LAST_SPACE_ADMIN_ERROR_ID, SPACE_LOCK_TIMEOUT_ERROR_ID} from 'types/server_errors';
+import {CUSTOM_PERMISSION_SCHEME_LICENSE_ERROR_ID, GUEST_NOT_ASSIGNABLE_ERROR_ID, GUEST_PERMISSIONS_LICENSE_ERROR_ID, LAST_SPACE_ADMIN_ERROR_ID, SPACE_LOCK_TIMEOUT_ERROR_ID} from 'types/server_errors';
 
 export type SpacePermissions = {
 
@@ -87,17 +87,18 @@ export function useSpacePermissions(space: Space): SpacePermissions {
     const [loadFailed, setLoadFailed] = useState(false);
     const [busy, setBusy] = useState(false);
 
-    // Roster invalidation needs the latest manage tier without depending on every space update.
-    const canManageMembersRef = useRef(storeCanManageMembers);
-    canManageMembersRef.current = storeCanManageMembers;
+    // Marks a spaceId resolved only once its access read has actually succeeded, mirroring
+    // useResolveSpacePermissions's success-gated marker: a cancelled read (superseded by a
+    // same-space rerender before it resolves) must not mark the id resolved, or the surviving
+    // run would skip its own access read and be left with whatever authority was in scope
+    // before either read.
+    const accessResolvedFor = useRef<string>();
 
-    // Only a space change requires another access read; other triggers reload the local matrix
-    // against the latest resolved tier.
-    const previousLoadTrigger = useRef<{
-        spaceId: string;
-        memberIds: string[];
-        grantRevision: number;
-    }>();
+    // Tracks each member's most recent direct grant write so a slower roster read already in
+    // flight cannot revert it: the read is merged per record against whichever is newer,
+    // rather than replacing the whole map.
+    const writeCounter = useRef(0);
+    const memberWriteGeneration = useRef(new Map<string, number>());
 
     const genericError = useCallback(() => formatMessage({
         id: 'docs.spacePermissions.error.generic',
@@ -132,6 +133,12 @@ export function useSpacePermissions(space: Space): SpacePermissions {
                 defaultMessage: 'Custom permission combinations require a Professional or Enterprise license.',
             });
         }
+        if (id === GUEST_PERMISSIONS_LICENSE_ERROR_ID) {
+            return formatMessage({
+                id: 'docs.spacePermissions.error.guestPermissionsLicense',
+                defaultMessage: 'Custom permission combinations require a license that includes guest account permissions.',
+            });
+        }
         if (error instanceof RestError && error.status === 409) {
             return formatMessage({
                 id: 'docs.spacePermissions.error.conflict',
@@ -151,9 +158,7 @@ export function useSpacePermissions(space: Space): SpacePermissions {
     }, [dispatch, space.id]);
 
     useEffect(() => {
-        const previous = previousLoadTrigger.current;
-        const loadAccess = previous?.spaceId !== space.id;
-        previousLoadTrigger.current = {spaceId: space.id, memberIds, grantRevision};
+        const loadAccess = accessResolvedFor.current !== space.id;
 
         let cancelled = false;
 
@@ -163,8 +168,9 @@ export function useSpacePermissions(space: Space): SpacePermissions {
         const load = async () => {
             setLoading(true);
             setLoadFailed(false);
+            const loadStartedAt = writeCounter.current;
             try {
-                let canManage = canManageMembersRef.current;
+                let canManage = storeCanManageMembers;
                 if (loadAccess) {
                     const access = await getSpaceAccess(space.id);
                     if (cancelled) {
@@ -176,6 +182,7 @@ export function useSpacePermissions(space: Space): SpacePermissions {
                     dispatch(receivedSpaceAccess(access));
                     canManage = access.permissions.some((permission) =>
                         permission === Permissions.MANAGE_SPACE || permission === Permissions.ADMIN_SPACE);
+                    accessResolvedFor.current = space.id;
                 }
 
                 // A non-manager receives a redacted roster; it is not a usable empty matrix.
@@ -189,7 +196,18 @@ export function useSpacePermissions(space: Space): SpacePermissions {
                     return;
                 }
 
-                setMembers(new Map(roster.map((member) => [member.user_id, member])));
+                setMembers((current) => {
+                    const next = new Map(roster.map((member) => [member.user_id, member]));
+                    for (const [userId, writtenAt] of memberWriteGeneration.current) {
+                        if (writtenAt > loadStartedAt) {
+                            const fresher = current.get(userId);
+                            if (fresher) {
+                                next.set(userId, fresher);
+                            }
+                        }
+                    }
+                    return next;
+                });
             } catch {
                 if (!cancelled) {
                     // Disabled empty state represents an unavailable matrix without mount-time
@@ -208,7 +226,7 @@ export function useSpacePermissions(space: Space): SpacePermissions {
         return () => {
             cancelled = true;
         };
-    }, [dispatch, space.id, memberIds, grantRevision]);
+    }, [dispatch, space.id, memberIds, grantRevision, storeCanManageMembers]);
 
     // Defaults do not change the granted_permissions rendered by the matrix.
     const setDefaults = useCallback(async (next: Permission[]) => {
@@ -227,6 +245,8 @@ export function useSpacePermissions(space: Space): SpacePermissions {
         setBusy(true);
         try {
             const updated = await setMemberPermissions(space.id, userId, next);
+            writeCounter.current += 1;
+            memberWriteGeneration.current.set(updated.user_id, writeCounter.current);
             setMembers((current) => new Map(current).set(updated.user_id, updated));
 
             // A successful self-edit may revoke authority even when the submitted grant alone

@@ -301,9 +301,17 @@ describe('addSpaceMembers', () => {
 });
 
 describe('isNotTeamMemberError', () => {
-    it('recognises the server 403 and nothing else', () => {
-        expect(isNotTeamMemberError(new ClientError('', {message: 'nope', status_code: 403, url: '/x'}))).toBe(true);
-        expect(isNotTeamMemberError(new ClientError('', {message: 'nope', status_code: 409, url: '/x'}))).toBe(false);
+    it('recognises the not-team-member id and nothing else', () => {
+        expect(isNotTeamMemberError(new ClientError('', {
+            message: 'nope',
+            status_code: 403,
+            url: '/x',
+            server_error_id: 'app.space.member.not_team_member.app_error',
+        }))).toBe(true);
+
+        // A bare 403 (e.g. a non-manage caller) carries a different id and must fall
+        // to the generic message, not the not-team-member one.
+        expect(isNotTeamMemberError(new ClientError('', {message: 'nope', status_code: 403, url: '/x'}))).toBe(false);
         expect(isNotTeamMemberError(new Error('boom'))).toBe(false);
     });
 });

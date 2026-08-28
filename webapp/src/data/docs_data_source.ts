@@ -3,7 +3,7 @@
 
 import type {CreatePageInput, CreateSpaceInput, Page, Space, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
 import type {Draft, DraftPatch, DraftSummary} from 'types/drafts';
-import type {SpaceMember} from 'types/permissions';
+import type {SpaceAccess, SpaceMember} from 'types/permissions';
 
 // The seam between the store's thunks and the Docs server REST API. The
 // API-backed source implements this over the plugin's /api/v1 routes; the
@@ -22,17 +22,17 @@ export interface DocsDataSource {
     // deep link must not depend on the space being in a list the client already
     // holds. Rejects with a RestError the caller interprets (403/404 = the caller
     // can't see it).
-    getSpace(spaceId: string): Promise<Space | undefined>;
+    getSpace(spaceId: string): Promise<SpaceAccess | undefined>;
 
     // Creates a space in the team and returns it (with its server-assigned id
     // and team_id).
-    createSpace(teamId: string, input: CreateSpaceInput): Promise<Space>;
+    createSpace(teamId: string, input: CreateSpaceInput): Promise<SpaceAccess>;
 
     // Patches a space's editable fields (name/description/icon) and returns the
     // updated space. `expectedUpdateAt` is the space's current update_at for
     // optimistic concurrency (the server rejects a stale write). Only the
     // provided fields are sent.
-    updateSpace(spaceId: string, patch: UpdateSpacePatch, expectedUpdateAt: number): Promise<Space>;
+    updateSpace(spaceId: string, patch: UpdateSpacePatch, expectedUpdateAt: number): Promise<SpaceAccess>;
 
     // Archives (soft-deletes) a space. The server rejects when the caller can't
     // manage the space; the caller surfaces that.

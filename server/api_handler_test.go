@@ -227,7 +227,7 @@ func TestHandler_CreateSpace(t *testing.T) {
 	// both space-wide tiers — admin_space satisfies the roster gate and the archive gate alike, and
 	// the set says so for each.
 	require.Equal(t,
-		model.NormalizePermissions(append(model.AdminEffectivePermissions(), mmmodel.PermissionManageSpace.Id, mmmodel.PermissionDeleteSpace.Id)),
+		mmmodel.NormalizePermissions(append(model.AdminEffectivePermissions(), mmmodel.PermissionManageSpace.Id, mmmodel.PermissionDeleteSpace.Id)),
 		created.Permissions)
 	require.Contains(t, created.Permissions, mmmodel.PermissionAdminSpace.Id)
 	require.Contains(t, created.Permissions, mmmodel.PermissionManageSpace.Id)
@@ -662,7 +662,7 @@ func TestHandler_GetSpaceMembers_NonManageMemberRedacted(t *testing.T) {
 	require.True(t, resp.Items[0].IsAdmin, "who administers the space stays visible")
 	require.Empty(t, resp.Items[0].Permissions)
 	require.Empty(t, resp.Items[0].GrantedPermissions)
-	require.False(t, resp.Items[0].AutoJoined)
+	require.False(t, resp.Items[0].IsAutoJoined)
 }
 
 // TestHandler_AddSpaceMember adds a member to a space; the caller needs requireSpaceManage
@@ -1906,7 +1906,7 @@ func TestHandler_JoinSpace_NonMemberJoinsOpenSpace(t *testing.T) {
 
 	// The membership is recorded as one the caller made for themselves, which is what a later
 	// membership review — notably after an open->private flip — reads to tell it from an invitation.
-	marked, err := h.store.AutoJoinedIDs(space.Id)
+	marked, err := h.store.GetAutoJoinedIDs(space.Id)
 	require.NoError(t, err)
 	require.Contains(t, marked, stranger)
 }
@@ -2460,8 +2460,8 @@ func stubPluginChannelScheme(t *testing.T, mockAPI *plugintest.API) *testutil.Sc
 // single catch-all expectation. permissions is the requested default set.
 func assertSpaceTierModel(t *testing.T, got testutil.SchemePoolRequest, permissions []string) {
 	t.Helper()
-	require.Equal(t, model.NormalizePermissions(append([]string{mmmodel.PermissionReadPage.Id}, permissions...)),
-		model.NormalizePermissions(got.User), "members hold the baseline read plus the requested set")
+	require.Equal(t, mmmodel.NormalizePermissions(append([]string{mmmodel.PermissionReadPage.Id}, permissions...)),
+		mmmodel.NormalizePermissions(got.User), "members hold the baseline read plus the requested set")
 	require.Equal(t, mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions), got.Admin)
 	require.Equal(t, []string{mmmodel.PermissionReadPage.Id}, got.Guest, "the guest tier reads and nothing more")
 }
@@ -2954,4 +2954,241 @@ func TestHandler_PublishGatesOnTargetKind(t *testing.T) {
 
 	rec = h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/pages/"+reserved.PageId+"/draft/publish", author, nil)
 	require.Equal(t, http.StatusForbidden, rec.Code, "publishing over a live page must require edit_page")
+}
+
+// TestHandler_MovePageToSpace_SameSpaceRequiresEditPage verifies a same-space request carries the
+// edit_page gate /move applies to the identical reparent: a caller holding the remove (delete_page)
+// and create_page permissions but not edit_page is refused on both routes, so move-to-space cannot
+// reparent inside a space where /move would refuse.
+func TestHandler_MovePageToSpace_SameSpaceRequiresEditPage(t *testing.T) {
+	mockAPI := newEnabledMockAPI()
+	user := mmmodel.NewId()
+	channelA := mmmodel.NewId()
+	// Registered before the harness so they win over StubDefaultSpacePermissions' catch-alls. The
+	// delete_page grant states the scenario — the caller would pass the remove-class gate — but is
+	// .Maybe() because the edit_page refusal on the same-space branch precedes that gate.
+	mockAPI.On("HasPermissionToChannel", user, channelA, mmmodel.PermissionEditPage).Return(false)
+	mockAPI.On("HasPermissionToChannel", user, channelA, mmmodel.PermissionDeletePage).Return(true).Maybe()
+	h := openTestPlugin(t, mockAPI)
+	spaceA := seedSpace(t, h.store, channelA)
+	page := seedPage(t, h.store, spaceA.Id, channelA, "")
+	newParent := seedPage(t, h.store, spaceA.Id, channelA, "")
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/move-to-space", user, map[string]any{
+		"target_space_id":    spaceA.Id,
+		"parent_id":          newParent.Id,
+		"expected_update_at": page.UpdateAt,
+	})
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	var appErr mmmodel.AppError
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+	require.Equal(t, "app.space.access.forbidden.app_error", appErr.Id)
+
+	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+spaceA.Id+"/pages/"+page.Id+"/move", user, map[string]any{
+		"parent_id":          newParent.Id,
+		"expected_update_at": page.UpdateAt,
+	})
+	require.Equal(t, http.StatusForbidden, rec.Code)
+
+	parentID, exists, err := h.store.GetPageParentInSpace(page.Id, spaceA.Id)
+	require.NoError(t, err)
+	require.True(t, exists)
+	require.Empty(t, parentID, "the refused request must not have reparented the page")
+}
+
+// TestHandler_UpdateSpace_PreservesCanJoin verifies the PATCH response carries the caller's
+// pre-resolved can_join rather than the field's zero value: a non-member admitted through the
+// open-space fall-through who holds team manage_space renames the space and is still told they may
+// join it.
+func TestHandler_UpdateSpace_PreservesCanJoin(t *testing.T) {
+	teamID := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	caller := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	grantSpaceManage(mockAPI, caller)
+	// Registered before openTestPlugin so this "not a member" stub wins over
+	// StubDefaultSpacePermissions' read_page-for-anyone catch-all.
+	mockAPI.On("HasPermissionToChannel", caller, channelID, mmmodel.PermissionReadPage).Return(false)
+	mockAPI.On("GetTeamMember", teamID, caller).Return(&mmmodel.TeamMember{}, nil)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpaceInTeam(t, h.store, channelID, teamID)
+
+	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id, caller, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var read model.SpaceWithAccess
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &read))
+	require.True(t, read.CanJoin)
+
+	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, caller, map[string]any{
+		"title":              "Renamed",
+		"expected_update_at": space.UpdateAt,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var updated model.SpaceWithAccess
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updated))
+	require.Equal(t, "Renamed", updated.Title)
+	require.True(t, updated.CanJoin)
+}
+
+// TestHandler_OpenSpaceReadFallthrough_CanJoinTransitions verifies the response's can_join field:
+// true for a non-member reading an open space through the fall-through, and false once the same
+// caller has joined — a member gains nothing by joining again.
+func TestHandler_OpenSpaceReadFallthrough_CanJoinTransitions(t *testing.T) {
+	teamID := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	stranger := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	// A function-valued stub, not a fixed answer: the composed channel permission this mirrors only
+	// becomes true once AddChannelMember commits the caller's row, the same way core's own
+	// permission composition would change. Registered before openTestPlugin: same
+	// registration-order rule as the sibling fall-through tests above.
+	var isMember bool
+	mockAPI.On("HasPermissionToChannel", stranger, channelID, mmmodel.PermissionReadPage).
+		Return(func(string, string, *mmmodel.Permission) bool { return isMember })
+	mockAPI.On("GetTeamMember", teamID, stranger).Return(&mmmodel.TeamMember{}, nil)
+	mockAPI.On("AddChannelMember", channelID, stranger).
+		Run(func(mock.Arguments) { isMember = true }).
+		Return(&mmmodel.ChannelMember{ChannelId: channelID, UserId: stranger}, nil)
+	h := openTestPlugin(t, mockAPI)
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
+	space := seedSpaceInTeam(t, h.store, channelID, teamID)
+
+	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id, stranger, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var before model.SpaceWithAccess
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &before))
+	require.True(t, before.CanJoin, "a fall-through reader whose defaults grant more than read may join")
+
+	rec = h.do(t, http.MethodPost, "/api/v1/spaces/"+space.Id+"/members/me", stranger, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var after model.SpaceWithAccess
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &after))
+	require.False(t, after.CanJoin, "a member gains nothing by joining again")
+}
+
+// TestHandler_OpenSpaceReadFallthrough_ReadOnlyDefaultCannotJoin verifies can_join is false for a
+// fall-through reader of an open space configured with the read-only preset: its default
+// permission set is empty, so joining would grant nothing beyond the read the caller already has.
+func TestHandler_OpenSpaceReadFallthrough_ReadOnlyDefaultCannotJoin(t *testing.T) {
+	teamID := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	stranger := mmmodel.NewId()
+
+	mockAPI := newEnabledMockAPI()
+	mockAPI.On("HasPermissionToChannel", stranger, channelID, mmmodel.PermissionReadPage).Return(false)
+	mockAPI.On("GetTeamMember", teamID, stranger).Return(&mmmodel.TeamMember{}, nil)
+	// Registered before openTestPlugin so the read-only preset wins over StubDefaultChannelScheme's
+	// contribute-preset catch-all: mock matching is by registration order.
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceReadOnly)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpaceInTeam(t, h.store, channelID, teamID)
+
+	rec := h.do(t, http.MethodGet, "/api/v1/spaces/"+space.Id, stranger, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var wrapper model.SpaceWithAccess
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &wrapper))
+	require.Empty(t, wrapper.DefaultPermissions)
+	require.False(t, wrapper.CanJoin, "a read-only default grants nothing beyond the read every fall-through reader already has")
+}
+
+// TestHandler_UpdateSpace_StaleBaselineConflictEnvelope verifies a stale expected_update_at on
+// PATCH /spaces/{id} returns the shared conflict envelope carrying the store's plain
+// optimistic-lock conflict id, with no current_page — the conflict is not about a page.
+func TestHandler_UpdateSpace_StaleBaselineConflictEnvelope(t *testing.T) {
+	mockAPI := newEnabledMockAPI()
+	adminID := mmmodel.NewId()
+	grantSpaceManage(mockAPI, adminID)
+	h := openTestPlugin(t, mockAPI)
+	space := seedSpace(t, h.store, mmmodel.NewId())
+
+	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, adminID, map[string]any{
+		"title":              "Renamed",
+		"expected_update_at": space.UpdateAt,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// The baseline above already committed, so the same value is now stale.
+	rec = h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, adminID, map[string]any{
+		"title":              "Stale",
+		"expected_update_at": space.UpdateAt,
+	})
+	require.Equal(t, http.StatusConflict, rec.Code)
+	var conflict struct {
+		Error       *mmmodel.AppError `json:"error"`
+		CurrentPage *model.Page       `json:"current_page"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &conflict))
+	require.NotNil(t, conflict.Error)
+	require.Equal(t, "app.store.conflict.app_error", conflict.Error.Id)
+	require.Nil(t, conflict.CurrentPage)
+}
+
+// TestHandler_CreateSpace_ViewAccessAndDefaultPermissions pins the create body's view_access and
+// default_permissions wiring: an explicit value round-trips, an absent view_access defaults to
+// open, an invalid value is rejected, and an explicit default set is echoed back normalized.
+func TestHandler_CreateSpace_ViewAccessAndDefaultPermissions(t *testing.T) {
+	newHarness := func(t *testing.T) (*apiTestHarness, string) {
+		t.Helper()
+		mockAPI := newEnabledMockAPI()
+		mockAPI.On("GetTeamMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+			Return(&mmmodel.TeamMember{}, nil)
+		backingChannelID := mmmodel.NewId()
+		// .Maybe(): the invalid-view_access subtest below is rejected before any of these run.
+		mockAPI.On("CreateChannel", mock.AnythingOfType("*model.Channel")).
+			Return(&mmmodel.Channel{Id: backingChannelID, Type: mmmodel.ChannelTypeSpace}, nil).Maybe()
+		mockAPI.On("AddChannelMember", mock.AnythingOfType("string"), mock.AnythingOfType("string")).
+			Return(&mmmodel.ChannelMember{}, nil).Maybe()
+		mockAPI.On("UpdateChannelMemberRoles", backingChannelID, mock.Anything, mock.Anything).
+			Return(&mmmodel.ChannelMember{}, nil).Maybe()
+		return openTestPlugin(t, mockAPI), mmmodel.NewId()
+	}
+
+	t.Run("explicit private view_access round-trips", func(t *testing.T) {
+		h, teamID := newHarness(t)
+		rec := h.do(t, http.MethodPost, "/api/v1/teams/"+teamID+"/spaces", mmmodel.NewId(), map[string]any{
+			"title":       "Private Space",
+			"view_access": "private",
+		})
+		require.Equal(t, http.StatusCreated, rec.Code)
+		var created model.SpaceWithAccess
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+		require.Equal(t, model.ViewAccessPrivate, created.ViewAccess)
+	})
+
+	t.Run("absent view_access defaults to open", func(t *testing.T) {
+		h, teamID := newHarness(t)
+		rec := h.do(t, http.MethodPost, "/api/v1/teams/"+teamID+"/spaces", mmmodel.NewId(), map[string]any{
+			"title": "Default Space",
+		})
+		require.Equal(t, http.StatusCreated, rec.Code)
+		var created model.SpaceWithAccess
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+		require.Equal(t, model.ViewAccessOpen, created.ViewAccess)
+	})
+
+	t.Run("invalid view_access is rejected", func(t *testing.T) {
+		h, teamID := newHarness(t)
+		rec := h.do(t, http.MethodPost, "/api/v1/teams/"+teamID+"/spaces", mmmodel.NewId(), map[string]any{
+			"title":       "Bogus Space",
+			"view_access": "bogus",
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+		var appErr mmmodel.AppError
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+		require.Equal(t, "app.space.create.invalid_view_access.app_error", appErr.Id)
+	})
+
+	t.Run("explicit default_permissions echoes the normalized set", func(t *testing.T) {
+		h, teamID := newHarness(t)
+		rec := h.do(t, http.MethodPost, "/api/v1/teams/"+teamID+"/spaces", mmmodel.NewId(), map[string]any{
+			"title":               "Custom Defaults",
+			"default_permissions": []string{mmmodel.PermissionCommentPage.Id},
+		})
+		require.Equal(t, http.StatusCreated, rec.Code)
+		var created model.SpaceWithAccess
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+		require.Equal(t, []string{mmmodel.PermissionCommentPage.Id}, created.DefaultPermissions)
+	})
 }

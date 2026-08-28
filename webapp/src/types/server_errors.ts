@@ -20,3 +20,12 @@ export const GUEST_NOT_ASSIGNABLE_ERROR_ID = 'app.space.member.guest_not_assigna
 
 // Core refuses creation or reuse of a non-preset channel scheme without this entitlement.
 export const CUSTOM_PERMISSION_SCHEME_LICENSE_ERROR_ID = 'app.scheme.plugin_scheme.scheme_license.app_error';
+
+// Core also refuses a non-preset scheme whose guest role grants anything — every Docs scheme lets
+// guests read — without the guest account permissions entitlement.
+export const GUEST_PERMISSIONS_LICENSE_ERROR_ID = 'app.scheme.plugin_scheme.guest_license.app_error';
+
+// The add route answers 403 for two different rules: the target isn't an active member of the
+// space's team, or the caller lacks manage authority over the space. The id is what tells them
+// apart, the same way the removal routes' 409s are told apart above.
+export const NOT_TEAM_MEMBER_ERROR_ID = 'app.space.member.not_team_member.app_error';

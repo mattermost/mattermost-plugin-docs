@@ -194,26 +194,11 @@ test.describe.serial('docs authoring', () => {
 
         await loginAs(page, server.adminUsername, server.adminPassword);
 
-        // # Create without changing the initial selection.
+        // # Create without changing the initial selection: a new space is public by default.
         await sidebar.goto(teamName);
         await sidebar.openCreateSpace();
         await createSpaceModal.expectOpen();
-        await createSpaceModal.expectVisibility('Private');
-        const privateResponsePromise = page.waitForResponse((response) => (
-            response.request().method() === 'POST' && /\/api\/v1\/teams\/[^/]+\/spaces$/.test(response.url())
-        ));
-        await createSpaceModal.createSpace(privateTitle);
-        const privateResponse = await privateResponsePromise;
-        expect(privateResponse.ok()).toBe(true);
-        const privateSpace = await privateResponse.json() as {id: string; view_access: string};
-        expect(privateSpace.view_access).toBe('private');
-        await new SpacePage(page).expectOpen(privateTitle);
-
-        // # Create another space after explicitly selecting Public.
-        await sidebar.goto(teamName);
-        await sidebar.openCreateSpace();
-        await createSpaceModal.expectOpen();
-        await createSpaceModal.chooseVisibility('Public');
+        await createSpaceModal.expectVisibility('Public');
         const publicResponsePromise = page.waitForResponse((response) => (
             response.request().method() === 'POST' && /\/api\/v1\/teams\/[^/]+\/spaces$/.test(response.url())
         ));
@@ -223,6 +208,21 @@ test.describe.serial('docs authoring', () => {
         const publicSpace = await publicResponse.json() as {id: string; view_access: string};
         expect(publicSpace.view_access).toBe('open');
         await new SpacePage(page).expectOpen(publicTitle);
+
+        // # Create another space after explicitly selecting Private.
+        await sidebar.goto(teamName);
+        await sidebar.openCreateSpace();
+        await createSpaceModal.expectOpen();
+        await createSpaceModal.chooseVisibility('Private');
+        const privateResponsePromise = page.waitForResponse((response) => (
+            response.request().method() === 'POST' && /\/api\/v1\/teams\/[^/]+\/spaces$/.test(response.url())
+        ));
+        await createSpaceModal.createSpace(privateTitle);
+        const privateResponse = await privateResponsePromise;
+        expect(privateResponse.ok()).toBe(true);
+        const privateSpace = await privateResponse.json() as {id: string; view_access: string};
+        expect(privateSpace.view_access).toBe('private');
+        await new SpacePage(page).expectOpen(privateTitle);
 
         // * A fresh teammate who was never invited cannot discover or deep-link the private
         // space, but can discover and open the public one.
@@ -262,7 +262,7 @@ test.describe.serial('docs authoring', () => {
         const license = await readJsonOrThrow<Record<string, string>>(licenseResponse, 'Unable to read the client license');
         test.skip(
             license.CustomPermissionsSchemes === 'true' || license.SkuShortName === 'professional',
-            'This scenario covers the unlicensed preset-only surface.',
+            'This scenario covers the unlicensed tier-only surface.',
         );
 
         // # Open the space's compact sharing and permission surface on an unlicensed server.
@@ -271,11 +271,11 @@ test.describe.serial('docs authoring', () => {
         await spacePage.openShare();
         await share.expectOpen();
 
-        // * The arbitrary checkbox matrix is replaced by the three included presets.
+        // * Without the entitlement the menu offers the three named tiers and no individual permissions.
         await share.expectDefaultSummary('Can edit');
-        await share.expectDefaultPresetOptions();
+        await share.expectDefaultTierOptionsOnly();
 
-        // # Start a draft while Contribute still grants creation. Keep this one browser stale so
+        // # Start a draft while Can edit still grants creation. Keep this one browser stale so
         // its already-rendered Publish button can submit to the live gate after the preset changes.
         const staleContext = await newContext(browser, {baseURL: server.baseURL});
         try {
@@ -291,8 +291,8 @@ test.describe.serial('docs authoring', () => {
             await staleSpace.writeBody('This draft must not publish under the Comment preset.');
             await staleSpace.expectDraftSaved();
 
-            // # Select Comment, then close and reopen Share to force a server-backed read.
-            await share.chooseDefaultPreset('Comment');
+            // # Select Can comment, then close and reopen Share to force a server-backed read.
+            await share.chooseDefaultTier('Can comment');
             await share.close();
             await spacePage.openShare();
             await share.expectOpen();
@@ -329,19 +329,19 @@ test.describe.serial('docs authoring', () => {
             }
         };
 
-        // * Comment still permits reading the existing page but withholds page creation.
+        // * Can comment still permits reading the existing page but withholds page creation.
         await expectMemberCanOnlyRead();
 
-        // # Select Read only and prove both persistence and its effective read-only outcome.
-        await share.chooseDefaultPreset('Read only');
+        // # Select Can view and prove both persistence and its effective read-only outcome.
+        await share.chooseDefaultTier('Can view');
         await share.close();
         await spacePage.openShare();
         await share.expectOpen();
         await share.expectDefaultSummary('Can view');
         await expectMemberCanOnlyRead();
 
-        // # Restore Contribute and force another fresh Share read.
-        await share.chooseDefaultPreset('Contribute');
+        // # Restore Can edit and force another fresh Share read.
+        await share.chooseDefaultTier('Can edit');
         await share.close();
         await spacePage.openShare();
         await share.expectOpen();

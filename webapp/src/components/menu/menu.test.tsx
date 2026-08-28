@@ -53,6 +53,33 @@ describe('Menu', () => {
         await waitFor(() => expect(onClick).toHaveBeenCalledTimes(1));
     });
 
+    it('renders an accessible radio group and exposes the selected option', async () => {
+        const onValueChange = jest.fn();
+        renderWithContext(
+            <Menu
+                ariaLabel='Space visibility'
+                trigger={<button type='button'>{'Open menu'}</button>}
+            >
+                <Menu.RadioGroup
+                    value='open'
+                    onValueChange={onValueChange}
+                >
+                    <Menu.RadioItem value='open'>{'Public'}</Menu.RadioItem>
+                    <Menu.RadioItem value='private'>{'Private'}</Menu.RadioItem>
+                </Menu.RadioGroup>
+            </Menu>,
+        );
+
+        fireEvent.click(screen.getByRole('button', {name: 'Open menu'}));
+
+        const publicOption = await screen.findByRole('menuitemradio', {name: 'Public'});
+        expect(publicOption).toHaveAttribute('aria-checked', 'true');
+        expect(screen.getByRole('menuitemradio', {name: 'Private'})).toHaveAttribute('aria-checked', 'false');
+
+        fireEvent.click(screen.getByRole('menuitemradio', {name: 'Private'}));
+        expect(onValueChange).toHaveBeenCalledWith('private');
+    });
+
     it('renders an accessible checkbox item and keeps the menu open when toggled', async () => {
         const onPermissionChange = jest.fn();
         renderMenu(jest.fn(), onPermissionChange);

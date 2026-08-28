@@ -9,6 +9,7 @@ import (
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
+	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
 // GetPageChildren returns one page of metadata summaries for a page's direct live children,
@@ -155,19 +156,36 @@ func (s *Service) reparentWithinSpace(where, pageID, spaceID string, newParentID
 	return moved, nil
 }
 
-// MovePageToSpace moves a page and its subtree to another space in the same team. parentPageID
+// MovePageToSpaceParams bundles MovePageToSpace's inputs.
+type MovePageToSpaceParams struct {
+	PageID string
+	// SourceSpace and TargetSpace are the caller's already-fetched records (from its membership
+	// gates), so no re-read happens inside MovePageToSpace.
+	SourceSpace, TargetSpace *model.Space
+	ParentPageID             *string
+	ExpectedUpdateAt         *int64
+	Force                    bool
+	// UserID is the acting user and must be a valid ID: the store scopes the target-space draft
+	// quota to the drafts it owns. It does not change the page's LastModifiedBy.
+	UserID string
+	// RequiredOwnerID, when non-empty, requires every live page in the moved subtree to be owned by
+	// it — the gate resolves this to UserID on the delete_own_page-only path and "" on the
+	// delete_page (any) path — and the move is rejected as a whole if any page has a different
+	// owner. A same-space request requires only the reparented root to be owned, since no other
+	// page leaves the space.
+	RequiredOwnerID string
+}
+
+// MovePageToSpace moves a page and its subtree to another space in the same team. ParentPageID
 // nil/"" places it at the target root. Cross-team moves, wrong-space parents,
 // destination-inside-subtree cycles, and depth-cap breaches are all rejected.
-// A nil expectedUpdateAt without force is rejected: the mutation must supply a baseline.
-// sourceSpace and targetSpace are the caller's already-fetched records (from its membership
-// gates), so no re-read happens here. userID is the acting user and must be a valid ID: the store
-// scopes the target-space draft quota to the drafts it owns. It does not change the page's
-// LastModifiedBy. requiredOwnerID, when non-empty, requires every live page in the moved subtree
-// to be owned by it — the gate resolves this to userID on the delete_own_page-only path and "" on
-// the delete_page (any) path — and the move is rejected as a whole if any page has a different
-// owner. A same-space request requires only the reparented root to be owned, since no other page
-// leaves the space. Per-page restrictions and redirects are not handled yet.
-func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model.Space, parentPageID *string, expectedUpdateAt *int64, force bool, userID, requiredOwnerID string) (*model.Page, *mmmodel.AppError) {
+// A nil ExpectedUpdateAt without Force is rejected: the mutation must supply a baseline.
+// Per-page restrictions and redirects are not handled yet.
+func (s *Service) MovePageToSpace(params MovePageToSpaceParams) (*model.Page, *mmmodel.AppError) {
+	pageID, sourceSpace, targetSpace := params.PageID, params.SourceSpace, params.TargetSpace
+	parentPageID, expectedUpdateAt, force := params.ParentPageID, params.ExpectedUpdateAt, params.Force
+	userID, requiredOwnerID := params.UserID, params.RequiredOwnerID
+
 	if !mmmodel.IsValidId(pageID) {
 		return nil, mmmodel.NewAppError("MovePageToSpace", "app.page.move_to_space.invalid_id.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -249,7 +267,17 @@ func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model
 
 	s.log.Debug("Moving page to space", "page_id", pageID, "source_space_id", sourceSpace.Id, "target_space_id", targetSpace.Id, "user_id", userID)
 
-	moved, priorParentID, storeErr := s.store.MovePageToSpace(pageID, sourceSpace.Id, targetSpace.Id, userID, parentPageID, mmmodel.SafeDereference(expectedUpdateAt), force, model.MaxPageDepth, requiredOwnerID)
+	moved, priorParentID, storeErr := s.store.MovePageToSpace(store.MovePageToSpaceParams{
+		PageID:           pageID,
+		SourceSpaceID:    sourceSpace.Id,
+		TargetSpaceID:    targetSpace.Id,
+		MoverUserID:      userID,
+		ParentPageID:     parentPageID,
+		ExpectedUpdateAt: mmmodel.SafeDereference(expectedUpdateAt),
+		Force:            force,
+		MaxDepth:         model.MaxPageDepth,
+		RequiredOwnerID:  requiredOwnerID,
+	})
 	if storeErr != nil {
 		return nil, storeAppError("MovePageToSpace", storeErr)
 	}

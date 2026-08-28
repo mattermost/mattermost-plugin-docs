@@ -168,17 +168,31 @@ func membershipLockAppError(where string, lockErr error) *mmmodel.AppError {
 // *AppError carrying the status core chose — a license denial for a custom scheme, or the refusal
 // the scheme API returns until core finishes the asynchronous permissions migration it runs at
 // startup, during which no scheme can be resolved or created. Those are surfaced
-// unchanged; storeAppError would collapse both to a 500 because neither is a store sentinel.
+// unchanged; storeAppError would collapse both to a 500 because neither is a store sentinel. A
+// corrupt pooled scheme is also surfaced unchanged, but its row-level repair message is logged so
+// an operator sees the action required even when the request's response is not visible to them.
 //
 // A missing preset scheme is separated out because storeAppError renders every not-found with the
 // shared key ordinary row lookups use, which would report an unseeded server as though the caller
 // had asked for a space that does not exist.
-func schemeAppError(where string, err error) *mmmodel.AppError {
+func (s *Service) schemeAppError(where string, err error) *mmmodel.AppError {
 	if errors.Is(err, errPresetSchemeMissing) {
 		return mmmodel.NewAppError(where, "app.space.preset_scheme_missing.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
 	var appErr *mmmodel.AppError
 	if errors.As(err, &appErr) {
+		if appErr.Id == "app.scheme.plugin_scheme.conflict.app_error" && s.log != nil {
+			// Core's translated message names the derived Schemes.Name and the generated Roles
+			// that must be repaired. Keep that message and its 500 intact for the caller, and
+			// put the same actionable condition in the server log for the operator who can fix
+			// store-direct corruption.
+			s.log.Error(
+				"pooled space scheme is inconsistent; inspect and repair the Schemes and Roles rows named by the core error, then retry",
+				"error_id", appErr.Id,
+				"core_message", appErr.Message,
+				"core_details", appErr.DetailedError,
+			)
+		}
 		return appErr
 	}
 	return storeAppError(where, err)

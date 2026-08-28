@@ -188,9 +188,8 @@ const NON_PRESET_DEFAULTS = ['comment_page', 'edit_page'];
  * Every space default outside the three seeded presets resolves through the plugin scheme API
  * (`GetOrCreatePluginChannelScheme`). A server whose plugin API predates it does not report an
  * error: the generated plugin RPC client logs a transport failure and hands back zero values, which
- * the plugin can only surface as a 500. Without this check that lands as a *test* failure — a
- * permission checkbox that silently reverts — and reads as a product bug rather than a server that
- * cannot serve the feature.
+ * the plugin can only surface as a 500. This check turns an unsupported server into a setup failure
+ * named here, instead of a silently-reverting permission checkbox that looks like a product bug.
  *
  * Probed end-to-end rather than by version number, because the capability has shipped in
  * uncommitted core work before appearing in any released or pinned build: the only honest question

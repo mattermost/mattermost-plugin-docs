@@ -64,7 +64,7 @@ const member = (userId: string, isAdmin = false): SpaceMember => ({
     granted_permissions: [],
     is_admin: isAdmin,
     is_guest: false,
-    auto_joined: false,
+    is_auto_joined: false,
 });
 
 // The server answers an AppError as a flat body; RestError carries the id the hook
@@ -397,6 +397,135 @@ describe('useSpacePermissions', () => {
         });
     });
 
+    // The regression this exists for: a same-space rerender that starts a second effect run
+    // before the first access read resolves used to mark the space resolved anyway (on entry
+    // to the effect, before the read finished), so the surviving run skipped its own access
+    // read and never applied the resolved authority at all.
+    describe('a cancelled access read', () => {
+        it('does not mark the space resolved, so the surviving run still fetches access', async () => {
+            const store = makeRosterStore();
+            const rosterWrapper = ({children}: {children: React.ReactNode}) => (
+                <Provider store={store}>
+                    <IntlProvider
+                        locale='en'
+                        messages={{}}
+                    >
+                        {children}
+                    </IntlProvider>
+                </Provider>
+            );
+
+            let resolveFirst: (value: SpaceAccess) => void = () => {};
+            mockGetSpaceAccess.mockImplementationOnce(() => new Promise((resolve) => {
+                resolveFirst = resolve;
+            }));
+            mockGetSpaceAccess.mockResolvedValue(access(['manage_space']));
+            mockListAllSpaceMembers.mockResolvedValue([member('me')]);
+
+            const {result} = renderHook(() => useSpacePermissions(space), {wrapper: rosterWrapper});
+            expect(mockGetSpaceAccess).toHaveBeenCalledTimes(1);
+
+            // A membership change before the first access read resolves cancels that run.
+            act(() => {
+                store.dispatch({type: SpaceTypes.ADDED_SPACE_MEMBER, spaceId: space.id, userId: 'u2'});
+            });
+
+            // The cancelled read settles after the cancellation. If it had marked the space
+            // resolved on entry, the surviving run (already committed above) would have
+            // skipped its own access read and left the caller without the authority either
+            // read actually resolved.
+            resolveFirst(access(['read_page']));
+
+            await waitFor(() => expect(result.current.loading).toBe(false));
+
+            expect(mockGetSpaceAccess).toHaveBeenCalledTimes(2);
+            expect(result.current.canManageMembers).toBe(true);
+        });
+    });
+
+    // Neither memberIds nor grantRevision changes when a promotion arrives via a bare
+    // space_updated refresh (no roster or grant event); the reload must still notice it.
+    describe('a manage-tier promotion without a membership or grant change', () => {
+        it('reloads the roster once the caller is promoted', async () => {
+            const store = makeRosterStore();
+            const revisionWrapper = ({children}: {children: React.ReactNode}) => (
+                <Provider store={store}>
+                    <IntlProvider
+                        locale='en'
+                        messages={{}}
+                    >
+                        {children}
+                    </IntlProvider>
+                </Provider>
+            );
+
+            mockGetSpaceAccess.mockResolvedValue(access(['read_page']));
+            const {result} = renderHook(() => useSpacePermissions(space), {wrapper: revisionWrapper});
+            await waitFor(() => expect(result.current.loading).toBe(false));
+            expect(result.current.canManageMembers).toBe(false);
+            expect(mockListAllSpaceMembers).not.toHaveBeenCalled();
+
+            mockListAllSpaceMembers.mockResolvedValue([member('me', true)]);
+            act(() => {
+                store.dispatch({
+                    type: SpaceTypes.RECEIVED_SPACES,
+                    spaces: [access(['manage_space'])],
+                });
+            });
+
+            await waitFor(() => expect(result.current.canManageMembers).toBe(true));
+            expect(mockListAllSpaceMembers).toHaveBeenCalledWith('space-1');
+        });
+    });
+
+    // Two writers of the member matrix: a full roster reload (e.g. from another member's grant
+    // change) and this admin's own targeted write. The reload can be slower, since it fetches
+    // every member rather than one.
+    describe('a slower roster reload racing a faster grant write', () => {
+        it('keeps the newer grant write instead of the reload\'s snapshot', async () => {
+            const store = makeRosterStore();
+            const revisionWrapper = ({children}: {children: React.ReactNode}) => (
+                <Provider store={store}>
+                    <IntlProvider
+                        locale='en'
+                        messages={{}}
+                    >
+                        {children}
+                    </IntlProvider>
+                </Provider>
+            );
+
+            mockListAllSpaceMembers.mockResolvedValue([member('me', true), member('u2')]);
+            const {result} = renderHook(() => useSpacePermissions(space), {wrapper: revisionWrapper});
+            await waitFor(() => expect(result.current.loading).toBe(false));
+            expect(result.current.members.get('u2')?.granted_permissions).toEqual([]);
+
+            // A slower full roster reload is already in flight when this admin's own faster
+            // write for u2 resolves and merges in.
+            let resolveReload: (roster: SpaceMember[]) => void = () => {};
+            mockListAllSpaceMembers.mockReturnValueOnce(new Promise((resolve) => {
+                resolveReload = resolve;
+            }));
+            act(() => {
+                store.dispatch({type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: space.id});
+            });
+
+            mockSetMemberPermissions.mockResolvedValue({...member('u2'), granted_permissions: ['edit_page']});
+            await act(async () => {
+                await result.current.setMemberGrants('u2', ['edit_page']);
+            });
+            expect(result.current.members.get('u2')?.granted_permissions).toEqual(['edit_page']);
+
+            // The reload's snapshot, requested before the write committed, is missing it.
+            await act(async () => {
+                resolveReload([member('me', true), member('u2')]);
+            });
+            await waitFor(() => expect(result.current.loading).toBe(false));
+
+            expect(result.current.members.get('u2')?.granted_permissions).toEqual(['edit_page']);
+        });
+    });
+
     describe('setDefaults', () => {
         it('applies the set the server returns, not the one it was given', async () => {
             mockSetDefaultPermissions.mockResolvedValue(access(['admin_space'], ['create_page']));
@@ -442,6 +571,7 @@ describe('useSpacePermissions', () => {
             ['a lock timeout', restError(409, 'app.space.lock_timeout.app_error'), 'This space is being changed right now. Try again in a moment.'],
             ['a concurrent edit', restError(409, 'app.store.conflict.app_error'), 'Someone else changed this space. Reopen settings and try again.'],
             ['an expired custom-scheme entitlement', restError(501, 'app.scheme.plugin_scheme.scheme_license.app_error'), 'Custom permission combinations require a Professional or Enterprise license.'],
+            ['a missing guest-permissions entitlement', restError(501, 'app.scheme.plugin_scheme.guest_license.app_error'), 'Custom permission combinations require a license that includes guest account permissions.'],
         ])('names %s', async (_case, error, message) => {
             mockSetDefaultPermissions.mockRejectedValue(error);
             const hook = await renderLoaded();

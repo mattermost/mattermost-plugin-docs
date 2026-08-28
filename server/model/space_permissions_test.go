@@ -38,7 +38,7 @@ func TestRolesForPermissions_PermissionsFromMember_RoundTrip(t *testing.T) {
 				permissions = append(permissions, p)
 			}
 		}
-		want := model.NormalizePermissions(permissions)
+		want := mmmodel.NormalizePermissions(permissions)
 
 		explicitRoles, schemeAdmin := model.RolesForPermissions(permissions, schemeUserRole)
 
@@ -113,7 +113,7 @@ func TestPermissionsFromMember_Guest(t *testing.T) {
 		mc := model.PermissionsFromMember(explicitRoles, false, true, defaultPermissions)
 
 		// Granted still reports the stale grant, so it is visible rather than hidden.
-		require.Equal(t, model.NormalizePermissions([]string{mmmodel.PermissionCreatePage.Id, mmmodel.PermissionEditPage.Id}), mc.Granted)
+		require.Equal(t, mmmodel.NormalizePermissions([]string{mmmodel.PermissionCreatePage.Id, mmmodel.PermissionEditPage.Id}), mc.Granted)
 		require.Equal(t, []string{mmmodel.PermissionReadPage.Id}, mc.Effective)
 		require.True(t, mc.IsGuest)
 	})
@@ -206,7 +206,7 @@ func TestDefaultPermissionsFrom(t *testing.T) {
 	}
 
 	require.Equal(t,
-		model.NormalizePermissions([]string{mmmodel.PermissionCreatePage.Id, mmmodel.PermissionEditPage.Id}),
+		mmmodel.NormalizePermissions([]string{mmmodel.PermissionCreatePage.Id, mmmodel.PermissionEditPage.Id}),
 		model.DefaultPermissionsFrom(permissions),
 	)
 }

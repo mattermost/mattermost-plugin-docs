@@ -30,12 +30,6 @@ describe('PeoplePicker', () => {
         mockUseUserSearch.mockReturnValue({results: [alice, bob], loading: false});
     });
 
-    it('describes the current people-only support', () => {
-        renderWithContext(<PeoplePicker {...baseProps}/>);
-
-        expect(screen.getByRole('combobox', {name: 'Add people'})).toBeInTheDocument();
-    });
-
     it('selects a person when the row is clicked', async () => {
         const onChange = jest.fn();
         renderWithContext(

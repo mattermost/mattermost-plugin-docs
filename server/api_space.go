@@ -124,12 +124,15 @@ func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
-	// This patch does not itself change member grants or defaults, so carry the pre-resolved access
-	// fields without a fallible post-commit read.
+	// This patch does not itself change member grants, defaults, or how the caller is admitted, so
+	// carry every pre-resolved access field without a fallible post-commit read. A ViewAccess
+	// change is admitted only through the admin gate, which never resolves as the fall-through
+	// reader CanJoin describes.
 	wrapper := &model.SpaceWithAccess{
 		Space:              *updated,
 		DefaultPermissions: preWrapper.DefaultPermissions,
 		Permissions:        preWrapper.Permissions,
+		CanJoin:            preWrapper.CanJoin,
 	}
 	wrapper.Props = maps.Clone(updated.Props)
 	wrapper.EnsurePermissions()
@@ -257,9 +260,9 @@ func (p *Plugin) handleSetSpaceMemberPermissions(w http.ResponseWriter, r *http.
 		return
 	}
 	// A pointer, so an absent field is distinguishable from an explicit []. This endpoint replaces
-	// the member's whole granted set, and a non-pointer slice would decode {}, null, and a
-	// misspelled field name all to nil — silently clearing every grant the member holds. Only a
-	// present [] clears.
+	// the member's whole granted set, and a non-pointer slice cannot distinguish {}, null, and a
+	// misspelled field name, all of which decode to nil and would silently clear every grant. Only
+	// a present [] clears.
 	var req struct {
 		GrantedPermissions *[]string `json:"granted_permissions"`
 	}
@@ -287,8 +290,8 @@ func (p *Plugin) handleSetSpaceDefaultPermissions(w http.ResponseWriter, r *http
 		return
 	}
 	// A pointer, for the same reason as the member-permissions handler above: this repoints the
-	// whole space, so decoding {}, null, or a misspelled field to nil would drop every space
-	// default to read-only. Only a present [] does that deliberately.
+	// whole space, and decoding {}, null, or a misspelled field to nil cannot be distinguished from
+	// an intentional read-only reset. Only a present [] does that deliberately.
 	var req struct {
 		DefaultPermissions *[]string `json:"default_permissions"`
 	}
@@ -310,11 +313,10 @@ func (p *Plugin) handleSetSpaceDefaultPermissions(w http.ResponseWriter, r *http
 // handleJoinSpace handles POST /api/v1/spaces/{space_id}/members/me: the self-join an open space
 // offers a team member who can read it but is not yet a member.
 //
-// No route gate. The gates in this file answer whether a caller may act on a space; this route asks
-// the service to change the caller's own standing in it, and JoinOpenSpace resolves the only
-// authority that admits it — the open-space read fall-through — against the live row under the
-// membership lock. Gating here as well would resolve the same read a second time, one request
-// earlier, and spend it after the handler had done other work.
+// No route gate: JoinOpenSpace itself resolves the only authority that admits this write — the
+// open-space read fall-through — against the live row under the membership lock, so gating here
+// too would only re-run that same read redundantly, earlier and separately from where it is
+// actually spent.
 //
 // Answers the SpaceWithAccess wrapper the read routes answer, so the caller refreshes the record it
 // already holds from the response rather than following up with a read to discover what joining

@@ -175,6 +175,41 @@ func TestServiceCreateSpace_SchemeDenialKeepsStatus(t *testing.T) {
 	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 }
 
+// TestServiceCreateSpace_SchemeConflictKeepsRepairGuidance verifies store-direct corruption of a
+// pooled scheme remains a server fault, reaches the caller with core's exact row-level guidance,
+// and is also emitted to the server log for the operator who can perform the repair.
+func TestServiceCreateSpace_SchemeConflictKeepsRepairGuidance(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	schemeName := "plugin_channel_scheme_docs_deadbeef"
+	coreMessage := "The pooled plugin scheme row with Schemes.Name=\"" + schemeName + "\" does not match its generated Roles rows; repair or permanently remove it with administrative database tooling, then retry."
+	coreErr := &mmmodel.AppError{
+		Id:            "app.scheme.plugin_scheme.conflict.app_error",
+		Message:       coreMessage,
+		DetailedError: "generated user role permissions do not match",
+		StatusCode:    http.StatusInternalServerError,
+	}
+	mockAPI.On("GetOrCreatePluginChannelScheme", mock.Anything, mock.Anything, mock.Anything).
+		Return((*mmmodel.Scheme)(nil), coreErr)
+	mockAPI.On(
+		"LogError",
+		"pooled space scheme is inconsistent; inspect and repair the Schemes and Roles rows named by the core error, then retry",
+		"error_id", coreErr.Id,
+		"core_message", coreMessage,
+		"core_details", coreErr.DetailedError,
+	).Return().Once()
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	permissions := []string{mmmodel.PermissionCreatePage.Id}
+	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: mmmodel.NewId(), Title: "Blocked"}, mmmodel.NewId(), &permissions, nil)
+
+	require.Same(t, coreErr, appErr)
+	require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
+	require.Contains(t, appErr.Message, schemeName)
+	require.Contains(t, appErr.Message, "administrative database tooling")
+	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
+	mockAPI.AssertExpectations(t)
+}
+
 // TestServiceCreateSpace_ChannelIdRejected verifies a caller-supplied ChannelId is rejected
 // before any backing-channel side effect.
 func TestServiceCreateSpace_ChannelIdRejected(t *testing.T) {
@@ -1072,7 +1107,7 @@ func TestServiceUpdateSpace_PrivateFlipPrePrunes(t *testing.T) {
 		updated, appErr := h.svc.UpdateSpace(space, privatePatch(), new(space.UpdateAt), false, adminID)
 		require.Nil(t, appErr)
 		require.Equal(t, model.ViewAccessPrivate, updated.ViewAccess)
-		marked, err := h.store.AutoJoinedIDs(space.Id)
+		marked, err := h.store.GetAutoJoinedIDs(space.Id)
 		require.NoError(t, err)
 		require.Empty(t, marked)
 	})
@@ -1093,7 +1128,7 @@ func TestServiceUpdateSpace_PrivateFlipPrePrunes(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, model.ViewAccessOpen, live.ViewAccess)
 		require.Equal(t, space.UpdateAt, live.UpdateAt)
-		marked, err := h.store.AutoJoinedIDs(space.Id)
+		marked, err := h.store.GetAutoJoinedIDs(space.Id)
 		require.NoError(t, err)
 		require.Equal(t, []string{memberID}, marked,
 			"the failed member stays marked so a retry selects it again")
@@ -1114,9 +1149,43 @@ func TestServiceUpdateSpace_PrivateFlipPrePrunes(t *testing.T) {
 		updated, appErr := h.svc.UpdateSpace(space, privatePatch(), new(space.UpdateAt), false, adminID)
 		require.Nil(t, appErr)
 		require.Equal(t, model.ViewAccessPrivate, updated.ViewAccess)
-		marked, err := h.store.AutoJoinedIDs(space.Id)
+		marked, err := h.store.GetAutoJoinedIDs(space.Id)
 		require.NoError(t, err)
 		require.Empty(t, marked, "a stale marker is cleared when core reports the membership absent")
+	})
+
+	t.Run("a member who joins during the removal pass is pruned before the flip commits", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		h, space, adminID, memberID := setup(t, mockAPI)
+		stragglerID := mmmodel.NewId()
+		// The first removal runs with the lock released; a join landing in that window marks a
+		// member the initial snapshot never saw.
+		mockAPI.On("DeleteChannelMember", space.ChannelId, memberID).
+			Run(func(mock.Arguments) {
+				require.NoError(t, h.store.MarkAutoJoined(space.Id, stragglerID))
+			}).
+			Return(nil).
+			Once()
+		mockAPI.On("DeleteChannelMember", space.ChannelId, stragglerID).
+			Run(func(mock.Arguments) {
+				live, err := h.store.GetSpace(space.Id, false)
+				require.NoError(t, err)
+				require.Equal(t, model.ViewAccessOpen, live.ViewAccess,
+					"the late joiner must be removed before view_access commits")
+			}).
+			Return(nil).
+			Once()
+		mockAPI.On("GetChannelOfType", space.ChannelId, mmmodel.ChannelTypeSpace).
+			Return((*mmmodel.Channel)(nil), nil).
+			Once()
+
+		updated, appErr := h.svc.UpdateSpace(space, privatePatch(), new(space.UpdateAt), false, adminID)
+		require.Nil(t, appErr)
+		require.Equal(t, model.ViewAccessPrivate, updated.ViewAccess)
+		mockAPI.AssertCalled(t, "DeleteChannelMember", space.ChannelId, stragglerID)
+		marked, err := h.store.GetAutoJoinedIDs(space.Id)
+		require.NoError(t, err)
+		require.Empty(t, marked)
 	})
 
 	t.Run("a stale baseline prunes nobody", func(t *testing.T) {
@@ -1136,7 +1205,7 @@ func TestServiceUpdateSpace_PrivateFlipPrePrunes(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, model.ViewAccessOpen, live.ViewAccess)
 		require.Equal(t, fresh.UpdateAt, live.UpdateAt)
-		marked, err := h.store.AutoJoinedIDs(space.Id)
+		marked, err := h.store.GetAutoJoinedIDs(space.Id)
 		require.NoError(t, err)
 		require.Equal(t, []string{memberID}, marked)
 	})

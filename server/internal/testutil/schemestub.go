@@ -128,8 +128,10 @@ func PresetSchemeID(name string) string {
 }
 
 // PresetUserRoleName returns the generated user-role name StubPresetSchemes stubbed for the named
-// preset — exported for callers pinning the exact role argument DefaultRolesGrantPermission passes
-// to RolesGrantPermission, rather than accepting any role via mock.Anything.
+// preset — for a caller pinning the exact role name a production call passes to
+// UpdateChannelMemberRoles, rather than accepting any role via mock.Anything. The granted
+// permissions themselves are read from the role's Permissions field (getSchemeRolesForChannel),
+// not from the role name.
 func PresetUserRoleName(name string) string {
 	return presetSchemeFixtures[name].userRole
 }

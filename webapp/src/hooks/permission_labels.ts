@@ -2,6 +2,7 @@
 // See LICENSE.txt for license information.
 
 import {useIntl} from 'react-intl';
+import type {MemberPermissionTier} from 'utils/space_permission_sets';
 
 import type {Permission} from 'types/permissions';
 import {Permissions} from 'types/permissions';
@@ -20,5 +21,41 @@ export const usePermissionLabels = (): Record<Permission, string> => {
         [Permissions.DELETE_SPACE]: formatMessage({id: 'docs.permission.delete_space', defaultMessage: 'Archive space'}),
         [Permissions.DELETE_PAGE]: formatMessage({id: 'docs.permission.delete_page', defaultMessage: 'Delete any page'}),
         [Permissions.ADMIN_SPACE]: formatMessage({id: 'docs.permission.admin_space', defaultMessage: 'Administer space'}),
+    };
+};
+
+export type PermissionTierLabel = {
+    label: string;
+    description: string;
+};
+
+/**
+ * Resolve the named-tier vocabulary under the active locale. One spelling for every surface: the
+ * Share footer, the member row menu and the settings tab all name a tier the same way.
+ */
+export const usePermissionTierLabels = (): Record<MemberPermissionTier | 'custom', PermissionTierLabel> => {
+    const {formatMessage} = useIntl();
+
+    return {
+        view: {
+            label: formatMessage({id: 'docs.permissionTier.view', defaultMessage: 'Can view'}),
+            description: formatMessage({id: 'docs.permissionTier.viewDescription', defaultMessage: 'View pages'}),
+        },
+        comment: {
+            label: formatMessage({id: 'docs.permissionTier.comment', defaultMessage: 'Can comment'}),
+            description: formatMessage({id: 'docs.permissionTier.commentDescription', defaultMessage: 'View and comment on pages'}),
+        },
+        edit: {
+            label: formatMessage({id: 'docs.permissionTier.edit', defaultMessage: 'Can edit'}),
+            description: formatMessage({id: 'docs.permissionTier.editDescription', defaultMessage: 'Create, comment on, edit, and delete their own pages'}),
+        },
+        admin: {
+            label: formatMessage({id: 'docs.permissionTier.admin', defaultMessage: 'Admin'}),
+            description: formatMessage({id: 'docs.permissionTier.adminDescription', defaultMessage: 'Manage the space, its members, and every page'}),
+        },
+        custom: {
+            label: formatMessage({id: 'docs.permissionTier.custom', defaultMessage: 'Custom'}),
+            description: formatMessage({id: 'docs.permissionTier.customDescription', defaultMessage: 'A combination that matches no tier'}),
+        },
     };
 };

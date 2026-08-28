@@ -35,8 +35,9 @@ func isGrantableDefault(p string) bool {
 	return p != mmmodel.PermissionAdminSpace.Id && grantableMemberPermissions[p]
 }
 
-// permissionAtomicRole maps each non-admin grantable permission to the core capability role
-// recorded in ExplicitRoles.
+// permissionAtomicRole maps each non-admin grantable permission to the core capability (atomic)
+// role recorded in ExplicitRoles: a core role carrying exactly one page permission, as opposed to
+// the scheme's generated user/admin roles, which bundle a space's whole default or admin set.
 var permissionAtomicRole = map[string]string{
 	mmmodel.PermissionCreatePage.Id:    mmmodel.SpacePageCreatorRoleId,
 	mmmodel.PermissionCommentPage.Id:   mmmodel.SpacePageCommenterRoleId,
@@ -68,16 +69,16 @@ func stripReadPage(permissions []*mmmodel.Permission) []string {
 // holds, single-sourced from core's canonical admin permission slice (SpaceAdminRolePermissions,
 // which already includes read_page). Stored already normalized, like presetPermissionSets below,
 // so the accessor copies without re-deriving the canonical form on every call.
-var spaceAdminEffectivePermissions = NormalizePermissions(mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions))
+var spaceAdminEffectivePermissions = mmmodel.NormalizePermissions(mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions))
 
 // presetPermissionSets are the three seeded default-permission presets in wire form (read_page-
 // free — the baseline is implicit and never listed), single-sourced from core's canonical
 // permission slices. Stored already normalized so the lookups below compare and copy without
 // re-deriving the canonical form on every call.
 var presetPermissionSets = map[string][]string{
-	mmmodel.SchemeNameSpaceContribute: NormalizePermissions(stripReadPage(mmmodel.SpaceDefaultContributePermissions)),
-	mmmodel.SchemeNameSpaceComment:    NormalizePermissions(stripReadPage(mmmodel.SpaceDefaultCommentPermissions)),
-	mmmodel.SchemeNameSpaceReadOnly:   NormalizePermissions(stripReadPage(mmmodel.SpaceDefaultReadOnlyPermissions)),
+	mmmodel.SchemeNameSpaceContribute: mmmodel.NormalizePermissions(stripReadPage(mmmodel.SpaceDefaultContributePermissions)),
+	mmmodel.SchemeNameSpaceComment:    mmmodel.NormalizePermissions(stripReadPage(mmmodel.SpaceDefaultCommentPermissions)),
+	mmmodel.SchemeNameSpaceReadOnly:   mmmodel.NormalizePermissions(stripReadPage(mmmodel.SpaceDefaultReadOnlyPermissions)),
 }
 
 // validatePermissions validates permissions against allowed, rejecting read_page as the
@@ -119,7 +120,7 @@ func ValidateDefaultPermissions(permissions []string) *mmmodel.AppError {
 // caller, resolved via a store lookup elsewhere.
 func RolesForPermissions(permissions []string, schemeUserRole string) (explicitRoles string, schemeAdmin bool) {
 	roles := []string{schemeUserRole}
-	for _, p := range NormalizePermissions(permissions) {
+	for _, p := range mmmodel.NormalizePermissions(permissions) {
 		if p == mmmodel.PermissionAdminSpace.Id {
 			schemeAdmin = true
 			continue
@@ -165,7 +166,7 @@ func PermissionsFromMember(explicitRoles string, schemeAdmin, schemeGuest bool, 
 	if schemeAdmin {
 		granted[mmmodel.PermissionAdminSpace.Id] = true
 	}
-	grantedList := NormalizePermissions(slices.Collect(maps.Keys(granted)))
+	grantedList := mmmodel.NormalizePermissions(slices.Collect(maps.Keys(granted)))
 
 	effective := map[string]bool{mmmodel.PermissionReadPage.Id: true}
 	if !schemeGuest {
@@ -183,7 +184,7 @@ func PermissionsFromMember(explicitRoles string, schemeAdmin, schemeGuest bool, 
 	}
 
 	return MemberPermissions{
-		Effective: NormalizePermissions(slices.Collect(maps.Keys(effective))),
+		Effective: mmmodel.NormalizePermissions(slices.Collect(maps.Keys(effective))),
 		Granted:   grantedList,
 		IsAdmin:   schemeAdmin,
 		IsGuest:   schemeGuest,
@@ -209,7 +210,7 @@ func DefaultPermissionsFrom(permissions []string) []string {
 			out = append(out, p)
 		}
 	}
-	return NormalizePermissions(out)
+	return mmmodel.NormalizePermissions(out)
 }
 
 // DefaultPermissionsForSchemeName returns the wire-form default permission set for one of the
@@ -228,26 +229,11 @@ func DefaultPermissionsForSchemeName(name string) ([]string, bool) {
 // if permissions does not match any preset. Recognition is set equality — order-insensitive, deduplicated
 // — never a raw array comparison.
 func SchemeNameForDefaultPermissions(permissions []string) (string, bool) {
-	normalized := NormalizePermissions(permissions)
+	normalized := mmmodel.NormalizePermissions(permissions)
 	for name, preset := range presetPermissionSets {
 		if slices.Equal(preset, normalized) {
 			return name, true
 		}
 	}
 	return "", false
-}
-
-// NormalizePermissions dedupes and sorts permissions into a deterministic, non-nil slice.
-func NormalizePermissions(permissions []string) []string {
-	seen := make(map[string]bool, len(permissions))
-	out := make([]string, 0, len(permissions))
-	for _, p := range permissions {
-		if p == "" || seen[p] {
-			continue
-		}
-		seen[p] = true
-		out = append(out, p)
-	}
-	slices.Sort(out)
-	return out
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/gorilla/mux"
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 
+	"github.com/mattermost/mattermost-plugin-docs/server/app"
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 )
 
@@ -160,7 +161,7 @@ func (p *Plugin) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok = p.requireRemovePage(w, space, userID,
-		"api.page.delete", "api.page.delete_own", page.UserId == userID); !ok {
+		"api.page.restore", "api.page.restore_own", page.UserId == userID); !ok {
 		return
 	}
 	restored, appErr := p.service.RestorePage(vars["page_id"], vars["space_id"], userID)
@@ -292,7 +293,9 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The fetched records are passed through so the service never re-reads them; a same-space
-	// move reuses the membership gate's record instead of resolving the same space twice.
+	// move reuses the membership gate's record instead of resolving the same space twice. A
+	// same-space request is the /move reparent reached by another route, so it also carries
+	// /move's edit_page gate; the remove-and-create gates below still apply to it.
 	targetSpace := sourceSpace
 	if req.TargetSpaceId != vars["space_id"] {
 		var targetOK bool
@@ -300,6 +303,8 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 		if !targetOK {
 			return
 		}
+	} else if !p.requirePageWrite(w, sourceSpace, userID, mmmodel.PermissionEditPage) {
+		return
 	}
 	// Source-side remove-class gate: delete_page (any) if held, else delete_own_page, which
 	// requires the caller own every page in the moved subtree (passed down as requiredOwnerID).
@@ -321,7 +326,16 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 	// The subtree-ownership rule is enforced inside the move, so a caller admitted by the target
 	// gate can still be rejected here — including with a 403. Nothing needs undoing on that path
 	// any more: the gates above only read.
-	moved, appErr := p.service.MovePageToSpace(vars["page_id"], sourceSpace, targetSpace, req.ParentId, req.ExpectedUpdateAt, req.Force, userID, requiredOwnerID)
+	moved, appErr := p.service.MovePageToSpace(app.MovePageToSpaceParams{
+		PageID:           vars["page_id"],
+		SourceSpace:      sourceSpace,
+		TargetSpace:      targetSpace,
+		ParentPageID:     req.ParentId,
+		ExpectedUpdateAt: req.ExpectedUpdateAt,
+		Force:            req.Force,
+		UserID:           userID,
+		RequiredOwnerID:  requiredOwnerID,
+	})
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return

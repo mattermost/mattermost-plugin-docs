@@ -8,7 +8,6 @@ import (
 	"net/http"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
-	"github.com/mattermost/mattermost/server/public/pluginapi"
 
 	"github.com/mattermost/mattermost-plugin-docs/server/model"
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
@@ -58,18 +57,13 @@ func (s *Service) hasOpenTeamFallthrough(userID, teamID string) bool {
 }
 
 // readResolutionFrom evaluates the read gate against space for userID, given the caller's
-// already-resolved sysadmin status and team membership. A nil member means the caller is not an
-// active member of the space's team.
-//
-// Team read_space gates both branches below, the same permission the team listing requires.
-// Without it here, revoking read_space would leave every space still reachable by id to anyone
-// holding read_page on its backing channel, so the permission would govern discovery alone while
-// the admin console offers it as access. Both team_user and team_guest hold it by default.
+// already-resolved sysadmin status and team membership. A nil member means the caller has no
+// standing in the space's team: not an active member, or a member without team read_space.
 func (s *Service) readResolutionFrom(sysadmin bool, member *mmmodel.TeamMember, space *model.Space, userID string) ReadResolution {
 	if sysadmin {
 		return ReadViaSysadmin
 	}
-	if member == nil || !s.client.User.HasPermissionToTeam(userID, space.TeamId, mmmodel.PermissionReadSpace) {
+	if member == nil {
 		return ReadDenied
 	}
 	if s.client.User.HasPermissionToChannel(userID, space.ChannelId, mmmodel.PermissionReadPage) {
@@ -100,9 +94,15 @@ func (s *Service) ResolveSpaceRead(where string, space *model.Space, userID stri
 // failure.
 //
 // A non-nil appErr must be returned by the caller immediately; sysadmin=true means the caller may
-// admit without further checks. A nil member means the caller is not an active team member. The
-// membership itself is returned rather than a bool so a caller needing a team permission resolves
-// it from these roles instead of re-reading the row.
+// admit without further checks. A nil member means the caller has no standing in the space's
+// team. The membership itself is returned rather than a bool so a caller needing a team
+// permission resolves it from these roles instead of re-reading the row.
+//
+// Team read_space gates both branches below, the same permission the team listing requires: it is
+// what keeps a space and its pages unreachable by id once read_space is revoked, even for a caller
+// who still holds read_page on the backing channel. Resolved here, ahead of every gate, so a space
+// read and a page read in the same space cannot disagree about it. Both team_user and team_guest
+// hold it by default.
 func (s *Service) requireActiveMemberGate(where string, space *model.Space, userID string) (member *mmmodel.TeamMember, sysadmin bool, appErr *mmmodel.AppError) {
 	if appErr = s.requireClient(where, "space_id", spaceIDOrEmpty(space), "user_id", userID); appErr != nil {
 		return nil, false, appErr
@@ -121,6 +121,9 @@ func (s *Service) requireActiveMemberGate(where string, space *model.Space, user
 	member, err := s.activeTeamMember(space.TeamId, userID)
 	if err != nil {
 		return nil, false, mmmodel.NewAppError(where, "app.space.access.team_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+	}
+	if member != nil && !s.client.User.HasPermissionToTeam(userID, space.TeamId, mmmodel.PermissionReadSpace) {
+		return nil, false, nil
 	}
 	return member, false, nil
 }
@@ -159,11 +162,10 @@ func (s *Service) resolveGuest(userID string) (bool, error) {
 // fall-through. Any other case yields the shared existence-hiding 403. active is the caller's
 // already-resolved team-membership status.
 //
-// A guest is held to read_page whatever the composed channel permission says. Demoting a user to
-// guest clears SchemeUser/SchemeAdmin but leaves the capability roles a prior grant wrote
-// into ExplicitRoles, and core composes those into the member's channel permissions regardless of
-// guest standing — so a gate trusting the composed permission alone would let a demoted guest keep
-// writing.
+// A guest is held to read_page whatever the composed channel permission says: demoting a user to
+// guest clears SchemeUser/SchemeAdmin, but the capability roles a prior grant wrote into
+// ExplicitRoles remain, and core composes those into the member's channel permissions regardless
+// of guest standing.
 func (s *Service) evaluatePagePermission(where string, space *model.Space, userID string, perm *mmmodel.Permission, active bool) *mmmodel.AppError {
 	if active && s.client.User.HasPermissionToChannel(userID, space.ChannelId, perm) {
 		if perm.Id == mmmodel.PermissionReadPage.Id {
@@ -221,8 +223,8 @@ func (s *Service) requireSpacePagePermissionFrom(where string, space *model.Spac
 //
 // admitted=false with a nil appErr means neither permission grants the operation. The caller
 // writes its own denial, so the 403 carries the caller's operation label rather than this one's.
-// A non-nil appErr is a failure of the check itself, not a denial: reporting it as a denial would
-// present a backend outage to the user as "not authorized".
+// A non-nil appErr is a failure of the check itself, distinct from a denial, and must be
+// propagated as such rather than converted to a 403.
 func (s *Service) ResolveSpaceRemovePage(space *model.Space, userID, anyWhere, ownWhere string, ownerMatches bool) (ownOnly, admitted bool, appErr *mmmodel.AppError) {
 	admittedVia, readErr := s.resolveReadForWrite(anyWhere, space, userID)
 	if readErr != nil {
@@ -310,16 +312,16 @@ func (s *Service) RequireSpaceAdminOrSysadmin(where string, space *model.Space, 
 	}
 	if member != nil {
 		// The SchemeAdmin flag is read from the master rather than composed through
-		// HasPermissionToChannel, which answers from GetAllChannelMembersForUser's cache. Every
-		// caller that re-runs this gate inside the space-membership lock does so to catch a
-		// demotion that landed while it waited, and a cached composition can still report the
-		// pre-demotion roles — so the re-check would admit exactly the actor it exists to exclude.
+		// HasPermissionToChannel, which can still report the pre-demotion roles from a cached
+		// composition. Every caller that re-runs this gate inside the space-membership lock does so
+		// to catch a demotion that landed while it waited, so the re-check would admit exactly the
+		// actor it exists to exclude.
 		//
 		// The flag is the whole signal for admin_space: RolesForPermissions turns an admin_space
 		// grant into SchemeAdmin rather than an ExplicitRoles token, PermissionsFromMember derives
 		// the permission back from that flag alone, and the permission is rejected as a space
 		// default and carried by no team or system role. A non-member has no row and is denied.
-		schemeAdmin, _, flagErr := s.store.MemberSchemeFlags(space.ChannelId, userID)
+		schemeAdmin, _, flagErr := s.store.GetMemberSchemeFlags(space.ChannelId, userID)
 		switch {
 		case flagErr == nil && schemeAdmin:
 			return nil
@@ -371,9 +373,9 @@ func (s *Service) RequireSpaceDraftWrite(where string, space *model.Space, userI
 	if createErr == nil {
 		return nil
 	}
-	// Only a denial falls through to the second attempt: a failure of the check itself must not be
-	// retried into a 403, which would present a backend outage to the user as "not authorized".
-	// Mirrors ResolveSpaceRemovePage's handling of the same two-attempt shape.
+	// Only a denial falls through to the second attempt: a failure of the check itself is distinct
+	// from a denial and must be propagated as such rather than converted into a 403. Mirrors
+	// ResolveSpaceRemovePage's handling of the same two-attempt shape.
 	if createErr.StatusCode != http.StatusForbidden {
 		return createErr
 	}
@@ -404,120 +406,4 @@ func spaceIDOrEmpty(space *model.Space) string {
 	return space.Id
 }
 
-// JoinOpenSpace joins userID to space's backing channel: the explicit self-join an open space
-// offers a team member who can already read it but holds none of the permissions its defaults give
-// a member. It is the only path that turns a space's view access into a membership.
-//
-// Idempotent. A caller who can already read the space as a member — or as a sysadmin, who needs no
-// membership — is answered with server-resolved access rather than an error, so a client that
-// cannot tell whether it has joined yet may simply call it.
-//
-// Admission is the open-space read fall-through and nothing else: the caller must be an active
-// team member whose read of this space resolved through ViewAccessOpen rather than through a
-// membership. A guest cannot reach it — the fall-through requires read_public_channel on the team
-// and core's team_guest role carries only view_team and read_space — so no explicit guest clamp is
-// needed here. A space whose defaults confer nothing beyond the read every reader already has is
-// refused, since joining would grant exactly what the caller had without it.
-//
-// The read and the defaults are re-resolved inside the space membership lock, so an open->private
-// flip or a default narrowed to read-only racing this call aborts the join rather than admitting
-// on a setting that no longer holds.
-func (s *Service) JoinOpenSpace(space *model.Space, userID string) (*model.SpaceWithAccess, *mmmodel.AppError) {
-	if space == nil {
-		return nil, ExistenceHidingForbidden("JoinOpenSpace")
-	}
-	if appErr := s.requireClient("JoinOpenSpace", "space_id", space.Id, "user_id", userID); appErr != nil {
-		return nil, appErr
-	}
-
-	admittedVia, appErr := s.ResolveSpaceRead("JoinOpenSpace", space, userID)
-	if appErr != nil {
-		return nil, appErr
-	}
-	switch admittedVia {
-	case ReadDenied:
-		return nil, ExistenceHidingForbidden("JoinOpenSpace")
-	case ReadViaSysadmin, ReadViaMember:
-		return s.BuildSpaceWithAccess(space, userID)
-	case ReadViaOpenFallthrough:
-	}
-
-	joined := false
-	var joinedChannelID string
-	var latestSpace *model.Space
-	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
-		fresh, getErr := s.store.GetSpace(space.Id, false)
-		if getErr != nil {
-			if store.IsErrNotFound(getErr) {
-				// Deleted concurrently: the space the caller asked to join is gone, and it must not
-				// be distinguishable from one they were never allowed to see.
-				return ExistenceHidingForbidden("JoinOpenSpace")
-			}
-			return mmmodel.NewAppError("JoinOpenSpace", "app.space.auto_join.get_space_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(getErr)
-		}
-		latestSpace = fresh
-		resolution, resErr := s.ResolveSpaceRead("JoinOpenSpace", fresh, userID)
-		if resErr != nil {
-			return resErr
-		}
-		if resolution != ReadViaOpenFallthrough {
-			// The space flipped private, or the caller became a member, between the read above and
-			// this one. Either way there is nothing left for this call to do.
-			return nil
-		}
-		defaults, defErr := s.spaceDefaultPermissions(fresh)
-		if defErr != nil {
-			return schemeAppError("JoinOpenSpace", defErr)
-		}
-		if len(defaults) == 0 {
-			return mmmodel.NewAppError("JoinOpenSpace", "app.space.join.nothing_to_grant.app_error", nil, "", http.StatusForbidden)
-		}
-		// The existence check must not miss a member: core returns the existing membership
-		// unchanged for an add of a current member, so a false negative would mark a member who
-		// joined deliberately as having joined themselves. The plugin API answers this lookup from
-		// a read replica, which can miss a membership committed on the primary a moment earlier, so
-		// the check reads the master through the plugin store instead.
-		isMember, memErr := s.store.IsChannelMember(fresh.ChannelId, userID)
-		if memErr != nil {
-			return mmmodel.NewAppError("JoinOpenSpace", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memErr)
-		}
-		if isMember {
-			return nil
-		}
-		// The write is an idempotent upsert, so a retry of a join that already marked is a no-op.
-		// A marker with no membership grants nothing: every gate derives authority from real
-		// channel membership, never from this table, which only records how a member got here.
-		if markErr := s.store.MarkAutoJoined(fresh.Id, userID); markErr != nil {
-			return mmmodel.NewAppError("JoinOpenSpace", "app.space.auto_join.provenance_write_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(markErr)
-		}
-		if _, addErr := s.client.Channel.AddMember(fresh.ChannelId, userID); addErr != nil {
-			// The marker describes a membership that does not exist, which no gate consults, but it
-			// would mislead a membership review — so it is cleared. Unlike the pre-step this
-			// replaced, the failure is returned to a caller who asked for the join and can retry it,
-			// rather than logged inside a page write that must not fail.
-			if clearErr := s.store.ClearAutoJoined(fresh.Id, userID); clearErr != nil {
-				s.log.Warn("failed to clear the auto-join provenance marker of a join that did not happen",
-					"space_id", fresh.Id, "user_id", userID, "err", clearErr)
-			}
-			// A vanished user is a caller-state condition, not a server fault; AddSpaceMember
-			// classifies the same failure the same way.
-			if errors.Is(addErr, pluginapi.ErrNotFound) {
-				return mmmodel.NewAppError("JoinOpenSpace", "app.space.member.user_not_found.app_error", nil, "", http.StatusNotFound).Wrap(addErr)
-			}
-			return addErr
-		}
-		joined = true
-		joinedChannelID = fresh.ChannelId
-		return nil
-	})
-	if lockErr != nil {
-		return nil, membershipLockAppError("JoinOpenSpace", lockErr)
-	}
-	// Published after the lock is released, since the membership lock holds a dedicated connection
-	// for its whole duration.
-	if joined {
-		payload := map[string]any{"space_id": space.Id, "user_id": userID}
-		s.publishMembershipEvent(wsEventSpaceMemberAdded, payload, joinedChannelID, userID)
-	}
-	return s.BuildSpaceWithAccess(latestSpace, userID)
-}
+// JoinOpenSpace lives in space_members.go, next to AddSpaceMember.

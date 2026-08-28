@@ -1,16 +1,26 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {fireEvent, screen, waitFor} from '@testing-library/react';
+import {act, fireEvent, screen, waitFor} from '@testing-library/react';
+import manifest from 'manifest';
 import React from 'react';
+import {legacy_createStore as createStore} from 'redux';
+import type {UnknownAction} from 'redux';
 
+import type {GlobalState} from '@mattermost/types/store';
+
+import {SpaceTypes} from 'store/action_types';
+import docsReducer from 'store/reducer';
 import {makeDraft, makePage, makeSpace} from 'store/test_fixtures';
+import type {DocsPluginState} from 'store/types';
+
+import {toast} from 'components/toast';
 
 import type {Permission} from 'types/permissions';
 
 import PageHeader from './page_header';
 
-import {renderWithContext} from '../../../tests/react_testing_utils';
+import {makeTestState, renderWithContext} from '../../../tests/react_testing_utils';
 
 jest.mock('webapp_globals', () => ({Timestamp: () => null}));
 jest.mock('hooks/pages', () => ({useCreateRootPage: () => jest.fn()}));
@@ -21,6 +31,8 @@ jest.mock('hooks/favorites', () => ({
     useIsFavorite: () => false,
     useToggleFavorite: () => jest.fn(),
 }));
+
+jest.mock('components/toast', () => ({toast: {error: jest.fn()}}));
 
 const SPACE = makeSpace('eng', 'Engineering');
 const PAGE = makePage('runbook', 'eng', 'Runbook');
@@ -52,6 +64,19 @@ const NO_EDIT_SPACE = {...SPACE, permissions: ['read_page', 'create_page'] as Pe
 // admitted by either permission (RequireSpaceDraftWrite), so this caller can hold a draft the
 // publish gate will then refuse.
 const NO_CREATE_SPACE = {...SPACE, permissions: ['read_page', 'edit_page'] as Permission[]};
+
+// A store running the real Docs reducer, so a dispatched RECEIVED_SPACES (the action a
+// re-resolved permission set arrives on) actually lands, exercising the same selector recompute
+// the header sees in the app rather than a prop change the test drives directly.
+const pluginKey = 'plugins-' + manifest.id;
+const makeLiveStore = (space = SPACE) => {
+    const initial = makeTestState({docs: {spaces: {[space.id]: space}}});
+
+    return createStore((state: GlobalState = initial, action: UnknownAction): GlobalState => ({
+        ...state,
+        [pluginKey]: docsReducer((state as unknown as Record<string, DocsPluginState>)[pluginKey], action),
+    } as unknown as GlobalState));
+};
 
 describe('PageHeader edit control', () => {
     it('offers Edit while reading', () => {
@@ -313,5 +338,65 @@ describe('PageHeader edit gating', () => {
         renderHeader({editing: true}, PAGE_URL, NO_EDIT_SPACE);
 
         expect(screen.getByRole('button', {name: 'Close'})).toBeInTheDocument();
+    });
+});
+
+// Update disappears the moment canEditPage flips false (canCommit depends on it), silently —
+// this notice is what tells a caller mid-edit why the control it was about to press just vanished.
+describe('PageHeader edit access revoked mid-edit', () => {
+    const EDITABLE_SPACE = {...SPACE, permissions: ['read_page', 'create_page', 'edit_page'] as Permission[]};
+
+    beforeEach(() => {
+        jest.clearAllMocks();
+    });
+
+    const renderLive = (space: typeof SPACE, editing: boolean) => {
+        const store = makeLiveStore(space);
+        renderWithContext(
+            <PageHeader
+                space={space}
+                page={PAGE}
+                treeOpen={false}
+                editing={editing}
+                commentsOpen={false}
+                onTogglePages={jest.fn()}
+                onToggleComments={jest.fn()}
+                onToggleEdit={jest.fn()}
+                onPublish={jest.fn()}
+            />,
+            {route: PAGE_URL, store},
+        );
+        return store;
+    };
+
+    it('gives no notice on mount when the caller already cannot edit', () => {
+        renderLive(NO_EDIT_SPACE, true);
+
+        expect(toast.error).not.toHaveBeenCalled();
+    });
+
+    it('notices exactly once when the grant is revoked while editing', () => {
+        const store = renderLive(EDITABLE_SPACE, true);
+
+        act(() => {
+            store.dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: [NO_EDIT_SPACE]});
+        });
+        expect(toast.error).toHaveBeenCalledTimes(1);
+
+        // Nothing has changed the second time around; the transition already fired.
+        act(() => {
+            store.dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: [NO_EDIT_SPACE]});
+        });
+        expect(toast.error).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives no notice when the grant is revoked while only reading', () => {
+        const store = renderLive(EDITABLE_SPACE, false);
+
+        act(() => {
+            store.dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: [NO_EDIT_SPACE]});
+        });
+
+        expect(toast.error).not.toHaveBeenCalled();
     });
 });

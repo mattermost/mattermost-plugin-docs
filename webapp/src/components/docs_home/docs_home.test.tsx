@@ -38,7 +38,7 @@ describe('DocsHome', () => {
         expect(screen.queryByText('Welcome to Docs.')).not.toBeInTheDocument();
     });
 
-    it('withholds every create-space action when the caller cannot create spaces', () => {
+    it('hides the create-space CTAs when no onCreateSpace handler is wired', () => {
         renderWithContext(<DocsHome/>, {state: spacesLoaded});
 
         expect(screen.queryByRole('button', {name: 'New Space'})).not.toBeInTheDocument();

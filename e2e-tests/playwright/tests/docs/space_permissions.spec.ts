@@ -91,8 +91,10 @@ test.describe('space permissions', () => {
     });
 
     // Whether the space view offers the member page creation. Kept as a browser helper so both
-    // sides of a default toggle are observed at the affordance where the person would act.
-    const memberIsOfferedAuthoring = async (baseURL: string, browser: Browser): Promise<boolean> => {
+    // sides of a default toggle are observed at the affordance where the person would act. The
+    // assertion runs inside the helper's fresh context so it retries against the locator instead
+    // of taking a single non-retrying snapshot.
+    const expectMemberOfferedAuthoring = async (baseURL: string, browser: Browser, offered: boolean): Promise<void> => {
         const context = await newContext(browser, {baseURL});
         try {
             const probePage = await context.newPage();
@@ -104,7 +106,11 @@ test.describe('space permissions', () => {
             await sidebar.openSpace(spaceTitle);
             await space.expectOpen(spaceTitle);
 
-            return await space.addPageButton.isVisible();
+            if (offered) {
+                await expect(space.addPageButton).toBeVisible();
+            } else {
+                await expect(space.addPageButton).toBeHidden();
+            }
         } finally {
             await context.close();
         }
@@ -261,7 +267,7 @@ test.describe('space permissions', () => {
             await settings.togglePermission('Create pages');
 
             // * Verify a fresh member session is no longer offered the authoring journey.
-            expect(await memberIsOfferedAuthoring(server.baseURL, browser)).toBe(false);
+            await expectMemberOfferedAuthoring(server.baseURL, browser, false);
 
             // # Submit the already-open Publish control after revocation.
             const deniedResponsePromise = stalePage.waitForResponse((response) =>
@@ -667,7 +673,7 @@ test.describe('space permissions', () => {
         await setSpaceDefaultPermissions(page, []);
 
         // * With no space default and no member grant, the member cannot start authoring.
-        expect(await memberIsOfferedAuthoring(server.baseURL, browser)).toBe(false);
+        await expectMemberOfferedAuthoring(server.baseURL, browser, false);
 
         // # Grant the exact create_page cell in the member's row.
         await sidebar.goto(teamName);

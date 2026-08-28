@@ -237,9 +237,24 @@ func (s *Store) reindexSiblingGroup(tx *sqlx.Tx, channelID, parentID, movedPageI
 	return nil
 }
 
+// MovePageToSpaceParams bundles MovePageToSpace's inputs.
+type MovePageToSpaceParams struct {
+	PageID           string
+	SourceSpaceID    string
+	TargetSpaceID    string
+	MoverUserID      string
+	ParentPageID     *string
+	ExpectedUpdateAt int64
+	Force            bool
+	MaxDepth         int
+	// RequiredOwnerID, when non-empty, requires every live page in the moved subtree to be owned by
+	// that user, failing the move with ErrInvalidInput otherwise; empty skips the check.
+	RequiredOwnerID string
+}
+
 // MovePageToSpace moves a page and its entire live subtree to a different space in one
 // transaction: every live node's SpaceId/ChannelId is rewritten and the moved root is
-// reparented (parentPageID nil/"" = target root) and appended to the destination sibling group.
+// reparented (ParentPageID nil/"" = target root) and appended to the destination sibling group.
 // Alongside the moved root it returns the parent the root had under the row lock, for callers
 // publishing an old-parent reference (see MovePage).
 // The target's ChannelId is derived from its locked row, never trusted from the caller, so it
@@ -247,11 +262,13 @@ func (s *Store) reindexSiblingGroup(tx *sqlx.Tx, channelID, parentID, movedPageI
 // cycle-safety are all re-validated under lock, so the move is safe regardless of concurrent
 // operations between the caller's pre-checks and this call. Cross-owner resources
 // (page-comment Posts, FileInfo) are not re-homed here.
-// requiredOwnerID, when non-empty, requires every live page in the moved subtree to be owned by
-// that user, failing the move with ErrInvalidInput otherwise; empty skips the check. Checked
-// against the transaction's own locked subtree read, alongside the other re-validations above, so
-// a concurrent reparent cannot graft another user's page into the subtree undetected.
-func (s *Store) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID, moverUserID string, parentPageID *string, expectedUpdateAt int64, force bool, maxDepth int, requiredOwnerID string) (_ *model.Page, priorParentID string, err error) {
+// RequiredOwnerID is checked against the transaction's own locked subtree read, alongside the
+// other re-validations above, so a concurrent reparent cannot graft another user's page into the
+// subtree undetected.
+func (s *Store) MovePageToSpace(params MovePageToSpaceParams) (_ *model.Page, priorParentID string, err error) {
+	pageID, sourceSpaceID, targetSpaceID, moverUserID := params.PageID, params.SourceSpaceID, params.TargetSpaceID, params.MoverUserID
+	parentPageID, expectedUpdateAt, force, maxDepth, requiredOwnerID := params.ParentPageID, params.ExpectedUpdateAt, params.Force, params.MaxDepth, params.RequiredOwnerID
+
 	if pageID == "" {
 		return nil, "", &ErrInvalidInput{Entity: "Page", Field: "Id", Value: pageID}
 	}

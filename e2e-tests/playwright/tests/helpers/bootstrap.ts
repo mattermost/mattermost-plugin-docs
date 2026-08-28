@@ -11,8 +11,8 @@ import {clearState, writeState} from './state';
 const useExistingServer = process.env.MM_E2E_USE_EXISTING_SERVER === 'true';
 
 // The checks that need a running server and an admin, run identically on both paths: a setup
-// problem must fail here, naming itself, rather than surfacing later as a spec failure that reads
-// like a product bug. Every one of these was added after a real run misattributed its cause.
+// problem must fail here, naming itself, rather than surfacing later as a spec failure that looks
+// like a product bug.
 async function assertReadyForSpecs(baseURL: string, username: string, password: string, remedy = '') {
     await assertPluginActive(baseURL, username, password);
     await assertSpaceSchemeReadSupported(baseURL, username, password, remedy);
@@ -21,7 +21,9 @@ async function assertReadyForSpecs(baseURL: string, username: string, password: 
         return;
     }
     // Both are specific to the space-permission specs: the authoring run neither changes a space
-    // default nor touches team roles, so it should not pay for either.
+    // default nor touches team roles, so it does not need either check. On an existing server the
+    // baseline restore patches the server-wide team_user role; the README names that side effect
+    // where the existing-server opt-in is documented.
     await restoreBaselineTeamPermissions(baseURL, username, password);
     await assertSpacePermissionsSupported(baseURL, username, password, remedy);
 }

@@ -420,6 +420,10 @@
     "translation": "Unable to add the member to the space."
   },
   {
+    "id": "app.space.auto_join.add_member_failed.app_error",
+    "translation": "Failed to add you to the space. Please try again."
+  },
+  {
     "id": "app.space.auto_join.get_space_failed.app_error",
     "translation": "Failed to look up the space."
   },

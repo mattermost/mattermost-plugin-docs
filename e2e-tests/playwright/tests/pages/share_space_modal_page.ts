@@ -4,14 +4,11 @@
 import {expect, type Locator, type Page} from '@playwright/test';
 
 type AccessOption = 'Public' | 'Private';
-type DefaultSummary = 'Can view' | 'Can comment' | 'Can edit' | 'Custom';
-type DefaultPreset = 'Contribute' | 'Comment' | 'Read only';
 
-const presetSummary: Record<DefaultPreset, DefaultSummary> = {
-    Contribute: 'Can edit',
-    Comment: 'Can comment',
-    'Read only': 'Can view',
-};
+// The named tiers. The trigger summarises the current default with the same vocabulary the
+// menu items use, so choosing a tier reads back as its own name.
+type DefaultTier = 'Can view' | 'Can comment' | 'Can edit';
+type DefaultSummary = DefaultTier | 'Custom';
 
 export class ShareSpaceModalPage {
     readonly page: Page;
@@ -63,7 +60,7 @@ export class ShareSpaceModalPage {
 
     async chooseAccess(access: AccessOption) {
         await this.accessTrigger().click();
-        await this.page.getByRole('menuitem', {name: access, exact: true}).click();
+        await this.page.getByRole('menuitemradio', {name: access, exact: true}).click();
         await this.expectAccess(access);
     }
 
@@ -108,30 +105,34 @@ export class ShareSpaceModalPage {
         await expect(this.page.getByRole('menu')).toBeVisible();
     }
 
-    private defaultPreset(label: DefaultPreset): Locator {
-        // Match the title at the start of the accessible name. "Comment" also appears in the
-        // Contribute description, so a substring text filter would resolve both rows.
-        return this.page.getByRole('menu').getByRole('menuitem', {name: new RegExp(`^${label}\\b`)});
+    private defaultTier(label: DefaultTier): Locator {
+        // Match the title at the start of the accessible name: the item's description follows
+        // it, and "comment" also appears in the Can edit description, so a substring text
+        // filter would resolve two rows.
+        return this.page.getByRole('menu').getByRole('menuitemradio', {name: new RegExp(`^${label}\\b`)});
     }
 
-    async expectDefaultPresetOptions() {
+    // The unlicensed shape: the three tiers and nothing to refine them with.
+    async expectDefaultTierOptionsOnly() {
         await this.openDefaultPermissions();
-        await expect(this.defaultPreset('Contribute')).toBeVisible();
-        await expect(this.defaultPreset('Comment')).toBeVisible();
-        await expect(this.defaultPreset('Read only')).toBeVisible();
+        await expect(this.defaultTier('Can view')).toBeVisible();
+        await expect(this.defaultTier('Can comment')).toBeVisible();
+        await expect(this.defaultTier('Can edit')).toBeVisible();
         await expect(this.page.getByRole('menuitemcheckbox')).toHaveCount(0);
         await this.page.keyboard.press('Escape');
         await expect(this.page.getByRole('menu')).toBeHidden();
     }
 
-    async chooseDefaultPreset(label: DefaultPreset) {
+    async chooseDefaultTier(label: DefaultTier) {
         await this.openDefaultPermissions();
-        await this.defaultPreset(label).click();
-        await this.expectDefaultSummary(presetSummary[label]);
+        await this.defaultTier(label).click();
+        await this.expectDefaultSummary(label);
     }
 
     memberPermissionsTrigger(username: string): Locator {
-        return this.dialog.getByRole('button', {name: `Permissions for ${username}`, exact: true});
+        // The accessible name is prefixed with the member's visible role text once their
+        // permission record resolves ("Can edit — permissions for …"), so match the tail.
+        return this.dialog.getByRole('button', {name: new RegExp(`permissions for ${username}$`, 'i')});
     }
 
     async expectMemberSummary(username: string, summary: DefaultSummary | 'Admin' | 'Guest') {

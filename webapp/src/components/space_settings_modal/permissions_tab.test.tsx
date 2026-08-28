@@ -15,13 +15,14 @@ import {renderWithContext, type TestStateOptions} from '../../../tests/react_tes
 const mockAddMembers = jest.fn();
 const mockRemoveMember = jest.fn();
 const mockLeave = jest.fn();
+let mockManageMembersBusy = false;
 
 jest.mock('hooks/space_members', () => ({
     useManageSpaceMembers: () => ({
         addMembers: mockAddMembers,
         removeMember: mockRemoveMember,
         leave: mockLeave,
-        busy: false,
+        busy: mockManageMembersBusy,
     }),
 }));
 
@@ -66,7 +67,7 @@ const renderTab = (onClose = jest.fn(), state: TestStateOptions = {}) => renderW
     </>,
     {
         state: {
-            license: {CustomPermissionsSchemes: 'true'},
+            license: {CustomPermissionsSchemes: 'true', GuestAccountsPermissions: 'true'},
             ...state,
         },
     },
@@ -89,6 +90,7 @@ const matrixCheckbox = (id: string): HTMLInputElement => {
 describe('PermissionsTab', () => {
     beforeEach(() => {
         jest.clearAllMocks();
+        mockManageMembersBusy = false;
         mockLeave.mockResolvedValue(true);
         mockSetDefaults.mockResolvedValue(undefined);
         mockSetViewAccess.mockResolvedValue(undefined);
@@ -119,37 +121,17 @@ describe('PermissionsTab', () => {
         expect(screen.getByRole('button', {name: 'Add'})).toBeInTheDocument();
     });
 
-    it('removes a member through the hook once confirmed', async () => {
+    // A roster mutation started from this surface (or the sibling Share modal, via the same
+    // hook) must lock Add/Remove/Leave here too, or a second one dispatched from this tab could
+    // race the first.
+    it('disables Add/Remove/Leave while a roster mutation is in flight', () => {
+        mockManageMembersBusy = true;
         renderTab();
+
+        expect(screen.getByRole('button', {name: 'Add'})).toBeDisabled();
 
         fireEvent.click(screen.getByRole('button', {name: /Ada/}));
-        fireEvent.click(await screen.findByRole('menuitem', {name: 'Remove from space'}));
-
-        // The mutation waits on the confirmation.
-        expect(mockRemoveMember).not.toHaveBeenCalled();
-
-        await confirm(/Yes, remove/);
-
-        await waitFor(() => expect(mockRemoveMember).toHaveBeenCalledWith('u2'));
-    });
-
-    it('does not remove a member when the confirmation is cancelled', async () => {
-        renderTab();
-
-        fireEvent.click(screen.getByRole('button', {name: /Ada/}));
-        fireEvent.click(await screen.findByRole('menuitem', {name: 'Remove from space'}));
-        await confirm(/Cancel/);
-
-        expect(mockRemoveMember).not.toHaveBeenCalled();
-    });
-
-    // External sharing is the only part of this tab still scaffolding; the access
-    // selector and the permission set below it are wired.
-    it('keeps the external-sharing scaffolding in place', () => {
-        renderTab();
-
-        expect(screen.getByText('External sharing')).toBeInTheDocument();
-        expect(screen.getByText('Coming soon')).toBeInTheDocument();
+        expect(screen.getByRole('menuitem', {name: 'Remove from space'})).toHaveAttribute('aria-disabled', 'true');
     });
 
     it('shows the space\'s current access and permission set', () => {
@@ -200,54 +182,77 @@ describe('PermissionsTab', () => {
             };
         });
 
-        it('offers the three seeded presets instead of arbitrary combinations', () => {
+        it('offers the three named tiers instead of arbitrary combinations', () => {
             renderTab(jest.fn(), {license: {}});
 
             expect(screen.queryByRole('checkbox', {name: 'Create pages'})).not.toBeInTheDocument();
-            expect(screen.getByRole('radio', {name: 'Contribute'})).toBeChecked();
-            expect(screen.getByRole('radio', {name: 'Comment'})).not.toBeChecked();
-            expect(screen.getByRole('radio', {name: 'Read only'})).not.toBeChecked();
-            expect(screen.getByText('Custom permission combinations require a Professional or Enterprise license.')).toBeInTheDocument();
+            expect(screen.getByRole('radio', {name: 'Can edit'})).toBeChecked();
+            expect(screen.getByRole('radio', {name: 'Can comment'})).not.toBeChecked();
+            expect(screen.getByRole('radio', {name: 'Can view'})).not.toBeChecked();
+            expect(screen.getByText('Custom permission combinations require a Professional or Enterprise license that includes guest account permissions.')).toBeInTheDocument();
         });
 
-        it('deduplicates server defaults when selecting the matching preset', () => {
+        it('deduplicates server defaults when selecting the matching tier', () => {
             mockPermissionsState = {...mockPermissionsState, defaults: ['comment_page', 'comment_page']};
             renderTab(jest.fn(), {license: {}});
 
-            expect(screen.getByRole('radio', {name: 'Comment'})).toBeChecked();
+            expect(screen.getByRole('radio', {name: 'Can comment'})).toBeChecked();
             expect(screen.queryByText(/This space currently uses a custom permission combination/)).not.toBeInTheDocument();
         });
 
-        it('writes a preset atomically without passing through an unsupported combination', () => {
+        it('writes a tier atomically without passing through an unsupported combination', () => {
             renderTab(jest.fn(), {license: {}});
 
-            fireEvent.click(screen.getByRole('radio', {name: 'Comment'}));
+            fireEvent.click(screen.getByRole('radio', {name: 'Can comment'}));
 
             expect(mockSetDefaults).toHaveBeenCalledWith(['comment_page']);
         });
 
-        it('allows a space left on a custom combination to return to a preset', () => {
+        it('allows a space left on a custom combination to return to a tier', () => {
             mockPermissionsState = {...mockPermissionsState, defaults: ['create_page', 'edit_page']};
             renderTab(jest.fn(), {license: {}});
 
-            expect(screen.getAllByRole('radio', {name: /Contribute|Comment|Read only/})).toHaveLength(3);
+            expect(screen.getAllByRole('radio', {name: /^Can (view|comment|edit)$/})).toHaveLength(3);
             expect(screen.getByText(/This space currently uses a custom permission combination/)).toBeInTheDocument();
 
-            fireEvent.click(screen.getByRole('radio', {name: 'Read only'}));
+            fireEvent.click(screen.getByRole('radio', {name: 'Can view'}));
             expect(mockSetDefaults).toHaveBeenCalledWith([]);
         });
 
-        it('keeps granular controls for the Professional SKU fallback', () => {
+        it('keeps granular controls beneath the tiers for the Professional SKU fallback', () => {
             renderTab(jest.fn(), {
                 license: {
                     CustomPermissionsSchemes: 'false',
                     SkuShortName: 'professional',
+                    GuestAccountsPermissions: 'true',
                 },
             });
 
             expect(screen.getByRole('checkbox', {name: 'Create pages'})).toBeInTheDocument();
-            expect(screen.queryByRole('radio', {name: 'Contribute'})).not.toBeInTheDocument();
+            expect(screen.getByRole('radio', {name: 'Can edit'})).toBeChecked();
         });
+
+        // Every custom scheme also defines a guest role, which the server refuses to mint without
+        // the guest-permissions entitlement — so the combination controls are withheld with it.
+        it('withholds the granular controls when the license lacks guest account permissions', () => {
+            renderTab(jest.fn(), {license: {CustomPermissionsSchemes: 'true'}});
+
+            expect(screen.queryByRole('checkbox', {name: 'Create pages'})).not.toBeInTheDocument();
+            expect(screen.getByRole('radio', {name: 'Can edit'})).toBeChecked();
+        });
+    });
+
+    // The tiers lead on a licensed install too; the checkboxes beneath them are the refinement,
+    // and a set that matches no tier leaves every tier unchecked rather than mislabelling it.
+    it('marks the matching tier above the granular defaults, or none for a custom set', () => {
+        renderTab();
+
+        expect(screen.getByRole('checkbox', {name: 'Create pages'})).toBeChecked();
+        expect(screen.getByRole('radio', {name: 'Can edit'})).not.toBeChecked();
+        expect(screen.getByRole('radio', {name: 'Can view'})).not.toBeChecked();
+
+        fireEvent.click(screen.getByRole('radio', {name: 'Can edit'}));
+        expect(mockSetDefaults).toHaveBeenCalledWith(['create_page', 'comment_page', 'edit_page', 'delete_own_page']);
     });
 
     // The controls stay visible for a non-admin: what the space allows is worth reading
@@ -260,8 +265,9 @@ describe('PermissionsTab', () => {
         expect(screen.getByRole('radio', {name: /Private/})).toBeDisabled();
         expect(screen.getByRole('button', {name: 'Add'})).toBeDisabled();
 
-        fireEvent.click(screen.getByRole('button', {name: /Ada/}));
-        expect(screen.getByRole('menuitem', {name: 'Remove from space'})).toHaveAttribute('aria-disabled', 'true');
+        // Remove is withheld entirely from a surface that cannot manage members, rather than
+        // offered disabled.
+        expect(screen.queryByRole('button', {name: /Ada/})).not.toBeInTheDocument();
 
         fireEvent.click(screen.getByRole('checkbox', {name: 'Create pages'}));
         fireEvent.click(screen.getByRole('radio', {name: /Private/}));
@@ -280,8 +286,8 @@ describe('PermissionsTab', () => {
             canAdminister: false,
             canManageMembers: true,
             members: new Map([
-                ['me', {user_id: 'me', permissions: ['read_page'], granted_permissions: [], is_admin: false, is_guest: false, auto_joined: false}],
-                ['u2', {user_id: 'u2', permissions: ['read_page'], granted_permissions: ['edit_page'], is_admin: false, is_guest: false, auto_joined: false}],
+                ['me', {user_id: 'me', permissions: ['read_page'], granted_permissions: [], is_admin: false, is_guest: false, is_auto_joined: false}],
+                ['u2', {user_id: 'u2', permissions: ['read_page'], granted_permissions: ['edit_page'], is_admin: false, is_guest: false, is_auto_joined: false}],
             ]),
         };
         renderTab(jest.fn(), {currentUser: {id: 'me', username: 'caleb'}});
@@ -327,7 +333,7 @@ describe('PermissionsTab', () => {
 
         const option = screen.getByRole('radio', {name: /Private/});
         expect(option).toBeDisabled();
-        expect(option).toHaveAttribute('title', "Couldn't load this space's permissions. Close and reopen settings to try again.");
+        expect(option).toHaveAttribute('title', "Couldn't load this space's permissions. Close and reopen to try again.");
     });
 
     // The per-member half of the matrix. The roster mock supplies Caleb ('me') and Ada
@@ -337,8 +343,8 @@ describe('PermissionsTab', () => {
             mockPermissionsState = {
                 ...mockPermissionsState,
                 members: new Map([
-                    ['me', {user_id: 'me', permissions: ['read_page'], granted_permissions: [], is_admin: true, is_guest: false, auto_joined: false}],
-                    ['u2', {user_id: 'u2', permissions: ['read_page', 'create_page', 'edit_page'], granted_permissions: ['edit_page'], is_admin: false, is_guest: false, auto_joined: false}],
+                    ['me', {user_id: 'me', permissions: ['read_page'], granted_permissions: [], is_admin: true, is_guest: false, is_auto_joined: false}],
+                    ['u2', {user_id: 'u2', permissions: ['read_page', 'create_page', 'edit_page'], granted_permissions: ['edit_page'], is_admin: false, is_guest: false, is_auto_joined: false}],
                 ]),
             };
         };
@@ -347,8 +353,8 @@ describe('PermissionsTab', () => {
             withMembers();
             renderTab();
 
-            expect(screen.getByRole('button', {name: 'More actions for Caleb'})).toHaveTextContent('Admin');
-            expect(screen.getByRole('button', {name: 'More actions for Ada'})).toHaveTextContent('Member');
+            expect(screen.getByRole('button', {name: 'Admin — more actions for Caleb'})).toHaveTextContent('Admin');
+            expect(screen.getByRole('button', {name: 'Member — more actions for Ada'})).toHaveTextContent('Member');
 
             // Ada holds edit_page as a per-member grant; nobody holds delete_page.
             // Addressed by id: the label alone is ambiguous now, since the same vocabulary
@@ -385,12 +391,12 @@ describe('PermissionsTab', () => {
             mockPermissionsState = {
                 ...mockPermissionsState,
                 members: new Map([
-                    ['u2', {user_id: 'u2', permissions: ['read_page'], granted_permissions: [], is_admin: false, is_guest: true, auto_joined: false}],
+                    ['u2', {user_id: 'u2', permissions: ['read_page'], granted_permissions: [], is_admin: false, is_guest: true, is_auto_joined: false}],
                 ]),
             };
             renderTab();
 
-            expect(screen.getByRole('button', {name: 'More actions for Ada'})).toHaveTextContent('Guest');
+            expect(screen.getByRole('button', {name: 'Guest — more actions for Ada'})).toHaveTextContent('Guest');
             const guestEdit = matrixCheckbox('member-u2-edit_page');
             expect(guestEdit.disabled).toBe(true);
 
@@ -411,7 +417,7 @@ describe('PermissionsTab', () => {
             mockPermissionsState = {
                 ...mockPermissionsState,
                 members: new Map([
-                    ['u2', {user_id: 'u2', permissions: ['read_page'], granted_permissions: [], is_admin: false, is_guest: false, auto_joined: true}],
+                    ['u2', {user_id: 'u2', permissions: ['read_page'], granted_permissions: [], is_admin: false, is_guest: false, is_auto_joined: true}],
                 ]),
             };
             const {unmount} = renderTab();
@@ -421,7 +427,7 @@ describe('PermissionsTab', () => {
             mockPermissionsState = {
                 ...mockPermissionsState,
                 members: new Map([
-                    ['u2', {user_id: 'u2', permissions: ['read_page'], granted_permissions: [], is_admin: false, is_guest: false, auto_joined: false}],
+                    ['u2', {user_id: 'u2', permissions: ['read_page'], granted_permissions: [], is_admin: false, is_guest: false, is_auto_joined: false}],
                 ]),
             };
             renderTab();
@@ -429,13 +435,26 @@ describe('PermissionsTab', () => {
         });
     });
 
-    // Leaving destroys your access to what is behind this tab, so the settings
-    // modal must close too rather than sit open on a space you just left.
-    it('leaves and closes the modal from your own row once confirmed', async () => {
+    // The lock/reason matrix behind these actions is covered by
+    // hooks/space_access_editor.test.tsx; this only confirms the tab wires the
+    // hook's actions into MemberList.
+    it('wires the hook\'s actions into MemberList: Remove reaches the hook, Leave closes on success', async () => {
         const onClose = jest.fn();
 
         renderTab(onClose, {currentUser: {id: 'me', username: 'caleb'}});
 
+        fireEvent.click(screen.getByRole('button', {name: /Ada/}));
+        fireEvent.click(await screen.findByRole('menuitem', {name: 'Remove from space'}));
+
+        // The mutation waits on the confirmation.
+        expect(mockRemoveMember).not.toHaveBeenCalled();
+
+        await confirm(/Yes, remove/);
+
+        await waitFor(() => expect(mockRemoveMember).toHaveBeenCalledWith('u2'));
+
+        // Leaving destroys your access to what is behind this tab, so the settings
+        // modal must close too rather than sit open on a space you just left.
         fireEvent.click(screen.getByRole('button', {name: /Caleb/}));
         fireEvent.click(await screen.findByRole('menuitem', {name: 'Leave space'}));
 

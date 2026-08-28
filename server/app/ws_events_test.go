@@ -106,6 +106,45 @@ func TestServicePublishToChannels_OmitListFailureDropsEvent(t *testing.T) {
 	mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "page_updated", mock.Anything, mock.Anything)
 }
 
+// TestServicePublishToChannels_RechecksOmitListAfterTeamDeparture verifies authorization freshness:
+// a user who leaves the space's team after one event is omitted from the very next event. This must
+// query current membership for each publish; caching the first event's empty omit list would leak
+// the second event to the departed user.
+func TestServicePublishToChannels_RechecksOmitListAfterTeamDeparture(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	channelID := mmmodel.NewId()
+	userID := mmmodel.NewId()
+	departingUserID := mmmodel.NewId()
+	space := seedSpaceForTeam(t, h.store, channelID, teamID)
+	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
+	testutil.MustAddChannel(t, h.db, channelID, teamID)
+	testutil.MustAddChannelMember(t, h.db, channelID, departingUserID)
+	testutil.MustAddTeamMember(t, h.db, teamID, departingUserID, 0)
+
+	firstTitle := "Before team departure"
+	first, appErr := h.svc.UpdatePage(page.Id, space.Id, &model.PagePatch{Title: &firstTitle}, new(page.EditAt), false, userID)
+	require.Nil(t, appErr)
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_updated",
+		map[string]any{"page_id": first.Id, "space_id": space.Id},
+		&mmmodel.WebsocketBroadcast{ChannelId: channelID})
+
+	_, err := h.db.Exec(`UPDATE TeamMembers SET DeleteAt = $1 WHERE TeamId = $2 AND UserId = $3`,
+		mmmodel.GetMillis(), teamID, departingUserID)
+	require.NoError(t, err)
+
+	secondTitle := "After team departure"
+	second, appErr := h.svc.UpdatePage(page.Id, space.Id, &model.PagePatch{Title: &secondTitle}, new(first.EditAt), false, userID)
+	require.Nil(t, appErr)
+	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_updated",
+		map[string]any{"page_id": second.Id, "space_id": space.Id},
+		mock.MatchedBy(func(b *mmmodel.WebsocketBroadcast) bool {
+			return b.ChannelId == channelID && b.OmitUsers[departingUserID]
+		}))
+}
+
 // TestServiceRestorePage_PublishesRestoredEvent pins page_restored: page/space payload, broadcast
 // to the restored page's backing channel.
 func TestServiceRestorePage_PublishesRestoredEvent(t *testing.T) {
@@ -163,7 +202,10 @@ func TestServiceMovePageToSpace_PublishesEventToBothChannels(t *testing.T) {
 	spaceB := seedSpaceForTeam(t, h.store, chB, teamID)
 	page := mustCreatePage(t, h.store, spaceA.Id, chA, userID, "")
 
-	moved, appErr := h.svc.MovePageToSpace(page.Id, spaceA, spaceB, nil, new(page.UpdateAt), false, userID, "")
+	moved, appErr := h.svc.MovePageToSpace(app.MovePageToSpaceParams{
+		PageID: page.Id, SourceSpace: spaceA, TargetSpace: spaceB,
+		ExpectedUpdateAt: new(page.UpdateAt), UserID: userID,
+	})
 	require.Nil(t, appErr)
 
 	mockAPI.AssertCalled(t, "PublishWebSocketEvent", "page_moved_to_space",
@@ -196,7 +238,10 @@ func TestServiceMovePageToSpace_NoOpPublishesNothing(t *testing.T) {
 	space := mustCreateSpace(t, h.store, channelID)
 	page := mustCreatePage(t, h.store, space.Id, channelID, userID, "")
 
-	same, appErr := h.svc.MovePageToSpace(page.Id, space, space, nil, new(page.UpdateAt), false, userID, "")
+	same, appErr := h.svc.MovePageToSpace(app.MovePageToSpaceParams{
+		PageID: page.Id, SourceSpace: space, TargetSpace: space,
+		ExpectedUpdateAt: new(page.UpdateAt), UserID: userID,
+	})
 	require.Nil(t, appErr)
 	require.Equal(t, page.Id, same.Id)
 

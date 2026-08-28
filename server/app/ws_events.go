@@ -57,9 +57,11 @@ const (
 //
 // Core's hub delivers a channel broadcast to every raw ChannelMembers row with no team check, and
 // former team members keep their backing-channel rows after leaving the team — so each broadcast
-// carries an omit list of the members failing the team half of the access gate. When that list
-// cannot be resolved the event is dropped for the channel rather than delivered unfiltered: a
-// missed refresh signal only degrades liveness, while unfiltered delivery leaks space activity.
+// carries a freshly resolved omit list of the members failing the team half of the access gate.
+// When the list cannot be resolved the event is dropped for the channel rather than delivered
+// unfiltered: a missed refresh signal only degrades liveness, while unfiltered delivery leaks space
+// activity. Resolving on every publish keeps a team departure effective for the next event; there is
+// no plugin-visible team-membership hook that could safely invalidate a cache.
 func (s *Service) publishToChannels(event string, payload map[string]any, channelIDs ...string) {
 	if s.client == nil {
 		return
@@ -70,7 +72,7 @@ func (s *Service) publishToChannels(event string, payload map[string]any, channe
 			continue
 		}
 		seen[chID] = struct{}{}
-		omitted, err := s.store.InactiveTeamChannelMembers(chID)
+		omitted, err := s.store.GetInactiveTeamChannelMembers(chID)
 		if err != nil {
 			s.log.Warn("failed to resolve the WS omit list; dropping the event for this channel", "event", event, "channel_id", chID, "err", err)
 			continue

@@ -10,7 +10,7 @@ inputs:
     description: >-
       Enterprise license the container is started with, for the callers whose specs need one. Taken
       as an input rather than inherited from the job's env so it is set only on the step that runs
-      the suite — `npm ci` above executes third-party install scripts and has no business reading
+      the suite — `npm ci` above executes third-party install scripts and must not have access to
       it.
     required: false
     default: ""

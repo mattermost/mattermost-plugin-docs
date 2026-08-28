@@ -30,8 +30,15 @@ describe('CreateSpaceModal', () => {
     // assigns the opaque id.
     beforeEach(() => {
         jest.clearAllMocks();
+
+        // The create route answers the access wrapper; the creator is the space's admin.
         createSpaceSpy = jest.spyOn(docsDataSource, 'createSpace').mockImplementation(
-            async (_teamId, input) => makeSpace('new-space-id', input.title.trim(), 'team1'),
+            async (_teamId, input) => ({
+                ...makeSpace('new-space-id', input.title.trim(), 'team1'),
+                permissions: ['read_page', 'admin_space'],
+                default_permissions: [],
+                can_join: false,
+            }),
         );
         toastErrorSpy = jest.spyOn(toast, 'error').mockReturnValue('toast-id');
     });
@@ -45,8 +52,8 @@ describe('CreateSpaceModal', () => {
 
         expect(screen.getByLabelText('Space name')).toBeInTheDocument();
         expect(screen.getByRole('radiogroup', {name: 'Space visibility'})).toBeInTheDocument();
-        expect(screen.getByRole('radio', {name: /Private Space/})).toHaveAttribute('aria-checked', 'true');
-        expect(screen.getByRole('radio', {name: /Public Space/})).toBeEnabled();
+        expect(screen.getByRole('radio', {name: /Public Space/})).toHaveAttribute('aria-checked', 'true');
+        expect(screen.getByRole('radio', {name: /Private Space/})).toBeEnabled();
         expect(screen.getByRole('button', {name: 'Create'})).toBeDisabled();
 
         typeName('My Space');
@@ -70,31 +77,33 @@ describe('CreateSpaceModal', () => {
 
         await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
         expect(onCreated.mock.calls[0][0]).toMatchObject({title: 'Fresh Space'});
-        expect(createSpaceSpy.mock.calls[0][1]).toMatchObject({view_access: 'private'});
+
+        // A new space is open by default; private is the deliberate narrowing.
+        expect(createSpaceSpy.mock.calls[0][1]).toMatchObject({view_access: 'open'});
         expect(onClose).toHaveBeenCalledTimes(1);
     });
 
     // The selection has to survive all the way to the data source: the server
     // reads posture from the request alone, and defaults an absent one to open.
-    it('carries a Public selection through to the create call', async () => {
+    it('carries a Private selection through to the create call', async () => {
         renderWithContext(<CreateSpaceModal onClose={jest.fn()}/>, {state: {currentTeam: team}});
 
         typeName('Fresh Space');
-        fireEvent.click(screen.getByRole('radio', {name: /Public Space/}));
+        fireEvent.click(screen.getByRole('radio', {name: /Private Space/}));
         fireEvent.click(screen.getByRole('button', {name: 'Create'}));
 
         await waitFor(() => expect(createSpaceSpy).toHaveBeenCalledTimes(1));
-        expect(createSpaceSpy.mock.calls[0][1]).toMatchObject({view_access: 'open'});
+        expect(createSpaceSpy.mock.calls[0][1]).toMatchObject({view_access: 'private'});
     });
 
     it('updates the name-field icon when the visibility changes', () => {
         renderWithContext(<CreateSpaceModal onClose={jest.fn()}/>, {state: {currentTeam: team}});
 
-        expect(screen.getByTestId('space-name-icon')).toHaveTextContent('private');
-
-        fireEvent.click(screen.getByRole('radio', {name: /Public Space/}));
-
         expect(screen.getByTestId('space-name-icon')).toHaveTextContent('open');
+
+        fireEvent.click(screen.getByRole('radio', {name: /Private Space/}));
+
+        expect(screen.getByTestId('space-name-icon')).toHaveTextContent('private');
     });
 
     it('reports a failed create and keeps the modal open', async () => {

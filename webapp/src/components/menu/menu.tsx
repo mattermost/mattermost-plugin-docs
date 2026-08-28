@@ -47,6 +47,16 @@ type CheckboxItemProps = Pick<ItemProps, 'secondaryLabel' | 'disabled' | 'childr
     onCheckedChange: (checked: boolean) => void;
 };
 
+type RadioGroupProps = {
+    value?: string;
+    onValueChange: (value: string) => void;
+    children: React.ReactNode;
+};
+
+type RadioItemProps = Pick<ItemProps, 'leadingIcon' | 'secondaryLabel' | 'disabled' | 'children'> & {
+    value: string;
+};
+
 type SubmenuProps = {
     label: React.ReactNode;
     leadingIcon?: React.ReactNode;
@@ -126,6 +136,44 @@ const MenuCheckboxItem = ({checked, secondaryLabel, disabled, onCheckedChange, c
             {children}
         </ItemBody>
     </BaseMenu.CheckboxItem>
+);
+
+/** Groups mutually-exclusive `Menu.RadioItem` children; only one may be selected at a time. */
+const MenuRadioGroup = ({value, onValueChange, children}: RadioGroupProps) => (
+    <BaseMenu.RadioGroup
+        value={value}
+        onValueChange={(next) => onValueChange(next as string)}
+    >
+        {children}
+    </BaseMenu.RadioGroup>
+);
+
+/**
+ * One option within a `Menu.RadioGroup`. Exposes `role="menuitemradio"`/`aria-checked` so the
+ * selected option is announced without depending on the visible check indicator alone.
+ */
+const MenuRadioItem = ({value, leadingIcon, secondaryLabel, disabled, children}: RadioItemProps) => (
+    <BaseMenu.RadioItem
+        value={value}
+        className={classNames(styles.item, {[styles.disabled]: disabled})}
+        disabled={disabled}
+        closeOnClick={true}
+    >
+        <ItemBody
+            leadingIcon={leadingIcon}
+            trailingIcon={(
+                <BaseMenu.RadioItemIndicator
+                    className={styles.checkboxIndicator}
+                    keepMounted={true}
+                >
+                    <CheckIcon size={14}/>
+                </BaseMenu.RadioItemIndicator>
+            )}
+            secondaryLabel={secondaryLabel}
+        >
+            {children}
+        </ItemBody>
+    </BaseMenu.RadioItem>
 );
 
 /**
@@ -229,6 +277,8 @@ const Menu = ({ariaLabel, align = 'left', tooltip, trigger, open, onOpenChange, 
 
 Menu.Item = MenuItem;
 Menu.CheckboxItem = MenuCheckboxItem;
+Menu.RadioGroup = MenuRadioGroup;
+Menu.RadioItem = MenuRadioItem;
 Menu.LinkItem = MenuLinkItem;
 Menu.Separator = MenuSeparator;
 Menu.Submenu = MenuSubmenu;

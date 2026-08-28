@@ -9,7 +9,7 @@ import {useCreateRootPage} from 'hooks/pages';
 import {useCanCreatePage, useCanEditPage} from 'hooks/permissions';
 import {useSidebarWidth} from 'hooks/sidebar_width';
 import {useCurrentUserId} from 'hooks/user';
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {FormattedMessage, defineMessage, useIntl} from 'react-intl';
 import {Timestamp} from 'webapp_globals';
 import type {TimestampUnit} from 'webapp_globals';
@@ -28,6 +28,7 @@ import {Button} from 'components/form_controls/button';
 import AutosaveIndicator from 'components/page_editor/autosave_indicator';
 import PageMenu from 'components/page_menu/page_menu';
 import Spacer from 'components/spacer/spacer';
+import {toast} from 'components/toast';
 
 import type {Page, Space} from 'types/docs';
 import type {Draft} from 'types/drafts';
@@ -209,6 +210,22 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
             document.removeEventListener('keydown', onKeyDown, true);
         };
     }, [canCommit, publishing, publish]);
+
+    // canCommit depends on canEditPage, so Update disappears when the grant is revoked
+    // while Close (which does not gate on canAuthor) stays; without this notice the
+    // editor is left mid-edit with no explanation of why the control went away.
+    const wasEditablePage = useRef(canEditPage);
+    useEffect(() => {
+        const wasEditable = wasEditablePage.current;
+        wasEditablePage.current = canEditPage;
+
+        if (editing && wasEditable && !canEditPage) {
+            toast.error(formatMessage({
+                id: 'docs.space.editRevoked',
+                defaultMessage: 'Your permission to edit this page was removed.',
+            }));
+        }
+    }, [canEditPage, editing, formatMessage]);
 
     // The open page's last-updated time, the draft's own while it is unpublished,
     // otherwise the space's.

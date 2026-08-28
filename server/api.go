@@ -56,9 +56,8 @@ func (p *Plugin) initRouter() *mux.Router {
 	api.HandleFunc("/spaces/{space_id}/members/{user_id}", p.handleRemoveSpaceMember).Methods(http.MethodDelete)
 	// PUT, not PATCH: these two replace the permission set outright — the body carries the full set
 	// the target should end up with, and a token omitted from it is revoked. There is no
-	// add-one/remove-one form. PATCH on this API means "nil fields leave unchanged" (see
-	// PATCH /spaces/{space_id}), so a caller generalizing from that would read an omitted token as
-	// "leave it alone" and silently revoke it instead.
+	// add-one/remove-one form. This differs from PATCH /spaces/{space_id}, where a nil field means
+	// "leave unchanged" — here an omitted token is revoked, not preserved.
 	api.HandleFunc("/spaces/{space_id}/members/{user_id}/permissions", p.handleSetSpaceMemberPermissions).Methods(http.MethodPut)
 	api.HandleFunc("/spaces/{space_id}/default-permissions", p.handleSetSpaceDefaultPermissions).Methods(http.MethodPut)
 

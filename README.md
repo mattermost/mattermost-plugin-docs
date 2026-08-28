@@ -52,7 +52,9 @@ adding this exact marker to that PR's description:
 ```
 
 The SHA is scoped to that PR event. PRs without their own marker, and all runs on `master`, continue
-to use the master image.
+to use the master image. Keep exactly one marker: CI fails both E2E jobs when a marker's SHA is not a
+full lowercase 40-character SHA, or when the description carries more than one marker. The words
+`e2e-core-commit:` in ordinary prose are ignored.
 
 Set `MM_IMAGE` to override that default — to reproduce a run against another build, or to
 bisect a server-side regression:
@@ -68,12 +70,14 @@ cd e2e-tests/playwright && \
   MM_E2E_USE_EXISTING_SERVER=true MM_SERVICESETTINGS_SITEURL=http://localhost:8065 npm test
 ```
 
-This seeds real teams and users into that server, so it is opt-in through
+This seeds real teams and users into that server — and in permission mode also resets the
+server-wide `team_user` role to the suite's baseline — so it is opt-in through
 `MM_E2E_USE_EXISTING_SERVER` alone — exporting `MM_SERVICESETTINGS_SITEURL`, as most
 Mattermost dev shells do, is not enough to trigger it.
 
-The space-permission specs need a paired-core image and a license, and are excluded from the
-default run without them:
+The space-permission specs are excluded from the default run; `MM_E2E_SPACE_PERMISSIONS=true`
+selects them. They need a core image carrying the paired branch's space roles and an Enterprise
+license:
 
 ```bash
 MM_E2E_SPACE_PERMISSIONS=true \
@@ -82,7 +86,10 @@ MM_LICENSE_FILE=/path/to/license \
 make test-e2e
 ```
 
-See `e2e-tests/playwright/README.md` for the paired image and the license.
+`<paired-core-tag>` is the first seven characters of the paired core commit — the same value the
+PR marker above resolves to. The license is any Enterprise license file; CI supplies its own from
+the `MM_E2E_TEST_LICENSE_ONPREM_ENT` secret. `e2e-tests/playwright/README.md` covers the
+existing-server form and the arm64 notes.
 
 Other useful scripts, run from `e2e-tests/playwright/`:
 

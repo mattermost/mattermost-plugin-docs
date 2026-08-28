@@ -151,10 +151,11 @@ export class SpaceSettingsModalPage {
     }
 
     private async openMemberMenu(username: string, actionName: 'Remove from space' | 'Leave space'): Promise<Locator> {
-        // Seeded E2E users use their username as their display name, which is also what the
-        // product places in the neutral action label. It deliberately does not encode Admin,
-        // Member, or Guest: all three roles open the same actions menu.
-        const trigger = this.dialog.getByRole('button', {name: `More actions for ${username}`, exact: true});
+        // Seeded E2E users use their username as their display name, which is what the product
+        // places in the action label. Once the member's permission record resolves, the label is
+        // prefixed with the visible role text ("Admin — more actions for …"), so match the tail:
+        // all roles open the same actions menu.
+        const trigger = this.dialog.getByRole('button', {name: new RegExp(`more actions for ${username}$`, 'i')});
         const action = this.page.getByRole('menuitem', {name: actionName});
 
         // Profiles and permission records resolve independently. If the menu opens before the

@@ -127,10 +127,6 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-    env:
-      # Lifted to env because the secrets context is not available in a step-level `if`.
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     # No `services:` block: testcontainers provisions the server, so CI and local runs
     # take the same path.
     steps:
@@ -148,10 +144,10 @@ jobs:
 
       # Authenticated so the core image pull is billed to the org's Docker Hub quota rather than
       # the shared anonymous per-IP limit, which GitHub-hosted runners exhaust as a pull failure
-      # that reads like a test failure. Skipped when no credentials exist — a fork PR has none, and
-      # must still be able to pull anonymously.
+      # that is indistinguishable from a test failure. Skipped for fork PRs, which carry no
+      # secrets and must still be able to pull anonymously.
       - name: ci/docker-login
-        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -174,9 +170,6 @@ jobs:
     env:
       # Selects both the specs and the licensed container setup they need; see tests/helpers/mode.ts.
       MM_E2E_SPACE_PERMISSIONS: "true"
-      # Lifted to env because the secrets context is not available in a step-level `if`.
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -186,13 +179,31 @@ jobs:
       # Resolve independently because jobs do not share environment, but from the same PR marker
       # as authoring so the two suites can never drift to different core commits.
       - name: ci/resolve-e2e-core-image
+        id: resolve-image
         uses: ./.github/actions/resolve-e2e-core-image
         with:
           pull-request-body: ${{ github.event.pull_request.body || '' }}
 
-      # Fails here, by name, rather than inside a spec: the suite's own error would otherwise arrive
-      # only after a container boot and a browser install.
+      # The master image predates the core space-role work (mattermost/mattermost#37685), so it
+      # does not define the roles this suite requires. Marker-less runs — every push to master and
+      # every PR without its own e2e-core-commit marker — resolve to that image; skip the remaining
+      # steps rather than fail the job until a marker (or master itself) carries the merged work.
+      - name: ci/check-space-permissions-image
+        id: check-image
+        env:
+          RESOLVED_IMAGE: ${{ steps.resolve-image.outputs.image }}
+        run: |
+          if [[ "$RESOLVED_IMAGE" == "mattermostdevelopment/mattermost-enterprise-edition:master" ]]; then
+            echo "::notice::Space-permission suite skipped: resolved image ($RESOLVED_IMAGE) predates the core space-role work (mattermost/mattermost#37685)."
+            echo "supported=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "supported=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Fails here, by name, before a container boot and browser install, rather than surfacing
+      # later as an in-spec failure.
       - name: ci/verify-license-available
+        if: steps.check-image.outputs.supported == 'true'
         run: |
           if [[ -z "$MM_LICENSE" ]]; then
             echo "MM_E2E_TEST_LICENSE_ONPREM_ENT is not available to this repository." >&2
@@ -203,16 +214,18 @@ jobs:
         env:
           MM_LICENSE: ${{ secrets.MM_E2E_TEST_LICENSE_ONPREM_ENT }}
 
-      # See the `e2e` job: authenticated so the core image pull is billed to the org's Docker Hub
-      # quota rather than the shared anonymous per-IP limit, and skipped when no credentials exist.
+      # See the `e2e-playwright-tests` job above: authenticated so the core image pull is billed to
+      # the org's Docker Hub quota rather than the shared anonymous per-IP limit. Skipped for fork
+      # PRs, which carry no secrets.
       - name: ci/docker-login
-        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        if: steps.check-image.outputs.supported == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: ci/playwright-e2e-test
+        if: steps.check-image.outputs.supported == 'true'
         uses: ./.github/actions/playwright-e2e-test
         with:
           # Distinct from the authoring job's, which uploads under the same names.

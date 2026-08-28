@@ -43,7 +43,7 @@ export const MEMBER_PERMISSION_ORDER: readonly Permission[] = [
     Permissions.ADMIN_SPACE,
 ];
 
-// Canonical SpaceMember wire model. Without manage authority, permission arrays and auto_joined
+// Canonical SpaceMember wire model. Without manage authority, permission arrays and is_auto_joined
 // are redacted while identity and role flags remain meaningful.
 export type SpaceMember = {
     user_id: string;
@@ -51,7 +51,7 @@ export type SpaceMember = {
     granted_permissions: Permission[];
     is_admin: boolean;
     is_guest: boolean;
-    auto_joined: boolean;
+    is_auto_joined: boolean;
 };
 
 // The space's own read/discover setting — distinct from the permission

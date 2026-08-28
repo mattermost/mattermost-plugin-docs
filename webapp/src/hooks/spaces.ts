@@ -87,8 +87,7 @@ const resolveRetryDelayMs = 2000;
  * Separate from useRoutedSpace, which fetches only while the space is absent: the team
  * listing puts every space in the store without permissions (it answers with bare spaces),
  * so by the time a space is opened from the sidebar it is present-but-unresolved and that
- * effect correctly does nothing. Permission-gated affordances would then never see a
- * resolved set.
+ * effect correctly does nothing — this hook is what resolves permissions in that gap.
  *
  * Runs once per SUCCESSFUL resolution rather than once per attempt, and re-reads on a change of id
  * so switching spaces cannot carry the previous space's permissions.
@@ -96,8 +95,9 @@ const resolveRetryDelayMs = 2000;
  * The success condition matters: fetchSpace answers any failure — a network blip, or the 403 a
  * private space gives a non-member — by resolving to undefined rather than rejecting. Marking the
  * id resolved before knowing the outcome therefore made one transient failure permanent for the
- * mounted view, and the two selectors reading that field fail in opposite directions: page creation
- * is offered on an unresolved set and member management is withheld from one.
+ * mounted view, and getCanCreatePage/getCanManageSpaceMembers, which both read space.permissions,
+ * fail in opposite directions on an unresolved set: page creation is offered and member management
+ * is withheld.
  *
  * A failed attempt is retried up to resolveMaxAttempts times; past that the space is left
  * unresolved until the id changes or the view remounts.
@@ -121,7 +121,7 @@ export function useResolveSpacePermissions(spaceId?: string): void {
             resolvedFor.current = spaceId;
             dispatch(fetchSpace(spaceId)).then((space) => {
                 // Guarded on the id so a resolution that lost a space switch cannot reopen the
-                // current space's.
+                // current space's retry cycle.
                 if (cancelled || space || resolvedFor.current !== spaceId) {
                     return;
                 }
@@ -208,9 +208,11 @@ type CreateSpaceValues = {
     description: string;
 };
 
+// A new space starts open — the spec's default-open posture — and the form offers private as
+// the deliberate narrowing.
 const INITIAL_VALUES: CreateSpaceValues = {
     name: '',
-    view_access: 'private',
+    view_access: 'open',
     description: '',
 };
 

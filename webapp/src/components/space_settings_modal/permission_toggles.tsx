@@ -10,11 +10,18 @@ import styles from './space_settings_modal.module.scss';
 
 type Props = {
 
-    // The permissions to offer, in display order.
+    // The permissions to offer, in display order. May be empty when the caller renders only
+    // the header under the legend.
     options: readonly Permission[];
     selected: Permission[];
     disabled?: boolean;
     disabledOptions?: readonly Permission[];
+
+    /** Shown as `title` on an input disabled by `disabled`. */
+    disabledReason?: string;
+
+    /** Shown as `title` on an input disabled individually via `disabledOptions`. */
+    disabledOptionsReason?: string;
     busy?: boolean;
     onChange: (next: Permission[]) => void;
 
@@ -22,9 +29,13 @@ type Props = {
     // (the space default and one row per member).
     idPrefix: string;
     legend: React.ReactNode;
+
+    // Rendered between the legend and the checkboxes, inside the same group: the named tiers
+    // that the checkboxes refine.
+    header?: React.ReactNode;
 };
 
-const PermissionToggles = ({options, selected, disabled, disabledOptions = [], busy, onChange, idPrefix, legend}: Props) => {
+const PermissionToggles = ({options, selected, disabled, disabledOptions = [], disabledReason, disabledOptionsReason, busy, onChange, idPrefix, legend, header}: Props) => {
     const labels = usePermissionLabels();
 
     const toggle = (permission: Permission) => {
@@ -49,8 +60,16 @@ const PermissionToggles = ({options, selected, disabled, disabledOptions = [], b
             aria-busy={busy}
         >
             <legend className={styles.togglesLegend}>{legend}</legend>
+            {header}
             {options.map((permission) => {
                 const id = `${idPrefix}-${permission}`;
+                const optionLocked = disabledOptions.includes(permission);
+                let reason;
+                if (disabled) {
+                    reason = disabledReason;
+                } else if (optionLocked) {
+                    reason = disabledOptionsReason;
+                }
                 return (
                     <div
                         key={permission}
@@ -60,7 +79,8 @@ const PermissionToggles = ({options, selected, disabled, disabledOptions = [], b
                             id={id}
                             type='checkbox'
                             checked={selected.includes(permission)}
-                            disabled={disabled || disabledOptions.includes(permission)}
+                            disabled={disabled || optionLocked}
+                            title={reason}
                             onChange={() => toggle(permission)}
                         />
                         <label htmlFor={id}>{labels[permission]}</label>

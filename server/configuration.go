@@ -52,8 +52,8 @@ func (c *configuration) validate() error {
 
 // newSpaceDefaultPermissions resolves the configured logical preset to the wire permission set
 // consumed by CreateSpace. Configuration deliberately stores no database scheme id: core owns
-// those ids, while the existing resolver maps this permission set to the appropriate seeded
-// scheme on every creation.
+// those ids, while CreateSpace's Service.resolveSpaceScheme (server/app/space.go) maps this
+// permission set to the appropriate seeded scheme on every creation.
 func (c *configuration) newSpaceDefaultPermissions() []string {
 	schemeName := mmmodel.SchemeNameSpaceContribute
 	switch c.NewSpaceDefaultPreset {

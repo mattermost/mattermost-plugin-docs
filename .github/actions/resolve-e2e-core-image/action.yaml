@@ -22,16 +22,36 @@ runs:
         PR_BODY: ${{ inputs.pull-request-body }}
       run: |
         image="mattermostdevelopment/mattermost-enterprise-edition:master"
-        marker="e2e-core-commit:"
 
-        if [[ "$PR_BODY" == *"$marker"* ]]; then
-          pattern='<!--[[:space:]]*e2e-core-commit:[[:space:]]*([0-9a-f]{40})[[:space:]]*-->'
-          if [[ ! "$PR_BODY" =~ $pattern ]]; then
-            echo "The PR's e2e-core-commit marker must contain one full lowercase 40-character SHA." >&2
-            echo "Use: <!-- e2e-core-commit: 0123456789abcdef0123456789abcdef01234567 -->" >&2
-            exit 1
-          fi
+        # Only an HTML comment carrying the marker is a selection attempt; the same words in the
+        # description's prose (a PR documenting this mechanism) are not. Every comment-form
+        # occurrence must be a well-formed marker, and there must be at most one, so two E2E jobs
+        # can never resolve different commits from one description.
+        marker_pattern='<!--[[:space:]]*e2e-core-commit:[[:space:]]*([0-9a-f]{40})[[:space:]]*-->'
+        comment_pattern='<!--[^>]*e2e-core-commit:[^>]*-->'
 
+        count_matches() {
+          local rest="$PR_BODY" count=0
+          while [[ "$rest" =~ $1 ]]; do
+            count=$((count + 1))
+            rest="${rest#*"${BASH_REMATCH[0]}"}"
+          done
+          echo "$count"
+        }
+
+        markers=$(count_matches "$marker_pattern")
+        comments=$(count_matches "$comment_pattern")
+        if (( comments != markers )); then
+          echo "An e2e-core-commit comment in the PR description does not contain one full lowercase 40-character SHA." >&2
+          echo "Use: <!-- e2e-core-commit: 0123456789abcdef0123456789abcdef01234567 -->" >&2
+          exit 1
+        fi
+        if (( markers > 1 )); then
+          echo "The PR description carries $markers e2e-core-commit markers; keep exactly one so both E2E jobs resolve the same core commit." >&2
+          exit 1
+        fi
+        if (( markers == 1 )); then
+          [[ "$PR_BODY" =~ $marker_pattern ]]
           core_commit="${BASH_REMATCH[1]}"
           image="mattermostdevelopment/mattermost-team-edition:${core_commit:0:7}"
         fi

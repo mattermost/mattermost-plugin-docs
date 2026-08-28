@@ -5,7 +5,7 @@ import {RestError, apiUrl, listAll, restDelete, restGet, restPatch, restPost} fr
 
 import type {CreatePageInput, CreateSpaceInput, Page, Space, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
 import type {Draft, DraftPatch, DraftSummary} from 'types/drafts';
-import type {SpaceMember} from 'types/permissions';
+import type {SpaceAccess, SpaceMember} from 'types/permissions';
 
 import type {DocsDataSource} from './docs_data_source';
 import {asPublishConflict} from './publish_conflict';
@@ -33,9 +33,9 @@ const toPage = (summary: Page): Page => ({
 export const apiDataSource: DocsDataSource = {
     listSpaces: (teamId) => listAll<Space>((query) => `${apiUrl()}/teams/${seg(teamId)}/spaces?${query}`),
 
-    getSpace: (spaceId) => restGet<Space>(`${apiUrl()}/spaces/${seg(spaceId)}`),
+    getSpace: (spaceId) => restGet<SpaceAccess>(`${apiUrl()}/spaces/${seg(spaceId)}`),
 
-    createSpace: (teamId, input: CreateSpaceInput) => restPost<Space>(`${apiUrl()}/teams/${seg(teamId)}/spaces`, {
+    createSpace: (teamId, input: CreateSpaceInput) => restPost<SpaceAccess>(`${apiUrl()}/teams/${seg(teamId)}/spaces`, {
         title: input.title.trim(),
         description: input.description?.trim() || undefined,
         icon: input.icon || undefined,
@@ -45,7 +45,7 @@ export const apiDataSource: DocsDataSource = {
         view_access: input.view_access,
     }),
 
-    updateSpace: (spaceId, patch: UpdateSpacePatch, expectedUpdateAt) => restPatch<Space>(`${apiUrl()}/spaces/${seg(spaceId)}`, {
+    updateSpace: (spaceId, patch: UpdateSpacePatch, expectedUpdateAt) => restPatch<SpaceAccess>(`${apiUrl()}/spaces/${seg(spaceId)}`, {
         title: patch.title?.trim(),
         description: patch.description?.trim(),
         icon: patch.icon,

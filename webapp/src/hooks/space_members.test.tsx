@@ -95,9 +95,10 @@ describe('useManageSpaceMembers', () => {
         expect(failed).toEqual([users[1]]);
     });
 
-    // A 403 is the one add failure the user can act on, so it says so by name.
-    it('names the user and the reason for a single 403', async () => {
-        mockAddSpaceMembers.mockResolvedValue([{userId: 'u2', error: clientError(403)}]);
+    // A 403 with the not-team-member id is the one add failure the user can act
+    // on, so it says so by name.
+    it('names the user and the reason for a single not-team-member 403', async () => {
+        mockAddSpaceMembers.mockResolvedValue([{userId: 'u2', error: clientError(403, 'app.space.member.not_team_member.app_error')}]);
         const hook = render();
 
         await act(async () => {
@@ -107,8 +108,21 @@ describe('useManageSpaceMembers', () => {
         expect(toast.error).toHaveBeenCalledWith("Grace isn't a member of this team.");
     });
 
-    // Any other single-user failure gets the generic add message, not the
-    // not-on-team wording, which is specific to a 403.
+    // A bare 403 (e.g. a non-manage caller) carries a different id and must fall to
+    // the generic message, not the not-on-team wording, which is specific to the
+    // not-team-member id.
+    it('names the user for a single 403 that is not the not-team-member id', async () => {
+        mockAddSpaceMembers.mockResolvedValue([{userId: 'u2', error: clientError(403)}]);
+        const hook = render();
+
+        await act(async () => {
+            await hook.current.addMembers([profile('u2', 'Grace')]);
+        });
+
+        expect(toast.error).toHaveBeenCalledWith("Couldn't add Grace. Please try again.");
+    });
+
+    // Any other single-user failure gets the generic add message too.
     it('names the user for a single non-403 failure', async () => {
         mockAddSpaceMembers.mockResolvedValue([{userId: 'u2', error: clientError(500)}]);
         const hook = render();

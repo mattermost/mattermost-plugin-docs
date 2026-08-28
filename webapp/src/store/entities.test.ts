@@ -487,4 +487,12 @@ describe('spaceMemberPermissionsRevision', () => {
 
         expect(bumped.spaceMemberPermissionsRevision).toEqual({s1: 1, s2: 1});
     });
+
+    it('DELETED_SPACE prunes that space\'s revision counter', () => {
+        const bumped = reducer(initialState, {type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: 's1'});
+
+        const next = reducer(bumped, {type: SpaceTypes.DELETED_SPACE, spaceId: 's1'});
+
+        expect('s1' in next.spaceMemberPermissionsRevision).toBe(false);
+    });
 });

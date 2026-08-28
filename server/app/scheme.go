@@ -25,9 +25,9 @@ func normalizeUnsupportedSchemeAPI(err error) error {
 	return err
 }
 
-// The three functions below are the space tier model: what a plain member, an admin and a guest
-// of a space may do. Core creates the scheme with these permission sets but does not define them —
-// it validates only that they are channel-scoped — so this is where the space policy lives.
+// The three functions below define the space's three roles: what a plain member, an admin, and a
+// guest of a space may do. Core creates the scheme with these permission sets but does not define
+// them — it validates only that they are channel-scoped.
 
 // spaceUserRolePermissions is what a space's plain members hold: the baseline read every member
 // has, plus the space's configured default set. permissions must already be normalized, which its
@@ -37,14 +37,14 @@ func spaceUserRolePermissions(permissions []string) []string {
 }
 
 // spaceAdminRolePermissions is what a space admin holds, single-sourced from core's canonical
-// admin slice so the tier cannot drift from the permission the admin toggle grants.
+// admin slice so the role cannot drift from the permission the admin toggle grants.
 func spaceAdminRolePermissions() []string {
 	return mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions)
 }
 
-// spaceGuestRolePermissions is what a guest of a space holds. The guest tier reads and nothing
-// more, whatever the space's defaults are: a guest never gains a page write from the space being
-// configured permissively.
+// spaceGuestRolePermissions is what a guest of a space holds: read and nothing more, whatever the
+// space's defaults are — a guest never gains a page write from the space being configured
+// permissively.
 func spaceGuestRolePermissions() []string {
 	return []string{mmmodel.PermissionReadPage.Id}
 }
@@ -52,6 +52,11 @@ func spaceGuestRolePermissions() []string {
 // schemeRoles carries the generated role names used for grants and the user role's permissions used
 // to project defaults. On a scheme-backed channel, core rejects literal channel_user/channel_admin
 // grants.
+//
+// UserPermissions is populated only by getSchemeRolesForChannel, which reads it from an already
+// fetched ChannelScheme's roles. rolesFromScheme builds a schemeRoles from a bare *mmmodel.Scheme,
+// which carries only role-name strings, so it leaves UserPermissions nil; a caller must not read
+// the field on a value that traces back to rolesFromScheme.
 type schemeRoles struct {
 	UserRoleName    string
 	AdminRoleName   string
@@ -102,7 +107,8 @@ func (s *Service) getSchemeByName(name string) (*mmmodel.Scheme, error) {
 	return scheme, nil
 }
 
-// rolesFromScheme names the three roles core generated for scheme.
+// rolesFromScheme names the three roles core generated for scheme. UserPermissions is left nil:
+// scheme carries only role-name strings, not the user role's permissions.
 func rolesFromScheme(scheme *mmmodel.Scheme) *schemeRoles {
 	return &schemeRoles{
 		UserRoleName:  scheme.DefaultChannelUserRole,

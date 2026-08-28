@@ -26,11 +26,11 @@ func activeTeamMemberJoin(teamRef string) string {
 	return "TeamMembers tm ON tm.UserId = cm.UserId AND tm.TeamId = " + teamRef + " AND tm.DeleteAt = 0"
 }
 
-// MemberSchemeFlags returns the SchemeAdmin and SchemeGuest flags of userID's ChannelMembers row
+// GetMemberSchemeFlags returns the SchemeAdmin and SchemeGuest flags of userID's ChannelMembers row
 // for channelID, answered from the master. Both flags are nullable in core's schema; NULL reads
 // as false, matching core's own scan-time handling. Returns ErrNotFound when no row exists, so
 // callers can distinguish a non-member from an ordinary member.
-func (s *Store) MemberSchemeFlags(channelID, userID string) (schemeAdmin, schemeGuest bool, err error) {
+func (s *Store) GetMemberSchemeFlags(channelID, userID string) (schemeAdmin, schemeGuest bool, err error) {
 	if channelID == "" || userID == "" {
 		return false, false, &ErrInvalidInput{Entity: "ChannelMember", Field: "id", Value: channelID + "/" + userID}
 	}
@@ -75,13 +75,13 @@ func (s *Store) IsChannelMember(channelID, userID string) (bool, error) {
 	return isMember, nil
 }
 
-// OtherAuthorizedMembers reports whether channelID has, disregarding excludeUserID, a member who
+// GetOtherAuthorizedMembers reports whether channelID has, disregarding excludeUserID, a member who
 // is an active member of teamID (anyMember), and whether any such member is a channel scheme
 // admin (anyAdmin). Former team members keep their channel-member rows, so the team join — with
 // the same DeleteAt=0 predicate as the app layer's activeTeamMember — is what makes a row count.
 // SchemeAdmin is nullable in core's schema; a NULL reads as not-admin, matching core's own
 // scan-time handling.
-func (s *Store) OtherAuthorizedMembers(channelID, teamID, excludeUserID string) (anyMember, anyAdmin bool, err error) {
+func (s *Store) GetOtherAuthorizedMembers(channelID, teamID, excludeUserID string) (anyMember, anyAdmin bool, err error) {
 	if channelID == "" || teamID == "" {
 		return false, false, &ErrInvalidInput{Entity: "ChannelMember", Field: "channel_id", Value: channelID}
 	}
@@ -106,7 +106,7 @@ func (s *Store) OtherAuthorizedMembers(channelID, teamID, excludeUserID string) 
 	return row.AnyMember, row.AnyAdmin, nil
 }
 
-// InactiveTeamChannelMembers returns the members of channelID holding no active membership in the
+// GetInactiveTeamChannelMembers returns the members of channelID holding no active membership in the
 // channel's own team — the rows that survive a team departure. The channel's team is resolved
 // through the Channels row rather than taken as a parameter, so a caller holding only a channel
 // id can use it.
@@ -115,9 +115,10 @@ func (s *Store) OtherAuthorizedMembers(channelID, teamID, excludeUserID string) 
 // (publishToChannels), so a partial answer does not degrade a listing — it delivers the event to
 // members the read gate rejects, which is the leak the omit list exists to prevent. The row count
 // is bounded by the channel's own membership (the predicate is cm.ChannelId), not by team size, so
-// it is the same order as the broadcast's own fan-out; a space with a very large membership pays a
-// member scan per event, which is a caching question rather than a paging one.
-func (s *Store) InactiveTeamChannelMembers(channelID string) ([]string, error) {
+// it is the same order as the broadcast's own fan-out. The query runs for every broadcast because
+// core team-membership changes provide no plugin-visible invalidation hook; caching this
+// authorization-derived audience would keep a departed user eligible for later events.
+func (s *Store) GetInactiveTeamChannelMembers(channelID string) ([]string, error) {
 	if channelID == "" {
 		return nil, &ErrInvalidInput{Entity: "ChannelMember", Field: "channel_id", Value: channelID}
 	}
@@ -137,11 +138,11 @@ func (s *Store) InactiveTeamChannelMembers(channelID string) ([]string, error) {
 	return ids, nil
 }
 
-// ActiveTeamChannelMembers returns the members of channelID who are active members of the
+// GetActiveTeamChannelMembers returns the members of channelID who are active members of the
 // channel's own team — the audience a space's events may reach. Unpaginated for the reason
-// InactiveTeamChannelMembers is: callers need the whole audience or none of it, and the count is
+// GetInactiveTeamChannelMembers is: callers need the whole audience or none of it, and the count is
 // bounded by the channel's membership rather than the team's.
-func (s *Store) ActiveTeamChannelMembers(channelID string) ([]string, error) {
+func (s *Store) GetActiveTeamChannelMembers(channelID string) ([]string, error) {
 	if channelID == "" {
 		return nil, &ErrInvalidInput{Entity: "ChannelMember", Field: "channel_id", Value: channelID}
 	}
@@ -204,9 +205,9 @@ func (s *Store) ClearAutoJoined(spaceID, userID string) error {
 // Per-membership rows make every update a single-row write, so no update can overwrite another's
 // outcome.
 
-// AutoJoinedIDs returns the user ids currently marked auto-joined to spaceID, for callers
+// GetAutoJoinedIDs returns the user ids currently marked auto-joined to spaceID, for callers
 // projecting the marker onto a set of members they already hold.
-func (s *Store) AutoJoinedIDs(spaceID string) ([]string, error) {
+func (s *Store) GetAutoJoinedIDs(spaceID string) ([]string, error) {
 	if spaceID == "" {
 		return nil, &ErrInvalidInput{Entity: "SpaceAutoJoin", Field: "space_id", Value: spaceID}
 	}

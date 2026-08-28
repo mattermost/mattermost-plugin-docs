@@ -19,7 +19,9 @@ In cloud CI, a PR can select an unmerged core build for both E2E jobs with a des
 ```
 
 The marker is read only from the current PR event. Without it — including pushes to `master` and
-later PRs — CI uses the master image.
+later PRs — CI uses the master image. Keep exactly one: CI fails both E2E jobs on a marker whose
+SHA is not a full lowercase 40-character SHA, or on more than one marker. The words `e2e-core-commit:`
+in ordinary prose are ignored.
 
 ### The space-permission specs
 
@@ -35,8 +37,15 @@ MM_LICENSE_FILE=/path/to/license \
 make test-e2e
 ```
 
+`<paired-core-tag>` is the first seven characters of the paired core commit, which is what the PR
+marker resolves to in CI. `MM_LICENSE_FILE` points at any Enterprise license file; CI reads the
+`MM_E2E_TEST_LICENSE_ONPREM_ENT` secret into `MM_LICENSE` instead. Until the paired core work is
+on `master`, the marker-less CI run of this job has no image that carries the space roles.
+
 Or against a server you are already running, built from the paired core branch — no container, no
-image pin. This seeds real data into that server:
+image pin. This seeds real data into that server and, before the specs run, resets the server-wide
+`team_user` role to the suite's baseline (`read_space`, `create_space`; no `manage_space`,
+`delete_space`):
 
 ```bash
 MM_E2E_SPACE_PERMISSIONS=true MM_E2E_USE_EXISTING_SERVER=true make test-e2e

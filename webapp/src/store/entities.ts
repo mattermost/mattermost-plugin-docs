@@ -484,6 +484,15 @@ function spaceMemberPermissionsRevision(state: Record<string, number> = {}, acti
         const {spaceId} = action as unknown as SpaceMemberPermissionsChangedAction;
         return {...state, [spaceId]: (state[spaceId] ?? 0) + 1};
     }
+    case SpaceTypes.DELETED_SPACE: {
+        const {spaceId} = action as unknown as DeletedSpaceAction;
+        if (!(spaceId in state)) {
+            return state;
+        }
+        const next = {...state};
+        delete next[spaceId];
+        return next;
+    }
     default:
         return state;
     }

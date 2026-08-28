@@ -22,8 +22,7 @@ const (
 
 	// ViewAccessOpen allows the app-layer read resolver to admit eligible team non-members;
 	// ViewAccessPrivate restricts ordinary reads to backing-channel members. There is no third
-	// value; PreSave deliberately does not default
-	// ViewAccess — the caller (app layer) always decides it explicitly.
+	// value.
 	ViewAccessOpen    ViewAccess = "open"
 	ViewAccessPrivate ViewAccess = "private"
 )
@@ -95,9 +94,9 @@ type SpaceWithAccess struct {
 	// CanJoin reports that the caller may join this space themselves, which is what turns its
 	// DefaultPermissions into permissions they would actually hold. Resolved by the server rather
 	// than inferred by the client: a guest member and a non-member reading through the open-space
-	// fall-through both carry read_page alone against the same DefaultPermissions, so the two are
-	// indistinguishable on the wire and a client deriving this would offer a guest authoring the
-	// server refuses.
+	// fall-through both carry read_page alone against the same DefaultPermissions, so the two look
+	// identical on the wire; deriving CanJoin client-side risks granting a guest authoring
+	// permission the server denies.
 	CanJoin bool `json:"can_join"`
 }
 
@@ -136,9 +135,9 @@ type SpaceMember struct {
 	GrantedPermissions []string `json:"granted_permissions"`
 	IsAdmin            bool     `json:"is_admin"`
 	IsGuest            bool     `json:"is_guest"`
-	// AutoJoined reports whether the plugin currently holds an auto-join provenance marker for the
+	// IsAutoJoined reports whether the plugin currently holds an auto-join provenance marker for the
 	// member. Marker cleanup is best-effort, so it is not proof of present intent.
-	AutoJoined bool `json:"auto_joined"`
+	IsAutoJoined bool `json:"is_auto_joined"`
 }
 
 // EnsurePermissions normalizes Permissions and GrantedPermissions to non-nil slices so they

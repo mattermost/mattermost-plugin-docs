@@ -3,6 +3,7 @@
 
 import type {GlobalState} from '@mattermost/types/store';
 
+import {getLicense} from 'mattermost-redux/selectors/entities/general';
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
 import {Permissions} from 'types/permissions';
@@ -69,3 +70,14 @@ export const getCanDeletePage = (state: GlobalState, spaceId: string, pageAuthor
 // The server-resolved precondition for authoring in an open space.
 export const getMustJoinSpace = (state: GlobalState, spaceId: string): boolean =>
     getSpace(state, spaceId)?.can_join === true;
+
+// Whether a space default may be any combination rather than one of the named tiers. Mirrors the
+// two entitlements the server checks before it mints a custom scheme: custom permission schemes
+// (which the Professional SKU carries without the feature flag), and guest account permissions,
+// because every custom scheme also defines what a guest may do. Offering the combination controls
+// without both would offer a write the server refuses.
+export const getCustomDefaultsAvailable = (state: GlobalState): boolean => {
+    const license = getLicense(state);
+    const customSchemes = license.CustomPermissionsSchemes === 'true' || license.SkuShortName === 'professional';
+    return customSchemes && license.GuestAccountsPermissions === 'true';
+};
