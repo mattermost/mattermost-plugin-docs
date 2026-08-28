@@ -13,6 +13,7 @@ import {
     CloseCircleOutlineIcon,
     DotsHorizontalIcon,
     InformationOutlineIcon,
+    PinIcon,
     PinOutlineIcon,
 } from '@mattermost/compass-icons/components';
 
@@ -133,13 +134,13 @@ export const PinToolbarControl = ({pinned, onToggle}: PinProps) => {
     return (
         <button
             type='button'
-            className={`${styles.control} docs-pin-control`}
+            className={`${styles.control} ${pinned ? styles.active : ''} docs-pin-control`}
             onClick={onToggle}
             aria-label={label}
             title={label}
             aria-pressed={pinned}
         >
-            <PinOutlineIcon size={18}/>
+            {pinned ? <PinIcon size={18}/> : <PinOutlineIcon size={18}/>}
         </button>
     );
 };

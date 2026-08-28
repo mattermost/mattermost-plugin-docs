@@ -4,14 +4,29 @@
 }
 
 .copyLink {
-    gap: 6px;
+    gap: 8px;
 }
 
 .body {
     display: flex;
     flex-direction: column;
     gap: 16px;
-    padding: 20px 24px 8px;
+    min-height: 0;
+}
+
+.search {
+    padding: 0 32px;
+}
+
+.members {
+    min-height: 181px;
+    max-height: 181px;
+    padding: 0 16px;
+    overflow-y: auto;
+}
+
+.footer {
+    padding: 12px;
 }
 
 .access {
@@ -19,28 +34,53 @@
     flex: 1 1 auto;
     align-items: center;
     justify-content: space-between;
+    height: 56px;
+    padding: 0 20px;
     gap: 12px;
 }
 
 .accessLeft {
     display: flex;
+    min-width: 0;
     align-items: center;
     gap: 8px;
     color: rgba(var(--center-channel-color-rgb), 0.75);
 }
 
+// Compact 24px dropdown chrome — not a padded `.btn`. Disabled until public
+// spaces exist; keep full opacity so Private still reads as the current state.
 .accessTrigger {
+    display: inline-flex;
+    height: 24px;
+    align-items: center;
     gap: 4px;
+    padding: 2px 4px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--center-channel-color);
+    font-size: 14px;
     font-weight: 600;
+    line-height: 20px;
+
+    &:disabled {
+        opacity: 1;
+        cursor: default;
+    }
 }
 
 .accessHint {
     color: rgba(var(--center-channel-color-rgb), 0.64);
     font-size: 14px;
+    line-height: 20px;
 }
 
-.canView {
-    gap: 4px;
+.canView:global(.btn.btn-sm) {
+    min-width: 0;
+    height: 32px;
+    padding: 6px 8px;
+    gap: 8px;
+    background: transparent;
     color: var(--link-color);
     font-weight: 600;
 }

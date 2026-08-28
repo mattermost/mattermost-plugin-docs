@@ -55,8 +55,11 @@
 
 .stat {
     display: flex;
+    flex: 0 1 160px;
     flex-direction: column;
     gap: 2px;
+    width: 160px;
+    min-width: 0;
     padding-right: 24px;
     border-right: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
 }

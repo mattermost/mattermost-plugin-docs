@@ -118,7 +118,10 @@ const SpaceView = ({space}: {space: Space}) => {
                         </Sidebar>
                         <div className={styles.main}>
                             <ToolbarSlot/>
-                            <div className={styles.scroll}>
+                            <div
+                                className={styles.scroll}
+                                data-docs-scroll=''
+                            >
                                 {pageId ? (
                                     <PageContent
                                         page={page}

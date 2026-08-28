@@ -43,17 +43,17 @@ const CreateSpaceModal = ({onClose, onCreated}: Props) => {
             icon: <GlobeIcon size={32}/>,
             title: formatMessage({id: 'docs.createSpace.public.title', defaultMessage: 'Public Space'}),
             description: formatMessage({id: 'docs.createSpace.public.description', defaultMessage: 'Any team member can view'}),
+
+            // Public (open to any team member) waits on view_access — shown but
+            // disabled until that lands. Spaces today are membership-based.
+            disabled: true,
+            disabledReason: formatMessage({id: 'docs.createSpace.public.disabledReason', defaultMessage: 'Public spaces are coming soon'}),
         },
         {
             value: 'private',
             icon: <LockOutlineIcon size={32}/>,
             title: formatMessage({id: 'docs.createSpace.private.title', defaultMessage: 'Private Space'}),
             description: formatMessage({id: 'docs.createSpace.private.description', defaultMessage: 'Only invited members'}),
-
-            // Private spaces require space-level permissions, which are not built
-            // yet — shown but disabled for the initial MVF.
-            disabled: true,
-            disabledReason: formatMessage({id: 'docs.createSpace.private.disabledReason', defaultMessage: 'Private spaces are coming soon'}),
         },
     ];
 
@@ -96,7 +96,14 @@ const CreateSpaceModal = ({onClose, onCreated}: Props) => {
                                 label={formatMessage({id: 'docs.createSpace.nameLabel', defaultMessage: 'Space name'})}
                                 value={field.state.value}
                                 onChange={changeName}
-                                leading={<span aria-hidden='true'><SpaceIcon size={20}/></span>}
+                                leading={(
+                                    <span aria-hidden='true'>
+                                        <SpaceIcon
+                                            size={20}
+                                            space={{visibility: 'private'}}
+                                        />
+                                    </span>
+                                )}
                                 error={firstSpaceValidationError(field.state.meta.errors, formatMessage)}
                                 maxLength={SPACE_NAME_MAX_LENGTH}
                                 autoFocus={true}

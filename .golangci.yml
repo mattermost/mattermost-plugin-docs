@@ -50,6 +50,10 @@ linters:
   exclusions:
     paths:
       - webapp
+
+      # Node dependencies here vendor Go sources of their own (e.g. flatted),
+      # which are not this plugin's code to lint.
+      - e2e-tests
     rules:
       - path: server/configuration.go
         linters:

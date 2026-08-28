@@ -8,7 +8,7 @@ import {usePagePresence} from 'hooks/page_presence';
 import {useCreateRootPage} from 'hooks/pages';
 import {useSidebarWidth} from 'hooks/sidebar_width';
 import {useCurrentUserId} from 'hooks/user';
-import React, {useState} from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {FormattedMessage, defineMessage, useIntl} from 'react-intl';
 import {Timestamp} from 'webapp_globals';
 import type {TimestampUnit} from 'webapp_globals';
@@ -21,6 +21,7 @@ import FormatListBulletedIcon from '@mattermost/compass-icons/components/format-
 import MessageTextOutlineIcon from '@mattermost/compass-icons/components/message-text-outline';
 import PencilOutlineIcon from '@mattermost/compass-icons/components/pencil-outline';
 import PlusIcon from '@mattermost/compass-icons/components/plus';
+import {isMac} from '@mattermost/shared/utils/user_agent';
 
 import {Button} from 'components/form_controls/button';
 import AutosaveIndicator from 'components/page_editor/autosave_indicator';
@@ -99,14 +100,14 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
 
     // Publishing navigates on success, so the guard is against a second click during
     // the round trip rather than a state this component returns to.
-    const publish = async () => {
+    const publish = useCallback(async () => {
         setPublishing(true);
         try {
             await onPublish();
         } finally {
             setPublishing(false);
         }
-    };
+    }, [onPublish]);
 
     // Read-only view of the pages sidebar's live width, so the add-page button
     // can sit on its right edge (shared store, no prop threading).
@@ -131,6 +132,68 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
     // them).
     const unpublished = !page && Boolean(draft);
     const hasUnpublishedEdits = Boolean(page) && Boolean(draft);
+    const canEnterEdit = Boolean(subject) && !editing;
+    const canCommit = unpublished || (editing && hasUnpublishedEdits);
+    const commitShortcut = isMac() ? 'Meta+Enter' : 'Control+Enter';
+
+    // Capture so Cmd/Ctrl+Enter wins over the editor inserting a newline, and
+    // over the title field treating Enter as "done". `e` stays off form fields
+    // so typing still works while editing.
+    useEffect(() => {
+        if (!canEnterEdit) {
+            return undefined;
+        }
+
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== 'e' && event.key !== 'E') {
+                return;
+            }
+            if (event.metaKey || event.ctrlKey || event.altKey) {
+                return;
+            }
+
+            const target = event.target as HTMLElement | null;
+            if (target?.closest?.('[role="dialog"]')) {
+                return;
+            }
+            const tag = target?.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) {
+                return;
+            }
+
+            event.preventDefault();
+            onToggleEdit();
+        };
+
+        document.addEventListener('keydown', onKeyDown);
+        return () => {
+            document.removeEventListener('keydown', onKeyDown);
+        };
+    }, [canEnterEdit, onToggleEdit]);
+
+    useEffect(() => {
+        if (!canCommit || publishing) {
+            return undefined;
+        }
+
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) {
+                return;
+            }
+            if ((event.target as HTMLElement | null)?.closest?.('[role="dialog"]')) {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            publish().catch(() => undefined);
+        };
+
+        document.addEventListener('keydown', onKeyDown, true);
+        return () => {
+            document.removeEventListener('keydown', onKeyDown, true);
+        };
+    }, [canCommit, publishing, publish]);
 
     // The open page's last-updated time, the draft's own while it is unpublished,
     // otherwise the space's.
@@ -235,6 +298,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                         emphasis='primary'
                         size='sm'
                         disabled={publishing}
+                        aria-keyshortcuts={commitShortcut}
                         onClick={publish}
                     >
                         <FormattedMessage
@@ -256,6 +320,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                         // accessible name — and the control is still "Update"
                         // whatever the reason it is unavailable.
                         aria-label={updateLabel}
+                        aria-keyshortcuts={commitShortcut}
                         tooltip={hasUnpublishedEdits ? undefined : noChangesLabel}
                         onClick={publish}
                     >
@@ -277,6 +342,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                         // button that already holds focus is not reliably
                         // re-announced.
                         aria-pressed={editing}
+                        aria-keyshortcuts={editing ? undefined : 'e'}
                         onClick={onToggleEdit}
                     >
                         {editing ? (

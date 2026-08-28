@@ -62,6 +62,23 @@ describe('AddMembersField', () => {
         expect(screen.getByRole('button', {name: 'Add'})).toBeDisabled();
     });
 
+    it('commits immediately when commitOnSelect is set', async () => {
+        const onAdd = jest.fn().mockResolvedValue([]);
+        renderWithContext(
+            <AddMembersField
+                excludeIds={[]}
+                onAdd={onAdd}
+                disabled={false}
+                commitOnSelect={true}
+            />,
+        );
+
+        expect(screen.queryByRole('button', {name: 'Add'})).not.toBeInTheDocument();
+
+        await pick([ada]);
+        await waitFor(() => expect(onAdd).toHaveBeenCalledWith([ada]));
+    });
+
     it('hands the picked users to onAdd and clears them all on success', async () => {
         const onAdd = jest.fn().mockResolvedValue([]);
         renderField(onAdd);
