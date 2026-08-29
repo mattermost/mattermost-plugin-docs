@@ -6,6 +6,9 @@
 // - [*] indicates an assertion (e.g. * Check the title)
 // ***************************************************************
 
+import {readFileSync} from 'node:fs';
+import {join, resolve} from 'node:path';
+
 import {expect, test} from '../fixtures';
 import {loginAs} from '../helpers/auth';
 import {uniqueSuffix} from '../helpers/client';
@@ -14,6 +17,32 @@ import {createTeam} from '../helpers/team';
 import {DRAFTS_SEGMENT, OVERVIEW_SEGMENT, RESERVED_SEGMENTS, SPACE_OR_PAGE_ID, SPACE_OR_PAGE_ID_PATTERN} from '../data/url_segments';
 import {SpacePage} from '../pages/space_page';
 import {SpacesSidebarPage} from '../pages/spaces_sidebar_page';
+
+// Playwright transpiles to CommonJS, so import.meta is unavailable.
+const repoRoot = resolve(__dirname, '../../../..');
+
+// The id grammar as the app declares it, read from source.
+//
+// Every other mirrored value here is pinned by a URL assertion: rename a segment and the
+// specs below stop finding the screen. The grammar is the one that can drift in silence,
+// because server ids are alphanumeric and satisfy a widened or narrowed grammar equally,
+// so no URL would ever disagree. Reading the declaration is what makes the copy honest.
+function declaredIdGrammar(): string {
+    const source = readFileSync(join(repoRoot, 'webapp', 'src', 'routing', 'paths.ts'), 'utf8');
+    const declared = (/const SPACE_OR_PAGE_ID = '([^']*)';/).exec(source);
+
+    if (!declared) {
+        throw new Error(
+            'routing/paths.ts no longer declares SPACE_OR_PAGE_ID as a single-quoted literal. ' +
+            'Update this check alongside it rather than dropping it.',
+        );
+    }
+
+    // What was captured is source text, where a backslash is written twice. Parsing it
+    // back to a value keeps the comparison about what the two grammars mean, not how
+    // either one is spelled.
+    return JSON.parse(`"${declared[1]}"`) as string;
+}
 
 // Docs URLs reserve a few segments for things that are not content, and every one of
 // them sits exactly where a space or page id goes. What keeps them apart is match order
@@ -141,5 +170,16 @@ test.describe('docs URL segments', () => {
         for (const reserved of RESERVED_SEGMENTS) {
             expect(reserved, `${reserved} must not be a legal id`).not.toMatch(SPACE_OR_PAGE_ID_PATTERN);
         }
+    });
+
+    /**
+     * @objective Hold the mirrored id grammar to the one the app routes by.
+     * @precondition None: this reads the webapp source in the checkout under test.
+     */
+    test('mirrors the id grammar the app routes by', {tag: '@docs'}, () => {
+        // Everything above rests on this copy being faithful: the assertion that server
+        // ids stay inside the grammar means nothing if the grammar has moved on without
+        // it. Changing either declaration alone fails here.
+        expect(declaredIdGrammar()).toBe(SPACE_OR_PAGE_ID);
     });
 });
