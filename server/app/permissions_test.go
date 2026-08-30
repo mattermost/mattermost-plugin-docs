@@ -106,6 +106,33 @@ func TestAutoJoin_JoinsWhenDefaultGrants(t *testing.T) {
 	mockAPI.AssertCalled(t, "AddChannelMember", space.ChannelId, userID)
 }
 
+// TestAutoJoin_ResponseReadsMembershipFromTheWrite pins where a successful join's response gets
+// the caller's membership: from the row core returned for the add itself, never a follow-up member
+// lookup. The plugin API's member lookup is answered from a read replica, which can miss the row
+// this same request committed on the primary, turning a committed join into a 500.
+func TestAutoJoin_ResponseReadsMembershipFromTheWrite(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	// The caller reaches the join as a fall-through reader and resolves as a member once the add
+	// commits, as core's permission resolution would. Registered before the harness constructor so
+	// it answers ahead of the catch-all grants.
+	memberNow := false
+	mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionReadPage).
+		Return(func(string, string, *mmmodel.Permission) bool { return memberNow }).Maybe()
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	mockAPI.On("AddChannelMember", space.ChannelId, userID).
+		Run(func(mock.Arguments) { memberNow = true }).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
+
+	access, appErr := h.svc.JoinOpenSpace(space, userID)
+	require.Nil(t, appErr)
+	require.NotNil(t, access)
+	require.Contains(t, access.Permissions, mmmodel.PermissionCreatePage.Id,
+		"the response carries the member-effective permissions of the fresh membership")
+	mockAPI.AssertNotCalled(t, "GetChannelMember", mock.Anything, mock.Anything)
+}
+
 // TestAutoJoin_ProvenanceMarkerLifecycle covers the auto-join provenance marker end to end: set on
 // a successful auto-join and visible through GetSpaceMembers, then cleared by a deliberate admin
 // permission change on the same member (SetSpaceMemberPermissions), which must supersede it.

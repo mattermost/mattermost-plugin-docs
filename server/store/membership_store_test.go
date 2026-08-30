@@ -120,6 +120,31 @@ func TestGetChannelMembership(t *testing.T) {
 		}, membership.Members)
 	})
 
+	t.Run("account liveness is resolved through Users and fails closed", func(t *testing.T) {
+		teamID := mmmodel.NewId()
+		channelID := mmmodel.NewId()
+		testutil.MustAddChannel(t, db, channelID, teamID)
+		active := mmmodel.NewId()
+		deactivated := mmmodel.NewId()
+		unknown := mmmodel.NewId()
+		testutil.MustAddChannelMember(t, db, channelID, active)
+		testutil.MustAddChannelAdmin(t, db, channelID, deactivated)
+		testutil.MustDeactivateUser(t, db, deactivated)
+		// A ChannelMembers row with no Users row reads as deactivated: liveness cannot be
+		// confirmed, so the listing must not report the member as reachable.
+		_, err := db.Exec(`INSERT INTO ChannelMembers (ChannelId, UserId) VALUES ($1, $2)`, channelID, unknown)
+		require.NoError(t, err)
+
+		membership, err := s.GetChannelMembership(channelID)
+		require.NoError(t, err)
+		require.Equal(t, teamID, membership.TeamID)
+		require.ElementsMatch(t, []store.ChannelMemberRef{
+			{UserID: active},
+			{UserID: deactivated, SchemeAdmin: true, Deactivated: true},
+			{UserID: unknown, Deactivated: true},
+		}, membership.Members)
+	})
+
 	t.Run("a missing channel row still lists the members, with no team", func(t *testing.T) {
 		channelID := mmmodel.NewId()
 		userID := mmmodel.NewId()

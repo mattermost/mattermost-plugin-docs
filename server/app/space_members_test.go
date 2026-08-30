@@ -121,6 +121,33 @@ func TestServiceRemoveSpaceMember_LastAdminIgnoresAdminWithoutTeamReadSpace(t *t
 	mockAPI.AssertNotCalled(t, "DeleteChannelMember", space.ChannelId, targetAdminID)
 }
 
+// TestServiceRemoveSpaceMember_LastAdminIgnoresDeactivatedAdmin pins that the last-admin invariant
+// counts only admins whose accounts can still authenticate: a second admin whose account is
+// deactivated — an active team row, a ChannelMembers row, SchemeAdmin set, only Users.DeleteAt
+// stamped, which is exactly what core's user deactivation leaves behind — is not one, so removing
+// the other admin is refused.
+func TestServiceRemoveSpaceMember_LastAdminIgnoresDeactivatedAdmin(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	sysadminID := mmmodel.NewId()
+	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true).Maybe()
+	h := openTestServiceWithAPI(t, mockAPI)
+	space, _ := createSpaceForMemberTests(t, h, mockAPI)
+
+	targetAdminID := mmmodel.NewId()
+	deactivatedAdminID := mmmodel.NewId()
+	testutil.MustAddChannelAdmin(t, h.db, space.ChannelId, targetAdminID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, targetAdminID, 0)
+	testutil.MustAddChannelAdmin(t, h.db, space.ChannelId, deactivatedAdminID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, deactivatedAdminID, 0)
+	testutil.MustDeactivateUser(t, h.db, deactivatedAdminID)
+
+	appErr := h.svc.RemoveSpaceMember(space, targetAdminID, sysadminID)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusConflict, appErr.StatusCode)
+	require.Equal(t, "app.space.member.last_admin.app_error", appErr.Id)
+	mockAPI.AssertNotCalled(t, "DeleteChannelMember", space.ChannelId, targetAdminID)
+}
+
 // TestServiceAddSpaceMember_ReAddSkipsEvent verifies AddSpaceMember does not publish
 // space_member_added when the target already holds the membership: core's AddMember is a no-op
 // for an existing member, so publishing on that path would deliver a phantom "member added" event

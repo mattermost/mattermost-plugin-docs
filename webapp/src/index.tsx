@@ -5,12 +5,11 @@ import {publishPagePresence} from 'client/presence_events';
 import type {PagePresenceEvent} from 'client/presence_events';
 import manifest from 'manifest';
 import type {Reducer, Store} from 'redux';
-import {DOCS_BASE_URL, DOCS_SWITCHER_LINK_URL} from 'routing/paths';
+import {DOCS_BASE_URL, DOCS_SWITCHER_LINK_URL, routedSpaceId} from 'routing/paths';
 
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
-import {SpaceTypes} from 'store/action_types';
-import {fetchSpace, fetchSpaceMembers, fetchSpaces, refreshSpaceAfterMemberPermissionsChanged, refreshSpaceAfterSelfRemoval} from 'store/actions';
+import {evictSpace, fetchSpace, fetchSpaceMembers, fetchSpaces, refreshSpaceAccess, refreshSpaceAfterMemberPermissionsChanged, refreshSpaceAfterSelfRemoval} from 'store/actions';
 import reducer from 'store/reducer';
 
 import DocsRootLazy from 'components/docs_root/docs_root_lazy';
@@ -91,28 +90,34 @@ export default class Plugin {
             dispatch(fetchSpaces());
         });
 
+        // A space update can be a revocation (view_access flipped private) or a defaults change,
+        // which alters every member's effective permission set: the refresh evicts on a definitive
+        // denial and bumps the grant-matrix revision so open permission surfaces re-read the
+        // roster's effective sets.
         registry.registerWebSocketEventHandler<SpaceAccessEvent>(SPACE_UPDATED_EVENT, (msg) => {
             const spaceId = msg.data?.space_id;
             if (spaceId) {
-                dispatch(fetchSpace(spaceId));
+                dispatch(refreshSpaceAfterMemberPermissionsChanged(spaceId));
             }
         });
 
-        // One delete event invalidates the space and its page subtree.
+        // One delete event invalidates the space and its page subtree; eviction also supersedes
+        // any read of it still in flight.
         registry.registerWebSocketEventHandler<SpaceAccessEvent>(SPACE_DELETED_EVENT, (msg) => {
             const spaceId = msg.data?.space_id;
             if (!spaceId) {
                 return;
             }
-            dispatch({type: SpaceTypes.DELETED_SPACE, spaceId});
+            dispatch(evictSpace(spaceId));
         });
 
         // Re-fetches rather than just un-evicting: a restore can also change what the caller
-        // may now do with the space, not just whether it exists.
+        // may now do with the space, not just whether it exists — and the caller may not be able
+        // to read the restored space at all, which the refresh answers by leaving it evicted.
         registry.registerWebSocketEventHandler<SpaceAccessEvent>(SPACE_RESTORED_EVENT, (msg) => {
             const spaceId = msg.data?.space_id;
             if (spaceId) {
-                dispatch(fetchSpace(spaceId));
+                dispatch(refreshSpaceAccess(spaceId));
             }
         });
 
@@ -139,9 +144,19 @@ export default class Plugin {
             dispatch(fetchSpaceMembers(spaceId));
         });
 
-        // Reconciles any of the above events missed while the connection was down.
+        // Reconciles events missed while the connection was down. The team listing refreshes the
+        // space set, but it answers with bare spaces whose resolved access fields are deliberately
+        // carried forward by the reducer — so the routed space, whose gated surfaces would
+        // otherwise keep rendering pre-disconnect authority, gets a full access-and-roster
+        // re-read of its own, with the same denial eviction and grant-matrix invalidation a live
+        // event would have delivered.
         registry.registerReconnectHandler(() => {
             dispatch(fetchSpaces());
+            const spaceId = routedSpaceId(window.location.pathname);
+            if (spaceId) {
+                dispatch(refreshSpaceAfterMemberPermissionsChanged(spaceId));
+                dispatch(fetchSpaceMembers(spaceId));
+            }
         });
 
         registry.registerProduct({

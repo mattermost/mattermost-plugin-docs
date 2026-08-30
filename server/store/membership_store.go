@@ -10,8 +10,8 @@ import (
 	"github.com/pkg/errors"
 )
 
-// This file reads core's ChannelMembers and Channels tables directly on the plugin's master DB
-// handle, following the ChannelMembers EXISTS in GetSpacesForTeam. The plugin API's membership
+// This file reads core's ChannelMembers, Channels, and Users tables directly on the plugin's
+// master DB handle, following the ChannelMembers EXISTS in GetSpacesForTeam. The plugin API's membership
 // reads are answered by core's store from a read replica, but the callers here back invariants —
 // last-admin and last-reachable-member protection, auto-join idempotency, WS recipient filtering —
 // that must observe a membership write committed on the primary an instant earlier; under replica
@@ -74,6 +74,12 @@ func (s *Store) IsChannelMember(channelID, userID string) (bool, error) {
 type ChannelMemberRef struct {
 	UserID      string
 	SchemeAdmin bool
+
+	// Deactivated reports that the member's user account is deactivated (Users.DeleteAt set) or
+	// that no Users row exists for it. Deactivation clears sessions but leaves TeamMembers and
+	// ChannelMembers rows in place, so without this flag a deactivated account still looks like a
+	// member who can reach the space.
+	Deactivated bool
 }
 
 // ChannelMembership is a backing channel's whole membership together with the channel's team,
@@ -83,16 +89,19 @@ type ChannelMembership struct {
 	Members []ChannelMemberRef
 }
 
-// GetChannelMembership lists every ChannelMembers row of channelID with its SchemeAdmin flag, and
-// the channel's team resolved through the Channels row so a caller holding only a channel id can
-// use it. The Channels join is outer so a membership row is still listed when its channel row is
-// missing; the team then reads as empty and core admits nobody for it, which fails closed.
-// SchemeAdmin is nullable in core's schema; a NULL reads as not-admin, matching core's own
-// scan-time handling.
+// GetChannelMembership lists every ChannelMembers row of channelID with its SchemeAdmin flag, the
+// account-deactivation state resolved through the Users row, and the channel's team resolved
+// through the Channels row so a caller holding only a channel id can use it. Both joins are outer
+// so a membership row is still listed when its channel or user row is missing; a missing channel
+// row makes the team read as empty and core admits nobody for it, and a missing user row reads as
+// deactivated — both fail closed. SchemeAdmin is nullable in core's schema; a NULL reads as
+// not-admin, matching core's own scan-time handling.
 //
 // Structural only: whether a listed member may still reach the space — an active team membership
 // whose team scheme grants read_space — is core's decision, asked per audience through the plugin
-// API, never a TeamMembers predicate here.
+// API, never a TeamMembers predicate here. The Users join reports account liveness, which is not
+// part of that permission decision: core resolves the permission from the membership and scheme
+// rows, which deactivation leaves in place.
 //
 // Deliberately unpaginated, and it must stay that way. The result feeds a WebSocket omit list
 // (publishToChannels), so a partial answer does not degrade a listing — it delivers the event to
@@ -109,15 +118,18 @@ func (s *Store) GetChannelMembership(channelID string) (*ChannelMembership, erro
 			"COALESCE(c.TeamId, '') AS TeamId",
 			"cm.UserId AS UserId",
 			"COALESCE(cm.SchemeAdmin, FALSE) AS SchemeAdmin",
+			"(u.DeleteAt IS NULL OR u.DeleteAt <> 0) AS Deactivated",
 		).
 		From("ChannelMembers cm").
 		LeftJoin("Channels c ON c.Id = cm.ChannelId").
+		LeftJoin("Users u ON u.Id = cm.UserId").
 		Where(sq.Eq{"cm.ChannelId": channelID})
 
 	var rows []struct {
 		TeamID      string `db:"teamid"`
 		UserID      string `db:"userid"`
 		SchemeAdmin bool   `db:"schemeadmin"`
+		Deactivated bool   `db:"deactivated"`
 	}
 	if err := s.selectBuilder(s.db, &rows, builder); err != nil {
 		return nil, errors.Wrap(err, "unable_to_list_channel_membership")
@@ -125,7 +137,7 @@ func (s *Store) GetChannelMembership(channelID string) (*ChannelMembership, erro
 	membership := &ChannelMembership{Members: make([]ChannelMemberRef, 0, len(rows))}
 	for _, row := range rows {
 		membership.TeamID = row.TeamID
-		membership.Members = append(membership.Members, ChannelMemberRef{UserID: row.UserID, SchemeAdmin: row.SchemeAdmin})
+		membership.Members = append(membership.Members, ChannelMemberRef{UserID: row.UserID, SchemeAdmin: row.SchemeAdmin, Deactivated: row.Deactivated})
 	}
 	return membership, nil
 }

@@ -79,33 +79,12 @@ export class SpaceSettingsModalPage {
             .getByRole('checkbox', {name: label});
     }
 
-    permissionPreset(label: string): Locator {
-        return this.dialog
-            .locator('fieldset')
-            .filter({hasText: 'Everyone with access to this space can:'})
-            .getByRole('radio', {name: label, exact: true});
-    }
-
     // A member's own toggle in the matrix. Addressed by the id the tab builds
     // (`member-<userId>-<permission>`) rather than by label: the same vocabulary is
     // rendered once for the space default and once per member, so a label match is
     // ambiguous by the number of members.
     memberPermission(userId: string, permission: string): Locator {
         return this.dialog.locator(`#member-${userId}-${permission}`);
-    }
-
-    memberEffectivePermissions(userId: string): Locator {
-        return this.dialog.locator(`#member-${userId}-effective-permissions`);
-    }
-
-    async expectMemberEffectivePermission(userId: string, label: string, included: boolean) {
-        const effective = this.memberEffectivePermissions(userId);
-        await expect(effective).toBeVisible();
-        if (included) {
-            await expect(effective).toContainText(label);
-        } else {
-            await expect(effective).not.toContainText(label);
-        }
     }
 
     async expectMemberPermission(userId: string, permission: string, checked: boolean) {
@@ -234,16 +213,6 @@ export class SpaceSettingsModalPage {
         // The server response is what flips it back, so this is the save completing —
         // not just the click landing.
         await expect(box).toBeChecked({checked: !wasChecked});
-    }
-
-    async choosePermissionPreset(label: string) {
-        const preset = this.permissionPreset(label);
-        await preset.click();
-        await expect(preset).toBeChecked();
-    }
-
-    async expectPermissionPreset(label: string) {
-        await expect(this.permissionPreset(label)).toBeChecked();
     }
 
     async chooseAccess(name: AccessOption) {

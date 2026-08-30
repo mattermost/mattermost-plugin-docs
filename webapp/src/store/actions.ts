@@ -21,6 +21,37 @@ import {collectSubtreeIds} from './entities';
 import {getMustJoinSpace} from './permissions';
 import {getPage, getPagesById, getSpace} from './selectors';
 
+// Orders the writers of a space's resolved access record. Every read or write whose response is
+// dispatched into the `spaces` slice claims an issue slot before its request is sent; the dispatch
+// is dropped when a later-issued response for the same space has already been applied, so a slower
+// earlier read cannot overwrite the state a fresher response wrote. An eviction claims a slot too,
+// which keeps a response already in flight from resurrecting a space evicted on a definitive
+// denial. The per-member counterpart is useSpacePermissions's write-generation guard; this one
+// covers the space record itself, whose writers span thunks, hooks, and WebSocket handlers.
+let spaceAccessIssueCounter = 0;
+const appliedSpaceAccessGeneration = new Map<string, number>();
+
+/** Claims the next issue slot. Call before sending the request whose response will be applied. */
+export function nextSpaceAccessGeneration(): number {
+    return ++spaceAccessIssueCounter;
+}
+
+// Builds the received-spaces action for one record — or an empty one, which the reducer ignores,
+// when a later-issued response for the same space has already been applied.
+const spaceAccessAction = (space: Space, generation: number) => {
+    if (generation < (appliedSpaceAccessGeneration.get(space.id) ?? 0)) {
+        return {type: SpaceTypes.RECEIVED_SPACES, spaces: [] as Space[]};
+    }
+    appliedSpaceAccessGeneration.set(space.id, generation);
+    return {type: SpaceTypes.RECEIVED_SPACES, spaces: [space]};
+};
+
+/** Drops spaceId from the store and supersedes any of its responses still in flight. */
+export function evictSpace(spaceId: string) {
+    appliedSpaceAccessGeneration.set(spaceId, ++spaceAccessIssueCounter);
+    return {type: SpaceTypes.DELETED_SPACE, spaceId};
+}
+
 // Spaces the caller may read in the current team. The server combines membership with the eligible
 // open-space fall-through. A failed load leaves the store empty rather than crashing on mount.
 export function fetchSpaces(): DocsThunkAction<Promise<void>> {
@@ -57,10 +88,11 @@ export function fetchSpaces(): DocsThunkAction<Promise<void>> {
  */
 export function fetchSpace(spaceId: string): DocsThunkAction<Promise<Space | undefined>> {
     return async (dispatch) => {
+        const generation = nextSpaceAccessGeneration();
         try {
             const space = await docsDataSource.getSpace(spaceId);
             if (space) {
-                dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: [space]});
+                dispatch(spaceAccessAction(space, generation));
             }
             return space;
         } catch (error) {
@@ -355,13 +387,19 @@ export function ensureSpaceMembership(spaceId: string): DocsThunkAction<Promise<
         if (!getMustJoinSpace(getState(), spaceId)) {
             return;
         }
-        dispatch(receivedSpaceAccess(await joinSpace(spaceId)));
+        const generation = nextSpaceAccessGeneration();
+        dispatch(receivedSpaceAccess(await joinSpace(spaceId), generation));
     };
 }
 
-/** Stores the server-resolved access record shared by permission-gated surfaces. */
-export function receivedSpaceAccess(space: SpaceAccess) {
-    return {type: SpaceTypes.RECEIVED_SPACES, spaces: [space]};
+/**
+ * Stores the server-resolved access record shared by permission-gated surfaces. generation is the
+ * issue slot (nextSpaceAccessGeneration) claimed before the request that produced `space` was
+ * sent; a record superseded by a later-issued response or an eviction resolves to an empty
+ * received-spaces action, which the reducer ignores.
+ */
+export function receivedSpaceAccess(space: SpaceAccess, generation: number) {
+    return spaceAccessAction(space, generation);
 }
 
 /** Invalidates the hook-local per-member grant matrix. */
@@ -370,12 +408,45 @@ export function spaceMemberPermissionsChanged(spaceId: string) {
 }
 
 /**
- * Refreshes shared access before invalidating grants. On a failed refresh, retain the matrix
- * rather than reload it under stale manage authority and mistake a redacted roster for grant data.
+ * Re-reads spaceId's access record, evicting it on a definitive denial.
+ *
+ * A refresh and loss of access are not the same event: the record that comes back may simply carry
+ * a narrowed permission set, in which case it replaces the stored one. Only a definitive denial
+ * (403/404) evicts — the caller lost the space, and retaining the stale record would keep
+ * rendering pre-revocation affordances indefinitely. A request that never completed is not an
+ * answer about access, so a transient failure retains the stored record.
+ *
+ * Resolves to the refreshed record, or undefined when the space was evicted or the read failed.
+ */
+export function refreshSpaceAccess(spaceId: string): DocsThunkAction<Promise<Space | undefined>> {
+    return async (dispatch) => {
+        const generation = nextSpaceAccessGeneration();
+        try {
+            const space = await docsDataSource.getSpace(spaceId);
+            if (space) {
+                dispatch(spaceAccessAction(space, generation));
+            }
+            return space;
+        } catch (error) {
+            if (error instanceof RestError && (error.status === 403 || error.status === 404)) {
+                dispatch(evictSpace(spaceId));
+                return undefined;
+            }
+            // eslint-disable-next-line no-console
+            console.error('Docs: failed to re-resolve space access', spaceId, error);
+            return undefined;
+        }
+    };
+}
+
+/**
+ * Refreshes shared access before invalidating grants. A definitive denial evicts the space
+ * (refreshSpaceAccess); on any other failed refresh, retain the matrix rather than reload it under
+ * stale manage authority and mistake a redacted roster for grant data.
  */
 export function refreshSpaceAfterMemberPermissionsChanged(spaceId: string): DocsThunkAction<Promise<void>> {
     return async (dispatch) => {
-        const space = await dispatch(fetchSpace(spaceId));
+        const space = await dispatch(refreshSpaceAccess(spaceId));
         if (!space) {
             return;
         }
@@ -440,30 +511,15 @@ export function updateSpace(spaceId: string, patch: UpdateSpacePatch): DocsThunk
  *
  * Removal and loss of access are not the same event. The open-space fall-through may still admit
  * the caller, in which case the returned record carries their narrowed permission set and remains
- * in the store.
- *
- * Only a definitive denial evicts. A request that never completed is not an answer about access,
- * and treating it as one would drop a space the caller can still read until some later listing
- * happened to restore it.
+ * in the store; only a definitive denial evicts (refreshSpaceAccess).
  */
 export function refreshSpaceAfterSelfRemoval(spaceId: string): DocsThunkAction<Promise<void>> {
     return async (dispatch) => {
-        try {
-            const space = await docsDataSource.getSpace(spaceId);
-            if (space) {
-                dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: [space]});
-
-                // The caller is gone from the roster the space view renders its count from, so the
-                // read that survived has a stale member list behind it.
-                await dispatch(fetchSpaceMembers(spaceId));
-            }
-        } catch (error) {
-            if (error instanceof RestError && (error.status === 403 || error.status === 404)) {
-                dispatch({type: SpaceTypes.DELETED_SPACE, spaceId});
-                return;
-            }
-            // eslint-disable-next-line no-console
-            console.error('Docs: failed to re-resolve space after removal', spaceId, error);
+        const space = await dispatch(refreshSpaceAccess(spaceId));
+        if (space) {
+            // The caller is gone from the roster the space view renders its count from, so the
+            // read that survived has a stale member list behind it.
+            await dispatch(fetchSpaceMembers(spaceId));
         }
     };
 }
@@ -473,7 +529,7 @@ export function refreshSpaceAfterSelfRemoval(spaceId: string): DocsThunkAction<P
 export function deleteSpace(spaceId: string): DocsThunkAction<Promise<void>> {
     return async (dispatch) => {
         await docsDataSource.deleteSpace(spaceId);
-        dispatch({type: SpaceTypes.DELETED_SPACE, spaceId});
+        dispatch(evictSpace(spaceId));
     };
 }
 

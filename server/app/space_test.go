@@ -1048,10 +1048,12 @@ func TestServiceUpdateSpace_ViewAccessGuards(t *testing.T) {
 	})
 }
 
-// TestServiceUpdateSpace_PrivateFlipPrePrunes pins the open-to-private ordering and failure
-// contract. Auto-joined backing memberships are removed while the persisted space is still open;
-// only a complete prune permits the privacy update to commit.
-func TestServiceUpdateSpace_PrivateFlipPrePrunes(t *testing.T) {
+// TestServiceUpdateSpace_PrivateFlipPrunesSelfJoined pins the open-to-private ordering and failure
+// contract. The privacy update commits under the same lock acquisition as its escalation gate, so
+// no removal can precede a refused gate or a stale baseline; the auto-joined backing memberships
+// are removed after the commit, and a removal failure leaves the space private with the failed
+// member still marked rather than failing the request.
+func TestServiceUpdateSpace_PrivateFlipPrunesSelfJoined(t *testing.T) {
 	privatePatch := func() *model.SpacePatch {
 		return &model.SpacePatch{ViewAccess: mmmodel.NewPointer(model.ViewAccessPrivate)}
 	}
@@ -1067,15 +1069,15 @@ func TestServiceUpdateSpace_PrivateFlipPrePrunes(t *testing.T) {
 		return h, space, adminID, memberID
 	}
 
-	t.Run("prunes before committing private", func(t *testing.T) {
+	t.Run("commits private before the removal pass", func(t *testing.T) {
 		mockAPI := &plugintest.API{}
 		h, space, adminID, memberID := setup(t, mockAPI)
 		mockAPI.On("DeleteChannelMember", space.ChannelId, memberID).
 			Run(func(mock.Arguments) {
 				live, err := h.store.GetSpace(space.Id, false)
 				require.NoError(t, err)
-				require.Equal(t, model.ViewAccessOpen, live.ViewAccess,
-					"the backing membership must be removed before view_access commits")
+				require.Equal(t, model.ViewAccessPrivate, live.ViewAccess,
+					"view_access must be committed before the removal pass runs")
 			}).
 			Return(nil).
 			Once()
@@ -1091,28 +1093,51 @@ func TestServiceUpdateSpace_PrivateFlipPrePrunes(t *testing.T) {
 		require.Empty(t, marked)
 	})
 
-	t.Run("a deletion failure leaves the space open", func(t *testing.T) {
+	t.Run("a deletion failure leaves the space private and the request successful", func(t *testing.T) {
 		mockAPI := &plugintest.API{}
 		h, space, adminID, memberID := setup(t, mockAPI)
 		deleteErr := mmmodel.NewAppError("DeleteChannelMember", "test.delete.failed", nil, "", http.StatusInternalServerError)
 		mockAPI.On("DeleteChannelMember", space.ChannelId, memberID).Return(deleteErr).Once()
+		mockAPI.On("GetChannelOfType", space.ChannelId, mmmodel.ChannelTypeSpace).
+			Return((*mmmodel.Channel)(nil), nil).
+			Once()
 
 		updated, appErr := h.svc.UpdateSpace(space, privatePatch(), new(space.UpdateAt), false, adminID)
-		require.Nil(t, updated)
+		require.Nil(t, appErr, "the access change committed, so the removal failure must not fail the request")
+		require.Equal(t, model.ViewAccessPrivate, updated.ViewAccess)
+
+		live, err := h.store.GetSpace(space.Id, false)
+		require.NoError(t, err)
+		require.Equal(t, model.ViewAccessPrivate, live.ViewAccess)
+		marked, err := h.store.GetAutoJoinedIDs(space.Id)
+		require.NoError(t, err)
+		require.Equal(t, []string{memberID}, marked,
+			"the failed member stays marked so a later removal pass selects them again")
+		mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_updated",
+			map[string]any{"space_id": space.Id},
+			&mmmodel.WebsocketBroadcast{ChannelId: space.ChannelId})
+		mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "space_member_removed",
+			map[string]any{"space_id": space.Id, "user_id": memberID},
+			&mmmodel.WebsocketBroadcast{UserId: memberID})
+	})
+
+	t.Run("a refused gate writes and prunes nothing", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		h, space, _, memberID := setup(t, mockAPI)
+
+		// The harness grants an ordinary member's permissions and withholds admin_space, and the
+		// stand-in tables carry no SchemeAdmin row for this acting user.
+		_, appErr := h.svc.UpdateSpace(space, privatePatch(), new(space.UpdateAt), false, mmmodel.NewId())
 		require.NotNil(t, appErr)
-		require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
-		require.Equal(t, "app.space.prune_self_joined.failed.app_error", appErr.Id)
+		require.Equal(t, http.StatusForbidden, appErr.StatusCode)
 
 		live, err := h.store.GetSpace(space.Id, false)
 		require.NoError(t, err)
 		require.Equal(t, model.ViewAccessOpen, live.ViewAccess)
-		require.Equal(t, space.UpdateAt, live.UpdateAt)
+		mockAPI.AssertNotCalled(t, "DeleteChannelMember", space.ChannelId, memberID)
 		marked, err := h.store.GetAutoJoinedIDs(space.Id)
 		require.NoError(t, err)
-		require.Equal(t, []string{memberID}, marked,
-			"the failed member stays marked so a retry selects it again")
-		mockAPI.AssertNotCalled(t, "GetChannelOfType", mock.Anything, mock.Anything)
-		mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "space_updated", mock.Anything, mock.Anything)
+		require.Equal(t, []string{memberID}, marked)
 	})
 
 	t.Run("an already absent membership does not block the flip", func(t *testing.T) {
@@ -1131,40 +1156,6 @@ func TestServiceUpdateSpace_PrivateFlipPrePrunes(t *testing.T) {
 		marked, err := h.store.GetAutoJoinedIDs(space.Id)
 		require.NoError(t, err)
 		require.Empty(t, marked, "a stale marker is cleared when core reports the membership absent")
-	})
-
-	t.Run("a member who joins during the removal pass is pruned before the flip commits", func(t *testing.T) {
-		mockAPI := &plugintest.API{}
-		h, space, adminID, memberID := setup(t, mockAPI)
-		stragglerID := mmmodel.NewId()
-		// The first removal runs with the lock released; a join landing in that window marks a
-		// member the initial snapshot never saw.
-		mockAPI.On("DeleteChannelMember", space.ChannelId, memberID).
-			Run(func(mock.Arguments) {
-				require.NoError(t, h.store.MarkAutoJoined(space.Id, stragglerID))
-			}).
-			Return(nil).
-			Once()
-		mockAPI.On("DeleteChannelMember", space.ChannelId, stragglerID).
-			Run(func(mock.Arguments) {
-				live, err := h.store.GetSpace(space.Id, false)
-				require.NoError(t, err)
-				require.Equal(t, model.ViewAccessOpen, live.ViewAccess,
-					"the late joiner must be removed before view_access commits")
-			}).
-			Return(nil).
-			Once()
-		mockAPI.On("GetChannelOfType", space.ChannelId, mmmodel.ChannelTypeSpace).
-			Return((*mmmodel.Channel)(nil), nil).
-			Once()
-
-		updated, appErr := h.svc.UpdateSpace(space, privatePatch(), new(space.UpdateAt), false, adminID)
-		require.Nil(t, appErr)
-		require.Equal(t, model.ViewAccessPrivate, updated.ViewAccess)
-		mockAPI.AssertCalled(t, "DeleteChannelMember", space.ChannelId, stragglerID)
-		marked, err := h.store.GetAutoJoinedIDs(space.Id)
-		require.NoError(t, err)
-		require.Empty(t, marked)
 	})
 
 	t.Run("a stale baseline prunes nobody", func(t *testing.T) {

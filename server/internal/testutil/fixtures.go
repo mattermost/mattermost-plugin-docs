@@ -63,30 +63,58 @@ func OpenTestStore(t *testing.T) (*store.Store, *sql.DB) {
 	)`)
 	require.NoError(t, err, "create Channels stand-in")
 
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS Users (
+		Id varchar(26) NOT NULL,
+		DeleteAt bigint NOT NULL DEFAULT 0,
+		PRIMARY KEY (Id)
+	)`)
+	require.NoError(t, err, "create Users stand-in")
+
 	return s, db
+}
+
+// mustSeedUser upserts a Users row (see the stand-in table in OpenTestStore). The membership
+// listing resolves account liveness through Users and reads a missing row as deactivated, so every
+// helper that seeds a ChannelMembers row seeds the member's Users row too.
+func mustSeedUser(t *testing.T, db *sql.DB, userID string, deleteAt int64) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO Users (Id, DeleteAt) VALUES ($1, $2)
+		ON CONFLICT (Id) DO UPDATE SET DeleteAt = EXCLUDED.DeleteAt`, userID, deleteAt)
+	require.NoError(t, err)
+}
+
+// MustDeactivateUser marks userID's account deactivated (Users.DeleteAt set), matching what core's
+// user deactivation writes: the Users row changes while TeamMembers and ChannelMembers rows stay.
+func MustDeactivateUser(t *testing.T, db *sql.DB, userID string) {
+	t.Helper()
+	mustSeedUser(t, db, userID, 1)
 }
 
 // MustAddChannelMember seeds a ChannelMembers row (see the stand-in table in OpenTestStore) so
 // store queries that resolve visibility through channel membership can see channelID as userID.
-// SchemeAdmin is left NULL, as core's schema allows.
+// SchemeAdmin is left NULL, as core's schema allows. The member's Users row is seeded active;
+// deactivate it afterwards with MustDeactivateUser where a test needs a deactivated member.
 func MustAddChannelMember(t *testing.T, db *sql.DB, channelID, userID string) {
 	t.Helper()
+	mustSeedUser(t, db, userID, 0)
 	_, err := db.Exec(`INSERT INTO ChannelMembers (ChannelId, UserId) VALUES ($1, $2)`, channelID, userID)
 	require.NoError(t, err)
 }
 
 // MustAddChannelAdmin seeds a ChannelMembers row with SchemeAdmin set, for queries that
-// distinguish admins from plain members.
+// distinguish admins from plain members. The member's Users row is seeded active.
 func MustAddChannelAdmin(t *testing.T, db *sql.DB, channelID, userID string) {
 	t.Helper()
+	mustSeedUser(t, db, userID, 0)
 	_, err := db.Exec(`INSERT INTO ChannelMembers (ChannelId, UserId, SchemeAdmin) VALUES ($1, $2, TRUE)`, channelID, userID)
 	require.NoError(t, err)
 }
 
 // MustAddChannelGuest seeds a ChannelMembers row with SchemeGuest set, for queries that
-// distinguish guests from plain members.
+// distinguish guests from plain members. The member's Users row is seeded active.
 func MustAddChannelGuest(t *testing.T, db *sql.DB, channelID, userID string) {
 	t.Helper()
+	mustSeedUser(t, db, userID, 0)
 	_, err := db.Exec(`INSERT INTO ChannelMembers (ChannelId, UserId, SchemeGuest) VALUES ($1, $2, TRUE)`, channelID, userID)
 	require.NoError(t, err)
 }

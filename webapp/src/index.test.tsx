@@ -12,6 +12,7 @@ import {makeTestStore} from '../tests/react_testing_utils';
 const mockFetchSpace = jest.fn();
 const mockFetchSpaces = jest.fn();
 const mockFetchSpaceMembers = jest.fn();
+const mockRefreshSpaceAccess = jest.fn();
 const mockRefreshSpaceAfterMemberPermissionsChanged = jest.fn();
 const mockRefreshSpaceAfterSelfRemoval = jest.fn();
 
@@ -20,6 +21,7 @@ jest.mock('store/actions', () => ({
     fetchSpace: (...args: unknown[]) => () => mockFetchSpace(...args as []),
     fetchSpaces: (...args: unknown[]) => () => mockFetchSpaces(...args as []),
     fetchSpaceMembers: (...args: unknown[]) => () => mockFetchSpaceMembers(...args as []),
+    refreshSpaceAccess: (...args: unknown[]) => () => mockRefreshSpaceAccess(...args as []),
     refreshSpaceAfterMemberPermissionsChanged: (...args: unknown[]) => () => mockRefreshSpaceAfterMemberPermissionsChanged(...args as []),
     refreshSpaceAfterSelfRemoval: (...args: unknown[]) => () => mockRefreshSpaceAfterSelfRemoval(...args as []),
 }));
@@ -85,16 +87,20 @@ describe('Docs plugin WebSocket wiring', () => {
         expect(mockFetchSpaces).toHaveBeenCalled();
     });
 
-    it('re-fetches the space when space_restored fires, reversing a prior eviction', () => {
+    it('re-resolves access when space_restored fires, leaving a denied space evicted', () => {
         fake.fire(eventName('space_restored'), {data: {space_id: 'space1'}});
 
-        expect(mockFetchSpace).toHaveBeenCalledWith('space1');
+        expect(mockRefreshSpaceAccess).toHaveBeenCalledWith('space1');
     });
 
-    it('re-fetches the space when space_updated fires', () => {
+    it('re-resolves access and bumps the grant revision when space_updated fires', () => {
+        // A space update can be a revocation or a defaults change, which alters every member's
+        // effective set — so the handler shares the member-permissions refresh, denial eviction
+        // included, rather than a plain fetch that swallows a 403.
         fake.fire(eventName('space_updated'), {data: {space_id: 'space1'}});
 
-        expect(mockFetchSpace).toHaveBeenCalledWith('space1');
+        expect(mockRefreshSpaceAfterMemberPermissionsChanged).toHaveBeenCalledWith('space1');
+        expect(mockFetchSpace).not.toHaveBeenCalled();
     });
 
     it('dispatches DELETED_SPACE when space_deleted fires', () => {
@@ -136,5 +142,26 @@ describe('Docs plugin WebSocket wiring', () => {
         fake.fireReconnect();
 
         expect(mockFetchSpaces).toHaveBeenCalled();
+    });
+
+    it('re-reads the routed space and its roster on reconnect', () => {
+        // The team listing answers with bare spaces whose access fields are carried forward, so
+        // without this the routed space's gated surfaces would keep pre-disconnect authority.
+        window.history.pushState({}, '', '/team1/spaces/space1/page1');
+        try {
+            fake.fireReconnect();
+        } finally {
+            window.history.pushState({}, '', '/');
+        }
+
+        expect(mockRefreshSpaceAfterMemberPermissionsChanged).toHaveBeenCalledWith('space1');
+        expect(mockFetchSpaceMembers).toHaveBeenCalledWith('space1');
+    });
+
+    it('does not re-read any space on reconnect outside a routed space', () => {
+        fake.fireReconnect();
+
+        expect(mockRefreshSpaceAfterMemberPermissionsChanged).not.toHaveBeenCalled();
+        expect(mockFetchSpaceMembers).not.toHaveBeenCalled();
     });
 });

@@ -10,7 +10,7 @@ import {useIntl} from 'react-intl';
 
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
-import {receivedSpaceAccess} from 'store/actions';
+import {nextSpaceAccessGeneration, receivedSpaceAccess} from 'store/actions';
 import {getSpace, getSpaceMemberPermissionsRevision, getSpaceMemberIds} from 'store/selectors';
 
 import {toast} from 'components/toast';
@@ -150,8 +150,9 @@ export function useSpacePermissions(space: Space): SpacePermissions {
 
     // Self-grant changes can alter authority through several independent tiers; re-resolve it.
     const reloadTiers = useCallback(async () => {
+        const generation = nextSpaceAccessGeneration();
         try {
-            dispatch(receivedSpaceAccess(await getSpaceAccess(space.id)));
+            dispatch(receivedSpaceAccess(await getSpaceAccess(space.id), generation));
         } catch {
             // The grant write succeeded; a failed follow-up must not report it as rejected.
         }
@@ -172,6 +173,7 @@ export function useSpacePermissions(space: Space): SpacePermissions {
             try {
                 let canManage = storeCanManageMembers;
                 if (loadAccess) {
+                    const generation = nextSpaceAccessGeneration();
                     const access = await getSpaceAccess(space.id);
                     if (cancelled) {
                         return;
@@ -179,7 +181,7 @@ export function useSpacePermissions(space: Space): SpacePermissions {
 
                     // The server-resolved record is authoritative even when the caller is absent
                     // from the roster, as a system administrator may be.
-                    dispatch(receivedSpaceAccess(access));
+                    dispatch(receivedSpaceAccess(access, generation));
                     canManage = access.permissions.some((permission) =>
                         permission === Permissions.MANAGE_SPACE || permission === Permissions.ADMIN_SPACE);
                     accessResolvedFor.current = space.id;
@@ -231,8 +233,9 @@ export function useSpacePermissions(space: Space): SpacePermissions {
     // Defaults do not change the granted_permissions rendered by the matrix.
     const setDefaults = useCallback(async (next: Permission[]) => {
         setBusy(true);
+        const generation = nextSpaceAccessGeneration();
         try {
-            dispatch(receivedSpaceAccess(await setDefaultPermissions(space.id, next)));
+            dispatch(receivedSpaceAccess(await setDefaultPermissions(space.id, next), generation));
         } catch (error) {
             toast.error(permissionWriteError(error));
             throw error;
@@ -264,8 +267,9 @@ export function useSpacePermissions(space: Space): SpacePermissions {
 
     const setViewAccess = useCallback(async (next: SpaceViewAccess) => {
         setBusy(true);
+        const generation = nextSpaceAccessGeneration();
         try {
-            dispatch(receivedSpaceAccess(await setSpaceViewAccess(space.id, next, stored.update_at)));
+            dispatch(receivedSpaceAccess(await setSpaceViewAccess(space.id, next, stored.update_at), generation));
         } catch (error) {
             toast.error(permissionWriteError(error));
             throw error;

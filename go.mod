@@ -7,16 +7,14 @@ go 1.26.7
 // replace. Runtime E2E image selection is deliberately independent: CI defaults to core master,
 // and each plugin PR may opt into its own paired core commit through the PR-scoped marker.
 // server/v8 is the test harness only (storetest helpers); it does not contribute any runtime
-// symbols and is pinned independently to an older commit. The two modules live in the same
-// monorepo but are versioned independently, so their pseudo-version timestamps will always
-// differ; what matters is that server/public has the APIs this plugin calls.
+// symbols; what matters is that server/public has the APIs this plugin calls.
 // Bump both to a release tag once the core space-channel changes ship.
 require (
 	github.com/gorilla/mux v1.8.1
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.12.3
-	github.com/mattermost/mattermost/server/public v0.4.5-0.20260828203305-8701197087f4
-	github.com/mattermost/mattermost/server/v8 v8.0.0-20260623200446-ba033eae4704
+	github.com/mattermost/mattermost/server/public v0.4.5-0.20260830214830-fd2327bf98ff
+	github.com/mattermost/mattermost/server/v8 v8.0.0-20260830214830-fd2327bf98ff
 	github.com/mattermost/morph v1.1.0
 	github.com/mattermost/squirrel v0.5.0
 	github.com/pkg/errors v0.9.1
@@ -67,7 +65,7 @@ require (
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/wiggin77/srslog v1.0.1 // indirect
-	github.com/yuin/goldmark v1.8.2 // indirect
+	github.com/yuin/goldmark v1.8.5 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/mod v0.40.0 // indirect
@@ -80,10 +78,10 @@ require (
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	modernc.org/libc v1.72.3 // indirect
+	modernc.org/libc v1.75.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
-	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.50.1 // indirect
+	modernc.org/memory v1.12.1 // indirect
+	modernc.org/sqlite v1.57.0 // indirect
 )
 
 // Repin server/public to a released version once mattermost/mattermost#37685 merges.

@@ -46,6 +46,15 @@ export const DOCS_SPACE_ROUTE = `/:team/${DOCS_KEYWORD}/:spaceId(${SPACE_OR_PAGE
 export const DOCS_OVERVIEW_SEGMENT = 'overview';
 export const DOCS_SPACE_OVERVIEW_ROUTE = `/:team/${DOCS_KEYWORD}/:spaceId(${SPACE_OR_PAGE_ID})/${DOCS_OVERVIEW_SEGMENT}`;
 
+// The space id (or slug) segment of a docs pathname, or undefined when the path is not a routed
+// space — the product home, another product, or a path whose third segment is not a valid id
+// token. For callers outside the router tree (the WebSocket reconnect handler) that need the
+// currently routed space without a hook.
+export function routedSpaceId(pathname: string): string | undefined {
+    const match = pathname.match(new RegExp(`^/[^/]+/${DOCS_KEYWORD}/(${SPACE_OR_PAGE_ID})(?:/|$)`));
+    return match?.[1];
+}
+
 const segment = (value: string): string => encodeURIComponent(value);
 
 const teamRoot = (teamName: string): string => `/${segment(teamName)}/${DOCS_KEYWORD}`;

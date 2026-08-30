@@ -9,10 +9,14 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
-// spaceAudience is a space backing channel's membership split by the team half of the read gate.
-// Core makes the split: FilterUsersWithTeamPermission resolves team read_space per member from the
-// active team membership, its team scheme and the user's system roles, exactly as the per-request
-// gates resolve it, so the plugin never derives it from TeamMembers itself.
+// spaceAudience is a space backing channel's membership split by whether each member can still
+// reach the space: an active (non-deactivated) account holding the team half of the read gate.
+// Core makes the permission split: FilterUsersWithTeamPermission resolves team read_space per
+// member from the active team membership, its team scheme and the user's system roles, exactly as
+// the per-request gates resolve it, so the plugin never derives it from TeamMembers itself.
+// Account deactivation is the axis that split cannot see — it revokes sessions but leaves the
+// TeamMembers and ChannelMembers rows in place — so it is read alongside the membership and
+// resolved here: a deactivated member cannot authenticate, so they are never admitted.
 type spaceAudience struct {
 	// admitted holds the members who pass, with their SchemeAdmin flag.
 	admitted []store.ChannelMemberRef
@@ -20,9 +24,10 @@ type spaceAudience struct {
 	omitted []string
 }
 
-// resolveSpaceAudience lists channelID's members and asks core which of them hold team read_space.
-// Resolved on every call: a team departure or a team-scheme change has no plugin-visible hook, so
-// a cached answer could not be kept current. Requires a wired client.
+// resolveSpaceAudience lists channelID's members and asks core which of them hold team read_space;
+// deactivated accounts are omitted without asking. Resolved on every call: a team departure, a
+// team-scheme change, or a deactivation has no plugin-visible hook, so a cached answer could not
+// be kept current. Requires a wired client.
 func (s *Service) resolveSpaceAudience(channelID string) (*spaceAudience, error) {
 	membership, err := s.store.GetChannelMembership(channelID)
 	if err != nil {
@@ -32,20 +37,25 @@ func (s *Service) resolveSpaceAudience(channelID string) (*spaceAudience, error)
 	if len(membership.Members) == 0 {
 		return audience, nil
 	}
-	ids := make([]string, len(membership.Members))
-	for i, member := range membership.Members {
-		ids[i] = member.UserID
+	ids := make([]string, 0, len(membership.Members))
+	for _, member := range membership.Members {
+		if !member.Deactivated {
+			ids = append(ids, member.UserID)
+		}
 	}
-	granted, err := s.client.User.FilterWithTeamPermission(membership.TeamID, ids, mmmodel.PermissionReadSpace)
-	if err != nil {
-		return nil, err
+	var granted []string
+	if len(ids) > 0 {
+		granted, err = s.client.User.FilterWithTeamPermission(membership.TeamID, ids, mmmodel.PermissionReadSpace)
+		if err != nil {
+			return nil, err
+		}
 	}
 	admitted := make(map[string]bool, len(granted))
 	for _, id := range granted {
 		admitted[id] = true
 	}
 	for _, member := range membership.Members {
-		if admitted[member.UserID] {
+		if !member.Deactivated && admitted[member.UserID] {
 			audience.admitted = append(audience.admitted, member)
 		} else {
 			audience.omitted = append(audience.omitted, member.UserID)

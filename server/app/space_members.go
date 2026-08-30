@@ -231,6 +231,7 @@ func (s *Service) JoinOpenSpace(space *model.Space, userID string) (*model.Space
 
 	joined := false
 	var joinedChannelID string
+	var joinedMember *mmmodel.ChannelMember
 	var latestSpace *model.Space
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
 		fresh, getErr := s.store.GetSpace(space.Id, false)
@@ -277,7 +278,8 @@ func (s *Service) JoinOpenSpace(space *model.Space, userID string) (*model.Space
 		if markErr := s.store.MarkAutoJoined(fresh.Id, userID); markErr != nil {
 			return mmmodel.NewAppError("JoinOpenSpace", "app.space.auto_join.provenance_write_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(markErr)
 		}
-		if _, addErr := s.client.Channel.AddMember(fresh.ChannelId, userID); addErr != nil {
+		added, addErr := s.client.Channel.AddMember(fresh.ChannelId, userID)
+		if addErr != nil {
 			// The marker describes a membership that does not exist, which no gate consults, but it
 			// would mislead a membership review, so it is cleared. The failure is returned to the
 			// caller who asked to join, so they can retry it.
@@ -294,6 +296,7 @@ func (s *Service) JoinOpenSpace(space *model.Space, userID string) (*model.Space
 		}
 		joined = true
 		joinedChannelID = fresh.ChannelId
+		joinedMember = added
 		return nil
 	})
 	if lockErr != nil {
@@ -305,17 +308,19 @@ func (s *Service) JoinOpenSpace(space *model.Space, userID string) (*model.Space
 		payload := map[string]any{"space_id": space.Id, "user_id": userID}
 		s.publishMembershipEvent(wsEventSpaceMemberAdded, payload, joinedChannelID, userID)
 	}
-	return s.BuildSpaceWithAccess(latestSpace, userID)
+	// The response for a join this request performed is projected from the membership core returned
+	// for its own write, not from a re-read: the plugin API's member lookup is answered from a read
+	// replica, which can miss the row committed on the primary an instant earlier and would turn a
+	// committed join into a reported failure. The not-joined paths keep the ordinary lookup.
+	return s.buildSpaceWithAccess(latestSpace, userID, nil, joinedMember)
 }
 
-// PruneSelfJoinedMembers removes memberships currently carrying auto-join provenance from space's
-// backing channel, ahead of an open-to-private transition. Deliberate membership changes normally
-// clear that marker. Unlike the other membership mutations in this file, this one runs without the
-// space membership lock held: each removal is its own core RPC, and UpdateSpace — its only caller —
-// re-validates the space is still eligible for the flip once these removals finish, under a
-// separate, shorter lock acquisition. A genuine removal failure aborts here and leaves the failed
-// marker in place for a retry. Successfully removed memberships stay removed even if a later
-// removal fails; they are safe while the space remains open and their users can explicitly rejoin.
+// PruneSelfJoinedMembers removes every membership currently carrying auto-join provenance from
+// space's backing channel: the removal pass of an open-to-private transition. Deliberate
+// membership changes normally clear that marker. Unlike the other membership mutations in this
+// file, this one runs without the space membership lock held, since each removal is its own core
+// RPC. A removal failure returns the members removed so far and leaves the failed marker in place
+// for a later pass; successfully removed memberships stay removed.
 func (s *Service) PruneSelfJoinedMembers(space *model.Space) ([]string, *mmmodel.AppError) {
 	if space == nil {
 		return nil, mmmodel.NewAppError("PruneSelfJoinedMembers", "app.space.get.invalid_id.app_error", nil, "", http.StatusBadRequest)

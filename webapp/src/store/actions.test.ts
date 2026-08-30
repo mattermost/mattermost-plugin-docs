@@ -9,7 +9,7 @@ import {ClientError} from '@mattermost/client';
 import {makePage, makeSpace, makeTeam} from 'store/test_fixtures';
 
 import {DraftTypes, SpaceTypes} from './action_types';
-import {addSpaceMember, addSpaceMembers, createDraft, createSpace, ensureSpaceMembership, fetchAllSpaces, isLastSpaceAdminError, isLastSpaceMemberError, isNotTeamMemberError, isSpaceLockTimeoutError, leaveSpace, movePage, refreshSpaceAfterMemberPermissionsChanged, refreshSpaceAfterSelfRemoval, removeSpaceMember, saveDraft} from './actions';
+import {addSpaceMember, addSpaceMembers, createDraft, createSpace, ensureSpaceMembership, fetchAllSpaces, fetchSpace, isLastSpaceAdminError, isLastSpaceMemberError, isNotTeamMemberError, isSpaceLockTimeoutError, leaveSpace, movePage, refreshSpaceAccess, refreshSpaceAfterMemberPermissionsChanged, refreshSpaceAfterSelfRemoval, removeSpaceMember, saveDraft} from './actions';
 
 import {makeTestState} from '../../tests/react_testing_utils';
 
@@ -400,6 +400,62 @@ describe('refreshSpaceAfterMemberPermissionsChanged', () => {
         await result;
 
         expect(dispatch).not.toHaveBeenCalledWith({type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: 'space1'});
+    });
+
+    // The event that triggered this refresh may be the caller's own revocation, in which case the
+    // re-read is the denial: the stale privileged record must not keep rendering admin affordances.
+    it('evicts the space when the refresh answers a definitive denial', async () => {
+        mockGetSpace.mockRejectedValue(new RestError('/spaces/space1', 403, 'denied', undefined));
+
+        const {result, dispatch} = run((d, g) => refreshSpaceAfterMemberPermissionsChanged('space1')(d as never, g as never, undefined as never));
+        await result;
+
+        expect(dispatch).toHaveBeenCalledWith({type: SpaceTypes.DELETED_SPACE, spaceId: 'space1'});
+        expect(dispatch).not.toHaveBeenCalledWith({type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: 'space1'});
+    });
+});
+
+// The `spaces` slice has a dozen independent async writers — thunks, hooks, WebSocket handlers —
+// and the reducer applies whatever arrives. The issue-order guard is what keeps a slower request
+// issued earlier from silently reverting the state a fresher response wrote.
+describe('space access ordering', () => {
+    beforeEach(() => {
+        jest.clearAllMocks();
+        jest.spyOn(console, 'error').mockImplementation(() => {});
+    });
+    afterEach(() => jest.restoreAllMocks());
+
+    it('a slower earlier read does not overwrite a fresher response', async () => {
+        const stale = makeSpace('space1', 'Stale');
+        const fresh = makeSpace('space1', 'Fresh');
+        const first = deferred<unknown>();
+        mockGetSpace.mockReturnValueOnce(first.promise).mockResolvedValueOnce(fresh);
+
+        const earlier = run((d, g) => refreshSpaceAccess('space1')(d as never, g as never, undefined as never));
+        const later = run((d, g) => refreshSpaceAccess('space1')(d as never, g as never, undefined as never));
+        await later.result;
+        first.resolve(stale);
+        await earlier.result;
+
+        expect(later.dispatch).toHaveBeenCalledWith({type: SpaceTypes.RECEIVED_SPACES, spaces: [fresh]});
+        expect(earlier.dispatch).toHaveBeenCalledWith({type: SpaceTypes.RECEIVED_SPACES, spaces: []});
+        expect(earlier.dispatch).not.toHaveBeenCalledWith({type: SpaceTypes.RECEIVED_SPACES, spaces: [stale]});
+    });
+
+    it('an eviction supersedes a read still in flight', async () => {
+        const pending = deferred<unknown>();
+        mockGetSpace.
+            mockReturnValueOnce(pending.promise).
+            mockRejectedValueOnce(new RestError('/spaces/space1', 403, 'denied', undefined));
+
+        const read = run((d, g) => fetchSpace('space1')(d as never, g as never, undefined as never));
+        const denial = run((d, g) => refreshSpaceAccess('space1')(d as never, g as never, undefined as never));
+        await denial.result;
+        pending.resolve(makeSpace('space1', 'Stale'));
+        await read.result;
+
+        expect(denial.dispatch).toHaveBeenCalledWith({type: SpaceTypes.DELETED_SPACE, spaceId: 'space1'});
+        expect(read.dispatch).toHaveBeenCalledWith({type: SpaceTypes.RECEIVED_SPACES, spaces: []});
     });
 });
 

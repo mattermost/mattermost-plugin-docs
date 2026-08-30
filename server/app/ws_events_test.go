@@ -633,9 +633,9 @@ func TestServiceUpdateSpace_PublishesUpdatedEvent(t *testing.T) {
 }
 
 // TestServiceUpdateSpace_PrivateFlipPublishesPrunedMembers pins the two delivery scopes of the
-// pre-prune. Each removed member is told directly, since core has already removed them from the
-// channel; everyone who remains is told once, by a single channel broadcast carrying no user id,
-// however many members were removed. The normal space update follows.
+// flip's removal pass. Each removed member is told directly, since core has already removed them
+// from the channel; everyone who remains is told once, by a single channel broadcast carrying no
+// user id, however many members were removed. The normal space update follows.
 func TestServiceUpdateSpace_PrivateFlipPublishesPrunedMembers(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	h := openTestServiceWithAPI(t, mockAPI)
