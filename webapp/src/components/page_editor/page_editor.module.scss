@@ -57,14 +57,9 @@
 }
 
 .reading :global {
-    .WysiwygEditor,
-    .WysiwygEditor .ProseMirror,
-    .custom-textarea,
-    .custom-textarea[disabled] {
+    .WysiwygEditor--disabled .ProseMirror {
         opacity: 1;
-        color: var(--center-channel-color);
-        -webkit-text-fill-color: var(--center-channel-color);
-        cursor: default;
+        cursor: auto;
     }
 }
 
