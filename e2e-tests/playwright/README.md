@@ -32,7 +32,7 @@ also ensures the unlicensed preset-only authoring scenario is not collected agai
 
 ```bash
 MM_E2E_SPACE_PERMISSIONS=true \
-MM_IMAGE=mattermostdevelopment/mattermost-team-edition:<paired-core-tag> \
+MM_IMAGE=mattermostdevelopment/mattermost-enterprise-edition:<paired-core-tag> \
 MM_LICENSE_FILE=/path/to/license \
 make test-e2e
 ```

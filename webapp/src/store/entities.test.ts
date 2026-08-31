@@ -64,6 +64,10 @@ describe('spaces', () => {
         const next = reducer(state, {type: SpaceTypes.RECEIVED_SPACES, spaces: [after]});
 
         expect(next.spaces.a.permissions).toEqual(['read_page']);
+
+        // A total revocation arrives as an empty array, not as an omitted field.
+        const revoked = {...makeSpace('a', 'Space A', 't1'), permissions: [] as Permission[]};
+        expect(reducer(next, {type: SpaceTypes.RECEIVED_SPACES, spaces: [revoked]}).spaces.a.permissions).toEqual([]);
     });
 
     it('RECEIVED_SPACES with a teamId marks the team loaded even when it has none', () => {

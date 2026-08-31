@@ -21,13 +21,14 @@ import {collectSubtreeIds} from './entities';
 import {getMustJoinSpace} from './permissions';
 import {getPage, getPagesById, getSpace} from './selectors';
 
-// Orders the writers of a space's resolved access record. Every read or write whose response is
-// dispatched into the `spaces` slice claims an issue slot before its request is sent; the dispatch
-// is dropped when a later-issued response for the same space has already been applied, so a slower
-// earlier read cannot overwrite the state a fresher response wrote. An eviction claims a slot too,
-// which keeps a response already in flight from resurrecting a space evicted on a definitive
-// denial. The per-member counterpart is useSpacePermissions's write-generation guard; this one
-// covers the space record itself, whose writers span thunks, hooks, and WebSocket handlers.
+// Orders the single-space writers of a space's resolved access record. Each single-space read
+// claims an issue slot before its request is sent; the dispatch is dropped when a later-issued
+// response for the same space has already been applied, so a slower earlier read cannot overwrite
+// the state a fresher response wrote. An eviction claims a slot too, which keeps a single-space
+// response already in flight from resurrecting a space evicted on a definitive denial. The
+// fetchSpaces team listing does not consult this guard, so a listing already in flight can still
+// re-add an evicted space until the next refresh corrects it. The per-member counterpart is
+// useSpacePermissions's write-generation guard.
 let spaceAccessIssueCounter = 0;
 const appliedSpaceAccessGeneration = new Map<string, number>();
 

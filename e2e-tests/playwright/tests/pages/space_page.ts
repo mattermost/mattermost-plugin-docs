@@ -79,6 +79,10 @@ export class SpacePage {
             await expect(item).toBeHidden();
         }
         await this.page.keyboard.press('Escape');
+
+        // Wait out the close animation: openPageMenu's click toggles, so a click that lands
+        // while the menu is still dismissing closes it again instead of opening it.
+        await expect(this.page.getByRole('menuitem', {name: 'Copy link'})).toBeHidden();
     }
 
     async renamePage(from: string, to: string) {
@@ -235,11 +239,11 @@ export class SpacePage {
         const token = this.bodySurface.locator('pre code span[class^="hljs-"]').first();
         await expect(token).toBeVisible();
 
-        const paint = await token.evaluate((el) => {
-            const style = getComputedStyle(el);
-            return {color: style.color, fill: style.webkitTextFillColor};
-        });
-        expect(paint.fill, 'a highlighted token must paint in its own colour').toBe(paint.color);
+        const paint = await token.evaluate((el) => ({
+            token: getComputedStyle(el).color,
+            surrounding: getComputedStyle(el.closest('code')!).color,
+        }));
+        expect(paint.token, 'a highlighted token must paint in its own colour').not.toBe(paint.surrounding);
     }
 
     async publish() {

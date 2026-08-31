@@ -22,6 +22,7 @@ export GO111MODULE=on
 export GOBIN ?= $(PWD)/bin
 
 define check_go_coverage
+@test -r $(SERVER_COVERAGE_PROFILE) || { echo "server coverage profile $(SERVER_COVERAGE_PROFILE) is missing or unreadable; run the tests that produce it first"; exit 1; }
 @coverage="$$( $(GO) tool cover -func=$(SERVER_COVERAGE_PROFILE) | awk '/^total:/ {gsub(/%/, "", $$3); print $$3}' )"; \
 	awk -v actual="$$coverage" -v minimum="$(GO_COVERAGE_MIN)" 'BEGIN { \
 		if (actual + 0 < minimum + 0) { \

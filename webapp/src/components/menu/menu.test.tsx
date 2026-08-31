@@ -91,6 +91,6 @@ describe('Menu', () => {
         fireEvent.click(editPages);
 
         expect(onPermissionChange).toHaveBeenCalledWith(false);
-        expect(screen.getByRole('menu', {name: 'Open menu'})).toBeInTheDocument();
+        expect(screen.getByRole('menu', {name: 'Space actions'})).toBeInTheDocument();
     });
 });

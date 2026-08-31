@@ -150,8 +150,8 @@ func TestPresetRoundTrip(t *testing.T) {
 
 		// Reverse the set and duplicate every entry: still recognized as contribute.
 		shuffled := make([]string, 0, len(contribute)*2)
-		for i := len(contribute) - 1; i >= 0; i-- {
-			shuffled = append(shuffled, contribute[i], contribute[i])
+		for _, permission := range slices.Backward(contribute) {
+			shuffled = append(shuffled, permission, permission)
 		}
 
 		name, ok := model.SchemeNameForDefaultPermissions(shuffled)

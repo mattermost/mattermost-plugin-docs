@@ -207,8 +207,9 @@ jobs:
         id: check-image
         env:
           RESOLVED_IMAGE: ${{ steps.resolve-image.outputs.image }}
+          IMAGE_IS_DEFAULT: ${{ steps.resolve-image.outputs.is-default }}
         run: |
-          if [[ "$RESOLVED_IMAGE" == "mattermostdevelopment/mattermost-enterprise-edition:master" ]]; then
+          if [[ "$IMAGE_IS_DEFAULT" == "true" ]]; then
             echo "::notice::Space-permission suite skipped: resolved image ($RESOLVED_IMAGE) predates the core space-role work (mattermost/mattermost#37685)."
             echo "supported=false" >> "$GITHUB_OUTPUT"
           else

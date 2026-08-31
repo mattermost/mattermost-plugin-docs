@@ -209,36 +209,44 @@ const MenuLinkItem = ({href, external, leadingIcon, trailingIcon, secondaryLabel
 const MenuSeparator = () => <BaseMenu.Separator className={styles.divider}/>;
 
 /** A nested menu opened from an item row. */
-const MenuSubmenu = ({label, leadingIcon, ariaLabel, disabled, children}: SubmenuProps) => (
-    <BaseMenu.SubmenuRoot>
-        <BaseMenu.SubmenuTrigger
-            className={classNames(styles.item, styles.submenuTrigger, {[styles.disabled]: disabled})}
-            disabled={disabled}
-        >
-            <ItemBody
-                leadingIcon={leadingIcon}
-                trailingIcon={<ChevronRightIcon size={16}/>}
+const MenuSubmenu = ({label, leadingIcon, ariaLabel, disabled, children}: SubmenuProps) => {
+    const popupLabel = ariaLabel ?? (typeof label === 'string' ? label : undefined);
+    return (
+        <BaseMenu.SubmenuRoot>
+            <BaseMenu.SubmenuTrigger
+                className={classNames(styles.item, styles.submenuTrigger, {[styles.disabled]: disabled})}
+                disabled={disabled}
             >
-                {label}
-            </ItemBody>
-        </BaseMenu.SubmenuTrigger>
-        <BaseMenu.Portal>
-            <BaseMenu.Positioner
-                className={styles.positioner}
-                side='right'
-                align='start'
-                collisionPadding={8}
-            >
-                <BaseMenu.Popup
-                    className={styles.popover}
-                    aria-label={ariaLabel ?? (typeof label === 'string' ? label : undefined)}
+                <ItemBody
+                    leadingIcon={leadingIcon}
+                    trailingIcon={<ChevronRightIcon size={16}/>}
                 >
-                    {children}
-                </BaseMenu.Popup>
-            </BaseMenu.Positioner>
-        </BaseMenu.Portal>
-    </BaseMenu.SubmenuRoot>
-);
+                    {label}
+                </ItemBody>
+            </BaseMenu.SubmenuTrigger>
+            <BaseMenu.Portal>
+                <BaseMenu.Positioner
+                    className={styles.positioner}
+                    side='right'
+                    align='start'
+                    collisionPadding={8}
+                >
+                    <BaseMenu.Popup
+                        className={styles.popover}
+                        aria-label={popupLabel}
+
+                        // As in Menu below: without this, Base UI's trigger-derived aria-labelledby
+                        // outranks the aria-label. A popup with no label of its own keeps the
+                        // trigger-derived name.
+                        {...(popupLabel === undefined ? {} : {'aria-labelledby': undefined})}
+                    >
+                        {children}
+                    </BaseMenu.Popup>
+                </BaseMenu.Positioner>
+            </BaseMenu.Portal>
+        </BaseMenu.SubmenuRoot>
+    );
+};
 
 /**
  * A dropdown menu built from `Menu.Item`, `Menu.LinkItem`, `Menu.Separator` and
@@ -267,6 +275,11 @@ const Menu = ({ariaLabel, align = 'left', tooltip, trigger, open, onOpenChange, 
                 <BaseMenu.Popup
                     className={styles.popover}
                     aria-label={ariaLabel}
+
+                    // Base UI points aria-labelledby at the trigger, and labelledby outranks
+                    // aria-label in the accessible-name computation. Clearing it lets ariaLabel
+                    // name the popup.
+                    aria-labelledby={undefined}
                 >
                     {children}
                 </BaseMenu.Popup>

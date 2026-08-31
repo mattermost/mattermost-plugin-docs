@@ -11,6 +11,9 @@ outputs:
   image:
     description: The Mattermost image selected for this E2E run
     value: ${{ steps.resolve.outputs.image }}
+  is-default:
+    description: Whether the run fell back to the default master image because no marker selected a core commit
+    value: ${{ steps.resolve.outputs.is-default }}
 
 runs:
   using: "composite"
@@ -22,6 +25,7 @@ runs:
         PR_BODY: ${{ inputs.pull-request-body }}
       run: |
         image="mattermostdevelopment/mattermost-enterprise-edition:master"
+        is_default=true
 
         # Only an HTML comment carrying the marker is a selection attempt; the same words in the
         # description's prose (a PR documenting this mechanism) are not. Every comment-form
@@ -53,9 +57,13 @@ runs:
         if (( markers == 1 )); then
           [[ "$PR_BODY" =~ $marker_pattern ]]
           core_commit="${BASH_REMATCH[1]}"
-          image="mattermostdevelopment/mattermost-team-edition:${core_commit:0:7}"
+          # Enterprise like the default: the space-permission suite applies a license, which the
+          # team-edition build of the same commit cannot honor.
+          image="mattermostdevelopment/mattermost-enterprise-edition:${core_commit:0:7}"
+          is_default=false
         fi
 
         echo "MM_IMAGE=$image" >> "$GITHUB_ENV"
         echo "image=$image" >> "$GITHUB_OUTPUT"
+        echo "is-default=$is_default" >> "$GITHUB_OUTPUT"
         echo "Mattermost E2E image: $image"

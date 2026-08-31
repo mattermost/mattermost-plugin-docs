@@ -72,14 +72,26 @@ export class ShareSpaceModalPage {
         await expect(this.defaultPermissionsTrigger()).toHaveAccessibleName(summary);
     }
 
-    async openDefaultPermissions() {
-        const menu = this.page.getByRole('menu');
+    // The default-permissions and member-permissions menus both render role=menu with identical
+    // item labels, and the toggle helpers deliberately leave their menu open. Keying "already
+    // open" to this helper's own trigger — not to any visible menu — keeps one helper from
+    // toggling inside the other's still-open menu.
+    private async openMenuFor(trigger: Locator): Promise<Locator> {
         await expect(async () => {
-            if (!(await menu.isVisible())) {
-                await this.defaultPermissionsTrigger().click();
+            if ((await trigger.getAttribute('aria-expanded')) !== 'true') {
+                await trigger.click();
             }
-            await expect(menu).toBeVisible({timeout: 1_000});
+            await expect(trigger).toHaveAttribute('aria-expanded', 'true', {timeout: 1_000});
         }).toPass({timeout: 5_000});
+
+        const menuId = await trigger.getAttribute('aria-controls');
+        const menu = menuId ? this.page.locator(`[id="${menuId}"]`) : this.page.getByRole('menu');
+        await expect(menu).toBeVisible();
+        return menu;
+    }
+
+    async openDefaultPermissions() {
+        await this.openMenuFor(this.defaultPermissionsTrigger());
     }
 
     defaultCapability(label: string): Locator {
@@ -140,13 +152,8 @@ export class ShareSpaceModalPage {
     }
 
     private async openMemberPermissions(username: string) {
-        const menu = this.page.getByRole('menu');
-        await expect(async () => {
-            if (!(await menu.isVisible())) {
-                await this.memberPermissionsTrigger(username).click();
-            }
-            await expect(menu.getByRole('menuitemcheckbox').first()).toBeVisible({timeout: 1_000});
-        }).toPass({timeout: 5_000});
+        const menu = await this.openMenuFor(this.memberPermissionsTrigger(username));
+        await expect(menu.getByRole('menuitemcheckbox').first()).toBeVisible();
     }
 
     memberCapability(label: string): Locator {
