@@ -1,13 +1,14 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {useCopyText} from 'hooks/copy_text';
 import {useDocsNavigation} from 'hooks/navigation';
 import {useCanManageSpaceMembers} from 'hooks/permissions';
 import React, {useCallback} from 'react';
 import {useIntl} from 'react-intl';
-import {copyToClipboard} from 'utils/clipboard';
 
 import AccountMultipleOutlineIcon from '@mattermost/compass-icons/components/account-multiple-outline';
+import CheckIcon from '@mattermost/compass-icons/components/check';
 import ChevronRightIcon from '@mattermost/compass-icons/components/chevron-right';
 import CogOutlineIcon from '@mattermost/compass-icons/components/cog-outline';
 import LinkVariantIcon from '@mattermost/compass-icons/components/link-variant';
@@ -29,14 +30,18 @@ type ItemProps = {
 
     /** Marks the item as drilling into a sub-panel, adding a chevron. */
     opensPanel?: boolean;
+
+    /** Reads out `text` when it changes, for items that confirm in place. */
+    announce?: boolean;
     onClick: () => void;
 };
 
-const SpaceInfoMenuItem = ({icon, text, badge, opensPanel, onClick}: ItemProps) => (
+const SpaceInfoMenuItem = ({icon, text, badge, opensPanel, announce, onClick}: ItemProps) => (
     <Button
         emphasis='quaternary'
         size='sm'
         className={styles.item}
+        aria-live={announce ? 'polite' : undefined}
         onClick={onClick}
     >
         <span
@@ -84,9 +89,7 @@ const SpaceInfoMenu = ({space, memberCount, onShowMembers}: Props) => {
         ));
     }, [space]);
 
-    const copyLink = useCallback(() => {
-        copyToClipboard(absolutePaths.space(space.id));
-    }, [absolutePaths, space.id]);
+    const copyLink = useCopyText(absolutePaths.space(space.id));
 
     return (
         <nav
@@ -108,9 +111,10 @@ const SpaceInfoMenu = ({space, memberCount, onShowMembers}: Props) => {
                 onClick={onShowMembers}
             />
             <SpaceInfoMenuItem
-                icon={<LinkVariantIcon size={18}/>}
-                text={formatMessage({id: 'docs.spaceInfo.menu.copyLink', defaultMessage: 'Copy link'})}
-                onClick={copyLink}
+                icon={copyLink.copied ? <CheckIcon size={18}/> : <LinkVariantIcon size={18}/>}
+                text={copyLink.copied ? formatMessage({id: 'docs.spaceInfo.menu.linkCopied', defaultMessage: 'Copied'}) : formatMessage({id: 'docs.spaceInfo.menu.copyLink', defaultMessage: 'Copy link'})}
+                announce={copyLink.copied}
+                onClick={copyLink.copy}
             />
         </nav>
     );
