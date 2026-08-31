@@ -99,11 +99,19 @@ func (p *Plugin) OnConfigurationChange() error {
 	// The service is nil until OnActivate wires it; activation pushes the id and sweeps itself.
 	if p.service != nil {
 		p.service.SetRetentionPolicyID(configuration.RetentionPolicyId)
-		if configuration.RetentionPolicyId != "" && configuration.RetentionPolicyId != previousPolicyID {
+		if configuration.RetentionPolicyId != previousPolicyID {
 			// A sweep failure is logged rather than failing the configuration change: the sweep
 			// is idempotent and re-runs on the next policy change or activation.
 			if err := p.service.ReconcileSpaceRetention(); err != nil {
 				p.API.LogError("Docs retention reconcile failed after a policy change", "policy_id", configuration.RetentionPolicyId, "err", err)
+			}
+			// Clearing the setting is a policy change like any other, and the one the reconcile
+			// above cannot express: with no target policy to move channels into, returning them
+			// to the standard clock means removing them from the policy they were enrolled in.
+			if configuration.RetentionPolicyId == "" {
+				if err := p.service.ReleaseSpaceRetention(previousPolicyID); err != nil {
+					p.API.LogError("Docs retention release failed after the policy was cleared", "policy_id", previousPolicyID, "err", err)
+				}
 			}
 		}
 	}

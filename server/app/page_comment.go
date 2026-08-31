@@ -23,8 +23,12 @@ import (
 // Every write runs inside store.WithPageCommentLock: the page row lock serializes the write
 // against a concurrent MovePageToSpace, so the space the caller was authorized against is the
 // space the write lands in — a post-write repair could not retract the notification fan-out that
-// CreatePost performs before returning. The advisory root lock serializes reply-creates against
-// root deletes, so a reply cannot commit under a root whose cascade already ran.
+// CreatePost performs before returning. Every write against an existing comment also takes the
+// advisory lock on its thread root (see threadLockKey), so edits, resolves, reply-creates and
+// deletes within one thread run one at a time: a reply cannot commit under a root whose cascade
+// already ran, and an edit cannot read a live row, wait, and then write back the DeleteAt of a
+// delete that committed meanwhile. Creating a root takes no advisory key — its thread does not
+// exist yet, so there is nothing to serialize against.
 //
 // A plugin-API post write can fail after its store mutation has committed (e.g. CreatePost's
 // pending-post-id cache write), and the returned error carries no committed flag — so each write
@@ -233,14 +237,16 @@ func (s *Service) GetPageCommentReplies(space *model.Space, pageID, rootID strin
 	return comments, hasMore, nil
 }
 
-// CreatePageComment creates a root comment (footer or inline) on the page.
-func (s *Service) CreatePageComment(space *model.Space, pageID string, create *model.PageCommentCreate, userID string) (*model.PageComment, *mmmodel.AppError) {
+// CreatePageComment creates a root comment (footer or inline) on the page. The bool reports
+// whether the comment is durably stored, which an error return does not settle on its own — see
+// createCommentPost.
+func (s *Service) CreatePageComment(space *model.Space, pageID string, create *model.PageCommentCreate, userID string) (*model.PageComment, bool, *mmmodel.AppError) {
 	if appErr := s.validateCommentWrite("CreatePageComment", space, pageID, userID); appErr != nil {
-		return nil, appErr
+		return nil, false, appErr
 	}
 	create.Normalize()
 	if appErr := create.IsValid(); appErr != nil {
-		return nil, appErr
+		return nil, false, appErr
 	}
 
 	props := mmmodel.StringInterface{model.PropKeyPageId: pageID}
@@ -252,11 +258,13 @@ func (s *Service) CreatePageComment(space *model.Space, pageID string, create *m
 	s.log.Debug("Creating page comment", "page_id", pageID, "space_id", space.Id, "user_id", userID)
 
 	var created *mmmodel.Post
+	committed := false
 	lockErr := s.store.WithPageCommentLock(pageID, "", func(tx *sqlx.Tx, locked store.LockedPage) error {
 		if appErr := requireLockedPageInSpace("CreatePageComment", locked, space); appErr != nil {
 			return appErr
 		}
-		post, appErr := s.createCommentPost("CreatePageComment", tx, locked, pageID, "", create.Message, props, userID)
+		post, postCommitted, appErr := s.createCommentPost("CreatePageComment", tx, locked, pageID, "", create.Message, props, userID)
+		committed = postCommitted
 		if appErr != nil {
 			return appErr
 		}
@@ -264,35 +272,36 @@ func (s *Service) CreatePageComment(space *model.Space, pageID string, create *m
 		return nil
 	})
 	if lockErr != nil && created == nil {
-		return nil, commentLockAppError("CreatePageComment", pageID, lockErr)
+		return nil, committed, commentLockAppError("CreatePageComment", pageID, lockErr)
 	}
 	if lockErr != nil {
 		s.warnLockFailedAfterCommit("comment create", created.Id, lockErr)
 	}
 
 	s.publishToChannels(wsEventPageCommentCreated, pageCommentEventPayload(created.Id, "", pageID, space.Id), space.ChannelId)
-	return model.NewPageCommentFromPost(created, nil, space.Id, 0), nil
+	return model.NewPageCommentFromPost(created, nil, space.Id, 0), true, nil
 }
 
 // CreatePageCommentReply creates a reply on rootID. Replies carry no anchor fields — a reply
 // inherits the root's comment_type/anchor_id by belonging to the thread — and sub-replies are
 // rejected by the plugin before core is called, since the parent's RootId is already known.
-func (s *Service) CreatePageCommentReply(space *model.Space, pageID, rootID, message, userID string) (*model.PageComment, *mmmodel.AppError) {
+// The bool reports whether the reply is durably stored; see createCommentPost.
+func (s *Service) CreatePageCommentReply(space *model.Space, pageID, rootID, message, userID string) (*model.PageComment, bool, *mmmodel.AppError) {
 	if appErr := s.validateCommentWrite("CreatePageCommentReply", space, pageID, userID); appErr != nil {
-		return nil, appErr
+		return nil, false, appErr
 	}
 	create := &model.PageCommentCreate{Message: message}
 	create.Normalize()
 	if appErr := create.IsValid(); appErr != nil {
-		return nil, appErr
+		return nil, false, appErr
 	}
 
 	parent, appErr := s.resolvePageComment("CreatePageCommentReply", space, pageID, rootID, false)
 	if appErr != nil {
-		return nil, appErr
+		return nil, false, appErr
 	}
 	if parent.RootId != "" {
-		return nil, mmmodel.NewAppError("CreatePageCommentReply", "app.page_comment.create_reply.parent_is_reply.app_error", nil, "", http.StatusBadRequest)
+		return nil, false, mmmodel.NewAppError("CreatePageCommentReply", "app.page_comment.create_reply.parent_is_reply.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	s.log.Debug("Creating page comment reply", "page_id", pageID, "root_id", rootID, "user_id", userID)
@@ -300,6 +309,7 @@ func (s *Service) CreatePageCommentReply(space *model.Space, pageID, rootID, mes
 	props := mmmodel.StringInterface{model.PropKeyPageId: pageID}
 	var created *mmmodel.Post
 	var root *mmmodel.Post
+	committed := false
 	lockErr := s.store.WithPageCommentLock(pageID, rootID, func(tx *sqlx.Tx, locked store.LockedPage) error {
 		if appErr := requireLockedPageInSpace("CreatePageCommentReply", locked, space); appErr != nil {
 			return appErr
@@ -311,7 +321,8 @@ func (s *Service) CreatePageCommentReply(space *model.Space, pageID, rootID, mes
 			return rootErr
 		}
 		root = lockedRoot
-		post, createErr := s.createCommentPost("CreatePageCommentReply", tx, locked, pageID, rootID, create.Message, props, userID)
+		post, postCommitted, createErr := s.createCommentPost("CreatePageCommentReply", tx, locked, pageID, rootID, create.Message, props, userID)
+		committed = postCommitted
 		if createErr != nil {
 			return createErr
 		}
@@ -319,14 +330,14 @@ func (s *Service) CreatePageCommentReply(space *model.Space, pageID, rootID, mes
 		return nil
 	})
 	if lockErr != nil && created == nil {
-		return nil, commentLockAppError("CreatePageCommentReply", pageID, lockErr)
+		return nil, committed, commentLockAppError("CreatePageCommentReply", pageID, lockErr)
 	}
 	if lockErr != nil {
 		s.warnLockFailedAfterCommit("comment reply create", created.Id, lockErr)
 	}
 
 	s.publishToChannels(wsEventPageCommentCreated, pageCommentEventPayload(created.Id, rootID, pageID, space.Id), space.ChannelId)
-	return model.NewPageCommentFromPost(created, root, space.Id, 0), nil
+	return model.NewPageCommentFromPost(created, root, space.Id, 0), true, nil
 }
 
 // createCommentPost builds the comment post with a handler-allocated id and creates it through
@@ -337,7 +348,9 @@ func (s *Service) CreatePageCommentReply(space *model.Space, pageID, rootID, mes
 // nothing was written. A committed-but-errored create still publishes its event (the caller sees
 // the error either way); a probe error is read in the keeping direction, since a spurious
 // ids-only refetch signal is harmless and a suppressed one leaves every client stale.
-func (s *Service) createCommentPost(where string, tx *sqlx.Tx, locked store.LockedPage, pageID, rootID, message string, props mmmodel.StringInterface, userID string) (*mmmodel.Post, *mmmodel.AppError) {
+// The committed return carries that same verdict out to the caller, so a request that failed on
+// a write which did land is audited as the state change it was rather than as a no-op.
+func (s *Service) createCommentPost(where string, tx *sqlx.Tx, locked store.LockedPage, pageID, rootID, message string, props mmmodel.StringInterface, userID string) (*mmmodel.Post, bool, *mmmodel.AppError) {
 	post := &mmmodel.Post{
 		Id:        mmmodel.NewId(),
 		ChannelId: locked.ChannelId,
@@ -349,16 +362,19 @@ func (s *Service) createCommentPost(where string, tx *sqlx.Tx, locked store.Lock
 	post.SetProps(props)
 
 	if createErr := s.client.Post.CreatePost(post); createErr != nil {
+		committed := false
 		probe, probeErr := s.store.GetPageCommentTx(tx, post.Id, locked.ChannelId, pageID, false)
 		if probeErr == nil {
+			committed = true
 			s.publishToChannels(wsEventPageCommentCreated, pageCommentEventPayload(probe.Id, rootID, pageID, locked.SpaceId), locked.ChannelId)
 		} else if !store.IsErrNotFound(probeErr) {
+			committed = true
 			s.log.Warn("Comment create probe failed; treating the write as committed", "comment_id", post.Id, "err", probeErr)
 			s.publishToChannels(wsEventPageCommentCreated, pageCommentEventPayload(post.Id, rootID, pageID, locked.SpaceId), locked.ChannelId)
 		}
-		return nil, mmmodel.NewAppError(where, "app.page_comment.create.create_post_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(createErr)
+		return nil, committed, mmmodel.NewAppError(where, "app.page_comment.create.create_post_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(createErr)
 	}
-	return post, nil
+	return post, true, nil
 }
 
 // UpdatePageComment applies a patch to a comment: a resolve/unresolve of a root, a message edit
@@ -367,37 +383,39 @@ func (s *Service) createCommentPost(where string, tx *sqlx.Tx, locked store.Lock
 // edit leaves resolve state untouched and is stamped by core as EditAt. The write is
 // read-modify-write over the full prop map: the plugin API's UpdatePost replaces the map
 // wholesale, and page_id is not on core's identity-prop rescue list, so a fresh map would orphan
-// the comment permanently.
-func (s *Service) UpdatePageComment(space *model.Space, pageID, commentID string, patch *model.PageCommentPatch, userID string) (*model.PageComment, *mmmodel.AppError) {
+// the comment permanently. The bool reports whether the patch is durably stored; see
+// probePatchCommitted.
+func (s *Service) UpdatePageComment(space *model.Space, pageID, commentID string, patch *model.PageCommentPatch, userID string) (*model.PageComment, bool, *mmmodel.AppError) {
 	if appErr := s.validateCommentWrite("UpdatePageComment", space, pageID, userID); appErr != nil {
-		return nil, appErr
+		return nil, false, appErr
 	}
 	patch.Normalize()
 	if appErr := patch.IsValid(); appErr != nil {
-		return nil, appErr
+		return nil, false, appErr
 	}
 
 	target, appErr := s.resolvePageComment("UpdatePageComment", space, pageID, commentID, false)
 	if appErr != nil {
-		return nil, appErr
+		return nil, false, appErr
 	}
 	if patch.Resolved != nil && target.RootId != "" {
 		// The roots listing's resolved filter only sees roots, so a resolved reply would be
 		// settable and broadcast while being invisible to every filter.
-		return nil, mmmodel.NewAppError("UpdatePageComment", "app.page_comment.patch.target_is_reply.app_error", nil, "", http.StatusBadRequest)
+		return nil, false, mmmodel.NewAppError("UpdatePageComment", "app.page_comment.patch.target_is_reply.app_error", nil, "", http.StatusBadRequest)
 	}
 	if patch.Message != nil && target.UserId != userID {
 		// Message editing is author-only for every principal; other members delete, they do not
 		// rewrite someone else's words. Resolve carries no author gate, so a mixed patch from a
 		// non-author is refused whole rather than half-applied.
-		return nil, mmmodel.NewAppError("UpdatePageComment", "app.page_comment.patch.message_not_author.app_error", nil, "", http.StatusForbidden)
+		return nil, false, mmmodel.NewAppError("UpdatePageComment", "app.page_comment.patch.message_not_author.app_error", nil, "", http.StatusForbidden)
 	}
 
 	s.log.Debug("Updating page comment", "comment_id", commentID, "page_id", pageID, "user_id", userID)
 
 	var updated *mmmodel.Post
 	var replyCount int
-	lockErr := s.store.WithPageCommentLock(pageID, "", func(tx *sqlx.Tx, locked store.LockedPage) error {
+	committed := false
+	lockErr := s.store.WithPageCommentLock(pageID, threadLockKey(target), func(tx *sqlx.Tx, locked store.LockedPage) error {
 		if lockAppErr := requireLockedPageInSpace("UpdatePageComment", locked, space); lockAppErr != nil {
 			return lockAppErr
 		}
@@ -433,15 +451,17 @@ func (s *Service) UpdatePageComment(space *model.Space, pageID, commentID string
 
 		if updateErr := s.client.Post.UpdatePost(post); updateErr != nil {
 			if s.probePatchCommitted(tx, locked, pageID, commentID, preImage) {
+				committed = true
 				s.publishToChannels(wsEventPageCommentUpdated, pageCommentEventPayload(commentID, target.RootId, pageID, locked.SpaceId), locked.ChannelId)
 			}
 			return mmmodel.NewAppError("UpdatePageComment", "app.page_comment.patch.update_post_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(updateErr)
 		}
 		updated = post
+		committed = true
 		return nil
 	})
 	if lockErr != nil && updated == nil {
-		return nil, commentLockAppError("UpdatePageComment", pageID, lockErr)
+		return nil, committed, commentLockAppError("UpdatePageComment", pageID, lockErr)
 	}
 	if lockErr != nil {
 		s.warnLockFailedAfterCommit("comment update", commentID, lockErr)
@@ -451,11 +471,23 @@ func (s *Service) UpdatePageComment(space *model.Space, pageID, commentID string
 	if updated.RootId != "" {
 		root, rootErr := s.resolvePageComment("UpdatePageComment", space, pageID, updated.RootId, false)
 		if rootErr != nil {
-			return nil, rootErr
+			return nil, true, rootErr
 		}
-		return model.NewPageCommentFromPost(updated, root, space.Id, 0), nil
+		return model.NewPageCommentFromPost(updated, root, space.Id, 0), true, nil
 	}
-	return model.NewPageCommentFromPost(updated, nil, space.Id, replyCount), nil
+	return model.NewPageCommentFromPost(updated, nil, space.Id, replyCount), true, nil
+}
+
+// threadLockKey returns the advisory key that serializes writes to an existing comment's thread:
+// the root's own id for a root, the root it hangs from for a reply. Keying on the thread rather
+// than on the target means an edit, a resolve, a reply-create, and a delete anywhere in one thread
+// all queue behind each other — a reply delete and its root's cascading delete included, which a
+// key of the target's own id would let run concurrently.
+func threadLockKey(target *mmmodel.Post) string {
+	if target.RootId != "" {
+		return target.RootId
+	}
+	return target.Id
 }
 
 // warnLockFailedAfterCommit records a WithPageCommentLock failure that arrived after its callback
@@ -495,30 +527,24 @@ func (s *Service) probePatchCommitted(tx *sqlx.Tx, locked store.LockedPage, page
 // client can say how many replies the delete would destroy); any other space member deletes any
 // comment and force-deletes through the guard — the platform cascade takes the replies with the
 // root. The per-permission split of that contract (delete_own_page vs delete_page_comment) lands
-// with the RBAC epic.
-func (s *Service) DeletePageComment(space *model.Space, pageID, commentID, userID string) (int, *mmmodel.AppError) {
+// with the RBAC epic. The bool reports whether the deletion is durably stored; see
+// probeDeleteCommitted.
+func (s *Service) DeletePageComment(space *model.Space, pageID, commentID, userID string) (int, bool, *mmmodel.AppError) {
 	if appErr := s.validateCommentWrite("DeletePageComment", space, pageID, userID); appErr != nil {
-		return 0, appErr
+		return 0, false, appErr
 	}
 
 	target, appErr := s.resolvePageComment("DeletePageComment", space, pageID, commentID, false)
 	if appErr != nil {
-		return 0, appErr
+		return 0, false, appErr
 	}
-	// Every root deletion takes the advisory lock, not only the own-delete path: the lock's job
-	// is to keep a reply from committing after the root's cascade ran, and a force-delete skips
-	// the guard, never the cascade.
-	rootLockKey := ""
-	if target.RootId == "" {
-		rootLockKey = commentID
-	}
-
 	s.log.Debug("Deleting page comment", "comment_id", commentID, "page_id", pageID, "user_id", userID)
 
 	var deletedRootID string
 	var replyCount int
 	deleted := false
-	lockErr := s.store.WithPageCommentLock(pageID, rootLockKey, func(tx *sqlx.Tx, locked store.LockedPage) error {
+	committed := false
+	lockErr := s.store.WithPageCommentLock(pageID, threadLockKey(target), func(tx *sqlx.Tx, locked store.LockedPage) error {
 		if lockAppErr := requireLockedPageInSpace("DeletePageComment", locked, space); lockAppErr != nil {
 			return lockAppErr
 		}
@@ -543,22 +569,24 @@ func (s *Service) DeletePageComment(space *model.Space, pageID, commentID, userI
 
 		if deleteErr := s.client.Post.DeletePost(commentID); deleteErr != nil {
 			if s.probeDeleteCommitted(tx, locked, pageID, commentID) {
+				committed = true
 				s.publishToChannels(wsEventPageCommentDeleted, pageCommentEventPayload(commentID, preImage.RootId, pageID, locked.SpaceId), locked.ChannelId)
 			}
 			return mmmodel.NewAppError("DeletePageComment", "app.page_comment.delete.delete_post_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(deleteErr)
 		}
 		deleted = true
+		committed = true
 		return nil
 	})
 	if lockErr != nil && !deleted {
-		return replyCount, commentLockAppError("DeletePageComment", pageID, lockErr)
+		return replyCount, committed, commentLockAppError("DeletePageComment", pageID, lockErr)
 	}
 	if lockErr != nil {
 		s.warnLockFailedAfterCommit("comment delete", commentID, lockErr)
 	}
 
 	s.publishToChannels(wsEventPageCommentDeleted, pageCommentEventPayload(commentID, deletedRootID, pageID, space.Id), space.ChannelId)
-	return 0, nil
+	return 0, true, nil
 }
 
 // probeDeleteCommitted reports whether a DELETE whose DeletePost returned an error actually

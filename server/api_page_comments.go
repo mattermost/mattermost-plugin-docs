@@ -166,8 +166,9 @@ func (p *Plugin) handleCreatePageComment(w http.ResponseWriter, r *http.Request)
 	if !p.decodeJSONBody(w, r, maxCommentBodyBytes, &req, "handleCreatePageComment", false) {
 		return
 	}
-	comment, appErr := p.service.CreatePageComment(space, vars["page_id"], &req, userID)
+	comment, committed, appErr := p.service.CreatePageComment(space, vars["page_id"], &req, userID)
 	if appErr != nil {
+		p.recordAuditOutcome(auditRec, committed)
 		p.writeAppError(w, appErr)
 		return
 	}
@@ -196,8 +197,9 @@ func (p *Plugin) handleCreatePageCommentReply(w http.ResponseWriter, r *http.Req
 	if !p.decodeJSONBody(w, r, maxCommentBodyBytes, &req, "handleCreatePageCommentReply", false) {
 		return
 	}
-	comment, appErr := p.service.CreatePageCommentReply(space, vars["page_id"], vars["comment_id"], req.Message, userID)
+	comment, committed, appErr := p.service.CreatePageCommentReply(space, vars["page_id"], vars["comment_id"], req.Message, userID)
 	if appErr != nil {
+		p.recordAuditOutcome(auditRec, committed)
 		p.writeAppError(w, appErr)
 		return
 	}
@@ -223,8 +225,9 @@ func (p *Plugin) handleUpdatePageComment(w http.ResponseWriter, r *http.Request)
 	if !p.decodeJSONBody(w, r, maxCommentBodyBytes, &patch, "handleUpdatePageComment", false) {
 		return
 	}
-	comment, appErr := p.service.UpdatePageComment(space, vars["page_id"], vars["comment_id"], &patch, userID)
+	comment, committed, appErr := p.service.UpdatePageComment(space, vars["page_id"], vars["comment_id"], &patch, userID)
 	if appErr != nil {
+		p.recordAuditOutcome(auditRec, committed)
 		p.writeAppError(w, appErr)
 		return
 	}
@@ -245,8 +248,9 @@ func (p *Plugin) handleDeletePageComment(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	replyCount, appErr := p.service.DeletePageComment(space, vars["page_id"], vars["comment_id"], userID)
+	replyCount, committed, appErr := p.service.DeletePageComment(space, vars["page_id"], vars["comment_id"], userID)
 	if appErr != nil {
+		p.recordAuditOutcome(auditRec, committed)
 		if appErr.StatusCode == http.StatusConflict && replyCount > 0 {
 			p.writeConflictWithReplyCount(w, appErr, replyCount)
 			return

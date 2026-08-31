@@ -264,7 +264,7 @@ func TestServiceCreatePageComment(t *testing.T) {
 		space, page := seedCommentFixture(t, ch)
 		userID := mmmodel.NewId()
 
-		comment, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "  first!  "}, userID)
+		comment, _, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "  first!  "}, userID)
 		require.Nil(t, appErr)
 
 		assert.Equal(t, space.Id, comment.SpaceId)
@@ -296,7 +296,7 @@ func TestServiceCreatePageComment(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
 
-		comment, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{
+		comment, _, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{
 			Message:     "look here",
 			CommentType: model.CommentTypeInline,
 			AnchorId:    "anchor-42",
@@ -321,7 +321,7 @@ func TestServiceCreatePageComment(t *testing.T) {
 			"unknown type":          {Message: "m", CommentType: "margin"},
 		} {
 			t.Run(name, func(t *testing.T) {
-				_, appErr := ch.svc.CreatePageComment(space, page.Id, create, mmmodel.NewId())
+				_, _, appErr := ch.svc.CreatePageComment(space, page.Id, create, mmmodel.NewId())
 				require.NotNil(t, appErr)
 				assert.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 			})
@@ -334,7 +334,7 @@ func TestServiceCreatePageComment(t *testing.T) {
 		_, page := seedCommentFixture(t, ch)
 		otherSpace := mustCreateSpace(t, ch.store, mmmodel.NewId())
 
-		_, appErr := ch.svc.CreatePageComment(otherSpace, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
+		_, _, appErr := ch.svc.CreatePageComment(otherSpace, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
 		require.NotNil(t, appErr)
 		assert.Equal(t, http.StatusNotFound, appErr.StatusCode)
 		ch.mockAPI.AssertNotCalled(t, "CreatePost", mock.Anything)
@@ -345,7 +345,7 @@ func TestServiceCreatePageComment(t *testing.T) {
 		space, page := seedCommentFixture(t, ch)
 		requireStoreDeletePage(t, ch.store, page.Id, space.Id, mmmodel.NewId())
 
-		_, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
+		_, _, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
 		require.NotNil(t, appErr)
 		assert.Equal(t, http.StatusNotFound, appErr.StatusCode)
 	})
@@ -355,9 +355,10 @@ func TestServiceCreatePageComment(t *testing.T) {
 		space, page := seedCommentFixture(t, ch)
 		ch.behavior.failCreateAfterSave = true
 
-		_, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
+		_, committed, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
 		require.NotNil(t, appErr)
 		assert.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
+		assert.True(t, committed, "the audit trail must record the create that landed, not the error the caller saw")
 
 		// The comment is durably created at the id the handler allocated, and the plugin event —
 		// the only signal Docs clients get — was still published.
@@ -372,8 +373,9 @@ func TestServiceCreatePageComment(t *testing.T) {
 		space, page := seedCommentFixture(t, ch)
 		ch.behavior.failCreateBeforeSave = true
 
-		_, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
+		_, committed, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
 		require.NotNil(t, appErr)
+		assert.False(t, committed, "nothing was written, so the audit record must stay a failure")
 
 		var count int
 		require.NoError(t, ch.db.QueryRow(`SELECT COUNT(*) FROM Posts WHERE ChannelId = $1`, space.ChannelId).Scan(&count))
@@ -386,12 +388,12 @@ func TestServiceCreatePageCommentReply(t *testing.T) {
 	t.Run("reply carries page_id and RootId and inherits the inline root's anchor", func(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
-		root, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{
+		root, _, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{
 			Message: "root", CommentType: model.CommentTypeInline, AnchorId: "a1",
 		}, mmmodel.NewId())
 		require.Nil(t, appErr)
 
-		reply, appErr := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "reply", mmmodel.NewId())
+		reply, _, appErr := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "reply", mmmodel.NewId())
 		require.Nil(t, appErr)
 		assert.Equal(t, root.Id, reply.RootId)
 		assert.Equal(t, page.Id, reply.PageId)
@@ -411,12 +413,12 @@ func TestServiceCreatePageCommentReply(t *testing.T) {
 	t.Run("a reply to a reply is rejected without calling core", func(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "root"}, mmmodel.NewId())
-		reply, appErr := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "reply", mmmodel.NewId())
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "root"}, mmmodel.NewId())
+		reply, _, appErr := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "reply", mmmodel.NewId())
 		require.Nil(t, appErr)
 
 		createCalls := len(ch.mockAPI.Calls)
-		_, appErr = ch.svc.CreatePageCommentReply(space, page.Id, reply.Id, "sub-reply", mmmodel.NewId())
+		_, _, appErr = ch.svc.CreatePageCommentReply(space, page.Id, reply.Id, "sub-reply", mmmodel.NewId())
 		require.NotNil(t, appErr)
 		assert.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 		assert.Equal(t, "app.page_comment.create_reply.parent_is_reply.app_error", appErr.Id)
@@ -429,9 +431,9 @@ func TestServiceCreatePageCommentReply(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
 		otherPage := mustCreatePage(t, ch.store, space.Id, space.ChannelId, mmmodel.NewId(), "")
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "root"}, mmmodel.NewId())
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "root"}, mmmodel.NewId())
 
-		_, appErr := ch.svc.CreatePageCommentReply(space, otherPage.Id, root.Id, "reply", mmmodel.NewId())
+		_, _, appErr := ch.svc.CreatePageCommentReply(space, otherPage.Id, root.Id, "reply", mmmodel.NewId())
 		require.NotNil(t, appErr)
 		assert.Equal(t, http.StatusNotFound, appErr.StatusCode)
 	})
@@ -584,11 +586,11 @@ func TestServiceUpdatePageComment(t *testing.T) {
 		// so anything but read-modify-write permanently orphans the comment.
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
-		root, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
+		root, _, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
 		require.Nil(t, appErr)
 		userID := mmmodel.NewId()
 
-		updated, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedTrue}, userID)
+		updated, _, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedTrue}, userID)
 		require.Nil(t, appErr)
 		assert.True(t, updated.Resolved)
 		assert.Equal(t, userID, updated.ResolvedBy)
@@ -616,12 +618,12 @@ func TestServiceUpdatePageComment(t *testing.T) {
 	t.Run("unresolve records who reopened the thread", func(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
 		userA, userB := mmmodel.NewId(), mmmodel.NewId()
 
-		_, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedTrue}, userA)
+		_, _, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedTrue}, userA)
 		require.Nil(t, appErr)
-		reopened, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedFalse}, userB)
+		reopened, _, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedFalse}, userB)
 		require.Nil(t, appErr)
 
 		assert.False(t, reopened.Resolved)
@@ -632,11 +634,11 @@ func TestServiceUpdatePageComment(t *testing.T) {
 	t.Run("an empty patch is rejected and does not unresolve", func(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
-		_, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedTrue}, mmmodel.NewId())
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
+		_, _, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedTrue}, mmmodel.NewId())
 		require.Nil(t, appErr)
 
-		_, appErr = ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{}, mmmodel.NewId())
+		_, _, appErr = ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{}, mmmodel.NewId())
 		require.NotNil(t, appErr)
 		assert.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 
@@ -648,10 +650,10 @@ func TestServiceUpdatePageComment(t *testing.T) {
 	t.Run("a reply target is rejected 400", func(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
-		reply, _ := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r", mmmodel.NewId())
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
+		reply, _, _ := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r", mmmodel.NewId())
 
-		_, appErr := ch.svc.UpdatePageComment(space, page.Id, reply.Id, &model.PageCommentPatch{Resolved: &resolvedTrue}, mmmodel.NewId())
+		_, _, appErr := ch.svc.UpdatePageComment(space, page.Id, reply.Id, &model.PageCommentPatch{Resolved: &resolvedTrue}, mmmodel.NewId())
 		require.NotNil(t, appErr)
 		assert.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 		assert.Equal(t, "app.page_comment.patch.target_is_reply.app_error", appErr.Id)
@@ -660,13 +662,13 @@ func TestServiceUpdatePageComment(t *testing.T) {
 	t.Run("the PATCH response carries the live reply count", func(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
 		for range 2 {
-			_, appErr := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r", mmmodel.NewId())
+			_, _, appErr := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r", mmmodel.NewId())
 			require.Nil(t, appErr)
 		}
 
-		updated, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedTrue}, mmmodel.NewId())
+		updated, _, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedTrue}, mmmodel.NewId())
 		require.Nil(t, appErr)
 		assert.Equal(t, 2, updated.ReplyCount)
 	})
@@ -674,19 +676,21 @@ func TestServiceUpdatePageComment(t *testing.T) {
 	t.Run("a post-commit failure still publishes the update event; a pre-commit one does not", func(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
 
 		ch.behavior.failUpdateAfterSave = true
-		_, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedTrue}, mmmodel.NewId())
+		_, committed, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedTrue}, mmmodel.NewId())
 		require.NotNil(t, appErr)
+		assert.True(t, committed, "the audit trail must record the patch that landed")
 		assert.Len(t, ch.eventsNamed("page_comment_updated"), 1, "a committed write must announce itself")
 		stored := readStandInPost(t, ch.db, root.Id)
 		assert.Equal(t, true, stored.GetProp(model.PropKeyResolved))
 
 		ch.behavior.failUpdateAfterSave = false
 		ch.behavior.failUpdateBeforeSave = true
-		_, appErr = ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedFalse}, mmmodel.NewId())
+		_, committed, appErr = ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedFalse}, mmmodel.NewId())
 		require.NotNil(t, appErr)
+		assert.False(t, committed, "nothing was written, so the audit record must stay a failure")
 		assert.Len(t, ch.eventsNamed("page_comment_updated"), 1, "an uncommitted write must not announce anything")
 	})
 
@@ -694,10 +698,10 @@ func TestServiceUpdatePageComment(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
 		author := mmmodel.NewId()
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "before"}, author)
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "before"}, author)
 		message := "after"
 
-		updated, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Message: &message}, author)
+		updated, _, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Message: &message}, author)
 		require.Nil(t, appErr)
 		assert.Equal(t, "after", updated.Message)
 		assert.NotZero(t, updated.EditAt)
@@ -718,10 +722,10 @@ func TestServiceUpdatePageComment(t *testing.T) {
 	t.Run("a non-author message edit is refused 403 and changes nothing", func(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "before"}, mmmodel.NewId())
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "before"}, mmmodel.NewId())
 		message := "hijack"
 
-		_, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Message: &message}, mmmodel.NewId())
+		_, _, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Message: &message}, mmmodel.NewId())
 		require.NotNil(t, appErr)
 		assert.Equal(t, http.StatusForbidden, appErr.StatusCode)
 		assert.Equal(t, "app.page_comment.patch.message_not_author.app_error", appErr.Id)
@@ -731,12 +735,12 @@ func TestServiceUpdatePageComment(t *testing.T) {
 	t.Run("the author edits their own reply and the response keeps the root's kind", func(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m", CommentType: model.CommentTypeInline, AnchorId: "a1"}, mmmodel.NewId())
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m", CommentType: model.CommentTypeInline, AnchorId: "a1"}, mmmodel.NewId())
 		author := mmmodel.NewId()
-		reply, _ := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "before", author)
+		reply, _, _ := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "before", author)
 		message := "after"
 
-		updated, appErr := ch.svc.UpdatePageComment(space, page.Id, reply.Id, &model.PageCommentPatch{Message: &message}, author)
+		updated, _, appErr := ch.svc.UpdatePageComment(space, page.Id, reply.Id, &model.PageCommentPatch{Message: &message}, author)
 		require.Nil(t, appErr)
 		assert.Equal(t, "after", updated.Message)
 		assert.Equal(t, root.Id, updated.RootId)
@@ -752,10 +756,10 @@ func TestServiceUpdatePageComment(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
 		author := mmmodel.NewId()
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "before"}, author)
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "before"}, author)
 		message := "after"
 
-		updated, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedTrue, Message: &message}, author)
+		updated, _, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedTrue, Message: &message}, author)
 		require.Nil(t, appErr)
 		assert.Equal(t, "after", updated.Message)
 		assert.True(t, updated.Resolved)
@@ -765,10 +769,10 @@ func TestServiceUpdatePageComment(t *testing.T) {
 	t.Run("a mixed patch from a non-author is refused whole", func(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "before"}, mmmodel.NewId())
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "before"}, mmmodel.NewId())
 		message := "hijack"
 
-		_, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedTrue, Message: &message}, mmmodel.NewId())
+		_, _, appErr := ch.svc.UpdatePageComment(space, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedTrue, Message: &message}, mmmodel.NewId())
 		require.NotNil(t, appErr)
 		assert.Equal(t, http.StatusForbidden, appErr.StatusCode)
 
@@ -784,11 +788,11 @@ func TestServiceDeletePageComment(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
 		author := mmmodel.NewId()
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, author)
-		reply1, _ := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r1", mmmodel.NewId())
-		reply2, _ := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r2", mmmodel.NewId())
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, author)
+		reply1, _, _ := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r1", mmmodel.NewId())
+		reply2, _, _ := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r2", mmmodel.NewId())
 
-		replyCount, appErr := ch.svc.DeletePageComment(space, page.Id, root.Id, author)
+		replyCount, _, appErr := ch.svc.DeletePageComment(space, page.Id, root.Id, author)
 		require.NotNil(t, appErr)
 		assert.Equal(t, http.StatusConflict, appErr.StatusCode)
 		assert.Equal(t, "app.page_comment.delete.has_replies.app_error", appErr.Id)
@@ -797,10 +801,10 @@ func TestServiceDeletePageComment(t *testing.T) {
 
 		// The refusal lifts once every reply is deleted (each reply author deletes their own).
 		for _, reply := range []*model.PageComment{reply1, reply2} {
-			_, appErr = ch.svc.DeletePageComment(space, page.Id, reply.Id, reply.UserId)
+			_, _, appErr = ch.svc.DeletePageComment(space, page.Id, reply.Id, reply.UserId)
 			require.Nil(t, appErr)
 		}
-		_, appErr = ch.svc.DeletePageComment(space, page.Id, root.Id, author)
+		_, _, appErr = ch.svc.DeletePageComment(space, page.Id, root.Id, author)
 		require.Nil(t, appErr)
 	})
 
@@ -809,11 +813,11 @@ func TestServiceDeletePageComment(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
 		author := mmmodel.NewId()
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, author)
-		_, appErr := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r", mmmodel.NewId())
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, author)
+		_, _, appErr := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r", mmmodel.NewId())
 		require.Nil(t, appErr)
 
-		replyCount, appErr := ch.svc.DeletePageComment(space, page.Id, root.Id, author)
+		replyCount, _, appErr := ch.svc.DeletePageComment(space, page.Id, root.Id, author)
 		require.NotNil(t, appErr)
 		assert.Equal(t, http.StatusConflict, appErr.StatusCode)
 		assert.Equal(t, 1, replyCount)
@@ -822,10 +826,10 @@ func TestServiceDeletePageComment(t *testing.T) {
 	t.Run("a non-author force-deletes through the guard and the cascade takes the replies", func(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
-		reply, _ := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r", mmmodel.NewId())
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
+		reply, _, _ := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r", mmmodel.NewId())
 
-		_, appErr := ch.svc.DeletePageComment(space, page.Id, root.Id, mmmodel.NewId())
+		_, _, appErr := ch.svc.DeletePageComment(space, page.Id, root.Id, mmmodel.NewId())
 		require.Nil(t, appErr)
 
 		assert.NotZero(t, readStandInPost(t, ch.db, root.Id).DeleteAt)
@@ -846,11 +850,11 @@ func TestServiceDeletePageComment(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
 		author := mmmodel.NewId()
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, author)
-		_, appErr := ch.svc.DeletePageComment(space, page.Id, root.Id, author)
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, author)
+		_, _, appErr := ch.svc.DeletePageComment(space, page.Id, root.Id, author)
 		require.Nil(t, appErr)
 
-		_, appErr = ch.svc.DeletePageComment(space, page.Id, root.Id, author)
+		_, _, appErr = ch.svc.DeletePageComment(space, page.Id, root.Id, author)
 		require.NotNil(t, appErr)
 		assert.Equal(t, http.StatusNotFound, appErr.StatusCode)
 	})
@@ -859,12 +863,13 @@ func TestServiceDeletePageComment(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
 		author := mmmodel.NewId()
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, author)
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, author)
 
 		ch.behavior.failDeleteAfterSave = true
-		_, appErr := ch.svc.DeletePageComment(space, page.Id, root.Id, author)
+		_, committed, appErr := ch.svc.DeletePageComment(space, page.Id, root.Id, author)
 		require.NotNil(t, appErr)
 		assert.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
+		assert.True(t, committed, "the audit trail must record the deletion that landed")
 		assert.NotZero(t, readStandInPost(t, ch.db, root.Id).DeleteAt)
 		assert.Len(t, ch.eventsNamed("page_comment_deleted"), 1)
 	})
@@ -873,11 +878,12 @@ func TestServiceDeletePageComment(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
 		author := mmmodel.NewId()
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, author)
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, author)
 
 		ch.behavior.failDeleteBeforeSave = true
-		_, appErr := ch.svc.DeletePageComment(space, page.Id, root.Id, author)
+		_, committed, appErr := ch.svc.DeletePageComment(space, page.Id, root.Id, author)
 		require.NotNil(t, appErr)
+		assert.False(t, committed, "nothing was written, so the audit record must stay a failure")
 		assert.Zero(t, readStandInPost(t, ch.db, root.Id).DeleteAt)
 		assert.Empty(t, ch.eventsNamed("page_comment_deleted"))
 	})
@@ -887,9 +893,9 @@ func TestServiceDeletePageComment(t *testing.T) {
 		space, page := seedCommentFixture(t, ch)
 		otherPage := mustCreatePage(t, ch.store, space.Id, space.ChannelId, mmmodel.NewId(), "")
 		author := mmmodel.NewId()
-		root, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, author)
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, author)
 
-		_, appErr := ch.svc.DeletePageComment(space, otherPage.Id, root.Id, author)
+		_, _, appErr := ch.svc.DeletePageComment(space, otherPage.Id, root.Id, author)
 		require.NotNil(t, appErr)
 		assert.Equal(t, http.StatusNotFound, appErr.StatusCode)
 		assert.Zero(t, readStandInPost(t, ch.db, root.Id).DeleteAt)
@@ -901,7 +907,7 @@ func TestServiceDeletePageComment(t *testing.T) {
 		chatPost := &mmmodel.Post{Id: mmmodel.NewId(), UserId: mmmodel.NewId(), ChannelId: space.ChannelId, Message: "chat"}
 		insertStandInPost(t, ch.db, chatPost)
 
-		_, appErr := ch.svc.DeletePageComment(space, page.Id, chatPost.Id, chatPost.UserId)
+		_, _, appErr := ch.svc.DeletePageComment(space, page.Id, chatPost.Id, chatPost.UserId)
 		require.NotNil(t, appErr)
 		assert.Equal(t, http.StatusNotFound, appErr.StatusCode)
 		assert.Zero(t, readStandInPost(t, ch.db, chatPost.Id).DeleteAt)
@@ -956,9 +962,9 @@ func TestServiceMovePageToSpaceRehomesComments(t *testing.T) {
 		ch := openCommentHarness(t)
 		source, target, page := seedTwoSpaces(t, ch)
 		resolvedTrue := true
-		root, appErr := ch.svc.CreatePageComment(source, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
+		root, _, appErr := ch.svc.CreatePageComment(source, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
 		require.Nil(t, appErr)
-		_, appErr = ch.svc.UpdatePageComment(source, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedTrue}, mmmodel.NewId())
+		_, _, appErr = ch.svc.UpdatePageComment(source, page.Id, root.Id, &model.PageCommentPatch{Resolved: &resolvedTrue}, mmmodel.NewId())
 		require.Nil(t, appErr)
 
 		_, appErr = ch.svc.MovePageToSpace(page.Id, source, target, nil, nil, true, mmmodel.NewId())

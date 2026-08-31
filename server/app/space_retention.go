@@ -76,3 +76,35 @@ func (s *Service) ReconcileSpaceRetention() error {
 		}
 	}
 }
+
+// ReleaseSpaceRetention removes every space backing channel from policyID, returning Docs content
+// to the standard retention clock. This is what clearing the Docs retention setting means: the
+// enrolment is an exception Docs asked for, so withdrawing the setting has to withdraw the
+// assignments too, or spaces keep following a policy nothing in the configuration still names.
+// Only channels sitting in policyID are touched, so a policy an admin assigned by hand survives.
+// Idempotent and re-runnable; a no-op when policyID is empty.
+func (s *Service) ReleaseSpaceRetention(policyID string) error {
+	if policyID == "" || s.client == nil {
+		return nil
+	}
+	lastFirst := ""
+	for {
+		channelIDs, err := s.store.GetSpaceChannelsInRetentionPolicy(policyID, retentionEnrolChunkSize)
+		if err != nil {
+			return err
+		}
+		if len(channelIDs) == 0 {
+			return nil
+		}
+		// The detection is ordered, so the same leading id after a successful removal means the
+		// removal is not landing rows — stop rather than loop forever.
+		if channelIDs[0] == lastFirst {
+			return errors.New("space retention release is not converging; channel " + channelIDs[0] + " is still assigned after a removal")
+		}
+		lastFirst = channelIDs[0]
+
+		if err := s.client.System.RemoveChannelsFromRetentionPolicy(policyID, channelIDs); err != nil {
+			return err
+		}
+	}
+}

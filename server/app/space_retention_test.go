@@ -5,6 +5,7 @@ package app_test
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -198,5 +199,70 @@ func TestServiceReconcileSpaceRetention(t *testing.T) {
 		err := h.svc.ReconcileSpaceRetention()
 		require.Error(t, err)
 		assert.Len(t, calls, 1, "the non-convergence guard fires after one fruitless enrolment")
+	})
+}
+
+func TestServiceReleaseSpaceRetention(t *testing.T) {
+	policyID := "policy0000000000000000000x"
+
+	assignedPolicy := func(t *testing.T, h *testHarness, channelID string) string {
+		t.Helper()
+		var got string
+		err := h.db.QueryRow(`SELECT PolicyId FROM RetentionPoliciesChannels WHERE ChannelId = $1`, channelID).Scan(&got)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ""
+		}
+		require.NoError(t, err)
+		return got
+	}
+
+	t.Run("returns every enrolled space channel to the standard clock", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		h := openTestServiceWithAPI(t, mockAPI)
+		stubRetentionEnrolment(t, mockAPI, h.db, nil)
+		h.svc.SetRetentionPolicyID(policyID)
+
+		spaceA := mustCreateSpace(t, h.store, mmmodel.NewId())
+		spaceB := mustCreateSpace(t, h.store, mmmodel.NewId())
+		require.NoError(t, h.svc.ReconcileSpaceRetention())
+
+		require.NoError(t, h.svc.ReleaseSpaceRetention(policyID))
+
+		for _, channelID := range []string{spaceA.ChannelId, spaceB.ChannelId} {
+			assert.Empty(t, assignedPolicy(t, h, channelID), "clearing the setting must drop the Docs assignment")
+		}
+	})
+
+	t.Run("leaves an assignment Docs did not make in place", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		h := openTestServiceWithAPI(t, mockAPI)
+		stubRetentionEnrolment(t, mockAPI, h.db, nil)
+
+		space := mustCreateSpace(t, h.store, mmmodel.NewId())
+		adminPolicyID := "policy0000000000000000000z"
+		_, err := h.db.Exec(`INSERT INTO RetentionPoliciesChannels (PolicyId, ChannelId) VALUES ($1, $2)`, adminPolicyID, space.ChannelId)
+		require.NoError(t, err)
+
+		require.NoError(t, h.svc.ReleaseSpaceRetention(policyID))
+
+		assert.Equal(t, adminPolicyID, assignedPolicy(t, h, space.ChannelId),
+			"only the policy Docs enrolled into may be released")
+	})
+
+	t.Run("is idempotent and a no-op without a policy", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		h := openTestServiceWithAPI(t, mockAPI)
+		stubRetentionEnrolment(t, mockAPI, h.db, nil)
+		h.svc.SetRetentionPolicyID(policyID)
+
+		space := mustCreateSpace(t, h.store, mmmodel.NewId())
+		require.NoError(t, h.svc.ReconcileSpaceRetention())
+
+		require.NoError(t, h.svc.ReleaseSpaceRetention(""))
+		assert.Equal(t, policyID, assignedPolicy(t, h, space.ChannelId), "an empty policy releases nothing")
+
+		require.NoError(t, h.svc.ReleaseSpaceRetention(policyID))
+		require.NoError(t, h.svc.ReleaseSpaceRetention(policyID))
+		assert.Empty(t, assignedPolicy(t, h, space.ChannelId))
 	})
 }

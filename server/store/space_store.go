@@ -64,6 +64,32 @@ func (s *Store) GetSpaceChannelsNotInRetentionPolicy(policyID string, limit int)
 	return rows, nil
 }
 
+// GetSpaceChannelsInRetentionPolicy returns up to limit space backing channels currently assigned
+// to the given data-retention policy. It is the inverse of the detection above and drives the
+// release path: when the Docs retention setting is cleared, the channels Docs enrolled must be
+// removed from the policy it enrolled them in, or they keep following that policy's clock instead
+// of the standard one. Scoping the read to the policy Docs was configured with is what keeps an
+// assignment an admin made by hand out of the release. Deleted spaces are included for the same
+// reason they are included in the detection: their content is still restorable.
+func (s *Store) GetSpaceChannelsInRetentionPolicy(policyID string, limit int) ([]string, error) {
+	if err := requirePositiveLimit("Space", limit); err != nil {
+		return nil, err
+	}
+	query := s.getQueryBuilder().
+		Select("sp.ChannelId").
+		From("DOCS_Space sp").
+		Join("RetentionPoliciesChannels rpc ON rpc.ChannelId = sp.ChannelId").
+		Where(sq.Eq{"rpc.PolicyId": policyID}).
+		OrderBy("sp.Id ASC").
+		Limit(uint64(limit)) //nolint:gosec // limit>0 enforced above
+
+	var channelIDs []string
+	if err := s.selectBuilder(s.db, &channelIDs, query); err != nil {
+		return nil, errors.Wrap(err, "failed to list space channels in the retention policy")
+	}
+	return channelIDs, nil
+}
+
 // CreateSpace inserts a space row, fills in defaults and validates before inserting.
 func (s *Store) CreateSpace(space *model.Space) (*model.Space, error) {
 	if space == nil {

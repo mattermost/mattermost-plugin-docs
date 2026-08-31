@@ -406,3 +406,70 @@ func TestWithPageCommentLock(t *testing.T) {
 		assert.Equal(t, targetSpace.Id, moved.SpaceId)
 	})
 }
+
+// TestWithPageCommentLockThreadSerialization pins the property the threadLockKey rule exists for:
+// two writes anywhere in one comment thread must not run at once. The page row lock alone does not
+// give this — it is taken FOR SHARE, so two comment writes on the same page hold it concurrently.
+func TestWithPageCommentLockThreadSerialization(t *testing.T) {
+	t.Run("the same thread key serializes two writes on one page", func(t *testing.T) {
+		f := newCommentFixture(t)
+		rootID := mmmodel.NewId()
+
+		release := make(chan struct{})
+		firstHeld := make(chan struct{})
+		firstDone := make(chan error, 1)
+		go func() {
+			firstDone <- f.store.WithPageCommentLock(f.page.Id, rootID, func(*sqlx.Tx, store.LockedPage) error {
+				close(firstHeld)
+				<-release
+				return nil
+			})
+		}()
+		<-firstHeld
+
+		secondEntered := make(chan struct{})
+		secondDone := make(chan error, 1)
+		go func() {
+			secondDone <- f.store.WithPageCommentLock(f.page.Id, rootID, func(*sqlx.Tx, store.LockedPage) error {
+				close(secondEntered)
+				return nil
+			})
+		}()
+
+		select {
+		case <-secondEntered:
+			t.Fatal("a second write on the same thread entered while the first held the thread lock")
+		case <-time.After(300 * time.Millisecond):
+		}
+
+		close(release)
+		require.NoError(t, <-firstDone)
+		require.NoError(t, <-secondDone)
+		<-secondEntered
+	})
+
+	t.Run("a different thread key on the same page does not block", func(t *testing.T) {
+		f := newCommentFixture(t)
+
+		release := make(chan struct{})
+		firstHeld := make(chan struct{})
+		firstDone := make(chan error, 1)
+		go func() {
+			firstDone <- f.store.WithPageCommentLock(f.page.Id, mmmodel.NewId(), func(*sqlx.Tx, store.LockedPage) error {
+				close(firstHeld)
+				<-release
+				return nil
+			})
+		}()
+		<-firstHeld
+
+		// A write on another thread of the same page must proceed: the page row lock is FOR
+		// SHARE, so only the thread key can be what serializes.
+		require.NoError(t, f.store.WithPageCommentLock(f.page.Id, mmmodel.NewId(), func(*sqlx.Tx, store.LockedPage) error {
+			return nil
+		}))
+
+		close(release)
+		require.NoError(t, <-firstDone)
+	})
+}

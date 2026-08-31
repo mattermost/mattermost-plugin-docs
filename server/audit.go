@@ -67,3 +67,14 @@ func (p *Plugin) makeAuditRecord(r *http.Request, eventName, userID string) *mmm
 	}
 	return rec
 }
+
+// recordAuditOutcome settles the audit status of a write that returned an error. A comment write
+// through the plugin API can fail after its row has committed, and the service reports that as its
+// committed return; the audit trail records the durable state change that happened rather than the
+// error the caller saw, so a created, edited, or deleted comment is never absent from the log.
+// Leaves the record at fail when nothing was written.
+func (p *Plugin) recordAuditOutcome(rec *mmmodel.AuditRecord, committed bool) {
+	if committed {
+		rec.Success()
+	}
+}
