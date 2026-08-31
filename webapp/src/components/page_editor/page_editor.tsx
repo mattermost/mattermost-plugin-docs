@@ -41,7 +41,7 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
         editorRef,
     });
 
-    const {formattingBarRef, surfaceRef, getEditor, applyFormatting, documentMode} =
+    const {formattingBarRef, surfaceRef, getEditor, applyFormatting, editorReady, documentMode} =
         useHostEditor(editorRef, editing && !load.loading && !load.error);
 
     const publish = usePublishDraft(spaceId);
@@ -124,7 +124,7 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
 
     return (
         <div className={styles.root}>
-            {editing && pinned && FormattingBar && toolbarSlot && createPortal(
+            {editing && pinned && editorReady && FormattingBar && toolbarSlot && createPortal(
                 <div className={styles.pinnedToolbar}>
                     <FormattingBar
                         ref={formattingBarRef}
@@ -185,7 +185,7 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
                         ref={surfaceRef}
                         className={classNames(styles.surface, {[styles.reading]: !editing})}
                     >
-                        {editing && !pinned && (
+                        {editing && !pinned && editorReady && (
                             <FloatingFormattingBar
                                 editorRef={surfaceRef}
                                 applyFormatting={applyFormatting}

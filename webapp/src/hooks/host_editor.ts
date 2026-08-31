@@ -17,6 +17,7 @@ export type HostEditor = {
 
     getEditor: () => unknown;
     applyFormatting: (mode: PublishedMarkdownMode) => void;
+    editorReady: boolean;
 
     documentMode: boolean | null;
 };
@@ -26,8 +27,28 @@ export function useHostEditor(editorRef: EditorRef, ready: boolean): HostEditor 
     const surfaceRef = useRef<HTMLDivElement>(null);
 
     const [documentMode, setDocumentMode] = useState<boolean | null>(null);
+    const [editorReady, setEditorReady] = useState(false);
 
     useCaretAnchoredSuggestions(surfaceRef, ready);
+
+    useEffect(() => {
+        if (!ready) {
+            setEditorReady(false);
+            return undefined;
+        }
+
+        let frame = 0;
+        const look = () => {
+            if (editorRef.current?.getEditor?.()) {
+                setEditorReady(true);
+                return;
+            }
+            frame = requestAnimationFrame(look);
+        };
+        look();
+
+        return () => cancelAnimationFrame(frame);
+    }, [editorRef, ready]);
 
     useEffect(() => {
         if (!ready) {
@@ -50,5 +71,5 @@ export function useHostEditor(editorRef: EditorRef, ready: boolean): HostEditor 
         applyWysiwygFormatting(editor, mode);
     }, [getEditor]);
 
-    return {formattingBarRef, surfaceRef, getEditor, applyFormatting, documentMode};
+    return {formattingBarRef, surfaceRef, getEditor, applyFormatting, editorReady, documentMode};
 }
