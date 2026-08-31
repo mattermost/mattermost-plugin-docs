@@ -13,8 +13,8 @@ require (
 	github.com/gorilla/mux v1.8.1
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.12.3
-	github.com/mattermost/mattermost/server/public v0.4.5-0.20260831151757-3d9b5f2af0fd
-	github.com/mattermost/mattermost/server/v8 v8.0.0-20260831151757-3d9b5f2af0fd
+	github.com/mattermost/mattermost/server/public v0.4.5-0.20260831214924-3b49ada2f26d
+	github.com/mattermost/mattermost/server/v8 v8.0.0-20260831214924-3b49ada2f26d
 	github.com/mattermost/morph v1.1.0
 	github.com/mattermost/squirrel v0.5.0
 	github.com/pkg/errors v0.9.1

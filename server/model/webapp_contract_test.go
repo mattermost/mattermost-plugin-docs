@@ -91,3 +91,89 @@ func TestWebappTierPermissionsMatchPresets(t *testing.T) {
 			"TIER_PERMISSIONS.%s must equal the %s preset's default set", tier, schemeName)
 	}
 }
+
+// parseWebappPermissionList maps one `export const NAME: readonly Permission[] = [...]` array in
+// types/permissions.ts to the wire ids it lists. A list built by spreading another (
+// MEMBER_PERMISSION_ORDER spreads DEFAULT_PERMISSION_ORDER) is resolved against that list, so the
+// ids compared here are the ones the webapp actually renders.
+func parseWebappPermissionList(t *testing.T, name string) []string {
+	t.Helper()
+	source := readWebappSource(t, filepath.Join("types", "permissions.ts"))
+	body := regexp.MustCompile(`(?s)export const ` + name + `: readonly Permission\[\] = \[(.*?)\n\];`).FindStringSubmatch(source)
+	require.Len(t, body, 2, "cannot locate %s in types/permissions.ts", name)
+
+	permissionIDs := parseWebappPermissionIDs(t)
+	ids := []string{}
+	for _, entry := range regexp.MustCompile(`\.\.\.(\w+)|Permissions\.(\w+)`).FindAllStringSubmatch(body[1], -1) {
+		if entry[1] != "" {
+			ids = append(ids, parseWebappPermissionList(t, entry[1])...)
+			continue
+		}
+		id, ok := permissionIDs[entry[2]]
+		require.True(t, ok, "%s references Permissions.%s, which types/permissions.ts does not define", name, entry[2])
+		ids = append(ids, id)
+	}
+	require.NotEmpty(t, ids, "parsed no permissions out of %s", name)
+	return ids
+}
+
+// spaceWireVocabulary is every permission id the plugin can put on the wire: the channel-scoped
+// space permissions a member holds or is granted, plus the two team-scoped tiers, which reach a
+// caller in an effective set. The webapp names each of them, so this is what its Permissions
+// object must cover.
+func spaceWireVocabulary() []string {
+	ids := mmmodel.PermissionIDs(mmmodel.SpaceChannelScopedPermissions)
+	return append(ids, mmmodel.PermissionManageSpace.Id, mmmodel.PermissionDeleteSpace.Id)
+}
+
+// TestWebappPermissionIDsMatchCore pins the id strings themselves. types/permissions.ts calls
+// itself byte-for-byte aligned with the server, and until now only the ids a tier happened to
+// reference were resolved at all — a wrong token on any other permission reached the client as a
+// permission the server has never heard of, and was simply never granted.
+func TestWebappPermissionIDsMatchCore(t *testing.T) {
+	ids := parseWebappPermissionIDs(t)
+
+	known := map[string]bool{}
+	for _, permission := range mmmodel.AllPermissions {
+		known[permission.Id] = true
+	}
+	listed := map[string]bool{}
+	for name, id := range ids {
+		require.True(t, known[id], "Permissions.%s is %q, which core defines no permission for", name, id)
+		listed[id] = true
+	}
+
+	for _, id := range spaceWireVocabulary() {
+		require.True(t, listed[id], "core speaks %q on the space wire; types/permissions.ts does not name it", id)
+	}
+}
+
+// TestWebappDefaultPermissionOrderMatchesGrantable pins the space-default vocabulary the two
+// permission surfaces offer — the Share menu's checkboxes and the settings tab's toggles both
+// render DEFAULT_PERMISSION_ORDER — against the set ValidateDefaultPermissions accepts. A
+// permission made grantable server-side and not added here is offered by neither surface.
+func TestWebappDefaultPermissionOrderMatchesGrantable(t *testing.T) {
+	grantable := []string{}
+	for _, id := range mmmodel.PermissionIDs(mmmodel.SpaceChannelScopedPermissions) {
+		if model.ValidateDefaultPermissions([]string{id}) == nil {
+			grantable = append(grantable, id)
+		}
+	}
+
+	require.ElementsMatch(t, grantable, parseWebappPermissionList(t, "DEFAULT_PERMISSION_ORDER"),
+		"DEFAULT_PERMISSION_ORDER must list exactly the permissions a space default may carry")
+}
+
+// TestWebappMemberPermissionOrderMatchesGrantable is the same pin on the per-member grant
+// vocabulary, which differs from the space default by admin_space alone.
+func TestWebappMemberPermissionOrderMatchesGrantable(t *testing.T) {
+	grantable := []string{}
+	for _, id := range mmmodel.PermissionIDs(mmmodel.SpaceChannelScopedPermissions) {
+		if model.ValidateGrantedPermissions([]string{id}) == nil {
+			grantable = append(grantable, id)
+		}
+	}
+
+	require.ElementsMatch(t, grantable, parseWebappPermissionList(t, "MEMBER_PERMISSION_ORDER"),
+		"MEMBER_PERMISSION_ORDER must list exactly the permissions a member may be granted")
+}

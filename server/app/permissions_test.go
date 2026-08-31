@@ -937,6 +937,72 @@ func TestRequireSpaceAdminOrSysadmin_GuestRowDenied(t *testing.T) {
 		"the denial must be the shared existence-hiding 403, not a distinguishable one")
 }
 
+// TestRequireSpaceAdminOrTeamPerm_ReadsSchemeAdminFromMaster is the twin of
+// TestRequireSpaceAdminOrSysadmin_ReadsSchemeAdminFromMaster on the manage gate, whose channel-admin
+// branch reads the same master row for the same reason. The manage tier reshapes the roster — adding
+// members, editing their permissions, removing them — and patches the space's title and description,
+// so a caller the cached composition still calls an admin must not reach it either.
+//
+// As in the twin, the demotion is not interleaved: a cached grant with no ChannelMembers row is the
+// same divergence, expressed deterministically. The team manage_space branch is denied by the
+// harness defaults, leaving the master read as the only thing that can admit.
+func TestRequireSpaceAdminOrTeamPerm_ReadsSchemeAdminFromMaster(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	teamID := mmmodel.NewId()
+	mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionAdminSpace).Return(true).Maybe()
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
+
+	appErr := h.svc.RequireSpaceAdminOrTeamPerm("test", space, userID, mmmodel.PermissionManageSpace)
+	require.NotNil(t, appErr,
+		"the manage gate must read SchemeAdmin from the master; a cached admin_space grant with no ChannelMembers row must not admit")
+	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+	require.Equal(t, "app.space.access.forbidden.app_error", appErr.Id,
+		"the denial must be the shared existence-hiding 403, not a distinguishable one")
+}
+
+// TestRequireSpaceAdminOrTeamPerm_SchemeAdminRowAdmits is the positive half of the pair above,
+// pinning the source in both directions: the cached grant is denied and the row alone admits.
+func TestRequireSpaceAdminOrTeamPerm_SchemeAdminRowAdmits(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	teamID := mmmodel.NewId()
+	mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionAdminSpace).Return(false).Maybe()
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
+	testutil.MustAddChannelAdmin(t, h.db, space.ChannelId, userID)
+
+	require.Nil(t, h.svc.RequireSpaceAdminOrTeamPerm("test", space, userID, mmmodel.PermissionManageSpace),
+		"a SchemeAdmin row on the master must admit to the manage tier on its own")
+}
+
+// TestRequireSpaceAdminOrTeamPerm_GuestRowDenied carries the guest clamp onto the manage gate. A
+// guest conversion that leaves a SchemeAdmin flag behind produces a row that reads as admin, and
+// without the conjunct the guest keeps the roster and space-patch operations the page gates already
+// refuse them.
+func TestRequireSpaceAdminOrTeamPerm_GuestRowDenied(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	teamID := mmmodel.NewId()
+	mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionAdminSpace).Return(true).Maybe()
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
+	testutil.MustAddChannelAdmin(t, h.db, space.ChannelId, userID)
+	_, err := h.db.Exec(`UPDATE ChannelMembers SET SchemeGuest = TRUE WHERE ChannelId = $1 AND UserId = $2`,
+		space.ChannelId, userID)
+	require.NoError(t, err)
+
+	appErr := h.svc.RequireSpaceAdminOrTeamPerm("test", space, userID, mmmodel.PermissionManageSpace)
+	require.NotNil(t, appErr, "a guest must not reach the manage tier through a leftover SchemeAdmin flag")
+	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+	require.Equal(t, "app.space.access.forbidden.app_error", appErr.Id,
+		"the denial must be the shared existence-hiding 403, not a distinguishable one")
+}
+
 // TestResolveSpaceRead_GuestDeniedOpenFallthrough covers the guest exclusion from the open-space
 // non-member read. Core's team_guest holds read_space but not read_public_channel, so a guest who
 // is not a backing-channel member has no path into an open space they were never added to —

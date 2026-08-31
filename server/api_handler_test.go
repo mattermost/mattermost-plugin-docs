@@ -2827,6 +2827,9 @@ func TestHandler_UpdateSpace_ViewAccessInvalidValue(t *testing.T) {
 	grantSpaceAdmin(mockAPI, channelID, adminID)
 	h := openTestPlugin(t, mockAPI)
 	space := seedSpace(t, h.store, channelID)
+	// Both gates the route runs read SchemeAdmin from the master, so the caller needs the row as
+	// well as the cached grant to reach the validation this asserts.
+	testutil.MustAddChannelAdmin(t, h.db, channelID, adminID)
 
 	rec := h.do(t, http.MethodPatch, "/api/v1/spaces/"+space.Id, adminID, map[string]any{
 		"view_access":        "bogus",

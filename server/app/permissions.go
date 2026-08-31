@@ -264,7 +264,11 @@ func (s *Service) RequireSpaceAdminOrTeamPerm(where string, space *model.Space, 
 	if appErr != nil {
 		return appErr
 	}
-	if s.adminOrTeamPermFrom(sysadmin, active, space, userID, teamPerm) {
+	admitted, appErr := s.adminOrTeamPermFrom(where, sysadmin, active, space, userID, teamPerm)
+	if appErr != nil {
+		return appErr
+	}
+	if admitted {
 		return nil
 	}
 	return ExistenceHidingForbidden(where)
@@ -274,15 +278,25 @@ func (s *Service) RequireSpaceAdminOrTeamPerm(where string, space *model.Space, 
 // already-resolved sysadmin status and team standing so a caller answering two questions about
 // the same space resolves that standing once. Ordered so the team lookup only runs for a caller
 // who is neither sysadmin nor space admin.
-func (s *Service) adminOrTeamPermFrom(sysadmin bool, active bool, space *model.Space, userID string, teamPerm *mmmodel.Permission) bool {
+//
+// The admin_space branch reads masterSchemeAdmin rather than composing the permission, for the
+// reasons given there: the roster and the space patch it admits are as reachable to a demoted
+// admin or a converted guest as the exposure knobs RequireSpaceAdminOrSysadmin guards.
+func (s *Service) adminOrTeamPermFrom(where string, sysadmin bool, active bool, space *model.Space, userID string, teamPerm *mmmodel.Permission) (bool, *mmmodel.AppError) {
 	if sysadmin {
-		return true
+		return true, nil
 	}
-	if active && s.client.User.HasPermissionToChannel(userID, space.ChannelId, mmmodel.PermissionAdminSpace) {
-		return true
+	if active {
+		admin, appErr := s.masterSchemeAdmin(where, space, userID)
+		if appErr != nil {
+			return false, appErr
+		}
+		if admin {
+			return true, nil
+		}
 	}
 	return s.readResolutionFrom(false, active, space, userID) != ReadDenied &&
-		s.client.User.HasPermissionToTeam(userID, space.TeamId, teamPerm)
+		s.client.User.HasPermissionToTeam(userID, space.TeamId, teamPerm), nil
 }
 
 // ResolveSpaceRosterAccess gates the member listing and reports whether the caller additionally
@@ -300,7 +314,7 @@ func (s *Service) ResolveSpaceRosterAccess(where string, space *model.Space, use
 	if s.readResolutionFrom(sysadmin, active, space, userID) == ReadDenied {
 		return false, ExistenceHidingForbidden(where)
 	}
-	return s.adminOrTeamPermFrom(sysadmin, active, space, userID, mmmodel.PermissionManageSpace), nil
+	return s.adminOrTeamPermFrom(where, sysadmin, active, space, userID, mmmodel.PermissionManageSpace)
 }
 
 // RequireSpaceAdminOrSysadmin gates the space-wide exposure-policy knobs (ViewAccess, default
@@ -315,27 +329,40 @@ func (s *Service) RequireSpaceAdminOrSysadmin(where string, space *model.Space, 
 		return nil
 	}
 	if active {
-		// The SchemeAdmin flag is read from the master row, not composed through
-		// HasPermissionToChannel: composition can still reflect the cached, pre-demotion roles.
-		// Re-running this gate inside the space-membership lock catches a demotion that took
-		// effect while the caller was waiting.
-		//
-		// The flag is the whole signal for admin_space: RolesForPermissions turns an admin_space
-		// grant into SchemeAdmin rather than an ExplicitRoles token, PermissionsFromMember derives
-		// the permission back from that flag alone, and the permission is rejected as a space
-		// default and carried by no team or system role. A non-member has no row and is denied.
-		//
-		// A guest is denied whatever the admin flag says, the clamp evaluatePagePermission applies
-		// to page writes. The guest flag comes from the same row, so the clamp costs no extra read.
-		schemeAdmin, schemeGuest, flagErr := s.store.GetMemberSchemeFlags(space.ChannelId, userID)
-		switch {
-		case flagErr == nil && schemeAdmin && !schemeGuest:
+		admin, appErr := s.masterSchemeAdmin(where, space, userID)
+		if appErr != nil {
+			return appErr
+		}
+		if admin {
 			return nil
-		case flagErr != nil && !errors.As(flagErr, new(*store.ErrNotFound)):
-			return mmmodel.NewAppError(where, "app.space.access.member_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(flagErr)
 		}
 	}
 	return ExistenceHidingForbidden(where)
+}
+
+// masterSchemeAdmin reports whether userID's ChannelMembers row carries admin_space standing over
+// space: SchemeAdmin set, SchemeGuest clear.
+//
+// The flags are read from the master row, not composed through HasPermissionToChannel: composition
+// can still reflect the cached, pre-demotion roles. Re-running a gate inside the space-membership
+// lock catches a demotion that took effect while the caller was waiting.
+//
+// The flag is the whole signal for admin_space: RolesForPermissions turns an admin_space grant into
+// SchemeAdmin rather than an ExplicitRoles token, PermissionsFromMember derives the permission back
+// from that flag alone, and the permission is rejected as a space default and carried by no team or
+// system role. A non-member has no row and is denied.
+//
+// A guest is denied whatever the admin flag says, the clamp evaluatePagePermission applies to page
+// writes. The guest flag comes from the same row, so the clamp costs no extra read.
+func (s *Service) masterSchemeAdmin(where string, space *model.Space, userID string) (bool, *mmmodel.AppError) {
+	schemeAdmin, schemeGuest, err := s.store.GetMemberSchemeFlags(space.ChannelId, userID)
+	if err != nil {
+		if errors.As(err, new(*store.ErrNotFound)) {
+			return false, nil
+		}
+		return false, mmmodel.NewAppError(where, "app.space.access.member_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+	}
+	return schemeAdmin && !schemeGuest, nil
 }
 
 // RequireSpacePageWrite gates a page write on perm: it resolves the read gate — a caller cannot be
