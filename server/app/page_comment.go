@@ -39,9 +39,10 @@ import (
 // either way: the caller must see the failure while the rest of the space converges on the state
 // that exists.
 //
-// Space membership is the only authorization gate wired today, enforced by the handlers via
-// requireSpaceMembership like every other Docs route; the per-permission gates (read_page,
-// comment_page, delete_page_comment) land with the RBAC epic.
+// Space membership is the shared authorization gate wired today, enforced by the handlers via
+// requireSpaceMembership like every other Docs route. Delete additionally restricts moderation
+// of another author's comment to the space creator until the per-permission RBAC gates
+// (read_page, comment_page, delete_page_comment) land.
 
 // PageCommentCursor is the decoded keyset boundary of the roots listing: the (CreateAt, Id) pair
 // of the last row the client saw. The pair is a pure value comparison in SQL, so a cursor naming
@@ -524,10 +525,10 @@ func (s *Service) probePatchCommitted(tx *sqlx.Tx, locked store.LockedPage, page
 
 // DeletePageComment soft-deletes a comment. The author deletes their own comment, except a root
 // with live replies, which is refused 409 (the returned replyCount populates the 409 body so the
-// client can say how many replies the delete would destroy); any other space member deletes any
-// comment and force-deletes through the guard — the platform cascade takes the replies with the
-// root. The per-permission split of that contract (delete_own_page vs delete_page_comment) lands
-// with the RBAC epic. The bool reports whether the deletion is durably stored; see
+// client can say how many replies the delete would destroy). Until the per-permission RBAC split
+// lands, only the space creator may delete another user's comment and bypass that guard; ordinary
+// members cannot use someone else's authorship as a force-delete capability. The bool reports
+// whether the deletion is durably stored; see
 // probeDeleteCommitted.
 func (s *Service) DeletePageComment(space *model.Space, pageID, commentID, userID string) (int, bool, *mmmodel.AppError) {
 	if appErr := s.validateCommentWrite("DeletePageComment", space, pageID, userID); appErr != nil {
@@ -553,10 +554,13 @@ func (s *Service) DeletePageComment(space *model.Space, pageID, commentID, userI
 			return preErr
 		}
 		deletedRootID = preImage.RootId
+		if preImage.UserId != userID && space.CreatorId != userID {
+			return mmmodel.NewAppError("DeletePageComment", "app.space.access.forbidden.app_error", nil, "", http.StatusForbidden)
+		}
 
-		// The guard applies only on the own-delete path, and only after that path admitted the
-		// caller — force-delete, by definition, must bypass it for every other principal.
-		if preImage.UserId == userID && preImage.RootId == "" {
+		// The guard applies to the own-delete path. The space creator's moderation path may remove
+		// a whole thread and therefore deliberately bypasses it.
+		if preImage.UserId == userID && space.CreatorId != userID && preImage.RootId == "" {
 			counts, countErr := s.store.GetPageCommentReplyCountsTx(tx, []string{commentID})
 			if countErr != nil {
 				return storeAppError("DeletePageComment", countErr)

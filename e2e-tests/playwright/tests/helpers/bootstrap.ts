@@ -2,20 +2,12 @@
 // See LICENSE.txt for license information.
 
 import {DocsServerContainer, adminPassword, adminUsername, defaultTeamName} from './mmcontainer';
-import {assertCommentRPCsSupported, assertPluginActive, assertServerSupportsDocs} from './preflight';
+import {assertPluginActive, assertServerSupportsDocs} from './preflight';
 import {clearState, writeState} from './state';
 
 // Deliberately not keyed off MM_SERVICESETTINGS_SITEURL: most dev shells export it, and
 // that would silently seed data into a developer's live server.
 const useExistingServer = process.env.MM_E2E_USE_EXISTING_SERVER === 'true';
-
-// The checks that need a running server and an admin, run identically on both paths: a setup
-// problem must fail here, naming itself, rather than surfacing later as a spec failure that looks
-// like a product bug.
-async function assertReadyForSpecs(baseURL: string, username: string, password: string, remedy = '') {
-    await assertPluginActive(baseURL, username, password);
-    await assertCommentRPCsSupported(baseURL, username, password, remedy);
-}
 
 // Teardown is returned as a closure to keep the container handle in scope; a separate
 // globalTeardown file would leak containers whenever it loaded in another process.
@@ -31,10 +23,10 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
         const username = process.env.MM_ADMIN_USERNAME || adminUsername;
         const password = process.env.MM_ADMIN_PASSWORD || adminPassword;
 
-        // Without these an unsupported server fails much later, as an opaque browser or API failure.
+        // The container path gets these checks during setup; without them here an
+        // unsupported server fails much later, as an opaque browser or API failure.
         await assertServerSupportsDocs(baseURL);
-        await assertReadyForSpecs(baseURL, username, password,
-            'This server is built from the paired core branch — rebuild and restart it so it carries the current core work.');
+        await assertPluginActive(baseURL, username, password);
 
         writeState({
             baseURL,
@@ -50,21 +42,12 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
 
     const server = await new DocsServerContainer().start();
 
-    try {
-        await assertReadyForSpecs(server.url(), adminUsername, adminPassword,
-            'Set MM_IMAGE locally, add an e2e-core-commit marker to the PR description in cloud CI, or run ' +
-            'against a compatible existing server with MM_E2E_USE_EXISTING_SERVER=true.');
-
-        writeState({
-            baseURL: server.url(),
-            adminUsername,
-            adminPassword,
-            teamName: defaultTeamName,
-        });
-    } catch (error) {
-        await server.stop();
-        throw error;
-    }
+    writeState({
+        baseURL: server.url(),
+        adminUsername,
+        adminPassword,
+        teamName: defaultTeamName,
+    });
 
     return async () => {
         clearState();

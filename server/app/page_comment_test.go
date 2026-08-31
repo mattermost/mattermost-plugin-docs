@@ -823,13 +823,26 @@ func TestServiceDeletePageComment(t *testing.T) {
 		assert.Equal(t, 1, replyCount)
 	})
 
-	t.Run("a non-author force-deletes through the guard and the cascade takes the replies", func(t *testing.T) {
+	t.Run("an ordinary non-author cannot delete another member's thread", func(t *testing.T) {
 		ch := openCommentHarness(t)
 		space, page := seedCommentFixture(t, ch)
 		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
-		reply, _, _ := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r", mmmodel.NewId())
 
 		_, _, appErr := ch.svc.DeletePageComment(space, page.Id, root.Id, mmmodel.NewId())
+		require.NotNil(t, appErr)
+		assert.Equal(t, http.StatusForbidden, appErr.StatusCode)
+		assert.Zero(t, readStandInPost(t, ch.db, root.Id).DeleteAt)
+	})
+
+	t.Run("the space creator can moderate a thread and cascade its replies", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		moderator := mmmodel.NewId()
+		space.CreatorId = moderator
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
+		reply, _, _ := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r", mmmodel.NewId())
+
+		_, _, appErr := ch.svc.DeletePageComment(space, page.Id, root.Id, moderator)
 		require.Nil(t, appErr)
 
 		assert.NotZero(t, readStandInPost(t, ch.db, root.Id).DeleteAt)
@@ -844,6 +857,18 @@ func TestServiceDeletePageComment(t *testing.T) {
 		got, _, _, appErr := ch.svc.GetPageComments(space, page.Id, nil, "", nil, 10)
 		require.Nil(t, appErr)
 		assert.Empty(t, got)
+	})
+
+	t.Run("the space creator can moderate their own thread", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		root, _, _ := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, space.CreatorId)
+		reply, _, _ := ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r", mmmodel.NewId())
+
+		_, _, appErr := ch.svc.DeletePageComment(space, page.Id, root.Id, space.CreatorId)
+		require.Nil(t, appErr)
+		assert.NotZero(t, readStandInPost(t, ch.db, root.Id).DeleteAt)
+		assert.NotZero(t, readStandInPost(t, ch.db, reply.Id).DeleteAt)
 	})
 
 	t.Run("a second delete reads as not-found", func(t *testing.T) {

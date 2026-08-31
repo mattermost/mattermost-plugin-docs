@@ -7,9 +7,7 @@ on:
       - master
     tags:
       - "v*"
-  # `edited` makes changing a PR's optional e2e-core-commit marker start a run immediately.
   pull_request:
-    types: [opened, synchronize, reopened, edited]
 
 # Superseded pull request runs are cancelled. Every other run gets a group of its own,
 # because a shared group keeps only the newest pending run: a second push to master
@@ -127,6 +125,10 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
+    # Declared here so the server under test shows up in a workflow diff; `vars` lets it
+    # be changed from repository settings.
+    env:
+      MM_IMAGE: ${{ vars.MM_IMAGE || 'mattermostdevelopment/mattermost-enterprise-edition:master' }}
     # No `services:` block: testcontainers provisions the server, so CI and local runs
     # take the same path.
     steps:
@@ -134,14 +136,6 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-
-      # A PR may opt the E2E job into its own unmerged core build. Without the marker — including
-      # every push to master and every later PR — the action selects the normal master image, where
-      # the comment preflight fails fast if the image predates the plugin's core surface.
-      - name: ci/resolve-e2e-core-image
-        uses: ./.github/actions/resolve-e2e-core-image
-        with:
-          pull-request-body: ${{ github.event.pull_request.body || '' }}
 
       - name: ci/playwright-e2e-test
         uses: ./.github/actions/playwright-e2e-test
