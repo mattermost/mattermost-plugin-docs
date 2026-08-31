@@ -49,7 +49,9 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
         disabled: busy,
     };
 
-    const copyLink = useCopyText(absolutePaths.space(space.id));
+    const copyLink = useCopyText(absolutePaths.space(space.id), {
+        announcement: formatMessage({id: 'docs.share.linkCopied', defaultMessage: 'Copied'}),
+    });
 
     const title = (
         <FormattedMessage
@@ -64,7 +66,6 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
             size='sm'
             className={styles.copyLink}
             onClick={copyLink.copy}
-            aria-live='polite'
         >
             {copyLink.copied ? <CheckIcon size={16}/> : <ContentCopyIcon size={16}/>}
             {copyLink.copied ? (

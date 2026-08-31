@@ -30,18 +30,14 @@ type ItemProps = {
 
     /** Marks the item as drilling into a sub-panel, adding a chevron. */
     opensPanel?: boolean;
-
-    /** Reads out `text` when it changes, for items that confirm in place. */
-    announce?: boolean;
     onClick: () => void;
 };
 
-const SpaceInfoMenuItem = ({icon, text, badge, opensPanel, announce, onClick}: ItemProps) => (
+const SpaceInfoMenuItem = ({icon, text, badge, opensPanel, onClick}: ItemProps) => (
     <Button
         emphasis='quaternary'
         size='sm'
         className={styles.item}
-        aria-live={announce ? 'polite' : undefined}
         onClick={onClick}
     >
         <span
@@ -89,7 +85,9 @@ const SpaceInfoMenu = ({space, memberCount, onShowMembers}: Props) => {
         ));
     }, [space]);
 
-    const copyLink = useCopyText(absolutePaths.space(space.id));
+    const copyLink = useCopyText(absolutePaths.space(space.id), {
+        announcement: formatMessage({id: 'docs.spaceInfo.menu.linkCopied', defaultMessage: 'Copied'}),
+    });
 
     return (
         <nav
@@ -113,7 +111,6 @@ const SpaceInfoMenu = ({space, memberCount, onShowMembers}: Props) => {
             <SpaceInfoMenuItem
                 icon={copyLink.copied ? <CheckIcon size={18}/> : <LinkVariantIcon size={18}/>}
                 text={copyLink.copied ? formatMessage({id: 'docs.spaceInfo.menu.linkCopied', defaultMessage: 'Copied'}) : formatMessage({id: 'docs.spaceInfo.menu.copyLink', defaultMessage: 'Copy link'})}
-                announce={copyLink.copied}
                 onClick={copyLink.copy}
             />
         </nav>

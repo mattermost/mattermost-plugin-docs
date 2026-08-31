@@ -42,7 +42,7 @@ jest.mock('hooks/navigation', () => ({
     useDocsNavigation: () => ({paths: {space: (id: string) => `/team/spaces/${id}`}}),
 }));
 
-jest.mock('utils/clipboard', () => ({copyToClipboard: jest.fn()}));
+jest.mock('utils/clipboard', () => ({copyToClipboard: jest.fn(() => Promise.resolve(true))}));
 
 // AddMembersField renders the real people picker, which pulls in mattermost-redux's
 // user search actions (published ESM that jest doesn't transform). Stub at the hook

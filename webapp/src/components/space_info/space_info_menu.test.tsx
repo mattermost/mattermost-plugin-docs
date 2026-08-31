@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {fireEvent, screen} from '@testing-library/react';
+import {act, fireEvent, screen} from '@testing-library/react';
 import React from 'react';
 import {copyToClipboard} from 'utils/clipboard';
 
@@ -19,7 +19,7 @@ jest.mock('hooks/permissions', () => ({
     useCanManageSpaceMembers: () => true,
 }));
 
-jest.mock('utils/clipboard', () => ({copyToClipboard: jest.fn()}));
+jest.mock('utils/clipboard', () => ({copyToClipboard: jest.fn(() => Promise.resolve(true))}));
 
 const space = makeSpace('space-1', 'Engineering');
 
@@ -34,21 +34,23 @@ const renderMenu = () => renderWithContext(
 describe('SpaceInfoMenu', () => {
     beforeEach(() => jest.clearAllMocks());
 
-    it('copies the space link', () => {
+    it('copies the space link', async () => {
         renderMenu();
 
-        fireEvent.click(screen.getByRole('button', {name: 'Copy link'}));
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', {name: 'Copy link'}));
+        });
 
         expect(copyToClipboard).toHaveBeenCalledWith('/team/spaces/space-1');
     });
 
     // MM-70344: the click gave no sign that anything happened.
-    it('confirms the copy on the item itself', () => {
+    it('confirms the copy on the item itself', async () => {
         renderMenu();
 
         fireEvent.click(screen.getByRole('button', {name: 'Copy link'}));
 
-        expect(screen.getByRole('button', {name: 'Copied'})).toBeInTheDocument();
+        expect(await screen.findByRole('button', {name: 'Copied'})).toBeInTheDocument();
         expect(screen.queryByRole('button', {name: 'Copy link'})).not.toBeInTheDocument();
     });
 });

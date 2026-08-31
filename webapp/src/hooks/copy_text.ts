@@ -4,7 +4,14 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {copyToClipboard} from 'utils/clipboard';
 
+import {announce} from 'components/readout/readout_store';
+
 const COPIED_TIMEOUT = 2000;
+
+type CopyOptions = {
+    announcement?: string;
+    timeout?: number;
+};
 
 type CopyText = {
 
@@ -15,25 +22,38 @@ type CopyText = {
 
 // Core's useCopyText, which plugins can't import. Controls own the confirmation:
 // core swaps the label and icon rather than raising a toast.
-export function useCopyText(text: string, timeout: number = COPIED_TIMEOUT): CopyText {
+export function useCopyText(text: string, {announcement, timeout = COPIED_TIMEOUT}: CopyOptions = {}): CopyText {
     const [copied, setCopied] = useState(false);
     const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const mounted = useRef(true);
 
-    useEffect(() => () => {
-        if (timer.current) {
-            clearTimeout(timer.current);
-        }
+    useEffect(() => {
+        mounted.current = true;
+
+        return () => {
+            mounted.current = false;
+            if (timer.current) {
+                clearTimeout(timer.current);
+            }
+        };
     }, []);
 
-    const copy = useCallback(() => {
-        copyToClipboard(text);
+    const copy = useCallback(async () => {
+        const done = await copyToClipboard(text);
+        if (!done || !mounted.current) {
+            return;
+        }
+
+        if (announcement) {
+            announce(announcement);
+        }
 
         if (timer.current) {
             clearTimeout(timer.current);
         }
         setCopied(true);
         timer.current = setTimeout(() => setCopied(false), timeout);
-    }, [text, timeout]);
+    }, [announcement, text, timeout]);
 
     return {copied, copy};
 }
