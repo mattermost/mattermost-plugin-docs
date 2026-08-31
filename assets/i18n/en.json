@@ -580,6 +580,10 @@
     "translation": "Invalid view access. Must be either \"open\" or \"private\"."
   },
   {
+    "id": "app.space.update.prune_raced.app_error",
+    "translation": "Someone joined this space while it was being made private. Please try again."
+  },
+  {
     "id": "app.space.update.view_access_force.app_error",
     "translation": "View access cannot be changed with force set."
   },

@@ -163,7 +163,7 @@ const MenuRadioItem = ({value, leadingIcon, secondaryLabel, disabled, children}:
             leadingIcon={leadingIcon}
             trailingIcon={(
                 <BaseMenu.RadioItemIndicator
-                    className={styles.checkboxIndicator}
+                    className={styles.radioIndicator}
                     keepMounted={true}
                 >
                     <CheckIcon size={14}/>

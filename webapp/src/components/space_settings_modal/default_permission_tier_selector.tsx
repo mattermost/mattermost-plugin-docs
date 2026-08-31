@@ -4,7 +4,7 @@
 import {usePermissionTierLabels} from 'hooks/permission_labels';
 import React from 'react';
 import {FormattedMessage} from 'react-intl';
-import {PERMISSION_TIERS, TIER_PERMISSIONS, samePermissionSet} from 'utils/space_permission_sets';
+import {PERMISSION_TIERS, TIER_PERMISSIONS, samePermissionSet, summarizePermissions} from 'utils/space_permission_sets';
 
 import type {Permission} from 'types/permissions';
 
@@ -53,6 +53,15 @@ const DefaultPermissionTierSelector = ({spaceId, selected, disabled, customDefau
                     </div>
                 );
             })}
+            {/* A set matching no tier leaves every radio above unselected, which on its own reads
+                as "nothing chosen" rather than "chosen by hand". The Share menu names this state
+                on its trigger; name it here in the same word. */}
+            {summarizePermissions(selected) === 'custom' && (
+                <span className={styles.customState}>
+                    <span className={styles.presetTitle}>{tierLabels.custom.label}</span>
+                    <span className={styles.presetDescription}>{tierLabels.custom.description}</span>
+                </span>
+            )}
             {customDefaultsAvailable && (
                 <span className={styles.fieldLabel}>
                     <FormattedMessage

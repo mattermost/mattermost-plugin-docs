@@ -50,6 +50,53 @@ func (s *Store) GetMemberSchemeFlags(channelID, userID string) (schemeAdmin, sch
 	return row.SchemeAdmin, row.SchemeGuest, nil
 }
 
+// SpaceMemberRoles is one member's authority on a backing channel: the capability roles held in
+// the membership's explicit roles, plus the scheme flags. It is what projecting a member's
+// permission set needs from the ChannelMembers row.
+type SpaceMemberRoles struct {
+	ExplicitRoles string
+	SchemeAdmin   bool
+	SchemeGuest   bool
+}
+
+// GetSpaceMemberRoles returns the authority carried by userID's ChannelMembers row for channelID,
+// answered from the master, or ErrNotFound when no row exists. It serves a caller that must both
+// establish membership and project what the membership grants: the plugin API's member lookup is
+// answered from a read replica, which can report a member who joined an instant earlier as a
+// non-member and project the non-member fall-through over their real grants. The scheme flags are
+// nullable in core's schema; NULL reads as false, matching core's own scan-time handling.
+func (s *Store) GetSpaceMemberRoles(channelID, userID string) (*SpaceMemberRoles, error) {
+	if channelID == "" || userID == "" {
+		return nil, &ErrInvalidInput{Entity: "ChannelMember", Field: "id", Value: channelID + "/" + userID}
+	}
+
+	builder := s.getQueryBuilder().
+		Select(
+			"COALESCE(Roles, '') AS ExplicitRoles",
+			"COALESCE(SchemeAdmin, FALSE) AS SchemeAdmin",
+			"COALESCE(SchemeGuest, FALSE) AS SchemeGuest",
+		).
+		From("ChannelMembers").
+		Where(sq.Eq{"ChannelId": channelID, "UserId": userID})
+
+	var row struct {
+		ExplicitRoles string `db:"explicitroles"`
+		SchemeAdmin   bool   `db:"schemeadmin"`
+		SchemeGuest   bool   `db:"schemeguest"`
+	}
+	if qErr := s.getBuilder(s.db, &row, builder); qErr != nil {
+		if errors.Is(qErr, sql.ErrNoRows) {
+			return nil, &ErrNotFound{EntityName: "ChannelMember", ID: channelID + "/" + userID}
+		}
+		return nil, errors.Wrap(qErr, "unable_to_get_space_member_roles")
+	}
+	return &SpaceMemberRoles{
+		ExplicitRoles: row.ExplicitRoles,
+		SchemeAdmin:   row.SchemeAdmin,
+		SchemeGuest:   row.SchemeGuest,
+	}, nil
+}
+
 // IsChannelMember reports whether userID has a ChannelMembers row for channelID, answered from
 // the master.
 func (s *Store) IsChannelMember(channelID, userID string) (bool, error) {

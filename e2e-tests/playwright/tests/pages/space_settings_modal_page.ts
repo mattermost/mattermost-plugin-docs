@@ -19,12 +19,14 @@ export class SpaceSettingsModalPage {
     readonly dialog: Locator;
     readonly permissionsTab: Locator;
     readonly permissionLegend: Locator;
+    readonly peopleHeading: Locator;
 
     constructor(page: Page) {
         this.page = page;
         this.dialog = page.getByRole('dialog', {name: 'Space Settings'});
         this.permissionsTab = this.dialog.getByRole('tab', {name: 'Permissions'});
         this.permissionLegend = this.dialog.getByText('Everyone with access to this space can:');
+        this.peopleHeading = this.dialog.getByText('People with access');
     }
 
     // Scoped to main and matched exactly: the sidebar row for the same space offers a
@@ -46,9 +48,10 @@ export class SpaceSettingsModalPage {
     async openPermissions() {
         await this.permissionsTab.click();
 
-        // The permission set is the last thing the tab renders and its state arrives over
-        // the network, so waiting on the legend means waiting for a tab that can be read.
-        await expect(this.permissionLegend).toBeVisible();
+        // The roster section is the one part every caller is shown — the space-wide controls
+        // above it are withheld from a caller who may not write them — so it, not the default
+        // legend, is what says the tab has rendered.
+        await expect(this.peopleHeading).toBeVisible();
     }
 
     async close() {
@@ -91,6 +94,25 @@ export class SpaceSettingsModalPage {
         await expect(this.memberPermission(userId, permission)).toBeChecked({checked});
     }
 
+    // A permission the member holds that this caller cannot grant — the read baseline, a
+    // team-scoped permission. Stated on the row instead of carrying a control, so it is
+    // addressed by its own id rather than as a checkbox.
+    memberInheritedPermission(userId: string, permission: string): Locator {
+        return this.dialog.locator(`#member-${userId}-${permission}-inherited`);
+    }
+
+    async expectMemberInheritedPermission(userId: string, permission: string, note: string) {
+        const row = this.memberInheritedPermission(userId, permission);
+        await expect(row).toBeVisible();
+        await expect(row).toContainText(note);
+    }
+
+    // The note beside a grantable permission the space default already provides: ticking it
+    // adds a grant that changes nothing today and outlives a later lowering of the default.
+    async expectMemberPermissionNote(userId: string, permission: string, note: string) {
+        await expect(this.dialog.locator(`label[for="member-${userId}-${permission}"]`)).toContainText(note);
+    }
+
     async toggleMemberPermission(userId: string, permission: string) {
         const box = this.memberPermission(userId, permission);
         const wasChecked = await box.isChecked();
@@ -101,11 +123,13 @@ export class SpaceSettingsModalPage {
         await expect(box).toBeChecked({checked: !wasChecked});
     }
 
-    async expectMemberPermissionEnabled(userId: string, permission: string, enabled: boolean) {
-        if (enabled) {
+    // Offered, not enabled: a grant this caller could not make is absent from the row rather
+    // than rendered in a state that says "no".
+    async expectMemberPermissionOffered(userId: string, permission: string, offered: boolean) {
+        if (offered) {
             await expect(this.memberPermission(userId, permission)).toBeEnabled();
         } else {
-            await expect(this.memberPermission(userId, permission)).toBeDisabled();
+            await expect(this.memberPermission(userId, permission)).toHaveCount(0);
         }
     }
 
@@ -196,11 +220,11 @@ export class SpaceSettingsModalPage {
         await expect(this.permission(label)).toBeChecked({checked});
     }
 
-    async expectPermissionEnabled(label: string, enabled: boolean) {
-        if (enabled) {
+    async expectPermissionOffered(label: string, offered: boolean) {
+        if (offered) {
             await expect(this.permission(label)).toBeEnabled();
         } else {
-            await expect(this.permission(label)).toBeDisabled();
+            await expect(this.permission(label)).toHaveCount(0);
         }
     }
 
@@ -224,11 +248,11 @@ export class SpaceSettingsModalPage {
         await expect(this.accessOption(name)).toHaveAttribute('aria-checked', 'true');
     }
 
-    async expectAccessEnabled(name: AccessOption, enabled: boolean) {
-        if (enabled) {
+    async expectAccessOffered(name: AccessOption, offered: boolean) {
+        if (offered) {
             await expect(this.accessOption(name)).toBeEnabled();
         } else {
-            await expect(this.accessOption(name)).toBeDisabled();
+            await expect(this.accessOption(name)).toHaveCount(0);
         }
     }
 

@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {act, fireEvent, screen, waitFor} from '@testing-library/react';
+import {act, cleanup, fireEvent, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 
 import {makeSpace} from 'store/test_fixtures';
@@ -148,12 +148,29 @@ describe('PermissionsTab', () => {
         expect(screen.getByRole('checkbox', {name: 'Delete any page'})).not.toBeChecked();
     });
 
-    it('changes view access through the hook', () => {
-        renderTab();
+    it('changes view access through the hook, and follows the value that comes back', () => {
+        const {rerender} = renderTab();
 
         fireEvent.click(screen.getByRole('radio', {name: /Private/}));
-
         expect(mockSetViewAccess).toHaveBeenCalledWith('private');
+
+        // The control is driven by the resolved record, not by the click: until the server's
+        // answer lands it still reads Public, and it is that answer the selection follows.
+        expect(screen.getByRole('radio', {name: /Private/})).toHaveAttribute('aria-checked', 'false');
+
+        mockPermissionsState = {...mockPermissionsState, viewAccess: 'private'};
+        rerender(
+            <>
+                <PermissionsTab
+                    space={space}
+                    onClose={jest.fn()}
+                />
+                <DocsModalController/>
+            </>,
+        );
+
+        expect(screen.getByRole('radio', {name: /Private/})).toHaveAttribute('aria-checked', 'true');
+        expect(screen.getByRole('radio', {name: /Public/})).toHaveAttribute('aria-checked', 'false');
     });
 
     it('sends the whole permission set when one is toggled on', () => {
@@ -254,25 +271,190 @@ describe('PermissionsTab', () => {
         expect(mockSetDefaults).toHaveBeenCalledWith(['create_page', 'comment_page', 'edit_page', 'delete_own_page']);
     });
 
-    // The controls stay visible for a non-admin: what the space allows is worth reading
-    // even when you may not change it.
-    it('locks both controls for a member who cannot administer the space', () => {
+    // The tier is derived from the set, never stored alongside it, so dropping one permission out
+    // of a tier's set leaves the tier behind: the space is on a combination no preset names, and
+    // the radio that named it a moment ago cannot keep claiming to.
+    it('clears the chosen tier when a permission is unticked out of its set', () => {
+        mockPermissionsState = {
+            ...mockPermissionsState,
+            defaults: ['create_page', 'comment_page', 'edit_page', 'delete_own_page'],
+        };
+        renderTab();
+
+        expect(screen.getByRole('radio', {name: 'Can edit'})).toBeChecked();
+
+        fireEvent.click(matrixCheckbox('space-default-edit_page'));
+
+        // The write drops only that permission, keeping the rest of the set and its order.
+        expect(mockSetDefaults).toHaveBeenCalledWith(['create_page', 'comment_page', 'delete_own_page']);
+
+        // Re-render on the set the server would return: no tier matches it any more.
+        mockPermissionsState = {
+            ...mockPermissionsState,
+            defaults: ['create_page', 'comment_page', 'delete_own_page'],
+        };
+        cleanup();
+        renderTab();
+
+        expect(screen.getByRole('radio', {name: 'Can edit'})).not.toBeChecked();
+        expect(screen.getByRole('radio', {name: 'Can comment'})).not.toBeChecked();
+        expect(screen.getByRole('radio', {name: 'Can view'})).not.toBeChecked();
+    });
+
+    // The mirror of the test above: unticking the last permission out of a custom set lands on
+    // the empty set, which *is* a tier, so the radio that named nothing a moment ago names it now.
+    it('re-checks a tier when unticking lands the set back on one', () => {
+        mockPermissionsState = {...mockPermissionsState, defaults: ['create_page']};
+        const {rerender} = renderTab();
+
+        expect(screen.getByRole('radio', {name: 'Can view'})).not.toBeChecked();
+
+        fireEvent.click(matrixCheckbox('space-default-create_page'));
+        expect(mockSetDefaults).toHaveBeenCalledWith([]);
+
+        mockPermissionsState = {...mockPermissionsState, defaults: []};
+        rerender(
+            <>
+                <PermissionsTab
+                    space={space}
+                    onClose={jest.fn()}
+                />
+                <DocsModalController/>
+            </>,
+        );
+
+        expect(screen.getByRole('radio', {name: 'Can view'})).toBeChecked();
+    });
+
+    // Promotion runs through the same grant control as any other permission, so the whole path is
+    // observable here: the write carries admin_space, and the standing the server returns is what
+    // renames the row — the click does not rename it on its own.
+    it('promotes a member to space administrator through the grant control', () => {
+        mockPermissionsState = {
+            ...mockPermissionsState,
+            members: new Map([['u2', {user_id: 'u2', permissions: ['read_page'], granted_permissions: [], is_admin: false, is_guest: false, is_auto_joined: false}]]),
+        };
+        const {rerender} = renderTab();
+
+        expect(screen.getByRole('button', {name: 'Member — more actions for Ada'})).toBeInTheDocument();
+        expect(matrixCheckbox('member-u2-admin_space').checked).toBe(false);
+
+        fireEvent.click(matrixCheckbox('member-u2-admin_space'));
+        expect(mockSetMemberGrants).toHaveBeenCalledWith('u2', ['admin_space']);
+
+        // Still a Member until the answer lands: the row follows the record, not the click.
+        expect(screen.getByRole('button', {name: 'Member — more actions for Ada'})).toBeInTheDocument();
+
+        mockPermissionsState = {
+            ...mockPermissionsState,
+            members: new Map([['u2', {
+                user_id: 'u2',
+                permissions: ['read_page', 'create_page', 'comment_page', 'edit_page', 'delete_own_page', 'delete_page', 'admin_space'],
+                granted_permissions: ['admin_space'],
+                is_admin: true,
+                is_guest: false,
+                is_auto_joined: false,
+            }]]),
+        };
+        rerender(
+            <>
+                <PermissionsTab
+                    space={space}
+                    onClose={jest.fn()}
+                />
+                <DocsModalController/>
+            </>,
+        );
+
+        expect(screen.getByRole('button', {name: 'Admin — more actions for Ada'})).toBeInTheDocument();
+        expect(matrixCheckbox('member-u2-admin_space').checked).toBe(true);
+
+        // The admin role carries the page permissions through the scheme rather than through a
+        // grant, so the box stays unticked — but the row says why, or it would read as an
+        // administrator who cannot delete a page.
+        expect(matrixCheckbox('member-u2-delete_page').checked).toBe(false);
+        expect(matrixCheckbox('member-u2-delete_page').closest('div')).toHaveTextContent('Also from their administrator role');
+    });
+
+    // A member can be demoted to guest server-wide while this panel is open. The server refuses
+    // every grant to a guest, so the controls have to go with the demotion — a row left holding
+    // checkboxes would offer writes that can only fail.
+    it('withdraws a member\'s grant controls when they become a guest mid-session', () => {
+        mockPermissionsState = {
+            ...mockPermissionsState,
+            members: new Map([['u2', {user_id: 'u2', permissions: ['read_page', 'create_page'], granted_permissions: ['create_page'], is_admin: false, is_guest: false, is_auto_joined: false}]]),
+        };
+        const {rerender} = renderTab();
+
+        // Live to begin with: revoking the grant reaches the hook as a whole-set replacement.
+        expect(matrixCheckbox('member-u2-create_page').checked).toBe(true);
+        fireEvent.click(matrixCheckbox('member-u2-create_page'));
+        expect(mockSetMemberGrants).toHaveBeenCalledWith('u2', []);
+
+        mockPermissionsState = {
+            ...mockPermissionsState,
+            members: new Map([['u2', {user_id: 'u2', permissions: ['read_page'], granted_permissions: [], is_admin: false, is_guest: true, is_auto_joined: false}]]),
+        };
+        rerender(
+            <>
+                <PermissionsTab
+                    space={space}
+                    onClose={jest.fn()}
+                />
+                <DocsModalController/>
+            </>,
+        );
+
+        expect(document.getElementById('member-u2-create_page')).toBeNull();
+        expect(document.getElementById('member-u2-read_page-inherited')).toHaveTextContent('View pages');
+        expect(screen.getByRole('button', {name: 'Guest — more actions for Ada'})).toBeInTheDocument();
+    });
+
+    // Authority can be revoked while the tab is open — another administrator demotes this caller,
+    // and the next read resolves without it. The controls have to leave with it: this surface
+    // withholds rather than disables, so a control left mounted here would be one the server
+    // refuses, offered as though it still worked.
+    it('unmounts the space-wide controls when administer authority is revoked mid-session', () => {
+        const {rerender} = renderTab();
+
+        // Live to begin with: the write reaches the hook with the whole set.
+        fireEvent.click(matrixCheckbox('space-default-create_page'));
+        expect(mockSetDefaults).toHaveBeenCalledWith(['edit_page']);
+        expect(screen.getByRole('radio', {name: /Private/})).toBeInTheDocument();
+
+        mockPermissionsState = {...mockPermissionsState, canAdminister: false, canManageMembers: false};
+        rerender(
+            <>
+                <PermissionsTab
+                    space={space}
+                    onClose={jest.fn()}
+                />
+                <DocsModalController/>
+            </>,
+        );
+
+        expect(document.getElementById('space-default-create_page')).toBeNull();
+        expect(screen.queryByRole('radio', {name: /Private/})).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Add'})).not.toBeInTheDocument();
+
+        // The roster survives: losing the authority to change the space is not losing the
+        // ability to read who is in it.
+        expect(screen.getByText('People with access')).toBeInTheDocument();
+    });
+
+    // Both space-wide writes would be refused, so neither control is rendered: an affordance the
+    // server would reject is withheld, never offered in a disabled state.
+    it('withholds both space-wide controls from a member who cannot administer the space', () => {
         mockPermissionsState = {...mockPermissionsState, canAdminister: false, canManageMembers: false};
         renderTab();
 
-        expect(screen.getByRole('checkbox', {name: 'Create pages'})).toBeDisabled();
-        expect(screen.getByRole('radio', {name: /Private/})).toBeDisabled();
-        expect(screen.getByRole('button', {name: 'Add'})).toBeDisabled();
-
-        // Remove is withheld entirely from a surface that cannot manage members, rather than
-        // offered disabled.
+        expect(screen.queryByRole('checkbox', {name: 'Create pages'})).not.toBeInTheDocument();
+        expect(screen.queryByRole('radio', {name: /Private/})).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Add'})).not.toBeInTheDocument();
         expect(screen.queryByRole('button', {name: /Ada/})).not.toBeInTheDocument();
 
-        fireEvent.click(screen.getByRole('checkbox', {name: 'Create pages'}));
-        fireEvent.click(screen.getByRole('radio', {name: /Private/}));
-
-        expect(mockSetDefaults).not.toHaveBeenCalled();
-        expect(mockSetViewAccess).not.toHaveBeenCalled();
+        // The roster itself still reads, so the caller learns who is in the space.
+        expect(screen.getByText('People with access')).toBeInTheDocument();
     });
 
     // The case a single lock cannot express, and the reason the hook exposes two. A team
@@ -291,10 +473,10 @@ describe('PermissionsTab', () => {
         };
         renderTab(jest.fn(), {currentUser: {id: 'me', username: 'caleb'}});
 
-        // The space-wide knobs: locked. Addressed by id rather than label, since the member row
+        // The space-wide knobs: withheld. Addressed by id rather than label, since the member row
         // below carries a checkbox with the same visible name.
-        expect(document.getElementById('space-default-create_page')).toBeDisabled();
-        expect(screen.getByRole('radio', {name: /Private/})).toBeDisabled();
+        expect(document.getElementById('space-default-create_page')).toBeNull();
+        expect(screen.queryByRole('radio', {name: /Private/})).not.toBeInTheDocument();
 
         // The roster: live, and a toggle reaches the hook.
         const memberEdit = matrixCheckbox('member-u2-create_page');
@@ -304,13 +486,11 @@ describe('PermissionsTab', () => {
 
         // Self-targeting also needs the stricter admin tier. A team administrator granted
         // manage_space can edit another person's row, but offering their own would produce a 403.
-        expect(matrixCheckbox('member-me-create_page').disabled).toBe(true);
+        expect(document.getElementById('member-me-create_page')).toBeNull();
 
         // Promoting a space administrator is a stricter operation than managing the roster. The
-        // server refuses it from manage_space alone, so this one cell must not remain actionable.
-        const memberAdmin = matrixCheckbox('member-u2-admin_space');
-        expect(memberAdmin.disabled).toBe(true);
-        fireEvent.click(memberAdmin);
+        // server refuses it from manage_space alone, so this cell is never rendered.
+        expect(document.getElementById('member-u2-admin_space')).toBeNull();
         expect(mockSetMemberGrants).toHaveBeenCalledTimes(1);
     });
 
@@ -324,15 +504,13 @@ describe('PermissionsTab', () => {
         expect(screen.getByRole('radio', {name: /Private/})).toBeDisabled();
     });
 
-    // A read that failed says so. Telling an administrator they are not one — which is what
-    // reusing the non-admin reason here would do — is worse than saying nothing.
+    // A read that failed says so. Without this the tab is indistinguishable from one belonging to
+    // a caller who simply is not an administrator: controls absent, and no reason given.
     it('blames the failed read, not the caller, when permission state could not load', () => {
         mockPermissionsState = {...mockPermissionsState, canAdminister: false, canManageMembers: false, loadFailed: true};
         renderTab();
 
-        const option = screen.getByRole('radio', {name: /Private/});
-        expect(option).toBeDisabled();
-        expect(option).toHaveAttribute('title', "Couldn't load this space's permissions. Close and reopen to try again.");
+        expect(screen.getByText("Couldn't load this space's permissions. Close and reopen to try again.")).toBeInTheDocument();
     });
 
     // The per-member half of the matrix. The roster mock supplies Caleb ('me') and Ada
@@ -366,13 +544,16 @@ describe('PermissionsTab', () => {
             expect(adaCreate.checked).toBe(false);
             expect(adaDelete.checked).toBe(false);
 
-            // Effective authority is shown separately from the additional-grant controls:
-            // create_page comes from the space default, while edit_page is Ada's direct grant.
-            const effective = screen.getByRole('group', {name: 'Effective permissions for ada'});
-            expect(effective).toHaveTextContent('Effective permissions:');
-            expect(effective).toHaveTextContent('View pages');
-            expect(effective).toHaveTextContent('Create pages');
-            expect(effective).toHaveTextContent('Edit pages');
+            // Every permission appears once. The read baseline is not a grant anyone can make,
+            // so it is stated rather than offered as a control.
+            expect(document.getElementById('member-u2-read_page')).toBeNull();
+            expect(document.getElementById('member-u2-read_page-inherited')).toHaveTextContent('View pages');
+            expect(document.getElementById('member-u2-read_page-inherited')).toHaveTextContent('Everyone with access');
+
+            // create_page is in the space default, so ticking it would add a grant that changes
+            // nothing today — the row says so rather than leaving the reader to infer it from an
+            // unticked box beside a permission the member visibly holds.
+            expect(adaCreate.closest('div')).toHaveTextContent('Also from the space default');
         });
 
         // The write endpoint replaces granted_permissions wholesale, so the whole set goes.
@@ -386,7 +567,9 @@ describe('PermissionsTab', () => {
         });
 
         // The server refuses any grant to a guest, so the row says so instead of offering it.
-        it('locks a guest\'s row', () => {
+        // A guest holds read_page and nothing else, and the server refuses every grant to one, so
+        // the row states what they hold and offers no toggle to change it.
+        it('offers no grants on a guest\'s row', () => {
             mockPermissionsState = {
                 ...mockPermissionsState,
                 members: new Map([
@@ -396,11 +579,11 @@ describe('PermissionsTab', () => {
             renderTab();
 
             expect(screen.getByRole('button', {name: 'Guest — more actions for Ada'})).toHaveTextContent('Guest');
-            const guestEdit = matrixCheckbox('member-u2-edit_page');
-            expect(guestEdit.disabled).toBe(true);
+            expect(document.getElementById('member-u2-edit_page')).toBeNull();
 
-            fireEvent.click(guestEdit);
-            expect(mockSetMemberGrants).not.toHaveBeenCalled();
+            // What a guest holds is still stated — read access, and its source — with nothing
+            // offered to change it.
+            expect(document.getElementById('member-u2-read_page-inherited')).toHaveTextContent('View pages');
         });
 
         // A member the permissions read did not return has no row rather than an empty one.

@@ -402,14 +402,14 @@ test.describe('space permissions', () => {
             await adminSpace.openShare();
             await share.expectOpen();
             await share.expectDefaultSummary('Can view');
-            await share.expectMemberSummary(member.username, 'Can view');
+            await share.expectMemberStanding(member.username, 'Member');
             await share.expectMemberCapability(member.username, 'Edit pages', false);
             await share.toggleMemberCapability(member.username, 'Edit pages');
 
             // * The grant is visibly separate from the unchanged default; its custom summary and
             // the member's untouched page both gain the new authority.
             await share.expectDefaultSummary('Can view');
-            await share.expectMemberSummary(member.username, 'Custom');
+            await share.expectMemberCapability(member.username, 'Edit pages', true);
             await expect(memberSpace.editButton).toBeVisible();
             await expect(memberPage).toHaveURL(memberURL);
 
@@ -417,7 +417,7 @@ test.describe('space permissions', () => {
             await share.toggleMemberCapability(member.username, 'Edit pages');
 
             // * Both the compact summary and the already-open member page lose it live.
-            await share.expectMemberSummary(member.username, 'Can view');
+            await share.expectMemberCapability(member.username, 'Edit pages', false);
             await expect(memberSpace.editButton).toBeHidden();
             await expect(memberPage).toHaveURL(memberURL);
         } finally {
@@ -659,6 +659,37 @@ test.describe('space permissions', () => {
         } finally {
             await verifyContext.close();
         }
+    });
+
+    /**
+     * @objective A member row states where each permission comes from, not only what is ticked.
+     *
+     * The row lists the whole vocabulary once. A permission the space default already provides
+     * keeps its control — a grant outlives a later lowering of the default — but says so, because
+     * an unticked box beside a permission the member visibly holds otherwise reads as a
+     * contradiction. A permission nobody can grant per member is stated without a control at all.
+     */
+    test('a member row marks a permission the space default already provides', {tag: ['@docs', '@permissions']}, async ({page, server}) => {
+        const sidebar = new SpacesSidebarPage(page);
+        const settings = new SpaceSettingsModalPage(page);
+
+        await loginAs(page, server.adminUsername, server.adminPassword);
+        await setSpaceDefaultPermissions(page, ['create_page']);
+
+        await sidebar.goto(teamName);
+        await sidebar.openSpace(spaceTitle);
+        await settings.openFromSpaceHeader(spaceTitle);
+        await settings.openPermissions();
+
+        // * create_page is the space default, not this member's grant: unticked, and annotated.
+        await settings.expectMemberPermission(member.id, 'create_page', false);
+        await settings.expectMemberPermissionNote(member.id, 'create_page', 'Also from the space default');
+
+        // * read_page is nobody's grant to make, so it is stated rather than offered.
+        await settings.expectMemberInheritedPermission(member.id, 'read_page', 'Everyone with access');
+        await expect(settings.memberPermission(member.id, 'read_page')).toHaveCount(0);
+
+        await settings.close();
     });
 
     /** @objective The create_page member cell enables that member's real publish flow. */
@@ -1065,12 +1096,12 @@ test.describe('space permissions', () => {
             await promotedSettings.openFromSpaceHeader(spaceTitle);
             await promotedSettings.renameSpace(renamedSpace);
             await promotedSettings.openPermissions();
-            await promotedSettings.expectAccessEnabled('Private', true);
-            await promotedSettings.expectPermissionEnabled('Create pages', true);
+            await promotedSettings.expectAccessOffered('Private', true);
+            await promotedSettings.expectPermissionOffered('Create pages', true);
 
             // # Add and remove another team member through the roster UI.
             await promotedSettings.addMember(candidate.username);
-            await promotedSettings.expectMemberPermissionEnabled(candidate.id, 'admin_space', true);
+            await promotedSettings.expectMemberPermissionOffered(candidate.id, 'admin_space', true);
             await promotedSettings.removeMember(candidate.username);
             await promotedSettings.close();
             await promotedSpace.expectOpen(renamedSpace);
@@ -1212,16 +1243,17 @@ test.describe('space permissions', () => {
             await settings.renameSpace(renamed);
             await settings.openPermissions();
 
-            // * Space-wide controls require admin_space even though this actor can manage people.
-            await settings.expectAccessEnabled('Private', false);
-            await settings.expectPermissionEnabled('Create pages', false);
+            // * Space-wide controls require admin_space even though this actor can manage people,
+            // so they are not rendered for them at all.
+            await settings.expectAccessOffered('Private', false);
+            await settings.expectPermissionOffered('Create pages', false);
 
-            // * Ordinary member grants and roster changes are live, but promotion is not.
-            await settings.expectMemberPermissionEnabled(member.id, 'create_page', true);
-            await settings.expectMemberPermissionEnabled(member.id, 'admin_space', false);
+            // * Ordinary member grants and roster changes are live; promotion is not offered.
+            await settings.expectMemberPermissionOffered(member.id, 'create_page', true);
+            await settings.expectMemberPermissionOffered(member.id, 'admin_space', false);
             await settings.toggleMemberPermission(member.id, 'create_page');
             await settings.addMember(candidate.username);
-            await settings.expectMemberPermissionEnabled(candidate.id, 'create_page', true);
+            await settings.expectMemberPermissionOffered(candidate.id, 'create_page', true);
             await settings.removeMember(candidate.username);
             await settings.close();
             await space.expectOpen(renamed);
@@ -1568,17 +1600,17 @@ test.describe('space permissions', () => {
         });
 
         /**
-         * @objective A guest's row in the permission matrix is rendered locked.
+         * @objective A guest's row in the permission matrix offers no grant at all.
          *
          * Driven by the admin, because they are the only persona who can open Space
          * Settings at all — a guest never sees this surface. The server refuses every
-         * grant to a guest (app.space.member.guest_not_assignable), so the row must say
-         * so rather than offer toggles whose write can only fail.
+         * grant to a guest (app.space.member.guest_not_assignable), so the row must
+         * withhold the toggles rather than offer ones whose write can only fail.
          *
-         * The member's row alongside it is the control: it proves the lock is the guest's
-         * standing rather than the whole matrix being disabled.
+         * The member's row alongside it is the control: it proves the absence is the
+         * guest's standing rather than the whole matrix being withheld.
          */
-        test('has a locked row in the permission matrix', {tag: ['@docs', '@permissions']}, async ({page, server}) => {
+        test('offers no grants on a guest row in the permission matrix', {tag: ['@docs', '@permissions']}, async ({page, server}) => {
             const sidebar = new SpacesSidebarPage(page);
             const settings = new SpaceSettingsModalPage(page);
 
@@ -1593,9 +1625,12 @@ test.describe('space permissions', () => {
             //   about the guest and not about the matrix being read-only
             await expect(settings.memberPermission(member.id, 'edit_page')).toBeEnabled();
 
-            // * Verify the guest's row is offered but not editable
-            await expect(settings.memberPermission(guest.id, 'edit_page')).toBeVisible();
-            await expect(settings.memberPermission(guest.id, 'edit_page')).toBeDisabled();
+            // * Verify the guest's row carries no grant control at all
+            await expect(settings.memberPermission(guest.id, 'edit_page')).toHaveCount(0);
+
+            // * Verify what the guest does hold is still stated, with where it comes from:
+            //   withholding the control must not also withhold the fact.
+            await settings.expectMemberInheritedPermission(guest.id, 'read_page', 'Everyone with access');
         });
 
         /**

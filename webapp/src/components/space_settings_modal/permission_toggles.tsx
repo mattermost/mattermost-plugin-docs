@@ -13,15 +13,19 @@ type Props = {
     // The permissions to offer, in display order. May be empty when the caller renders only
     // the header under the legend.
     options: readonly Permission[];
+
+    // Permissions the subject holds but this control cannot change — a space default, a
+    // team-scoped permission, the read baseline. Listed alongside the options in the same order
+    // so the reader sees the whole vocabulary once, with `noteFor` saying where each comes from.
+    staticOptions?: readonly Permission[];
+
+    /** Where a permission comes from, shown beside its row. */
+    noteFor?: (permission: Permission) => string | undefined;
     selected: Permission[];
     disabled?: boolean;
-    disabledOptions?: readonly Permission[];
 
     /** Shown as `title` on an input disabled by `disabled`. */
     disabledReason?: string;
-
-    /** Shown as `title` on an input disabled individually via `disabledOptions`. */
-    disabledOptionsReason?: string;
     busy?: boolean;
     onChange: (next: Permission[]) => void;
 
@@ -30,19 +34,22 @@ type Props = {
     idPrefix: string;
     legend: React.ReactNode;
 
+    /** Keep the legend as the group's accessible name without showing it again on screen. */
+    hideLegend?: boolean;
+
     // Rendered between the legend and the checkboxes, inside the same group: the named tiers
     // that the checkboxes refine.
     header?: React.ReactNode;
 };
 
-const PermissionToggles = ({options, selected, disabled, disabledOptions = [], disabledReason, disabledOptionsReason, busy, onChange, idPrefix, legend, header}: Props) => {
+const PermissionToggles = ({options, staticOptions = [], noteFor, selected, disabled, disabledReason, busy, onChange, idPrefix, legend, hideLegend, header}: Props) => {
     const labels = usePermissionLabels();
 
     const toggle = (permission: Permission) => {
         // Checked here as well as on the input, since the input's `disabled` re-renders
         // after a save starts; this keeps a click in that window from sending a second
         // set built from the pre-save selection.
-        if (disabled || disabledOptions.includes(permission)) {
+        if (disabled) {
             return;
         }
 
@@ -59,17 +66,21 @@ const PermissionToggles = ({options, selected, disabled, disabledOptions = [], d
             className={styles.toggles}
             aria-busy={busy}
         >
-            <legend className={styles.togglesLegend}>{legend}</legend>
+            <legend className={hideLegend ? styles.togglesLegendHidden : styles.togglesLegend}>{legend}</legend>
             {header}
+            {staticOptions.map((permission) => (
+                <div
+                    key={permission}
+                    className={styles.inheritedToggle}
+                    id={`${idPrefix}-${permission}-inherited`}
+                >
+                    <span className={styles.inheritedLabel}>{labels[permission]}</span>
+                    {noteFor?.(permission) && <span className={styles.inheritedNote}>{noteFor(permission)}</span>}
+                </div>
+            ))}
             {options.map((permission) => {
                 const id = `${idPrefix}-${permission}`;
-                const optionLocked = disabledOptions.includes(permission);
-                let reason;
-                if (disabled) {
-                    reason = disabledReason;
-                } else if (optionLocked) {
-                    reason = disabledOptionsReason;
-                }
+                const note = noteFor?.(permission);
                 return (
                     <div
                         key={permission}
@@ -79,11 +90,14 @@ const PermissionToggles = ({options, selected, disabled, disabledOptions = [], d
                             id={id}
                             type='checkbox'
                             checked={selected.includes(permission)}
-                            disabled={disabled || optionLocked}
-                            title={reason}
+                            disabled={disabled}
+                            title={disabled ? disabledReason : undefined}
                             onChange={() => toggle(permission)}
                         />
-                        <label htmlFor={id}>{labels[permission]}</label>
+                        <label htmlFor={id}>
+                            {labels[permission]}
+                            {note && <span className={styles.inheritedNote}>{note}</span>}
+                        </label>
                     </div>
                 );
             })}

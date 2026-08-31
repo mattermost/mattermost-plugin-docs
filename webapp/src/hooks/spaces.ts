@@ -10,7 +10,7 @@ import {createSpaceFormSchema} from 'validation/space_schema';
 
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
-import {createSpace, fetchDrafts, fetchPages, fetchSpace, fetchSpaceMembers} from 'store/actions';
+import {createSpace, fetchDrafts, fetchPages, fetchSpace, fetchSpaceMembers, loadSpaceAccess} from 'store/actions';
 import {areMembersLoadedForSpace, getAllSpaces, getPagesForSpace, getSpace, getSpaceMemberIds, getSpacesForCurrentTeam} from 'store/selectors';
 
 import {toast} from 'components/toast';
@@ -92,15 +92,13 @@ const resolveRetryDelayMs = 2000;
  * Runs once per SUCCESSFUL resolution rather than once per attempt, and re-reads on a change of id
  * so switching spaces cannot carry the previous space's permissions.
  *
- * The success condition matters: fetchSpace answers any failure — a network blip, or the 403 a
- * private space gives a non-member — by resolving to undefined rather than rejecting. Marking the
- * id resolved before knowing the outcome therefore made one transient failure permanent for the
- * mounted view, and getCanCreatePage/getCanManageSpaceMembers, which both read space.permissions,
- * fail in opposite directions on an unresolved set: page creation is offered and member management
- * is withheld.
+ * The success condition matters: the read answers any failure — a network blip, or the 403 a
+ * private space gives a non-member — without rejecting. Marking the id resolved before knowing the
+ * outcome therefore made one transient failure permanent for the mounted view, and every selector
+ * reading space.permissions withholds its affordance while the set is unresolved.
  *
  * A failed attempt is retried up to resolveMaxAttempts times; past that the space is left
- * unresolved until the id changes or the view remounts.
+ * unresolved until the id changes or the view remounts. A denial is not retried.
  */
 export function useResolveSpacePermissions(spaceId?: string): void {
     const dispatch = useAppDispatch();
@@ -119,10 +117,11 @@ export function useResolveSpacePermissions(spaceId?: string): void {
                 attempts.current = {spaceId, count: 0};
             }
             resolvedFor.current = spaceId;
-            dispatch(fetchSpace(spaceId)).then((space) => {
+            dispatch(loadSpaceAccess(spaceId)).then(({space, denied}) => {
                 // Guarded on the id so a resolution that lost a space switch cannot reopen the
-                // current space's retry cycle.
-                if (cancelled || space || resolvedFor.current !== spaceId) {
+                // current space's retry cycle. A denial is an answer, not a failed attempt: the
+                // space is evicted and retrying only repeats the refusal.
+                if (cancelled || space || denied || resolvedFor.current !== spaceId) {
                     return;
                 }
                 resolvedFor.current = undefined;

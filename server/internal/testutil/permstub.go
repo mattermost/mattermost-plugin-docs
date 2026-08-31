@@ -90,6 +90,13 @@ func StubDefaultSpacePermissions(mockAPI *plugintest.API) {
 		mockAPI.On("HasPermissionToTeam", mock.Anything, mock.Anything, p).Return(false).Maybe()
 	}
 	mockAPI.On("HasPermissionTo", mock.Anything, mmmodel.PermissionManageSystem).Return(false).Maybe()
+	// Every user is an active member of every team, so a test asserting create behaviour is not
+	// also asserting team membership. A test exercising the non-member refusal registers its own
+	// answer for that user first.
+	mockAPI.On("GetTeamMember", mock.Anything, mock.Anything).
+		Return(func(teamID, userID string) (*mmmodel.TeamMember, *mmmodel.AppError) {
+			return &mmmodel.TeamMember{TeamId: teamID, UserId: userID}, nil
+		}).Maybe()
 }
 
 // StubGuestTeamDefaults narrows guestUserID's team grants to what core's team_guest actually holds:

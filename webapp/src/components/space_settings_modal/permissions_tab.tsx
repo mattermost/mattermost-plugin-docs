@@ -2,7 +2,6 @@
 // See LICENSE.txt for license information.
 
 import type {MemberProfile} from 'hooks/members';
-import {usePermissionLabels} from 'hooks/permission_labels';
 import {useCustomDefaultsAvailable} from 'hooks/permissions';
 import {useSpaceAccessEditor} from 'hooks/space_access_editor';
 import React, {useMemo} from 'react';
@@ -38,18 +37,17 @@ const EFFECTIVE_PERMISSION_ORDER: readonly Permission[] = [
 /** Immediate-write access, default-permission, and membership settings. */
 const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) => {
     const {formatMessage} = useIntl();
-    const permissionLabels = usePermissionLabels();
     const {
         permissions,
         members,
         memberIds,
-        adminLocked,
-        rosterLocked,
-        adminLockedReason,
-        adminSpaceLockedReason,
+        canEditAccess,
+        grantOptionsFor,
+        accessBusy,
+        rosterBusy,
+        loadFailedReason,
+        busyReason,
         roleForMember,
-        memberLockedReason,
-        isMemberLocked,
         actions,
         addMembers,
     } = useSpaceAccessEditor(space, {onClose});
@@ -58,24 +56,77 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
     const defaultTier = summarizePermissions(permissions.defaults);
 
     // Bind toggles to grants, not effective permissions, so per-member overrides stay independent
-    // of the space defaults. Guest grants are invalid and remain visible but locked.
+    // of the space defaults. The effective list is stated for every member; the toggles appear
+    // only for the grants this caller may actually make on them.
     const renderMemberPermissions = (profile: MemberProfile) => {
         const record = permissions.members.get(profile.id);
         if (!record) {
             return null;
         }
 
-        const lockedReason = memberLockedReason(profile);
+        const grantOptions = grantOptionsFor(profile);
 
-        const effectivePermissions = EFFECTIVE_PERMISSION_ORDER.
-            filter((permission) => record.permissions.includes(permission)).
-            map((permission) => permissionLabels[permission]);
+        // Held, but not through a grant this caller can edit: the read baseline, the space
+        // default, the team-scoped permissions. Listed beside the checkboxes so the row states
+        // the member's whole authority once, rather than a summary line that repeats the
+        // vocabulary below it and appears to contradict it.
+        const inherited = EFFECTIVE_PERMISSION_ORDER.filter((permission) => (
+            record.permissions.includes(permission) && !grantOptions.includes(permission)
+        ));
+
+        // Where a permission the member holds comes from. A grantable one is annotated only when
+        // the space default already provides it, since ticking it then adds a grant that changes
+        // nothing today and survives the default being lowered later.
+        const noteFor = (permission: Permission): string | undefined => {
+            const fromDefault = permissions.defaults.includes(permission);
+            if (grantOptions.includes(permission)) {
+                if (record.granted_permissions.includes(permission)) {
+                    return undefined;
+                }
+                if (fromDefault) {
+                    return formatMessage({
+                        id: 'docs.spaceSettings.permissions.alsoFromDefault',
+                        defaultMessage: 'Also from the space default',
+                    });
+                }
+
+                // Held without a grant and without the default: a space administrator holds the
+                // whole page vocabulary through the scheme's admin role. Left unsaid, the row
+                // reads as an unticked box beside a permission the member demonstrably has.
+                if (record.permissions.includes(permission) && record.is_admin) {
+                    return formatMessage({
+                        id: 'docs.spaceSettings.permissions.alsoFromAdmin',
+                        defaultMessage: 'Also from their administrator role',
+                    });
+                }
+                return undefined;
+            }
+            if (permission === Permissions.READ_PAGE) {
+                return formatMessage({
+                    id: 'docs.spaceSettings.permissions.fromBaseline',
+                    defaultMessage: 'Everyone with access',
+                });
+            }
+            if (permission === Permissions.MANAGE_SPACE || permission === Permissions.DELETE_SPACE) {
+                return formatMessage({
+                    id: 'docs.spaceSettings.permissions.fromTeam',
+                    defaultMessage: 'From their team role',
+                });
+            }
+            if (permission === Permissions.ADMIN_SPACE) {
+                return formatMessage({
+                    id: 'docs.spaceSettings.permissions.fromAdmin',
+                    defaultMessage: 'Space administrator',
+                });
+            }
+            return fromDefault ? formatMessage({
+                id: 'docs.spaceSettings.permissions.fromDefault',
+                defaultMessage: 'From the space default',
+            }) : undefined;
+        };
 
         return (
-            <div
-                className={styles.memberPermissions}
-                title={lockedReason}
-            >
+            <div className={styles.memberPermissions}>
                 {record.is_auto_joined && (
 
                     // Surface the provenance marker recorded by the server; its cleanup is best-effort.
@@ -86,38 +137,20 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                         />
                     </span>
                 )}
-                <div
-                    id={`member-${profile.id}-effective-permissions`}
-                    className={styles.effectivePermissions}
-                    role='group'
-                    aria-label={formatMessage({
-                        id: 'docs.spaceSettings.permissions.memberEffectiveLabel',
-                        defaultMessage: 'Effective permissions for {username}',
-                    }, {username: profile.username})}
-                >
-                    <span className={styles.effectivePermissionsLabel}>
-                        <FormattedMessage
-                            id='docs.spaceSettings.permissions.memberEffective'
-                            defaultMessage='Effective permissions:'
-                        />
-                    </span>
-                    <span>{effectivePermissions.join(', ')}</span>
-                </div>
                 <PermissionToggles
-                    options={MEMBER_PERMISSION_ORDER}
+                    options={grantOptions}
+                    staticOptions={inherited}
+                    noteFor={noteFor}
                     selected={record.granted_permissions}
-                    disabled={isMemberLocked(profile)}
-                    disabledReason={lockedReason}
-                    disabledOptions={permissions.canAdminister ? undefined : [Permissions.ADMIN_SPACE]}
-                    disabledOptionsReason={adminSpaceLockedReason}
+                    disabled={rosterBusy}
+                    disabledReason={busyReason}
                     busy={permissions.busy}
                     idPrefix={`member-${profile.id}`}
-                    legend={(
-                        <FormattedMessage
-                            id='docs.spaceSettings.permissions.memberLegend'
-                            defaultMessage='In addition to what everyone can do:'
-                        />
-                    )}
+                    legend={formatMessage({
+                        id: 'docs.spaceSettings.permissions.memberLegend',
+                        defaultMessage: 'Permissions for {username}',
+                    }, {username: profile.username})}
+                    hideLegend={true}
                     onChange={(next) => {
                         permissions.setMemberGrants(profile.id, next).catch(() => {});
                     }}
@@ -133,8 +166,8 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
             icon: <GlobeIcon size={20}/>,
             title: formatMessage({id: 'docs.spaceSettings.permissions.public.title', defaultMessage: 'Public'}),
             description: formatMessage({id: 'docs.spaceSettings.permissions.public.description', defaultMessage: 'Anyone in the team can find and view this space.'}),
-            disabled: adminLocked,
-            disabledReason: adminLockedReason,
+            disabled: accessBusy,
+            disabledReason: busyReason,
         },
         {
             value: 'private',
@@ -143,10 +176,10 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
 
             // Self-join markers select removals; deliberate membership changes normally clear them.
             description: formatMessage({id: 'docs.spaceSettings.permissions.private.description', defaultMessage: 'Only invited members can view. People who joined by authoring while public lose access.'}),
-            disabled: adminLocked,
-            disabledReason: adminLockedReason,
+            disabled: accessBusy,
+            disabledReason: busyReason,
         },
-    ], [formatMessage, adminLocked, adminLockedReason]);
+    ], [formatMessage, accessBusy, busyReason]);
 
     // The named tiers come first on every surface; a licensed install may refine the set below
     // them, permission by permission.
@@ -154,7 +187,7 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
         <DefaultPermissionTierSelector
             spaceId={space.id}
             selected={permissions.defaults}
-            disabled={adminLocked || permissions.busy}
+            disabled={accessBusy}
             customDefaultsAvailable={customDefaultsAvailable}
             onChange={(next) => {
                 permissions.setDefaults(next).catch(() => {});
@@ -162,69 +195,77 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
         />
     );
 
+    // Both exposure sections are a space administrator's to set. A caller without that authority
+    // is offered neither control: the server would refuse the write, and their own authority is
+    // still legible from the effective list on their row below.
     return (
         <>
-            <Section
-                title={(
-                    <FormattedMessage
-                        id='docs.spaceSettings.permissions.accessHeading'
-                        defaultMessage='Space access'
-                    />
-                )}
-            >
-                <PublicPrivateSelector
-                    ariaLabel={formatMessage({id: 'docs.spaceSettings.permissions.accessLabel', defaultMessage: 'Space access'})}
-                    options={accessOptions}
-                    value={permissions.viewAccess}
-                    onChange={(value) => {
-                        // The hook reports the rejection; consume it here to avoid an unhandled promise.
-                        permissions.setViewAccess(value as typeof permissions.viewAccess).catch(() => {});
-                    }}
-                />
-            </Section>
-
-            <Section
-                title={(
-                    <FormattedMessage
-                        id='docs.spaceSettings.permissions.permissionsHeading'
-                        defaultMessage='What members can do'
-                    />
-                )}
-            >
-                <PermissionToggles
-                    options={customDefaultsAvailable ? DEFAULT_PERMISSION_ORDER : []}
-                    selected={permissions.defaults}
-                    disabled={adminLocked || permissions.busy}
-                    disabledReason={adminLockedReason}
-                    busy={permissions.busy}
-                    idPrefix='space-default'
-                    legend={(
+            {loadFailedReason && <p className={styles.helper}>{loadFailedReason}</p>}
+            {canEditAccess && (
+                <Section
+                    title={(
                         <FormattedMessage
-                            id='docs.spaceSettings.permissions.permissionsLegend'
-                            defaultMessage='Everyone with access to this space can:'
+                            id='docs.spaceSettings.permissions.accessHeading'
+                            defaultMessage='Space access'
                         />
                     )}
-                    header={defaultTiers}
-                    onChange={(next) => {
-                        permissions.setDefaults(next).catch(() => {});
-                    }}
-                />
-                {!customDefaultsAvailable && (
-                    <p className={styles.helper}>
-                        {defaultTier === 'custom' ? (
+                >
+                    <PublicPrivateSelector
+                        ariaLabel={formatMessage({id: 'docs.spaceSettings.permissions.accessLabel', defaultMessage: 'Space access'})}
+                        options={accessOptions}
+                        value={permissions.viewAccess}
+                        onChange={(value) => {
+                        // The hook reports the rejection; consume it here to avoid an unhandled promise.
+                            permissions.setViewAccess(value as typeof permissions.viewAccess).catch(() => {});
+                        }}
+                    />
+                </Section>
+            )}
+
+            {canEditAccess && (
+                <Section
+                    title={(
+                        <FormattedMessage
+                            id='docs.spaceSettings.permissions.permissionsHeading'
+                            defaultMessage='What members can do'
+                        />
+                    )}
+                >
+                    <PermissionToggles
+                        options={customDefaultsAvailable ? DEFAULT_PERMISSION_ORDER : []}
+                        selected={permissions.defaults}
+                        disabled={accessBusy}
+                        disabledReason={busyReason}
+                        busy={permissions.busy}
+                        idPrefix='space-default'
+                        legend={(
                             <FormattedMessage
-                                id='docs.spaceSettings.permissions.preset.customCurrent'
-                                defaultMessage='This space currently uses a custom permission combination. Choose a tier to replace it; custom combinations require a Professional or Enterprise license that includes guest account permissions.'
-                            />
-                        ) : (
-                            <FormattedMessage
-                                id='docs.spaceSettings.permissions.preset.licenseRequired'
-                                defaultMessage='Custom permission combinations require a Professional or Enterprise license that includes guest account permissions.'
+                                id='docs.spaceSettings.permissions.permissionsLegend'
+                                defaultMessage='Everyone with access to this space can:'
                             />
                         )}
-                    </p>
-                )}
-            </Section>
+                        header={defaultTiers}
+                        onChange={(next) => {
+                            permissions.setDefaults(next).catch(() => {});
+                        }}
+                    />
+                    {!customDefaultsAvailable && (
+                        <p className={styles.helper}>
+                            {defaultTier === 'custom' ? (
+                                <FormattedMessage
+                                    id='docs.spaceSettings.permissions.preset.customCurrent'
+                                    defaultMessage='This space currently uses a custom permission combination. Choose a tier to replace it; custom combinations require a Professional or Enterprise license that includes guest account permissions.'
+                                />
+                            ) : (
+                                <FormattedMessage
+                                    id='docs.spaceSettings.permissions.preset.licenseRequired'
+                                    defaultMessage='Custom permission combinations require a Professional or Enterprise license that includes guest account permissions.'
+                                />
+                            )}
+                        </p>
+                    )}
+                </Section>
+            )}
 
             <Section
                 title={(
@@ -234,11 +275,13 @@ const PermissionsTab = ({space, onClose}: {space: Space; onClose: () => void}) =
                     />
                 )}
             >
-                <AddMembersField
-                    excludeIds={memberIds}
-                    onAdd={addMembers}
-                    disabled={rosterLocked}
-                />
+                {permissions.canManageMembers && (
+                    <AddMembersField
+                        excludeIds={memberIds}
+                        onAdd={addMembers}
+                        disabled={rosterBusy}
+                    />
+                )}
                 <MemberList
                     members={members}
                     avatarSize='sm'

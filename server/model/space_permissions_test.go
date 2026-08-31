@@ -119,6 +119,20 @@ func TestPermissionsFromMember_Guest(t *testing.T) {
 	})
 }
 
+// TestPermissionsFromChannelMember pins the ChannelMember entry point as a field unpack of
+// PermissionsFromMember, so the roster and SpaceWithAccess member branch cannot drift.
+func TestPermissionsFromChannelMember(t *testing.T) {
+	cm := &mmmodel.ChannelMember{
+		ExplicitRoles: mmmodel.SpacePageEditorRoleId,
+		SchemeAdmin:   true,
+		SchemeGuest:   false,
+	}
+	defaults := []string{mmmodel.PermissionCommentPage.Id}
+	fromRow := model.PermissionsFromChannelMember(cm, defaults)
+	fromFields := model.PermissionsFromMember(cm.ExplicitRoles, cm.SchemeAdmin, cm.SchemeGuest, defaults)
+	require.Equal(t, fromFields, fromRow)
+}
+
 // TestPresetRoundTrip verifies the default-preset <-> scheme-name maps invert each other for the
 // three seeded presets, and that preset recognition is order-insensitive and dedup-tolerant.
 func TestPresetRoundTrip(t *testing.T) {

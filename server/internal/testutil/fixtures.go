@@ -42,6 +42,7 @@ func OpenTestStore(t *testing.T) (*store.Store, *sql.DB) {
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS ChannelMembers (
 		ChannelId varchar(26) NOT NULL,
 		UserId varchar(26) NOT NULL,
+		Roles varchar(64),
 		SchemeAdmin boolean,
 		SchemeGuest boolean,
 		PRIMARY KEY (ChannelId, UserId)

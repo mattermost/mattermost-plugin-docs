@@ -21,16 +21,23 @@ type Props = {
     disabled: boolean;
     disabledReason?: string;
     customDefaultsAvailable: boolean;
+
+    /** The caller may not change the default set: state it, and offer no control. */
+    readOnly?: boolean;
     onChange: (next: Permission[]) => void;
 };
 
 /** The Share footer's space-default permissions picker: the named tiers first, refined below
  * them by the individual permissions when the server licence allows a custom combination. */
-const DefaultPermissionsMenu = ({defaults, disabled, disabledReason, customDefaultsAvailable, onChange}: Props) => {
+const DefaultPermissionsMenu = ({defaults, disabled, disabledReason, customDefaultsAvailable, readOnly, onChange}: Props) => {
     const {formatMessage} = useIntl();
     const tierLabels = usePermissionTierLabels();
     const permissionLabels = usePermissionLabels();
     const defaultTier = summarizePermissions(defaults);
+
+    if (readOnly) {
+        return <span className={styles.accessStatic}>{tierLabels[defaultTier].label}</span>;
+    }
 
     const trigger = (
         <Button

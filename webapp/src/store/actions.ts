@@ -75,6 +75,41 @@ export function fetchSpaces(): DocsThunkAction<Promise<void>> {
     };
 }
 
+/** The outcome of a space read: `denied` separates a definitive 403/404 from a failed request. */
+export type SpaceAccessLoad = {space?: Space; denied: boolean};
+
+/**
+ * Reads one space's access record and stores it, evicting the space on a definitive denial.
+ *
+ * The read endpoint is the reconciliation path for access changes a client cannot observe any
+ * other way — an open space turned private drops the non-member's channel WebSocket, so no event
+ * announces the loss. Ignoring the denial would leave the stored record, and every affordance
+ * gated on its permissions, in place until a full reload. A request that never completed is not an
+ * answer about access, so a transient failure retains the stored record.
+ *
+ * Never rejects: the caller can only tell "not there" from "not asked yet" by whether this settled.
+ */
+export function loadSpaceAccess(spaceId: string): DocsThunkAction<Promise<SpaceAccessLoad>> {
+    return async (dispatch) => {
+        const generation = nextSpaceAccessGeneration();
+        try {
+            const space = await docsDataSource.getSpace(spaceId);
+            if (space) {
+                dispatch(spaceAccessAction(space, generation));
+            }
+            return {space, denied: false};
+        } catch (error) {
+            if (error instanceof RestError && (error.status === 403 || error.status === 404)) {
+                dispatch(evictSpace(spaceId));
+                return {denied: true};
+            }
+            // eslint-disable-next-line no-console
+            console.error('Docs: failed to load space', spaceId, error);
+            return {denied: false};
+        }
+    };
+}
+
 /**
  * Loads one space by id, for a URL that names a space the store doesn't hold.
  *
@@ -83,25 +118,11 @@ export function fetchSpaces(): DocsThunkAction<Promise<void>> {
  * stale (a space created since), scoped to another team, or simply not to have run
  * yet, and none of those mean the id is bad.
  *
- * Resolves to undefined when the space can't be read (403/404) or the request
- * failed — the caller can only tell "not there" from "not asked yet" by whether
- * this settled, so it must not reject.
+ * Resolves to undefined when the space can't be read or the request failed. A caller that must
+ * separate those two outcomes dispatches loadSpaceAccess instead.
  */
 export function fetchSpace(spaceId: string): DocsThunkAction<Promise<Space | undefined>> {
-    return async (dispatch) => {
-        const generation = nextSpaceAccessGeneration();
-        try {
-            const space = await docsDataSource.getSpace(spaceId);
-            if (space) {
-                dispatch(spaceAccessAction(space, generation));
-            }
-            return space;
-        } catch (error) {
-            // eslint-disable-next-line no-console
-            console.error('Docs: failed to load space', spaceId, error);
-            return undefined;
-        }
-    };
+    return async (dispatch) => (await dispatch(loadSpaceAccess(spaceId))).space;
 }
 
 // Cross-team load for the switcher: fan out over the user's teams. The server
@@ -409,35 +430,16 @@ export function spaceMemberPermissionsChanged(spaceId: string) {
 }
 
 /**
- * Re-reads spaceId's access record, evicting it on a definitive denial.
+ * Re-reads spaceId's access record after an event that may have changed what the caller may do.
  *
  * A refresh and loss of access are not the same event: the record that comes back may simply carry
- * a narrowed permission set, in which case it replaces the stored one. Only a definitive denial
- * (403/404) evicts — the caller lost the space, and retaining the stale record would keep
- * rendering pre-revocation affordances indefinitely. A request that never completed is not an
- * answer about access, so a transient failure retains the stored record.
+ * a narrowed permission set, in which case it replaces the stored one, while a definitive denial
+ * evicts the space.
  *
  * Resolves to the refreshed record, or undefined when the space was evicted or the read failed.
  */
 export function refreshSpaceAccess(spaceId: string): DocsThunkAction<Promise<Space | undefined>> {
-    return async (dispatch) => {
-        const generation = nextSpaceAccessGeneration();
-        try {
-            const space = await docsDataSource.getSpace(spaceId);
-            if (space) {
-                dispatch(spaceAccessAction(space, generation));
-            }
-            return space;
-        } catch (error) {
-            if (error instanceof RestError && (error.status === 403 || error.status === 404)) {
-                dispatch(evictSpace(spaceId));
-                return undefined;
-            }
-            // eslint-disable-next-line no-console
-            console.error('Docs: failed to re-resolve space access', spaceId, error);
-            return undefined;
-        }
-    };
+    return async (dispatch) => (await dispatch(loadSpaceAccess(spaceId))).space;
 }
 
 /**

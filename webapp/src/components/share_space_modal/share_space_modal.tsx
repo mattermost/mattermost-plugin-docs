@@ -15,7 +15,7 @@ import GenericModal from 'components/generic_modal/generic_modal';
 import {AddMembersField, MemberList} from 'components/space_members';
 
 import type {Space} from 'types/docs';
-import {MEMBER_PERMISSION_ORDER, Permissions, type Permission} from 'types/permissions';
+import type {Permission} from 'types/permissions';
 
 import DefaultPermissionsMenu from './default_permissions_menu';
 import styles from './share_space_modal.module.scss';
@@ -28,7 +28,8 @@ type Props = {
 
 // Primary space-sharing surface. The compact controls preserve the approved Share modal: the
 // named tiers come first, and a licensed install can refine the space default permission by
-// permission beneath them.
+// permission beneath them. The tiers name the space default only; a member's row edits the
+// permission ids themselves.
 const ShareSpaceModal = ({space, onClose}: Props) => {
     const {formatMessage} = useIntl();
     const {paths: absolutePaths} = useDocsNavigation({absolute: true});
@@ -36,13 +37,12 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
         permissions,
         members,
         memberIds,
-        adminLocked,
-        rosterLocked,
-        adminLockedReason,
-        adminSpaceLockedReason,
+        canEditAccess,
+        grantOptionsFor,
+        accessBusy,
+        rosterBusy,
+        busyReason,
         roleForMember,
-        memberLockedReason,
-        isMemberLocked,
         actions,
         addMembers,
     } = useSpaceAccessEditor(space, {onClose});
@@ -73,19 +73,23 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
         </SecondaryButton>
     );
 
+    // A caller who does not administer the space still reads its exposure here; what they lose
+    // is the control, not the statement, since either write would be refused.
     const footer = (
         <div className={styles.access}>
             <VisibilityMenu
                 viewAccess={permissions.viewAccess}
-                disabled={adminLocked}
-                disabledReason={adminLockedReason}
+                disabled={accessBusy}
+                disabledReason={busyReason}
+                readOnly={!canEditAccess}
                 onChange={(next) => permissions.setViewAccess(next).catch(() => {})}
             />
             <DefaultPermissionsMenu
                 defaults={permissions.defaults}
-                disabled={adminLocked}
-                disabledReason={adminLockedReason}
+                disabled={accessBusy}
+                disabledReason={busyReason}
                 customDefaultsAvailable={customDefaultsAvailable}
+                readOnly={!canEditAccess}
                 onChange={(next) => permissions.setDefaults(next).catch(() => {})}
             />
         </div>
@@ -109,7 +113,7 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
                         <AddMembersField
                             excludeIds={memberIds}
                             onAdd={addMembers}
-                            disabled={rosterLocked}
+                            disabled={rosterBusy}
                             large={true}
                             commitOnSelect={true}
                         />
@@ -126,18 +130,16 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
                         roleForMember={roleForMember}
                         permissionMenuForMember={(profile) => {
                             const record = permissions.members.get(profile.id);
-                            if (!record) {
+                            const options = grantOptionsFor(profile);
+                            if (!record || options.length === 0) {
                                 return undefined;
                             }
 
                             return {
-                                options: MEMBER_PERMISSION_ORDER,
+                                options,
                                 selected: record.granted_permissions,
-                                effective: record.permissions,
-                                disabled: isMemberLocked(profile),
-                                disabledReason: memberLockedReason(profile),
-                                disabledOptions: permissions.canAdminister ? undefined : [Permissions.ADMIN_SPACE],
-                                disabledOptionsReason: adminSpaceLockedReason,
+                                disabled: rosterBusy,
+                                disabledReason: busyReason,
                                 onChange: (next: Permission[]) => {
                                     permissions.setMemberGrants(profile.id, next).catch(() => {});
                                 },

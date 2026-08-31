@@ -16,6 +16,7 @@ import type {DocsPluginState} from 'store/types';
 
 import {toast} from 'components/toast';
 
+import type {Space} from 'types/docs';
 import type {Permission} from 'types/permissions';
 
 import PageHeader from './page_header';
@@ -34,12 +35,15 @@ jest.mock('hooks/favorites', () => ({
 
 jest.mock('components/toast', () => ({toast: {error: jest.fn()}}));
 
-const SPACE = makeSpace('eng', 'Engineering');
+// Carries a resolved permission set, as the space view's own resolve pass gives the header in the
+// app: the authoring affordances are withheld until the server has answered, so a fixture without
+// one would exercise the unresolved case rather than the ordinary author's.
+const SPACE = {...makeSpace('eng', 'Engineering'), permissions: ['read_page', 'create_page', 'edit_page'] as Permission[]};
 const PAGE = makePage('runbook', 'eng', 'Runbook');
 
 const PAGE_URL = '/myteam/spaces/eng/runbook';
 
-const renderHeader = (props: Partial<React.ComponentProps<typeof PageHeader>> = {}, route = PAGE_URL, space = SPACE) =>
+const renderHeader = (props: Partial<React.ComponentProps<typeof PageHeader>> = {}, route = PAGE_URL, space: Space = SPACE) =>
     renderWithContext(
         <PageHeader
             space={space}
@@ -310,6 +314,17 @@ describe('PageHeader edit gating', () => {
 
     it('withholds Publish and Edit on an unpublished page when the resolved set omits create_page', () => {
         renderHeader({page: undefined, draft: DRAFT}, PAGE_URL, NO_CREATE_SPACE);
+
+        expect(screen.queryByRole('button', {name: 'Publish'})).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Edit'})).not.toBeInTheDocument();
+    });
+
+    // A space opened straight from the sidebar is in the store from the team listing, which answers
+    // with bare spaces. Offering authoring on that record showed Edit and Publish to a reader for
+    // as long as the resolve pass took; they appear once the server has actually granted them.
+    it('withholds Edit and Publish until the permission set has been resolved', () => {
+        const unresolved = makeSpace('eng', 'Engineering');
+        renderHeader({page: undefined, draft: DRAFT}, PAGE_URL, unresolved);
 
         expect(screen.queryByRole('button', {name: 'Publish'})).not.toBeInTheDocument();
         expect(screen.queryByRole('button', {name: 'Edit'})).not.toBeInTheDocument();

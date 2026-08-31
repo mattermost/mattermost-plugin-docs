@@ -133,6 +133,50 @@ func TestAutoJoin_ResponseReadsMembershipFromTheWrite(t *testing.T) {
 	mockAPI.AssertNotCalled(t, "GetChannelMember", mock.Anything, mock.Anything)
 }
 
+// TestAutoJoin_ResponseProjectsMembershipUnderReplicaLag is the case the test above cannot reach:
+// the replica has not caught up by the time the response is projected, so core still answers the
+// read resolution as a non-member. Nothing else in the join distinguishes that from a caller who
+// really is outside the space, and the fall-through projection is read-only with can_join set — so
+// a join that just succeeded would be reported as not having happened, and the very first write it
+// was performed to enable would 403.
+func TestAutoJoin_ResponseProjectsMembershipUnderReplicaLag(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	// Never flips: the caller is a member on the primary and a non-member everywhere core looks.
+	stubNonMember(mockAPI, userID)
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+
+	mockAPI.On("AddChannelMember", space.ChannelId, userID).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: userID}, nil)
+
+	access, appErr := h.svc.JoinOpenSpace(space, userID)
+	require.Nil(t, appErr)
+	require.NotNil(t, access)
+	require.Contains(t, access.Permissions, mmmodel.PermissionCreatePage.Id,
+		"the row core returned for the add decides the projection, not the replica the resolution reads")
+	require.False(t, access.CanJoin, "a caller who just joined must not be offered the join again")
+}
+
+// TestJoinOpenSpace_MemberUnderReplicaLagProjectsMembership is the same lag on the idempotent
+// path: the caller was already a member, so nothing is written and the response has only the
+// resolution to go on. The in-lock membership probe reads the primary precisely because the
+// replica can be behind, so the row it finds must also decide what the response projects.
+func TestJoinOpenSpace_MemberUnderReplicaLagProjectsMembership(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	stubNonMember(mockAPI, userID)
+	h, space := autoJoinHarness(t, mockAPI, model.ViewAccessOpen)
+	testutil.MustAddChannelMember(t, h.db, space.ChannelId, userID)
+
+	access, appErr := h.svc.JoinOpenSpace(space, userID)
+	require.Nil(t, appErr)
+	require.NotNil(t, access)
+	require.Contains(t, access.Permissions, mmmodel.PermissionCreatePage.Id,
+		"the primary-backed membership row decides the projection")
+	require.False(t, access.CanJoin)
+	mockAPI.AssertNotCalled(t, "AddChannelMember", mock.Anything, mock.Anything)
+}
+
 // TestAutoJoin_ProvenanceMarkerLifecycle covers the auto-join provenance marker end to end: set on
 // a successful auto-join and visible through GetSpaceMembers, then cleared by a deliberate admin
 // permission change on the same member (SetSpaceMemberPermissions), which must supersede it.
@@ -866,6 +910,31 @@ func TestRequireSpaceAdminOrSysadmin_SchemeAdminRowAdmits(t *testing.T) {
 
 	require.Nil(t, h.svc.RequireSpaceAdminOrSysadmin("test", space, userID),
 		"a SchemeAdmin row on the master is the whole signal for admin_space and must admit on its own")
+}
+
+// TestRequireSpaceAdminOrSysadmin_GuestRowDenied covers a membership carrying both flags. Core
+// refuses the guest+admin pairing on the write paths, but a guest conversion that leaves a
+// SchemeAdmin flag behind produces the row anyway, and this gate reads the flag rather than
+// composing the permission — so without the guest conjunct it admits a guest to ViewAccess, the
+// default permissions, and the admin-affecting member changes, which page writes already clamp.
+func TestRequireSpaceAdminOrSysadmin_GuestRowDenied(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	userID := mmmodel.NewId()
+	teamID := mmmodel.NewId()
+	mockAPI.On("HasPermissionToChannel", userID, mock.Anything, mmmodel.PermissionAdminSpace).Return(true).Maybe()
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	space := seedSpaceForTeam(t, h.store, mmmodel.NewId(), teamID)
+	testutil.MustAddChannelAdmin(t, h.db, space.ChannelId, userID)
+	_, err := h.db.Exec(`UPDATE ChannelMembers SET SchemeGuest = TRUE WHERE ChannelId = $1 AND UserId = $2`,
+		space.ChannelId, userID)
+	require.NoError(t, err)
+
+	appErr := h.svc.RequireSpaceAdminOrSysadmin("test", space, userID)
+	require.NotNil(t, appErr, "a guest must not reach the admin tier through a leftover SchemeAdmin flag")
+	require.Equal(t, http.StatusForbidden, appErr.StatusCode)
+	require.Equal(t, "app.space.access.forbidden.app_error", appErr.Id,
+		"the denial must be the shared existence-hiding 403, not a distinguishable one")
 }
 
 // TestResolveSpaceRead_GuestDeniedOpenFallthrough covers the guest exclusion from the open-space

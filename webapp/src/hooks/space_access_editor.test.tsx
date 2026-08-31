@@ -11,6 +11,7 @@ import {makeSpace} from 'store/test_fixtures';
 
 import type {Space} from 'types/docs';
 import type {SpaceMember} from 'types/permissions';
+import {DEFAULT_PERMISSION_ORDER, MEMBER_PERMISSION_ORDER} from 'types/permissions';
 
 import {useSpaceAccessEditor} from './space_access_editor';
 import type {SpacePermissions} from './space_permissions';
@@ -95,123 +96,115 @@ describe('useSpaceAccessEditor', () => {
         };
     });
 
-    describe('adminLocked / rosterLocked', () => {
-        it('is unlocked for an administrator once the read resolves', () => {
+    // Authority and availability are separate: a caller who lacks the authority gets no control
+    // rendered at all, where one who owns it loses it only for as long as a write is in flight.
+    describe('canEditAccess', () => {
+        it('follows the administer authority alone, not the in-flight state', () => {
+            const {hook} = render();
+            expect(hook.current.canEditAccess).toBe(true);
+
+            mockPermissionsState = {...mockPermissionsState, busy: true};
+            expect(render().hook.current.canEditAccess).toBe(true);
+
+            mockPermissionsState = {...mockPermissionsState, busy: false, canAdminister: false};
+            expect(render().hook.current.canEditAccess).toBe(false);
+        });
+    });
+
+    describe('accessBusy / rosterBusy', () => {
+        it('are clear for an administrator once the read resolves', () => {
             const {hook} = render();
 
-            expect(hook.current.adminLocked).toBe(false);
-            expect(hook.current.rosterLocked).toBe(false);
+            expect(hook.current.accessBusy).toBe(false);
+            expect(hook.current.rosterBusy).toBe(false);
         });
 
-        it('locks admin controls for a caller who cannot administer', () => {
-            mockPermissionsState = {...mockPermissionsState, canAdminister: false};
-            const {hook} = render();
-
-            expect(hook.current.adminLocked).toBe(true);
-        });
-
-        it('locks roster controls for a caller who cannot manage members', () => {
-            mockPermissionsState = {...mockPermissionsState, canManageMembers: false};
-            const {hook} = render();
-
-            expect(hook.current.rosterLocked).toBe(true);
-        });
-
-        it('locks both while the permission read is loading', () => {
+        it('are both set while the permission read is loading', () => {
             mockPermissionsState = {...mockPermissionsState, loading: true};
             const {hook} = render();
 
-            expect(hook.current.adminLocked).toBe(true);
-            expect(hook.current.rosterLocked).toBe(true);
+            expect(hook.current.accessBusy).toBe(true);
+            expect(hook.current.rosterBusy).toBe(true);
         });
 
-        it('locks the roster, but not the admin controls, while a roster mutation is in flight', () => {
+        it('sets the roster, but not the access controls, while a roster mutation is in flight', () => {
             mockManageMembersBusy = true;
             const {hook} = render();
 
-            expect(hook.current.rosterLocked).toBe(true);
-            expect(hook.current.adminLocked).toBe(false);
+            expect(hook.current.rosterBusy).toBe(true);
+            expect(hook.current.accessBusy).toBe(false);
         });
     });
 
-    describe('adminLockedReason', () => {
-        it('is undefined while the read is in flight, so a real denial is not implied', () => {
-            mockPermissionsState = {...mockPermissionsState, loading: true};
-            const {hook} = render();
+    describe('busyReason / loadFailedReason', () => {
+        it('names the in-flight write only while one is in flight', () => {
+            expect(render().hook.current.busyReason).toBeUndefined();
 
-            expect(hook.current.adminLockedReason).toBeUndefined();
-        });
-
-        it('is undefined while a write is in flight', () => {
             mockPermissionsState = {...mockPermissionsState, busy: true};
-            const {hook} = render();
-
-            expect(hook.current.adminLockedReason).toBeUndefined();
+            expect(render().hook.current.busyReason).toBe('Saving…');
         });
 
-        it('names the load failure ahead of the admin-only reason', () => {
-            mockPermissionsState = {...mockPermissionsState, loadFailed: true, loading: true};
-            const {hook} = render();
+        it('names a failed read so the surface can say so, and nothing otherwise', () => {
+            expect(render().hook.current.loadFailedReason).toBeUndefined();
 
-            expect(hook.current.adminLockedReason).toBe("Couldn't load this space's permissions. Close and reopen to try again.");
-        });
-
-        it('names the admin-only reason once the read has resolved', () => {
-            const {hook} = render();
-
-            expect(hook.current.adminLockedReason).toBe('Only a space administrator can change this');
+            mockPermissionsState = {...mockPermissionsState, loadFailed: true};
+            expect(render().hook.current.loadFailedReason).toBe("Couldn't load this space's permissions. Close and reopen to try again.");
         });
     });
 
-    describe('memberLockedReason / isMemberLocked', () => {
-        it('locks and names a guest even when the roster itself is unlocked', () => {
+    describe('grantOptionsFor', () => {
+        it('offers a guest nothing, since the server refuses every grant to one', () => {
             mockPermissionsState = {
                 ...mockPermissionsState,
                 members: new Map([['u2', member('u2', {is_guest: true})]]),
             };
             const {hook} = render();
-            const ada = profile('u2');
 
-            expect(hook.current.isMemberLocked(ada)).toBe(true);
-            expect(hook.current.memberLockedReason(ada)).toBe('Guests can only view pages');
+            expect(hook.current.grantOptionsFor(profile('u2'))).toEqual([]);
         });
 
-        it("locks and names the caller's own row when they cannot administer", () => {
+        it('offers the caller nothing on their own row unless they administer the space', () => {
             mockPermissionsState = {
                 ...mockPermissionsState,
                 canAdminister: false,
                 members: new Map([['me', member('me', {is_admin: true})]]),
             };
             const {hook} = render();
-            const caleb = profile('me');
 
-            expect(hook.current.isMemberLocked(caleb)).toBe(true);
-            expect(hook.current.memberLockedReason(caleb)).toBe('Only a space administrator can change their own permissions');
+            expect(hook.current.grantOptionsFor(profile('me'))).toEqual([]);
         });
 
-        it('names the admin lock reason for another member once the roster is locked', () => {
+        it('offers nothing to a caller who cannot manage members', () => {
             mockPermissionsState = {
                 ...mockPermissionsState,
                 canManageMembers: false,
                 members: new Map([['u2', member('u2')]]),
             };
             const {hook} = render();
-            const ada = profile('u2');
 
-            expect(hook.current.isMemberLocked(ada)).toBe(true);
-            expect(hook.current.memberLockedReason(ada)).toBe('Only a space administrator can change this');
+            expect(hook.current.grantOptionsFor(profile('u2'))).toEqual([]);
         });
 
-        it('leaves an ordinary member unlocked with no reason', () => {
+        // admin_space is a space administrator's to give: a manager without it never sees the row.
+        it('withholds admin_space from a manager who does not administer the space', () => {
+            mockPermissionsState = {
+                ...mockPermissionsState,
+                canAdminister: false,
+                members: new Map([['u2', member('u2')]]),
+            };
+            const {hook} = render();
+
+            expect(hook.current.grantOptionsFor(profile('u2'))).toEqual(DEFAULT_PERMISSION_ORDER);
+        });
+
+        it('offers the whole vocabulary to an administrator', () => {
             mockPermissionsState = {
                 ...mockPermissionsState,
                 members: new Map([['u2', member('u2')]]),
             };
             const {hook} = render();
-            const ada = profile('u2');
 
-            expect(hook.current.isMemberLocked(ada)).toBe(false);
-            expect(hook.current.memberLockedReason(ada)).toBeUndefined();
+            expect(hook.current.grantOptionsFor(profile('u2'))).toEqual(MEMBER_PERMISSION_ORDER);
         });
     });
 
@@ -231,11 +224,14 @@ describe('useSpaceAccessEditor', () => {
             expect(mockRemoveMember).toHaveBeenCalledWith('u2');
         });
 
-        it('disables actions when the roster is locked', () => {
+        // Authority is expressed by omitting onRemove, so what remains for `disabled` to say is
+        // that a write is already in flight — not that the caller may not act at all.
+        it('disables actions only while a roster write is in flight', () => {
             mockPermissionsState = {...mockPermissionsState, canManageMembers: false};
-            const {hook} = render();
+            expect(render().hook.current.actions.disabled).toBe(false);
 
-            expect(hook.current.actions.disabled).toBe(true);
+            mockManageMembersBusy = true;
+            expect(render().hook.current.actions.disabled).toBe(true);
         });
 
         it('closes via onClose after a successful leave', async () => {

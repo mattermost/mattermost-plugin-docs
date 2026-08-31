@@ -14,6 +14,52 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
+// GetSpaceMemberRoles is the read that stands in for the plugin API's replica-backed member
+// lookup, so it has to carry everything a permission projection needs: the capability roles in the
+// explicit roles alongside the scheme flags, and a distinguishable miss for a non-member.
+func TestGetSpaceMemberRoles(t *testing.T) {
+	s, db := testutil.OpenTestStore(t)
+
+	t.Run("returns the explicit roles and the scheme flags", func(t *testing.T) {
+		channelID := mmmodel.NewId()
+		userID := mmmodel.NewId()
+		testutil.MustAddChannelAdmin(t, db, channelID, userID)
+		_, err := db.Exec(`UPDATE ChannelMembers SET Roles = $1 WHERE ChannelId = $2 AND UserId = $3`,
+			mmmodel.SpacePageEditorRoleId, channelID, userID)
+		require.NoError(t, err)
+
+		member, err := s.GetSpaceMemberRoles(channelID, userID)
+		require.NoError(t, err)
+		require.Equal(t, mmmodel.SpacePageEditorRoleId, member.ExplicitRoles)
+		require.True(t, member.SchemeAdmin)
+		require.False(t, member.SchemeGuest)
+	})
+
+	t.Run("a NULL roles column reads as empty", func(t *testing.T) {
+		channelID := mmmodel.NewId()
+		userID := mmmodel.NewId()
+		testutil.MustAddChannelGuest(t, db, channelID, userID)
+
+		member, err := s.GetSpaceMemberRoles(channelID, userID)
+		require.NoError(t, err)
+		require.Empty(t, member.ExplicitRoles)
+		require.False(t, member.SchemeAdmin)
+		require.True(t, member.SchemeGuest)
+	})
+
+	t.Run("a non-member is a distinguishable miss", func(t *testing.T) {
+		_, err := s.GetSpaceMemberRoles(mmmodel.NewId(), mmmodel.NewId())
+		require.True(t, store.IsErrNotFound(err), "a non-member must be tellable from a lookup failure")
+	})
+
+	t.Run("empty ids are rejected", func(t *testing.T) {
+		_, err := s.GetSpaceMemberRoles("", mmmodel.NewId())
+		require.Error(t, err)
+		_, err = s.GetSpaceMemberRoles(mmmodel.NewId(), "")
+		require.Error(t, err)
+	})
+}
+
 func TestMemberSchemeFlags(t *testing.T) {
 	s, db := testutil.OpenTestStore(t)
 

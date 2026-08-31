@@ -3,7 +3,7 @@
 
 import {Permissions} from 'types/permissions';
 
-import {samePermissionSet, summarizeMemberPermissions, summarizePermissions} from './space_permission_sets';
+import {samePermissionSet, summarizePermissions} from './space_permission_sets';
 
 describe('space permission sets', () => {
     it('compares permission sets independently of order and duplicates', () => {
@@ -36,13 +36,5 @@ describe('space permission sets', () => {
             Permissions.MANAGE_SPACE,
             Permissions.DELETE_SPACE,
         ])).toBe('view');
-    });
-
-    // A member's tier is what they can do, which the space default sets a floor for; only the
-    // admin_space grant names a tier of its own.
-    it('summarizes a member by their effective set unless they hold admin_space', () => {
-        expect(summarizeMemberPermissions([], [Permissions.READ_PAGE, Permissions.COMMENT_PAGE])).toBe('comment');
-        expect(summarizeMemberPermissions([Permissions.EDIT_PAGE], [Permissions.READ_PAGE, Permissions.EDIT_PAGE])).toBe('custom');
-        expect(summarizeMemberPermissions([Permissions.ADMIN_SPACE], [Permissions.READ_PAGE])).toBe('admin');
     });
 });

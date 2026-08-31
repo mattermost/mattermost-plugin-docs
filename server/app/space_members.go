@@ -66,11 +66,11 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int, withPer
 	members := make([]*model.SpaceMember, 0, len(channelMembers))
 	for _, cm := range channelMembers {
 		if !withPermissions {
-			members = append(members, toRedactedSpaceMember(cm))
+			members = append(members, spaceMemberFrom(cm, nil, false, false))
 			continue
 		}
 		_, wasAutoJoined := autoJoinedSet[cm.UserId]
-		members = append(members, toSpaceMember(cm, defaultPermissions, wasAutoJoined))
+		members = append(members, spaceMemberFrom(cm, defaultPermissions, wasAutoJoined, true))
 	}
 	hasMore := false
 	if len(channelMembers) == perPage {
@@ -86,30 +86,21 @@ func (s *Service) GetSpaceMembers(space *model.Space, page, perPage int, withPer
 	return members, hasMore, nil
 }
 
-// toRedactedSpaceMember builds the roster entry a caller without the manage tier receives: identity
-// and role standing, with no permission matrix and no auto-join provenance. Both flags come straight
-// off the membership, so this needs neither the space's default permission set nor the marker table.
-func toRedactedSpaceMember(cm *mmmodel.ChannelMember) *model.SpaceMember {
+// spaceMemberFrom projects a backing-channel membership onto the SpaceMember wire shape.
+// withPermissions selects the roster projection: the manage-tier matrix (effective set, granted
+// set, auto-join provenance) versus identity and scheme standing only. Both go through
+// PermissionsFromChannelMember so IsAdmin/IsGuest cannot drift from the permission matrix.
+func spaceMemberFrom(cm *mmmodel.ChannelMember, defaultPermissions []string, autoJoined, withPermissions bool) *model.SpaceMember {
+	projected := model.PermissionsFromChannelMember(cm, defaultPermissions)
 	member := &model.SpaceMember{
 		UserId:  cm.UserId,
-		IsAdmin: cm.SchemeAdmin,
-		IsGuest: cm.SchemeGuest,
+		IsAdmin: projected.IsAdmin,
+		IsGuest: projected.IsGuest,
 	}
-	member.EnsurePermissions()
-	return member
-}
-
-// toSpaceMember builds the wire representation of a channel member's permission state.
-// autoJoined reports whether the member carries the auto-join provenance marker.
-func toSpaceMember(cm *mmmodel.ChannelMember, defaultPermissions []string, autoJoined bool) *model.SpaceMember {
-	mc := model.PermissionsFromMember(cm.ExplicitRoles, cm.SchemeAdmin, cm.SchemeGuest, defaultPermissions)
-	member := &model.SpaceMember{
-		UserId:             cm.UserId,
-		Permissions:        mc.Effective,
-		GrantedPermissions: mc.Granted,
-		IsAdmin:            mc.IsAdmin,
-		IsGuest:            mc.IsGuest,
-		IsAutoJoined:       autoJoined,
+	if withPermissions {
+		member.Permissions = projected.Effective
+		member.GrantedPermissions = projected.Granted
+		member.IsAutoJoined = autoJoined
 	}
 	member.EnsurePermissions()
 	return member
@@ -188,7 +179,7 @@ func (s *Service) AddSpaceMember(space *model.Space, userID string) (*model.Spac
 		payload := map[string]any{"space_id": space.Id, "user_id": member.UserId}
 		s.publishMembershipEvent(wsEventSpaceMemberAdded, payload, space.ChannelId, member.UserId)
 	}
-	return toSpaceMember(member, defaultPermissions, false), nil
+	return spaceMemberFrom(member, defaultPermissions, false, true), nil
 }
 
 // JoinOpenSpace joins userID to space's backing channel: the explicit self-join an open space
@@ -264,12 +255,21 @@ func (s *Service) JoinOpenSpace(space *model.Space, userID string) (*model.Space
 		// unchanged for an add of a current member, so a false negative would mark a member who
 		// joined deliberately as having joined themselves. The plugin API answers this lookup from
 		// a read replica, which can miss a membership committed on the primary a moment earlier, so
-		// the check reads the master through the plugin store instead.
-		isMember, memErr := s.store.IsChannelMember(fresh.ChannelId, userID)
-		if memErr != nil {
+		// the check reads the master through the plugin store instead. The row comes back with it,
+		// since the response for an already-member caller has to project what that membership
+		// grants, and the replica that projection would otherwise read is the one just distrusted.
+		existing, memErr := s.store.GetSpaceMemberRoles(fresh.ChannelId, userID)
+		if memErr != nil && !store.IsErrNotFound(memErr) {
 			return mmmodel.NewAppError("JoinOpenSpace", "app.space.access.channel_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(memErr)
 		}
-		if isMember {
+		if memErr == nil {
+			joinedMember = &mmmodel.ChannelMember{
+				ChannelId:     fresh.ChannelId,
+				UserId:        userID,
+				ExplicitRoles: existing.ExplicitRoles,
+				SchemeAdmin:   existing.SchemeAdmin,
+				SchemeGuest:   existing.SchemeGuest,
+			}
 			return nil
 		}
 		// The write is an idempotent upsert, so a retry of a join that already marked is a no-op.
@@ -308,10 +308,12 @@ func (s *Service) JoinOpenSpace(space *model.Space, userID string) (*model.Space
 		payload := map[string]any{"space_id": space.Id, "user_id": userID}
 		s.publishMembershipEvent(wsEventSpaceMemberAdded, payload, joinedChannelID, userID)
 	}
-	// The response for a join this request performed is projected from the membership core returned
-	// for its own write, not from a re-read: the plugin API's member lookup is answered from a read
-	// replica, which can miss the row committed on the primary an instant earlier and would turn a
-	// committed join into a reported failure. The not-joined paths keep the ordinary lookup.
+	// The response is projected from the membership resolved above — the row core returned for this
+	// request's own write, or the master-backed row of a caller who was already a member — not from
+	// a re-read: the plugin API's member lookup is answered from a read replica, which can miss a
+	// row committed on the primary an instant earlier and answer a member with the non-member
+	// fall-through. joinedMember is nil only where the lock body found nothing to project, and
+	// those paths keep the ordinary lookup.
 	return s.buildSpaceWithAccess(latestSpace, userID, nil, joinedMember)
 }
 
@@ -332,21 +334,22 @@ func (s *Service) PruneSelfJoinedMembers(space *model.Space) ([]string, *mmmodel
 	if err != nil {
 		return nil, mmmodel.NewAppError("PruneSelfJoinedMembers", "app.space.prune_self_joined.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
-	return s.removeAutoJoinedMembers(space, selfJoined)
+	return s.removeAutoJoinedMembers("PruneSelfJoinedMembers", space, selfJoined)
 }
 
 // removeAutoJoinedMembers is PruneSelfJoinedMembers for a caller that already snapshotted the
 // auto-joined user ids (UpdateSpace takes that snapshot under the space membership lock, then
 // calls this without holding it, since the per-member Channel.DeleteMember RPCs below must not run
-// while the lock's dedicated connection is held).
-func (s *Service) removeAutoJoinedMembers(space *model.Space, userIDs []string) ([]string, *mmmodel.AppError) {
+// while the lock's dedicated connection is held). where attributes the failure to the calling
+// operation.
+func (s *Service) removeAutoJoinedMembers(where string, space *model.Space, userIDs []string) ([]string, *mmmodel.AppError) {
 	removed := make([]string, 0, len(userIDs))
 	for _, userID := range userIDs {
 		if delErr := s.client.Channel.DeleteMember(space.ChannelId, userID); delErr != nil {
 			if !errors.Is(delErr, pluginapi.ErrNotFound) {
 				s.log.Error("failed to remove a self-joined member; leaving the space open",
 					"space_id", space.Id, "user_id", userID, "err", delErr)
-				return removed, mmmodel.NewAppError("PruneSelfJoinedMembers", "app.space.prune_self_joined.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(delErr)
+				return removed, mmmodel.NewAppError(where, "app.space.prune_self_joined.failed.app_error", nil, "", http.StatusInternalServerError).Wrap(delErr)
 			}
 			// Already gone. The marker is stale and still needs clearing below.
 		}
@@ -479,7 +482,7 @@ func (s *Service) SetSpaceMemberPermissions(space *model.Space, targetUserID str
 	// Project from the member returned by the role update and the defaults resolved under the same
 	// lock. A post-write replica read could return pre-update state or turn a committed write into a
 	// reported failure.
-	result := toSpaceMember(updatedMember, defaultPermissions, false)
+	result := spaceMemberFrom(updatedMember, defaultPermissions, false, true)
 
 	payload := map[string]any{"space_id": space.Id, "user_id": targetUserID}
 	s.publishMembershipEvent(wsEventSpaceMemberPermissionsUpdated, payload, space.ChannelId, targetUserID)

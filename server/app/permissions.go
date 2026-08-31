@@ -56,6 +56,18 @@ func (s *Service) hasOpenTeamFallthrough(userID, teamID string) bool {
 	return s.client.User.HasPermissionToTeam(userID, teamID, mmmodel.PermissionReadPublicChannel)
 }
 
+// isActiveTeamMember reports whether userID holds a live membership in teamID. Core's team-member
+// lookup answers a removed member with the row rather than an error, so a membership counts only
+// while its DeleteAt is unset. A failed lookup reports false, so an undeterminable membership
+// denies rather than admits.
+func (s *Service) isActiveTeamMember(userID, teamID string) bool {
+	member, err := s.client.Team.GetMember(teamID, userID)
+	if err != nil || member == nil {
+		return false
+	}
+	return member.DeleteAt == 0
+}
+
 // readResolutionFrom evaluates the read gate against space for userID, given the caller's
 // already-resolved sysadmin status and team standing. active=false means the caller has no
 // standing in the space's team: not an active member, or a member without team read_space.
@@ -139,8 +151,8 @@ func (s *Service) RequireSpacePagePermission(where string, space *model.Space, u
 // resolveGuest reports whether userID holds core's system-wide guest role.
 //
 // Read from the user rather than from the backing channel's ChannelMember.SchemeGuest: the two
-// carry the same standing — a demotion stamps system_guest on the user and mirrors it onto every
-// membership in the same transaction — and the user is the record that standing originates from.
+// carry the same standing — core mirrors a guest conversion onto the user's space memberships as
+// part of the conversion — and the user is the record that standing originates from.
 func (s *Service) resolveGuest(userID string) (bool, error) {
 	user, err := s.client.User.Get(userID)
 	if err != nil {
@@ -312,9 +324,12 @@ func (s *Service) RequireSpaceAdminOrSysadmin(where string, space *model.Space, 
 		// grant into SchemeAdmin rather than an ExplicitRoles token, PermissionsFromMember derives
 		// the permission back from that flag alone, and the permission is rejected as a space
 		// default and carried by no team or system role. A non-member has no row and is denied.
-		schemeAdmin, _, flagErr := s.store.GetMemberSchemeFlags(space.ChannelId, userID)
+		//
+		// A guest is denied whatever the admin flag says, the clamp evaluatePagePermission applies
+		// to page writes. The guest flag comes from the same row, so the clamp costs no extra read.
+		schemeAdmin, schemeGuest, flagErr := s.store.GetMemberSchemeFlags(space.ChannelId, userID)
 		switch {
-		case flagErr == nil && schemeAdmin:
+		case flagErr == nil && schemeAdmin && !schemeGuest:
 			return nil
 		case flagErr != nil && !errors.As(flagErr, new(*store.ErrNotFound)):
 			return mmmodel.NewAppError(where, "app.space.access.member_lookup_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(flagErr)

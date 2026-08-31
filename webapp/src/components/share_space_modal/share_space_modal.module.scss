@@ -75,6 +75,20 @@
     line-height: 20px;
 }
 
+// The same state as `.accessTrigger` renders for a caller who may not change it: no chevron,
+// nothing focusable, and no button affordance suggesting a write that would be refused.
+.accessStatic {
+    display: inline-flex;
+    height: 24px;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px;
+    color: var(--center-channel-color);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 20px;
+}
+
 .canView:global(.btn.btn-sm) {
     min-width: 0;
     height: 32px;

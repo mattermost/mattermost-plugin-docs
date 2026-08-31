@@ -16,26 +16,34 @@ import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 import type {MemberListActions} from 'components/space_members';
 
 import type {Space} from 'types/docs';
+import type {Permission} from 'types/permissions';
+import {DEFAULT_PERMISSION_ORDER, MEMBER_PERMISSION_ORDER} from 'types/permissions';
 
 export type SpaceAccessEditor = {
     permissions: SpacePermissions;
     members: MemberProfile[];
     memberIds: string[];
 
-    /** This surface may not enable default and view-access changes. */
-    adminLocked: boolean;
+    // Authority, not availability. A caller without it would be refused by the server, so the
+    // surface renders no control at all rather than a disabled one; the busy flags below are
+    // the separate, temporary condition that disables a control the caller does own.
+    canEditAccess: boolean;
 
-    /** This surface may not expose member and grant controls. */
-    rosterLocked: boolean;
+    /** The permission ids this caller may grant a member, empty when they may grant none. */
+    grantOptionsFor: (profile: MemberProfile) => readonly Permission[];
 
-    adminLockedReason: string | undefined;
-    guestLockedReason: string;
-    selfLockedReason: string;
-    adminSpaceLockedReason: string;
+    /** A view-access or default-set write is in flight, or the record is still loading. */
+    accessBusy: boolean;
+
+    /** A roster write is in flight, or the record is still loading. */
+    rosterBusy: boolean;
+
+    /** Set only when the permission record failed to load, so the surface can say so. */
+    loadFailedReason: string | undefined;
+
+    busyReason: string | undefined;
 
     roleForMember: (profile: MemberProfile) => 'guest' | 'admin' | 'member' | undefined;
-    memberLockedReason: (profile: MemberProfile) => string | undefined;
-    isMemberLocked: (profile: MemberProfile) => boolean;
 
     /** Wired into MemberList; Remove is withheld from a surface that cannot manage members. */
     actions: MemberListActions;
@@ -60,37 +68,23 @@ export function useSpaceAccessEditor(space: Space, {onClose}: {onClose: () => vo
 
     const memberIds = useMemo(() => members.map((member) => member.id), [members]);
 
-    // Exposure and roster writes have different authority tiers. Disable both while the hook
-    // reports a write in flight to avoid overlapping reconciliation from either surface.
-    const adminLocked = !permissions.canAdminister || permissions.loading || permissions.busy;
-    const rosterLocked = !permissions.canManageMembers || permissions.loading || permissions.busy || busy;
+    // Exposure and roster writes have different authority tiers, and each is separately
+    // unavailable while a write of its own is in flight.
+    const canEditAccess = permissions.canAdminister;
+    const accessBusy = permissions.loading || permissions.busy;
+    const rosterBusy = permissions.loading || permissions.busy || busy;
 
-    // Only a resolved authority denial gets the admin-only explanation; a read still in flight,
-    // or a save of the caller's own, has no denial to report yet.
-    let adminLockedReason: string | undefined;
-    if (permissions.loadFailed) {
-        adminLockedReason = formatMessage({
-            id: 'docs.spaceSettings.permissions.loadFailed',
-            defaultMessage: "Couldn't load this space's permissions. Close and reopen to try again.",
-        });
-    } else if (!permissions.loading && !permissions.busy) {
-        adminLockedReason = formatMessage({
-            id: 'docs.spaceSettings.permissions.adminOnly',
-            defaultMessage: 'Only a space administrator can change this',
-        });
-    }
-    const guestLockedReason = formatMessage({
-        id: 'docs.spaceSettings.permissions.guestLocked',
-        defaultMessage: 'Guests can only view pages',
-    });
-    const selfLockedReason = formatMessage({
-        id: 'docs.spaceSettings.permissions.selfLocked',
-        defaultMessage: 'Only a space administrator can change their own permissions',
-    });
-    const adminSpaceLockedReason = formatMessage({
-        id: 'docs.spaceSettings.permissions.adminSpaceLocked',
-        defaultMessage: 'Only a space administrator can grant this',
-    });
+    const loadFailedReason = permissions.loadFailed ? formatMessage({
+        id: 'docs.spaceSettings.permissions.loadFailed',
+        defaultMessage: "Couldn't load this space's permissions. Close and reopen to try again.",
+    }) : undefined;
+
+    // The only reason a control the caller owns is unusable: an authority denial withholds the
+    // control instead, so it has no reason left to report.
+    const busyReason = accessBusy ? formatMessage({
+        id: 'docs.spaceSettings.permissions.saving',
+        defaultMessage: 'Saving…',
+    }) : undefined;
 
     const roleForMember = useCallback((profile: MemberProfile): 'guest' | 'admin' | 'member' | undefined => {
         const record = permissions.members.get(profile.id);
@@ -103,24 +97,19 @@ export function useSpaceAccessEditor(space: Space, {onClose}: {onClose: () => vo
         return record.is_admin ? 'admin' : 'member';
     }, [permissions.members]);
 
-    const isMemberLocked = useCallback((profile: MemberProfile): boolean => {
+    // Every grant this caller could not make on this member is dropped from the vocabulary
+    // rather than offered and refused: a guest may hold nothing beyond read_page, a member
+    // cannot raise themselves, and admin_space is a space administrator's grant to give.
+    const grantOptionsFor = useCallback((profile: MemberProfile): readonly Permission[] => {
         const record = permissions.members.get(profile.id);
-        return rosterLocked || Boolean(record?.is_guest) || (profile.id === currentUserId && !permissions.canAdminister);
-    }, [permissions.members, rosterLocked, currentUserId, permissions.canAdminister]);
-
-    const memberLockedReason = useCallback((profile: MemberProfile): string | undefined => {
-        const record = permissions.members.get(profile.id);
-        if (record?.is_guest) {
-            return guestLockedReason;
+        if (!record || !permissions.canManageMembers || record.is_guest) {
+            return [];
         }
         if (profile.id === currentUserId && !permissions.canAdminister) {
-            return selfLockedReason;
+            return [];
         }
-        if (rosterLocked) {
-            return adminLockedReason;
-        }
-        return undefined;
-    }, [permissions.members, currentUserId, permissions.canAdminister, rosterLocked, guestLockedReason, selfLockedReason, adminLockedReason]);
+        return permissions.canAdminister ? MEMBER_PERMISSION_ORDER : DEFAULT_PERMISSION_ORDER;
+    }, [permissions.members, permissions.canManageMembers, permissions.canAdminister, currentUserId]);
 
     const actions: MemberListActions = useMemo(() => ({
         ...(permissions.canManageMembers && {onRemove: removeMember}),
@@ -129,22 +118,20 @@ export function useSpaceAccessEditor(space: Space, {onClose}: {onClose: () => vo
                 onClose();
             }
         },
-        disabled: rosterLocked,
-    }), [permissions.canManageMembers, removeMember, leave, onClose, rosterLocked]);
+        disabled: rosterBusy,
+    }), [permissions.canManageMembers, removeMember, leave, onClose, rosterBusy]);
 
     return {
         permissions,
         members,
         memberIds,
-        adminLocked,
-        rosterLocked,
-        adminLockedReason,
-        guestLockedReason,
-        selfLockedReason,
-        adminSpaceLockedReason,
+        canEditAccess,
+        grantOptionsFor,
+        accessBusy,
+        rosterBusy,
+        loadFailedReason,
+        busyReason,
         roleForMember,
-        memberLockedReason,
-        isMemberLocked,
         actions,
         addMembers,
         removeMember,

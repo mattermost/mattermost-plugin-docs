@@ -142,13 +142,21 @@ export class ShareSpaceModalPage {
     }
 
     memberPermissionsTrigger(username: string): Locator {
-        // The accessible name is prefixed with the member's visible role text once their
-        // permission record resolves ("Can edit — permissions for …"), so match the tail.
+        // The accessible name is prefixed with the member's visible standing once their
+        // permission record resolves ("Member — permissions for …"), so match the tail.
         return this.dialog.getByRole('button', {name: new RegExp(`permissions for ${username}$`, 'i')});
     }
 
-    async expectMemberSummary(username: string, summary: DefaultSummary | 'Admin' | 'Guest') {
-        await expect(this.memberPermissionsTrigger(username)).toContainText(summary);
+    // The row trigger whatever it offers. A row whose grants are withheld — a guest's, or any
+    // row this caller may not edit — is named "… more actions for", not "… permissions for".
+    memberRowTrigger(username: string): Locator {
+        return this.dialog.getByRole('button', {name: new RegExp(`for ${username}$`, 'i')});
+    }
+
+    // The trigger names the member's standing, not the size of their grant: the named tiers
+    // belong to the space default alone. What a member holds is read from the checkboxes.
+    async expectMemberStanding(username: string, standing: 'Admin' | 'Member' | 'Guest') {
+        await expect(this.memberRowTrigger(username)).toContainText(standing);
     }
 
     private async openMemberPermissions(username: string) {

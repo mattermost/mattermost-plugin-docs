@@ -11,15 +11,15 @@ import {makeTestStore} from '../../tests/react_testing_utils';
 
 const mockFetchDrafts = jest.fn();
 const mockFetchPages = jest.fn();
-const mockFetchSpaceMembers = jest.fn();
-const mockFetchSpace = jest.fn();
+const mockLoadSpaceAccessMembers = jest.fn();
+const mockLoadSpaceAccess = jest.fn();
 
 jest.mock('store/actions', () => ({
     ...jest.requireActual('store/actions'),
     fetchDrafts: (spaceId: string) => () => mockFetchDrafts(spaceId),
     fetchPages: (spaceId: string) => () => mockFetchPages(spaceId),
-    fetchSpaceMembers: (spaceId: string) => () => mockFetchSpaceMembers(spaceId),
-    fetchSpace: (spaceId: string) => () => mockFetchSpace(spaceId),
+    fetchSpaceMembers: (spaceId: string) => () => mockLoadSpaceAccessMembers(spaceId),
+    loadSpaceAccess: (spaceId: string) => () => mockLoadSpaceAccess(spaceId),
 }));
 
 const wrapper = ({children}: {children: React.ReactNode}) => (
@@ -34,7 +34,7 @@ describe('useSpaceStats', () => {
 
         await waitFor(() => expect(mockFetchDrafts).toHaveBeenCalledWith('space-1'));
         expect(mockFetchPages).toHaveBeenCalledWith('space-1');
-        expect(mockFetchSpaceMembers).toHaveBeenCalledWith('space-1');
+        expect(mockLoadSpaceAccessMembers).toHaveBeenCalledWith('space-1');
     });
 });
 
@@ -52,26 +52,26 @@ describe('useResolveSpacePermissions', () => {
         jest.runAllTimers();
     });
 
-    // fetchSpace answers a failure with undefined rather than by rejecting, and nothing the hook's
-    // effect depends on changes when that happens — so without an explicit retry trigger the space
-    // stays unresolved for as long as the view is open.
+    // The read answers a failure without rejecting, and nothing the hook's effect depends on
+    // changes when that happens — so without an explicit retry trigger the space stays unresolved
+    // for as long as the view is open.
     it('resolves the same space again after a failed attempt', async () => {
-        mockFetchSpace.mockResolvedValueOnce(undefined);
-        mockFetchSpace.mockResolvedValueOnce({id: 'space-1'});
+        mockLoadSpaceAccess.mockResolvedValueOnce({denied: false});
+        mockLoadSpaceAccess.mockResolvedValueOnce({space: {id: 'space-1'}, denied: false});
 
         renderHook(() => useResolveSpacePermissions('space-1'), {wrapper});
-        expect(mockFetchSpace).toHaveBeenCalledTimes(1);
+        expect(mockLoadSpaceAccess).toHaveBeenCalledTimes(1);
 
         await advancePastRetry();
 
-        expect(mockFetchSpace).toHaveBeenCalledTimes(2);
-        expect(mockFetchSpace).toHaveBeenNthCalledWith(2, 'space-1');
+        expect(mockLoadSpaceAccess).toHaveBeenCalledTimes(2);
+        expect(mockLoadSpaceAccess).toHaveBeenNthCalledWith(2, 'space-1');
     });
 
     // A space that keeps failing must not re-request for as long as it stays open. The expected
     // count is written out rather than read from the hook's cap, so a change to that cap fails here.
     it('gives up after a bounded number of attempts', async () => {
-        mockFetchSpace.mockResolvedValue(undefined);
+        mockLoadSpaceAccess.mockResolvedValue({denied: false});
 
         renderHook(() => useResolveSpacePermissions('space-1'), {wrapper});
 
@@ -80,11 +80,11 @@ describe('useResolveSpacePermissions', () => {
             await advancePastRetry();
         }
 
-        expect(mockFetchSpace).toHaveBeenCalledTimes(3);
+        expect(mockLoadSpaceAccess).toHaveBeenCalledTimes(3);
     });
 
     it('starts a fresh attempt budget when the space changes', async () => {
-        mockFetchSpace.mockResolvedValue(undefined);
+        mockLoadSpaceAccess.mockResolvedValue({denied: false});
 
         const {rerender} = renderHook(({id}) => useResolveSpacePermissions(id), {
             wrapper,
@@ -94,38 +94,53 @@ describe('useResolveSpacePermissions', () => {
             // eslint-disable-next-line no-await-in-loop
             await advancePastRetry();
         }
-        expect(mockFetchSpace).toHaveBeenCalledTimes(3);
+        expect(mockLoadSpaceAccess).toHaveBeenCalledTimes(3);
 
         rerender({id: 'space-2'});
 
-        expect(mockFetchSpace).toHaveBeenNthCalledWith(4, 'space-2');
+        expect(mockLoadSpaceAccess).toHaveBeenNthCalledWith(4, 'space-2');
+    });
+
+    // A denial is the server's answer, not a failed attempt: the space is evicted, so retrying
+    // would only repeat the refusal for as long as the view stays open.
+    it('does not retry a denied space', async () => {
+        mockLoadSpaceAccess.mockResolvedValue({denied: true});
+
+        renderHook(() => useResolveSpacePermissions('space-1'), {wrapper});
+
+        for (let i = 0; i < 5; i++) {
+            // eslint-disable-next-line no-await-in-loop
+            await advancePastRetry();
+        }
+
+        expect(mockLoadSpaceAccess).toHaveBeenCalledTimes(1);
     });
 
     it('starts a new request when returning to a space before its previous request settles', async () => {
-        let settleFirst: (space: {id: string}) => void = () => {};
-        mockFetchSpace.mockImplementationOnce(() => new Promise((resolve) => {
+        let settleFirst: (load: {space: {id: string}; denied: boolean}) => void = () => {};
+        mockLoadSpaceAccess.mockImplementationOnce(() => new Promise((resolve) => {
             settleFirst = resolve;
         }));
-        mockFetchSpace.mockResolvedValueOnce({id: 'space-1'});
+        mockLoadSpaceAccess.mockResolvedValueOnce({space: {id: 'space-1'}, denied: false});
 
         const {rerender} = renderHook(({id}: {id?: string}) => useResolveSpacePermissions(id), {
             wrapper,
             initialProps: {id: 'space-1'} as {id?: string},
         });
-        expect(mockFetchSpace).toHaveBeenCalledTimes(1);
+        expect(mockLoadSpaceAccess).toHaveBeenCalledTimes(1);
 
         rerender({id: undefined});
         rerender({id: 'space-1'});
 
-        expect(mockFetchSpace).toHaveBeenCalledTimes(2);
-        expect(mockFetchSpace).toHaveBeenNthCalledWith(2, 'space-1');
+        expect(mockLoadSpaceAccess).toHaveBeenCalledTimes(2);
+        expect(mockLoadSpaceAccess).toHaveBeenNthCalledWith(2, 'space-1');
 
         await act(async () => {
-            settleFirst({id: 'space-1'});
+            settleFirst({space: {id: 'space-1'}, denied: false});
             await Promise.resolve();
             jest.runAllTimers();
         });
 
-        expect(mockFetchSpace).toHaveBeenCalledTimes(2);
+        expect(mockLoadSpaceAccess).toHaveBeenCalledTimes(2);
     });
 });

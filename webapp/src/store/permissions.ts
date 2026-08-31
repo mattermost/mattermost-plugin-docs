@@ -31,13 +31,15 @@ export const getSpacePermissions = (state: GlobalState, spaceId: string): Permis
     getSpace(state, spaceId)?.permissions;
 
 // Authoring is available to a current holder or to a server-approved self-joiner whose defaults
-// include it. Unresolved access leaves the affordance visible; the server remains authoritative.
+// include it. Unresolved access withholds the affordance, as every other selector here does: a
+// space reaches the store from the team listing without permissions, and offering authoring on
+// that record showed create and edit to readers until useResolveSpacePermissions answered.
 const offersAuthoring = (state: GlobalState, spaceId: string, permission: Permission): boolean => {
     const space = getSpace(state, spaceId);
     const permissions = space?.permissions;
 
     if (permissions === undefined) {
-        return true;
+        return false;
     }
     if (permissions.includes(permission)) {
         return true;
@@ -54,12 +56,12 @@ export const getCanEditPage = (state: GlobalState, spaceId: string): boolean =>
     offersAuthoring(state, spaceId, Permissions.EDIT_PAGE);
 
 // Deletion depends on both the any-page and own-page grants. It has no self-join path. As with
-// authoring affordances, unresolved access remains visible and the server stays authoritative.
+// authoring affordances, unresolved access withholds the control.
 export const getCanDeletePage = (state: GlobalState, spaceId: string, pageAuthorId: string): boolean => {
     const permissions = getSpacePermissions(state, spaceId);
 
     if (permissions === undefined) {
-        return true;
+        return false;
     }
     if (permissions.includes(Permissions.DELETE_PAGE)) {
         return true;

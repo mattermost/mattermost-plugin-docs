@@ -4,20 +4,19 @@
 import type {Permission} from 'types/permissions';
 import {Permissions} from 'types/permissions';
 
-// The named tiers every permission surface offers first. The three content tiers are the
-// seeded default schemes; admin is a per-member grant only, never a space default.
+// The named tiers name the three seeded default schemes, and nothing else. They belong to the
+// space default set alone: a set equal to a tier selects that seeded scheme, where any other set
+// resolves a pooled one. A member's grant has no such distinction to express — it is a subset of
+// the permission ids with no named bundle behind it — so no member surface offers these.
 export type PermissionTier = 'view' | 'comment' | 'edit';
-export type MemberPermissionTier = PermissionTier | 'admin';
 
 export const PERMISSION_TIERS: readonly PermissionTier[] = ['view', 'comment', 'edit'];
-export const MEMBER_PERMISSION_TIERS: readonly MemberPermissionTier[] = [...PERMISSION_TIERS, 'admin'];
 
 // The permission set each tier stands for, in wire form (read_page is the implicit baseline).
-export const TIER_PERMISSIONS: Record<MemberPermissionTier, readonly Permission[]> = {
+export const TIER_PERMISSIONS: Record<PermissionTier, readonly Permission[]> = {
     view: [],
     comment: [Permissions.COMMENT_PAGE],
     edit: [Permissions.CREATE_PAGE, Permissions.COMMENT_PAGE, Permissions.EDIT_PAGE, Permissions.DELETE_OWN_PAGE],
-    admin: [Permissions.ADMIN_SPACE],
 };
 
 export const samePermissionSet = (left: readonly Permission[], right: readonly Permission[]) => {
@@ -39,14 +38,4 @@ export const summarizePermissions = (permissions: readonly Permission[]): Permis
     );
 
     return PERMISSION_TIERS.find((tier) => samePermissionSet(contentPermissions, TIER_PERMISSIONS[tier])) ?? 'custom';
-};
-
-// Names the tier a member holds: admin when the grant carries admin_space, otherwise the content
-// tier of their effective set. Effective rather than granted, since a member cannot hold less
-// than the space default, so a lower tier would name something the member cannot be.
-export const summarizeMemberPermissions = (granted: readonly Permission[], effective: readonly Permission[]): MemberPermissionTier | 'custom' => {
-    if (granted.includes(Permissions.ADMIN_SPACE)) {
-        return 'admin';
-    }
-    return summarizePermissions(effective);
 };

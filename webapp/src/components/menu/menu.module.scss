@@ -93,6 +93,24 @@
     }
 }
 
+// A bare check on the chosen option and nothing on the rest, which is how the platform's own
+// single-select menus mark one. Deliberately not the boxed indicator above: an empty box on
+// every unchosen option is the affordance for a set the reader may add to, and these options
+// are mutually exclusive. The space is held so the label does not shift as the choice moves.
+.radioIndicator {
+    display: flex;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 16px;
+    align-items: center;
+    justify-content: center;
+    color: transparent;
+
+    &[data-checked] {
+        color: var(--button-bg);
+    }
+}
+
 .destructive .itemIcon {
     color: var(--error-text);
 }

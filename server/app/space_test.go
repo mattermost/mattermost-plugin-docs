@@ -172,6 +172,25 @@ func TestServiceCreateSpace_SchemeDenialKeepsStatus(t *testing.T) {
 	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
 }
 
+// TestServiceCreateSpace_GuestLicenseDenialKeepsStatus is the other half of the pooled-scheme
+// license gate: Docs always sends a non-empty guest role (read_page), so a server with custom
+// schemes but without GuestAccountsPermissions refuses a non-preset default with the guest
+// entitlement error rather than a generic 500.
+func TestServiceCreateSpace_GuestLicenseDenialKeepsStatus(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	mockAPI.On("GetOrCreatePluginChannelScheme", mock.Anything, mock.Anything, mock.Anything).
+		Return((*mmmodel.Scheme)(nil), &mmmodel.AppError{StatusCode: http.StatusNotImplemented, Id: "app.scheme.plugin_scheme.guest_license.app_error"})
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	permissions := []string{mmmodel.PermissionCreatePage.Id}
+	_, appErr := h.svc.CreateSpace(&model.Space{TeamId: mmmodel.NewId(), Title: "Unlicensed Guest"}, mmmodel.NewId(), &permissions, nil)
+
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusNotImplemented, appErr.StatusCode)
+	require.Equal(t, "app.scheme.plugin_scheme.guest_license.app_error", appErr.Id)
+	mockAPI.AssertNotCalled(t, "CreateChannel", mock.Anything)
+}
+
 // TestServiceCreateSpace_SchemeConflictKeepsRepairGuidance verifies store-direct corruption of a
 // pooled scheme remains a server fault, reaches the caller with core's exact row-level guidance,
 // and is also emitted to the server log for the operator who can perform the repair.
@@ -883,6 +902,27 @@ func TestServiceSetSpaceDefaultPermissions_PublishesSpaceUpdated(t *testing.T) {
 	mockAPI.AssertNumberOfCalls(t, "PublishWebSocketEvent", 1)
 }
 
+// TestServiceSetSpaceDefaultPermissions_GuestLicenseDenialKeepsStatus pins the same guest
+// entitlement refusal SetSpaceDefaultPermissions must surface when a non-preset set would
+// create a pooled scheme with Docs' non-empty guest role.
+func TestServiceSetSpaceDefaultPermissions_GuestLicenseDenialKeepsStatus(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	sysadminID := mmmodel.NewId()
+	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true)
+	mockAPI.On("GetOrCreatePluginChannelScheme", mock.Anything, mock.Anything, mock.Anything).
+		Return((*mmmodel.Scheme)(nil), &mmmodel.AppError{StatusCode: http.StatusNotImplemented, Id: "app.scheme.plugin_scheme.guest_license.app_error"})
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	testutil.MustSeedChannelScheme(t, mockAPI, channelID, mmmodel.SchemeNameSpaceContribute)
+	space := mustCreateSpace(t, h.store, channelID)
+
+	_, appErr := h.svc.SetSpaceDefaultPermissions(space, []string{mmmodel.PermissionCreatePage.Id}, sysadminID)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusNotImplemented, appErr.StatusCode)
+	require.Equal(t, "app.scheme.plugin_scheme.guest_license.app_error", appErr.Id)
+}
+
 // TestServiceRestoreSpace_UnarchivesBackingChannel verifies a create→delete→restore round trip
 // un-archives the backing channel and brings the space back live.
 func TestServiceRestoreSpace_UnarchivesBackingChannel(t *testing.T) {
@@ -1049,10 +1089,10 @@ func TestServiceUpdateSpace_ViewAccessGuards(t *testing.T) {
 }
 
 // TestServiceUpdateSpace_PrivateFlipPrunesSelfJoined pins the open-to-private ordering and failure
-// contract. The privacy update commits under the same lock acquisition as its escalation gate, so
-// no removal can precede a refused gate or a stale baseline; the auto-joined backing memberships
-// are removed after the commit, and a removal failure leaves the space private with the failed
-// member still marked rather than failing the request.
+// contract. A refused gate and a stale baseline both remove nobody; the auto-joined backing
+// memberships are removed while the space is still open, and the privacy change commits only once
+// the last of them is gone — so a removal failure leaves the space open and fails the request
+// rather than committing a private space the failed member is still in.
 func TestServiceUpdateSpace_PrivateFlipPrunesSelfJoined(t *testing.T) {
 	privatePatch := func() *model.SpacePatch {
 		return &model.SpacePatch{ViewAccess: mmmodel.NewPointer(model.ViewAccessPrivate)}
@@ -1069,15 +1109,15 @@ func TestServiceUpdateSpace_PrivateFlipPrunesSelfJoined(t *testing.T) {
 		return h, space, adminID, memberID
 	}
 
-	t.Run("commits private before the removal pass", func(t *testing.T) {
+	t.Run("stays open until the removal pass has finished", func(t *testing.T) {
 		mockAPI := &plugintest.API{}
 		h, space, adminID, memberID := setup(t, mockAPI)
 		mockAPI.On("DeleteChannelMember", space.ChannelId, memberID).
 			Run(func(mock.Arguments) {
 				live, err := h.store.GetSpace(space.Id, false)
 				require.NoError(t, err)
-				require.Equal(t, model.ViewAccessPrivate, live.ViewAccess,
-					"view_access must be committed before the removal pass runs")
+				require.Equal(t, model.ViewAccessOpen, live.ViewAccess,
+					"view_access must still be open while the removal pass runs")
 			}).
 			Return(nil).
 			Once()
@@ -1093,27 +1133,25 @@ func TestServiceUpdateSpace_PrivateFlipPrunesSelfJoined(t *testing.T) {
 		require.Empty(t, marked)
 	})
 
-	t.Run("a deletion failure leaves the space private and the request successful", func(t *testing.T) {
+	t.Run("a deletion failure leaves the space open and fails the request", func(t *testing.T) {
 		mockAPI := &plugintest.API{}
 		h, space, adminID, memberID := setup(t, mockAPI)
 		deleteErr := mmmodel.NewAppError("DeleteChannelMember", "test.delete.failed", nil, "", http.StatusInternalServerError)
 		mockAPI.On("DeleteChannelMember", space.ChannelId, memberID).Return(deleteErr).Once()
-		mockAPI.On("GetChannelOfType", space.ChannelId, mmmodel.ChannelTypeSpace).
-			Return((*mmmodel.Channel)(nil), nil).
-			Once()
 
 		updated, appErr := h.svc.UpdateSpace(space, privatePatch(), new(space.UpdateAt), false, adminID)
-		require.Nil(t, appErr, "the access change committed, so the removal failure must not fail the request")
-		require.Equal(t, model.ViewAccessPrivate, updated.ViewAccess)
+		require.Nil(t, updated)
+		require.NotNil(t, appErr, "a member the pass could not remove must not be left inside a private space")
+		require.Equal(t, http.StatusInternalServerError, appErr.StatusCode)
 
 		live, err := h.store.GetSpace(space.Id, false)
 		require.NoError(t, err)
-		require.Equal(t, model.ViewAccessPrivate, live.ViewAccess)
+		require.Equal(t, model.ViewAccessOpen, live.ViewAccess)
 		marked, err := h.store.GetAutoJoinedIDs(space.Id)
 		require.NoError(t, err)
 		require.Equal(t, []string{memberID}, marked,
 			"the failed member stays marked so a later removal pass selects them again")
-		mockAPI.AssertCalled(t, "PublishWebSocketEvent", "space_updated",
+		mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "space_updated",
 			map[string]any{"space_id": space.Id},
 			&mmmodel.WebsocketBroadcast{ChannelId: space.ChannelId})
 		mockAPI.AssertNotCalled(t, "PublishWebSocketEvent", "space_member_removed",
@@ -1156,6 +1194,33 @@ func TestServiceUpdateSpace_PrivateFlipPrunesSelfJoined(t *testing.T) {
 		marked, err := h.store.GetAutoJoinedIDs(space.Id)
 		require.NoError(t, err)
 		require.Empty(t, marked, "a stale marker is cleared when core reports the membership absent")
+	})
+
+	t.Run("a join that races the removal pass yields a conflict and does not flip", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		h, space, adminID, memberID := setup(t, mockAPI)
+		latecomerID := mmmodel.NewId()
+		mockAPI.On("DeleteChannelMember", space.ChannelId, memberID).
+			Run(func(mock.Arguments) {
+				// Stands in for a JoinOpenSpace that commits while the space is still open, which
+				// is the whole window the second lock acquisition exists to close.
+				require.NoError(t, h.store.MarkAutoJoined(space.Id, latecomerID))
+			}).
+			Return(nil).
+			Once()
+
+		updated, appErr := h.svc.UpdateSpace(space, privatePatch(), new(space.UpdateAt), false, adminID)
+		require.Nil(t, updated)
+		require.NotNil(t, appErr)
+		require.Equal(t, http.StatusConflict, appErr.StatusCode)
+
+		live, err := h.store.GetSpace(space.Id, false)
+		require.NoError(t, err)
+		require.Equal(t, model.ViewAccessOpen, live.ViewAccess,
+			"the flip must not commit while a self-joined member remains")
+		marked, err := h.store.GetAutoJoinedIDs(space.Id)
+		require.NoError(t, err)
+		require.Equal(t, []string{latecomerID}, marked)
 	})
 
 	t.Run("a stale baseline prunes nobody", func(t *testing.T) {

@@ -442,6 +442,30 @@ describe('space access ordering', () => {
         expect(earlier.dispatch).not.toHaveBeenCalledWith({type: SpaceTypes.RECEIVED_SPACES, spaces: [stale]});
     });
 
+    // fetchSpace is the reconciliation path for access changes no event announces: an open space
+    // turned private drops the non-member's channel WebSocket. Ignoring its denial left the record,
+    // and every affordance gated on its permissions, in place until a full reload.
+    it('evicts the space when a plain read answers a definitive denial', async () => {
+        for (const status of [403, 404]) {
+            mockGetSpace.mockRejectedValueOnce(new RestError('/spaces/space1', status, 'denied', undefined));
+
+            // eslint-disable-next-line no-await-in-loop
+            const {result, dispatch} = run((d, g) => fetchSpace('space1')(d as never, g as never, undefined as never));
+            // eslint-disable-next-line no-await-in-loop
+            expect(await result).toBeUndefined();
+            expect(dispatch).toHaveBeenCalledWith({type: SpaceTypes.DELETED_SPACE, spaceId: 'space1'});
+        }
+    });
+
+    // A request that never completed is not an answer about access, so the stored record stands.
+    it('retains the space when a plain read fails transiently', async () => {
+        mockGetSpace.mockRejectedValue(new Error('network down'));
+
+        const {result, dispatch} = run((d, g) => fetchSpace('space1')(d as never, g as never, undefined as never));
+        expect(await result).toBeUndefined();
+        expect(dispatch).not.toHaveBeenCalledWith({type: SpaceTypes.DELETED_SPACE, spaceId: 'space1'});
+    });
+
     it('an eviction supersedes a read still in flight', async () => {
         const pending = deferred<unknown>();
         mockGetSpace.

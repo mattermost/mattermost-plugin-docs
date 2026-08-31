@@ -18,13 +18,56 @@ type Props = {
     viewAccess: SpaceViewAccess;
     disabled: boolean;
     disabledReason?: string;
+
+    /** The caller may not change visibility: state it, and offer no control. */
+    readOnly?: boolean;
     onChange: (next: SpaceViewAccess) => void;
 };
 
 /** The Share footer's Public/Private picker. */
-const VisibilityMenu = ({viewAccess, disabled, disabledReason, onChange}: Props) => {
+const VisibilityMenu = ({viewAccess, disabled, disabledReason, readOnly, onChange}: Props) => {
     const {formatMessage} = useIntl();
     const isOpen = viewAccess === 'open';
+
+    const label = isOpen ? (
+        <FormattedMessage
+            id='docs.share.visibility.public'
+            defaultMessage='Public'
+        />
+    ) : (
+        <FormattedMessage
+            id='docs.share.visibility.private'
+            defaultMessage='Private'
+        />
+    );
+
+    const hint = (
+        <span className={styles.accessHint}>
+            {isOpen ? (
+                <FormattedMessage
+                    id='docs.share.visibility.publicHint'
+                    defaultMessage='Any team member can view'
+                />
+            ) : (
+                <FormattedMessage
+                    id='docs.share.visibility.privateHint'
+                    defaultMessage='Only invited members'
+                />
+            )}
+        </span>
+    );
+
+    if (readOnly) {
+        return (
+            <div className={styles.accessLeft}>
+                <span className={styles.accessStatic}>
+                    {isOpen ? <GlobeIcon size={16}/> : <LockOutlineIcon size={16}/>}
+                    {label}
+                </span>
+                {hint}
+            </div>
+        );
+    }
 
     const trigger = (
         <button
@@ -34,17 +77,7 @@ const VisibilityMenu = ({viewAccess, disabled, disabledReason, onChange}: Props)
             title={disabled ? disabledReason : undefined}
         >
             {isOpen ? <GlobeIcon size={16}/> : <LockOutlineIcon size={16}/>}
-            {isOpen ? (
-                <FormattedMessage
-                    id='docs.share.visibility.public'
-                    defaultMessage='Public'
-                />
-            ) : (
-                <FormattedMessage
-                    id='docs.share.visibility.private'
-                    defaultMessage='Private'
-                />
-            )}
+            {label}
             <ChevronDownIcon size={16}/>
         </button>
     );
@@ -79,19 +112,7 @@ const VisibilityMenu = ({viewAccess, disabled, disabledReason, onChange}: Props)
                     </Menu.RadioItem>
                 </Menu.RadioGroup>
             </Menu>
-            <span className={styles.accessHint}>
-                {isOpen ? (
-                    <FormattedMessage
-                        id='docs.share.visibility.publicHint'
-                        defaultMessage='Any team member can view'
-                    />
-                ) : (
-                    <FormattedMessage
-                        id='docs.share.visibility.privateHint'
-                        defaultMessage='Only invited members'
-                    />
-                )}
-            </span>
+            {hint}
         </div>
     );
 };

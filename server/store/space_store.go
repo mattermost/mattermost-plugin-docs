@@ -89,9 +89,10 @@ func (s *Store) GetSpace(spaceID string, includeDeleted bool) (*model.Space, err
 // the space is ViewAccess='open' and
 // callerHasOpenFallthrough is true — a single app-layer-computed boolean carrying the caller's
 // team-active/read_public_channel/compliance-mode conjunct (see the app-layer read resolver);
-// the store never evaluates permissions itself. There is deliberately no unfiltered variant, so a
-// listing can never bypass this predicate. limit must be > 0.
-func (s *Store) GetSpacesForTeam(teamID, userID string, callerHasOpenFallthrough bool, offset, limit int) ([]*model.Space, error) {
+// the store never evaluates permissions itself. callerSeesEverySpace drops the visibility predicate
+// altogether and returns the team's live spaces, and is likewise decided by the app layer (a
+// sysadmin, who is admitted to any single space by the same override). limit must be > 0.
+func (s *Store) GetSpacesForTeam(teamID, userID string, callerSeesEverySpace, callerHasOpenFallthrough bool, offset, limit int) ([]*model.Space, error) {
 	if teamID == "" {
 		return nil, &ErrInvalidInput{Entity: "Space", Field: "teamID", Value: teamID}
 	}
@@ -102,7 +103,12 @@ func (s *Store) GetSpacesForTeam(teamID, userID string, callerHasOpenFallthrough
 		return nil, err
 	}
 
-	visible := sq.Or{sq.Expr(`
+	builder := s.getQueryBuilder().
+		Select(columnsWithAlias("sp", spaceSelectColumns)...).
+		From("DOCS_Space sp").
+		Where(sq.Eq{"sp.TeamId": teamID, "sp.DeleteAt": 0})
+	if !callerSeesEverySpace {
+		visible := sq.Or{sq.Expr(`
 		EXISTS (
 			SELECT 1
 			FROM ChannelMembers cm
@@ -112,16 +118,12 @@ func (s *Store) GetSpacesForTeam(teamID, userID string, callerHasOpenFallthrough
 				AND tm.DeleteAt = 0
 			WHERE cm.ChannelId = sp.ChannelId AND cm.UserId = ?
 		)`, userID)}
-	if callerHasOpenFallthrough {
-		visible = append(visible, sq.Eq{"sp.ViewAccess": model.ViewAccessOpen})
+		if callerHasOpenFallthrough {
+			visible = append(visible, sq.Eq{"sp.ViewAccess": model.ViewAccessOpen})
+		}
+		builder = builder.Where(visible)
 	}
-
-	builder := s.getQueryBuilder().
-		Select(columnsWithAlias("sp", spaceSelectColumns)...).
-		From("DOCS_Space sp").
-		Where(sq.Eq{"sp.TeamId": teamID, "sp.DeleteAt": 0}).
-		Where(visible).
-		OrderBy("sp.SortOrder ASC", "sp.CreateAt DESC", "sp.Id ASC")
+	builder = builder.OrderBy("sp.SortOrder ASC", "sp.CreateAt DESC", "sp.Id ASC")
 	builder = applyLimitOffset(builder, offset, limit)
 
 	spaces := []*model.Space{}

@@ -83,13 +83,14 @@ describe('getCanCreatePage', () => {
         expect(getCanCreatePage(state, 'space-1')).toBe(false);
     });
 
-    // A space seen only in a team listing carries no permissions. That is "not resolved yet",
-    // not "holds nothing" — withholding here would hide the action from a legitimate author.
-    it('offers it when permissions have not been resolved', () => {
+    // A space seen only in a team listing carries no permissions. Offering the action on that
+    // record showed create to readers for as long as useResolveSpacePermissions took to answer,
+    // so an unresolved set withholds it and the affordance appears once the server has replied.
+    it('withholds it when permissions have not been resolved', () => {
         const state = makeTestState({docs: {spaces: {'space-1': spaceWith(undefined)}}});
 
-        expect(getCanCreatePage(state, 'space-1')).toBe(true);
-        expect(getCanCreatePage(state, 'never-loaded')).toBe(true);
+        expect(getCanCreatePage(state, 'space-1')).toBe(false);
+        expect(getCanCreatePage(state, 'never-loaded')).toBe(false);
     });
 });
 
@@ -168,15 +169,16 @@ describe('getCanDeletePage', () => {
         expect(getCanDeletePage(state, 'space-1', someoneElse)).toBe(false);
     });
 
-    // Unresolved is "not answered yet", as it is everywhere else: the affordance is offered and the
-    // server stays the authority.
-    it('offers it when permissions have not been resolved', () => {
+    // Unresolved is "not answered yet", as it is everywhere else, and every one of these selectors
+    // withholds on it: a control the server would refuse is never shown ahead of its answer.
+    it('withholds it when permissions have not been resolved', () => {
         const state = makeTestState({
             docs: {spaces: {'space-1': makeSpace('space-1', 'Engineering')}},
             currentUser: {id: me} as never,
         });
 
-        expect(getCanDeletePage(state, 'space-1', someoneElse)).toBe(true);
+        expect(getCanDeletePage(state, 'space-1', someoneElse)).toBe(false);
+        expect(getCanDeletePage(state, 'space-1', me)).toBe(false);
     });
 });
 
@@ -258,11 +260,11 @@ describe('getCanEditPage', () => {
         expect(getCanEditPage(state, 'space-1')).toBe(false);
     });
 
-    it('offers it when permissions have not been resolved', () => {
+    it('withholds it when permissions have not been resolved', () => {
         const state = makeTestState({docs: {spaces: {'space-1': spaceWith(undefined)}}});
 
-        expect(getCanEditPage(state, 'space-1')).toBe(true);
-        expect(getCanEditPage(state, 'never-loaded')).toBe(true);
+        expect(getCanEditPage(state, 'space-1')).toBe(false);
+        expect(getCanEditPage(state, 'never-loaded')).toBe(false);
     });
 });
 

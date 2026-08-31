@@ -90,6 +90,21 @@
     line-height: 16px;
 }
 
+// The group still needs a name for anyone navigating by fieldset, but the row header directly
+// above already says whose permissions these are, so showing it again only repeats the name.
+// Core uses its global `.sr-only`; scoped here so the plugin doesn't depend on a host class.
+.togglesLegendHidden {
+    position: absolute;
+    overflow: hidden;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+}
+
 .toggle {
     display: flex;
     min-height: 44px;
@@ -162,6 +177,40 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+}
+
+// The state a set matching no tier is in. Indented to the same column as the tier labels above,
+// so it reads as the answer to "which of these is selected" rather than as a new control.
+.customState {
+    display: flex;
+    flex-direction: column;
+    padding-left: 24px;
+    gap: 2px;
+}
+
+// A permission the subject holds that this control cannot change. No checkbox: an input here
+// would offer a write the model has no way to make, since a grant only ever adds.
+.inheritedToggle {
+    display: flex;
+    min-height: 24px;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.inheritedLabel {
+    color: rgba(var(--center-channel-color-rgb), 0.75);
+    font-size: 14px;
+    line-height: 20px;
+}
+
+.inheritedNote {
+    // Separated from the label it annotates: the two run together without it, since the note
+    // sits inside the same inline <label> as the permission name.
+    margin-inline-start: 8px;
+    color: rgba(var(--center-channel-color-rgb), 0.56);
+    font-size: 12px;
+    font-style: italic;
+    line-height: 16px;
 }
 
 .fieldLabel {

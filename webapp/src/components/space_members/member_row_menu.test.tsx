@@ -60,7 +60,6 @@ describe('MemberRowMenu', () => {
             permissionMenu: {
                 options: ['create_page', 'edit_page'],
                 selected: ['edit_page'],
-                effective: ['read_page', 'edit_page'],
                 disabled: false,
                 onChange,
             },
@@ -79,48 +78,42 @@ describe('MemberRowMenu', () => {
         expect(onRemove).toHaveBeenCalled();
     });
 
-    // The tiers come first and speak the same vocabulary as the trigger; choosing one replaces
-    // the grant with that tier's set, in the menu's own option order.
-    it('offers the named tiers ahead of the granular grants and marks the effective one', async () => {
-        const onChange = jest.fn();
+    // A tier names a seeded space-default scheme. A member's grant selects no scheme, so the
+    // row names the member's standing and edits permission ids — never a tier.
+    it('offers no named tier on a member row', async () => {
         renderMenu({
             role: 'member',
             permissionMenu: {
                 options: ['create_page', 'comment_page', 'edit_page', 'delete_own_page', 'delete_page', 'admin_space'],
                 selected: [],
-                effective: ['read_page', 'comment_page'],
                 disabled: false,
-                disabledOptions: ['admin_space'],
-                onChange,
+                onChange: jest.fn(),
             },
         });
 
-        expect(screen.getByRole('button', {name: 'Can comment — permissions for Ada'})).toHaveTextContent('Can comment');
+        expect(screen.getByRole('button', {name: 'Member — permissions for Ada'})).toHaveTextContent('Member');
 
         await openMenu();
 
-        const items = screen.getAllByRole('menuitemradio');
-        expect(items.map((item) => item.textContent)).toEqual([
-            expect.stringContaining('Can view'),
-            expect.stringContaining('Can comment'),
-            expect.stringContaining('Can edit'),
-            expect.stringContaining('Admin'),
+        expect(screen.queryAllByRole('menuitemradio')).toHaveLength(0);
+        expect(screen.getAllByRole('menuitemcheckbox').map((item) => item.textContent)).toEqual([
+            expect.stringContaining('Create pages'),
+            expect.stringContaining('Comment on pages'),
+            expect.stringContaining('Edit pages'),
+            expect.stringContaining('Delete own pages'),
+            expect.stringContaining('Delete any page'),
+            expect.stringContaining('Administer space'),
         ]);
-
-        // Admin requires the admin_space grant, which this caller may not grant.
-        expect(screen.getByRole('menuitemradio', {name: /^Admin/})).toHaveAttribute('aria-disabled', 'true');
-
-        fireEvent.click(screen.getByRole('menuitemradio', {name: /^Can edit/}));
-        expect(onChange).toHaveBeenCalledWith(['create_page', 'comment_page', 'edit_page', 'delete_own_page']);
     });
 
-    it('offers only the tiers whose permissions the menu may grant', async () => {
-        renderMenu({
+    // The caller decides what may be granted and passes only that; a permission it omits is
+    // absent from the menu rather than present and refused.
+    it('renders only the permissions the caller offers, and no grant editor without a menu', async () => {
+        const {unmount} = renderMenu({
             role: 'member',
             permissionMenu: {
-                options: ['create_page', 'edit_page'],
+                options: ['comment_page'],
                 selected: [],
-                effective: ['read_page'],
                 disabled: false,
                 onChange: jest.fn(),
             },
@@ -128,69 +121,39 @@ describe('MemberRowMenu', () => {
 
         await openMenu();
 
-        expect(screen.getByRole('menuitemradio', {name: /^Can view/})).toBeInTheDocument();
-        expect(screen.queryByRole('menuitemradio', {name: /^Can comment/})).not.toBeInTheDocument();
-        expect(screen.queryByRole('menuitemradio', {name: /^Can edit/})).not.toBeInTheDocument();
-        expect(screen.queryByRole('menuitemradio', {name: /^Admin/})).not.toBeInTheDocument();
+        expect(screen.getByRole('menuitemcheckbox', {name: 'Comment on pages'})).toBeInTheDocument();
+        expect(screen.queryByRole('menuitemcheckbox', {name: /Administer space/})).not.toBeInTheDocument();
+
+        unmount();
+
+        renderMenu({role: 'guest'});
+        await openMenu();
+
+        expect(screen.queryAllByRole('menuitemcheckbox')).toHaveLength(0);
+        expect(screen.getByRole('menuitem', {name: 'Remove from space'})).toBeInTheDocument();
     });
 
-    it('locks the capability matrix for a guest', async () => {
+    it('disables the grants and says why while a write is in flight', async () => {
         const onChange = jest.fn();
         renderMenu({
-            role: 'guest',
+            role: 'member',
             permissionMenu: {
                 options: ['comment_page'],
                 selected: [],
-                effective: ['read_page'],
                 disabled: true,
+                disabledReason: 'Saving…',
                 onChange,
             },
         });
 
         await openMenu();
 
-        const comment = screen.getByRole('menuitemcheckbox', {name: 'Comment on pages'});
+        const comment = screen.getByRole('menuitemcheckbox', {name: /Comment on pages/});
         expect(comment).toHaveAttribute('aria-disabled', 'true');
+        expect(comment).toHaveTextContent('Saving…');
+
         fireEvent.click(comment);
         expect(onChange).not.toHaveBeenCalled();
-    });
-
-    it('shows why a checkbox is locked via `disabled`', async () => {
-        renderMenu({
-            role: 'guest',
-            permissionMenu: {
-                options: ['comment_page'],
-                selected: [],
-                effective: ['read_page'],
-                disabled: true,
-                disabledReason: 'Guests can only view pages',
-                onChange: jest.fn(),
-            },
-        });
-
-        await openMenu();
-
-        expect(screen.getByRole('menuitemcheckbox', {name: /Comment on pages/})).toHaveTextContent('Guests can only view pages');
-    });
-
-    it('shows why a checkbox is locked via `disabledOptions`, leaving unlocked checkboxes unlabeled', async () => {
-        renderMenu({
-            role: 'member',
-            permissionMenu: {
-                options: ['comment_page', 'admin_space'],
-                selected: [],
-                effective: ['read_page'],
-                disabled: false,
-                disabledOptions: ['admin_space'],
-                disabledOptionsReason: 'Only a space administrator can grant this',
-                onChange: jest.fn(),
-            },
-        });
-
-        await openMenu();
-
-        expect(screen.getByRole('menuitemcheckbox', {name: /Administer space/})).toHaveTextContent('Only a space administrator can grant this');
-        expect(screen.getByRole('menuitemcheckbox', {name: 'Comment on pages'})).not.toHaveTextContent('Only a space administrator can grant this');
     });
 
     it('offers Leave space on your own row instead of Remove', async () => {

@@ -2,10 +2,9 @@
 // See LICENSE.txt for license information.
 
 import type {MemberProfile} from 'hooks/members';
-import {usePermissionLabels, usePermissionTierLabels} from 'hooks/permission_labels';
+import {usePermissionLabels} from 'hooks/permission_labels';
 import React from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
-import {MEMBER_PERMISSION_TIERS, TIER_PERMISSIONS, summarizeMemberPermissions, type MemberPermissionTier} from 'utils/space_permission_sets';
 
 import ChevronDownIcon from '@mattermost/compass-icons/components/chevron-down';
 import DotsVerticalIcon from '@mattermost/compass-icons/components/dots-vertical';
@@ -18,17 +17,18 @@ import type {Permission} from 'types/permissions';
 import styles from './space_members.module.scss';
 
 export type MemberPermissionMenu = {
+
+    // What this caller may grant this member. A permission the server would refuse from this
+    // caller is absent rather than present and disabled, so the menu offers only writes that
+    // can succeed; a caller with no grantable permission gets no menu at all.
     options: readonly Permission[];
     selected: readonly Permission[];
-    effective: readonly Permission[];
+
+    /** A write is in flight or the record is still loading; the menu opens but cannot be used. */
     disabled: boolean;
-    disabledOptions?: readonly Permission[];
 
-    /** Shown as a checkbox's secondaryLabel when it is disabled via `disabled`. */
+    /** Shown as a checkbox's secondaryLabel while `disabled`. */
     disabledReason?: string;
-
-    /** Shown as a checkbox's secondaryLabel when it is disabled via `disabledOptions`. */
-    disabledOptionsReason?: string;
     onChange: (next: Permission[]) => void;
 };
 
@@ -47,27 +47,26 @@ type Props = {
 /**
  * The role/membership menu on a member row.
  *
- * A resolved permission record turns the role dropdown into a permission editor: the named
- * tiers first, then the individual permissions that refine them. A profile-only roster still
- * gets an icon-only membership actions menu.
+ * A resolved permission record turns the role dropdown into a grant editor over the individual
+ * permission ids. It offers no named tier: a tier names a seeded space-default scheme, and a
+ * member's grant selects no scheme — it adds atomic roles on top of whatever the space default
+ * already gives them. A profile-only roster still gets an icon-only membership actions menu.
  */
 const MemberRowMenu = ({member, role, permissionMenu, isCurrentUser, disabled, onRemove, onLeave}: Props) => {
     const {formatMessage} = useIntl();
     const permissionLabels = usePermissionLabels();
-    const tierLabels = usePermissionTierLabels();
 
-    const memberTier = permissionMenu ? summarizeMemberPermissions(permissionMenu.selected, permissionMenu.effective) : undefined;
-
-    // roleText is the plain-string form of the visible role/tier label, folded into the
-    // trigger's accessible name below (WCAG 2.5.3): a screen reader or voice-control user must
-    // hear/match the same text a sighted user sees on the button.
+    // roleText is the plain-string form of the visible standing, folded into the trigger's
+    // accessible name below (WCAG 2.5.3): a screen reader or voice-control user must hear/match
+    // the same text a sighted user sees on the button. It names the member's standing —
+    // administrator, guest, ordinary member — not the size of their grant.
     let roleText: string | undefined;
     if (role === 'admin') {
-        roleText = tierLabels.admin.label;
+        roleText = formatMessage({id: 'docs.spaceMembers.role.admin', defaultMessage: 'Admin'});
     } else if (role === 'guest') {
         roleText = formatMessage({id: 'docs.spaceMembers.role.guest', defaultMessage: 'Guest'});
     } else if (role === 'member') {
-        roleText = memberTier ? tierLabels[memberTier].label : formatMessage({id: 'docs.spaceMembers.role.member', defaultMessage: 'Member'});
+        roleText = formatMessage({id: 'docs.spaceMembers.role.member', defaultMessage: 'Member'});
     }
     const roleLabel = roleText ?? <DotsVerticalIcon size={16}/>;
 
@@ -102,29 +101,6 @@ const MemberRowMenu = ({member, role, permissionMenu, isCurrentUser, disabled, o
         </Button>
     );
 
-    // A tier is offered only when every permission it stands for is one this menu may grant.
-    const tiers = permissionMenu ? MEMBER_PERMISSION_TIERS.filter((tier) => (
-        TIER_PERMISSIONS[tier].every((permission) => permissionMenu.options.includes(permission))
-    )) : [];
-
-    const permissionDisabled = (permission: Permission) => (
-        Boolean(permissionMenu?.disabled) || Boolean(permissionMenu?.disabledOptions?.includes(permission))
-    );
-
-    const permissionDisabledReason = (permission: Permission): string | undefined => {
-        if (permissionMenu?.disabled) {
-            return permissionMenu.disabledReason;
-        }
-        if (permissionMenu?.disabledOptions?.includes(permission)) {
-            return permissionMenu.disabledOptionsReason;
-        }
-        return undefined;
-    };
-
-    const tierDisabled = (tier: MemberPermissionTier) => (
-        TIER_PERMISSIONS[tier].some(permissionDisabled) || Boolean(permissionMenu?.disabled)
-    );
-
     return (
         <Menu
             ariaLabel={formatMessage(
@@ -136,40 +112,14 @@ const MemberRowMenu = ({member, role, permissionMenu, isCurrentUser, disabled, o
         >
             {permissionMenu && (
                 <>
-                    {tiers.length > 0 && (
-                        <Menu.RadioGroup
-                            value={memberTier}
-                            onValueChange={(tier) => {
-                                const nextTier = tier as MemberPermissionTier;
-                                if (tierDisabled(nextTier)) {
-                                    return;
-                                }
-
-                                // Sent in the menu's own option order, like the checkboxes below.
-                                permissionMenu.onChange(permissionMenu.options.filter((option) => TIER_PERMISSIONS[nextTier].includes(option)));
-                            }}
-                        >
-                            {tiers.map((tier) => (
-                                <Menu.RadioItem
-                                    key={tier}
-                                    value={tier}
-                                    secondaryLabel={tierLabels[tier].description}
-                                    disabled={tierDisabled(tier)}
-                                >
-                                    {tierLabels[tier].label}
-                                </Menu.RadioItem>
-                            ))}
-                        </Menu.RadioGroup>
-                    )}
-                    {tiers.length > 0 && <Menu.Separator/>}
                     {permissionMenu.options.map((permission) => (
                         <Menu.CheckboxItem
                             key={permission}
                             checked={permissionMenu.selected.includes(permission)}
-                            disabled={permissionDisabled(permission)}
-                            secondaryLabel={permissionDisabledReason(permission)}
+                            disabled={permissionMenu.disabled}
+                            secondaryLabel={permissionMenu.disabled ? permissionMenu.disabledReason : undefined}
                             onCheckedChange={(checked) => {
-                                if (permissionDisabled(permission)) {
+                                if (permissionMenu.disabled) {
                                     return;
                                 }
 

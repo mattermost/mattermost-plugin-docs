@@ -191,6 +191,13 @@ func PermissionsFromMember(explicitRoles string, schemeAdmin, schemeGuest bool, 
 	}
 }
 
+// PermissionsFromChannelMember is PermissionsFromMember for a backing-channel membership row.
+// The roster and SpaceWithAccess member branch both go through here so a ChannelMember is
+// unpacked in one place.
+func PermissionsFromChannelMember(cm *mmmodel.ChannelMember, defaultPermissions []string) MemberPermissions {
+	return PermissionsFromMember(cm.ExplicitRoles, cm.SchemeAdmin, cm.SchemeGuest, defaultPermissions)
+}
+
 // AdminEffectivePermissions returns the full permission set a SchemeAdmin effectively holds, wire
 // form, non-nil.
 func AdminEffectivePermissions() []string {

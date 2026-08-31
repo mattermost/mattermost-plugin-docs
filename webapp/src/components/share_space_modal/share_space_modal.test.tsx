@@ -115,13 +115,15 @@ describe('ShareSpaceModal', () => {
         expect(screen.getByText('Ada')).toBeInTheDocument();
     });
 
-    it('shows compact permission summaries and exposes granular capabilities in the existing row menu', async () => {
+    // The trigger names the member's standing, never a tier: a tier names a seeded space-default
+    // scheme, which a per-member grant does not select.
+    it('names each member by standing and exposes the grant vocabulary in the row menu', async () => {
         renderModal();
 
         expect(screen.getByRole('button', {name: 'Admin — permissions for Caleb'})).toHaveTextContent('Admin');
-        expect(screen.getByRole('button', {name: 'Can comment — permissions for Ada'})).toHaveTextContent('Can comment');
+        expect(screen.getByRole('button', {name: 'Member — permissions for Ada'})).toHaveTextContent('Member');
 
-        fireEvent.click(screen.getByRole('button', {name: 'Can comment — permissions for Ada'}));
+        fireEvent.click(screen.getByRole('button', {name: 'Member — permissions for Ada'}));
 
         expect(await screen.findByRole('menuitemcheckbox', {name: 'Create pages'})).not.toBeChecked();
         expect(screen.getByRole('menuitemcheckbox', {name: 'Administer space'})).not.toBeChecked();
@@ -131,7 +133,7 @@ describe('ShareSpaceModal', () => {
     it('changes a member grant from the row capability menu', async () => {
         renderModal();
 
-        fireEvent.click(screen.getByRole('button', {name: 'Can comment — permissions for Ada'}));
+        fireEvent.click(screen.getByRole('button', {name: 'Member — permissions for Ada'}));
         fireEvent.click(await screen.findByRole('menuitemcheckbox', {name: 'Edit pages'}));
 
         expect(mockSetMemberGrants).toHaveBeenCalledWith('u2', ['edit_page']);

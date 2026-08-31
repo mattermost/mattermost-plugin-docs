@@ -2,7 +2,7 @@
 // See LICENSE.txt for license information.
 
 import {useIntl} from 'react-intl';
-import type {MemberPermissionTier} from 'utils/space_permission_sets';
+import type {PermissionTier} from 'utils/space_permission_sets';
 
 import type {Permission} from 'types/permissions';
 import {Permissions} from 'types/permissions';
@@ -30,10 +30,10 @@ export type PermissionTierLabel = {
 };
 
 /**
- * Resolve the named-tier vocabulary under the active locale. One spelling for every surface: the
- * Share footer, the member row menu and the settings tab all name a tier the same way.
+ * Resolve the named-tier vocabulary under the active locale. One spelling for both space-default
+ * surfaces: the Share footer and the settings tab name a tier the same way.
  */
-export const usePermissionTierLabels = (): Record<MemberPermissionTier | 'custom', PermissionTierLabel> => {
+export const usePermissionTierLabels = (): Record<PermissionTier | 'custom', PermissionTierLabel> => {
     const {formatMessage} = useIntl();
 
     return {
@@ -48,10 +48,6 @@ export const usePermissionTierLabels = (): Record<MemberPermissionTier | 'custom
         edit: {
             label: formatMessage({id: 'docs.permissionTier.edit', defaultMessage: 'Can edit'}),
             description: formatMessage({id: 'docs.permissionTier.editDescription', defaultMessage: 'Create, comment on, edit, and delete their own pages'}),
-        },
-        admin: {
-            label: formatMessage({id: 'docs.permissionTier.admin', defaultMessage: 'Admin'}),
-            description: formatMessage({id: 'docs.permissionTier.adminDescription', defaultMessage: 'Manage the space, its members, and every page'}),
         },
         custom: {
             label: formatMessage({id: 'docs.permissionTier.custom', defaultMessage: 'Custom'}),

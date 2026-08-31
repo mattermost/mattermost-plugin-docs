@@ -419,6 +419,37 @@ func TestServiceGetTeamSpaces(t *testing.T) {
 	require.Len(t, spaces, 2)
 }
 
+// TestServiceGetTeamSpaces_SysadminSeesEverySpace pins the superuser listing override: a
+// sysadmin who is not a team member and not a backing-channel member still receives every
+// live space in the team, including private ones. That matches the per-space read gate.
+func TestServiceGetTeamSpaces_SysadminSeesEverySpace(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	sysadminID := mmmodel.NewId()
+	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true)
+	h := openTestServiceWithAPI(t, mockAPI)
+
+	teamID := mmmodel.NewId()
+	private := &model.Space{ChannelId: mmmodel.NewId(), TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "Private", ViewAccess: model.ViewAccessPrivate}
+	_, err := h.store.CreateSpace(private)
+	require.NoError(t, err)
+	open := &model.Space{ChannelId: mmmodel.NewId(), TeamId: teamID, CreatorId: mmmodel.NewId(), Title: "Open", ViewAccess: model.ViewAccessOpen}
+	_, err = h.store.CreateSpace(open)
+	require.NoError(t, err)
+	otherTeam := &model.Space{ChannelId: mmmodel.NewId(), TeamId: mmmodel.NewId(), CreatorId: mmmodel.NewId(), Title: "Other", ViewAccess: model.ViewAccessPrivate}
+	_, err = h.store.CreateSpace(otherTeam)
+	require.NoError(t, err)
+
+	spaces, _, appErr := h.svc.GetSpacesForTeam(teamID, sysadminID, 0, 0)
+	require.Nil(t, appErr)
+	ids := make([]string, 0, len(spaces))
+	for _, sp := range spaces {
+		ids = append(ids, sp.Id)
+	}
+	require.Contains(t, ids, private.Id)
+	require.Contains(t, ids, open.Id)
+	require.NotContains(t, ids, otherTeam.Id)
+}
+
 // TestServiceGetTeamSpacesInvalidID verifies a malformed team id is rejected with 400.
 func TestServiceGetTeamSpacesInvalidID(t *testing.T) {
 	h := openTestService(t)

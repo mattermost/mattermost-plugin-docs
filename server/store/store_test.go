@@ -878,20 +878,20 @@ func TestGetSpacesForTeam(t *testing.T) {
 	testutil.MustAddTeamMember(t, db, teamID, memberOfOne, 0)
 
 	t.Run("returns every team space whose backing channel the user belongs to", func(t *testing.T) {
-		spaces, err := s.GetSpacesForTeam(teamID, memberOfAll, false, 0, 100)
+		spaces, err := s.GetSpacesForTeam(teamID, memberOfAll, false, false, 0, 100)
 		require.NoError(t, err)
 		require.Len(t, spaces, 2)
 	})
 
 	t.Run("filters to the user's channel memberships", func(t *testing.T) {
-		spaces, err := s.GetSpacesForTeam(teamID, memberOfOne, false, 0, 100)
+		spaces, err := s.GetSpacesForTeam(teamID, memberOfOne, false, false, 0, 100)
 		require.NoError(t, err)
 		require.Len(t, spaces, 1)
 		require.Equal(t, visible.Id, spaces[0].Id)
 	})
 
 	t.Run("user with no memberships gets an empty result", func(t *testing.T) {
-		spaces, err := s.GetSpacesForTeam(teamID, mmmodel.NewId(), false, 0, 100)
+		spaces, err := s.GetSpacesForTeam(teamID, mmmodel.NewId(), false, false, 0, 100)
 		require.NoError(t, err)
 		require.Empty(t, spaces)
 	})
@@ -901,27 +901,27 @@ func TestGetSpacesForTeam(t *testing.T) {
 		testutil.MustAddChannelMember(t, db, chVisible, formerMember)
 		testutil.MustAddTeamMember(t, db, teamID, formerMember, 12345)
 
-		spaces, err := s.GetSpacesForTeam(teamID, formerMember, false, 0, 100)
+		spaces, err := s.GetSpacesForTeam(teamID, formerMember, false, false, 0, 100)
 		require.NoError(t, err)
 		require.Empty(t, spaces)
 	})
 
 	t.Run("pagination excludes hidden spaces before offset/limit", func(t *testing.T) {
 		// Only 1 visible space; with per_page=10 and 2 total, hidden must not count toward has_more.
-		spaces, err := s.GetSpacesForTeam(teamID, memberOfOne, false, 0, 10)
+		spaces, err := s.GetSpacesForTeam(teamID, memberOfOne, false, false, 0, 10)
 		require.NoError(t, err)
 		require.Len(t, spaces, 1)
 	})
 
 	t.Run("rejects empty userID", func(t *testing.T) {
-		_, err := s.GetSpacesForTeam(teamID, "", false, 0, 100)
+		_, err := s.GetSpacesForTeam(teamID, "", false, false, 0, 100)
 		require.Error(t, err)
 		require.True(t, store.IsErrInvalidInput(err))
 	})
 
 	t.Run("rejects non-positive limit", func(t *testing.T) {
 		for _, limit := range []int{0, -1} {
-			_, err := s.GetSpacesForTeam(teamID, memberOfAll, false, 0, limit)
+			_, err := s.GetSpacesForTeam(teamID, memberOfAll, false, false, 0, limit)
 			require.Error(t, err)
 			require.True(t, store.IsErrInvalidInput(err), "limit=%d must return ErrInvalidInput; got %v", limit, err)
 		}
@@ -944,7 +944,7 @@ func TestGetSpacesForTeam(t *testing.T) {
 		_, err = s.CreateSpace(privateSpace)
 		require.NoError(t, err)
 
-		withFallthrough, err := s.GetSpacesForTeam(teamID, nonMember, true, 0, 100)
+		withFallthrough, err := s.GetSpacesForTeam(teamID, nonMember, false, true, 0, 100)
 		require.NoError(t, err)
 		var ids []string
 		for _, sp := range withFallthrough {
@@ -953,11 +953,38 @@ func TestGetSpacesForTeam(t *testing.T) {
 		require.Contains(t, ids, openSpace.Id, "an open space must be visible to a non-member with the fall-through")
 		require.NotContains(t, ids, privateSpace.Id, "a private space must never be visible via the open fall-through")
 
-		withoutFallthrough, err := s.GetSpacesForTeam(teamID, nonMember, false, 0, 100)
+		withoutFallthrough, err := s.GetSpacesForTeam(teamID, nonMember, false, false, 0, 100)
 		require.NoError(t, err)
 		for _, sp := range withoutFallthrough {
 			require.NotEqual(t, openSpace.Id, sp.Id, "the open space must not appear when the caller lacks the fall-through")
 		}
+	})
+
+	t.Run("callerSeesEverySpace returns the team's live spaces to a caller with no memberships", func(t *testing.T) {
+		nonMember := mmmodel.NewId()
+
+		deletedChannel := mmmodel.NewId()
+		deletedSpace := newSpace(deletedChannel)
+		deletedSpace.TeamId = teamID
+		saved, err := s.CreateSpace(deletedSpace)
+		require.NoError(t, err)
+		require.NoError(t, s.DeleteSpace(saved.Id))
+
+		filtered, err := s.GetSpacesForTeam(teamID, nonMember, false, false, 0, 100)
+		require.NoError(t, err)
+		require.Empty(t, filtered, "without the bypass a caller with no memberships sees nothing")
+
+		all, err := s.GetSpacesForTeam(teamID, nonMember, true, false, 0, 100)
+		require.NoError(t, err)
+		ids := make([]string, 0, len(all))
+		for _, sp := range all {
+			ids = append(ids, sp.Id)
+			require.Equal(t, teamID, sp.TeamId, "the bypass must stay scoped to the requested team")
+		}
+		require.Contains(t, ids, visible.Id)
+		require.Contains(t, ids, hidden.Id)
+		require.NotContains(t, ids, other.Id, "a space in another team must never be returned")
+		require.NotContains(t, ids, saved.Id, "the bypass must not surface a soft-deleted space")
 	})
 }
 
