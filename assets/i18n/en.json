@@ -20,6 +20,18 @@
     "translation": "The target_space_id field is required."
   },
   {
+    "id": "api.page_comment.invalid_comment_type_filter.app_error",
+    "translation": "The comment_type filter must be footer or inline."
+  },
+  {
+    "id": "api.page_comment.invalid_cursor.app_error",
+    "translation": "The after cursor could not be parsed."
+  },
+  {
+    "id": "api.page_comment.invalid_resolved_filter.app_error",
+    "translation": "The resolved filter must be true or false."
+  },
+  {
     "id": "api.request_too_large.app_error",
     "translation": "The request body exceeds the maximum allowed size of {{.MaxBytes}} bytes."
   },
@@ -206,6 +218,54 @@
   {
     "id": "app.page.update.store_error.app_error",
     "translation": "An error occurred while updating the page."
+  },
+  {
+    "id": "app.page_comment.create.create_post_failed.app_error",
+    "translation": "The comment could not be created."
+  },
+  {
+    "id": "app.page_comment.create_reply.parent_is_reply.app_error",
+    "translation": "Replies cannot be nested. Reply to the thread's root comment instead."
+  },
+  {
+    "id": "app.page_comment.delete.delete_post_failed.app_error",
+    "translation": "The comment could not be deleted."
+  },
+  {
+    "id": "app.page_comment.delete.has_replies.app_error",
+    "translation": "This comment cannot be deleted while it has replies."
+  },
+  {
+    "id": "app.page_comment.get_replies.target_is_reply.app_error",
+    "translation": "Replies can only be listed for a root comment."
+  },
+  {
+    "id": "app.page_comment.invalid_page_id.app_error",
+    "translation": "The page ID is not valid."
+  },
+  {
+    "id": "app.page_comment.invalid_user_id.app_error",
+    "translation": "The user ID is not valid."
+  },
+  {
+    "id": "app.page_comment.not_found.app_error",
+    "translation": "The comment could not be found."
+  },
+  {
+    "id": "app.page_comment.patch.get_post_failed.app_error",
+    "translation": "The comment could not be read."
+  },
+  {
+    "id": "app.page_comment.patch.message_not_author.app_error",
+    "translation": "Only the comment's author can edit its message."
+  },
+  {
+    "id": "app.page_comment.patch.target_is_reply.app_error",
+    "translation": "Only a root comment can be resolved or unresolved."
+  },
+  {
+    "id": "app.page_comment.patch.update_post_failed.app_error",
+    "translation": "The comment could not be updated."
   },
   {
     "id": "app.page_draft.create.invalid_parent.app_error",
@@ -426,6 +486,10 @@
   {
     "id": "app.space.create.not_team_member.app_error",
     "translation": "You must be a member of the team to create a space in it."
+  },
+  {
+    "id": "app.space.create.retention_enrol_failed.app_error",
+    "translation": "The space could not be enrolled in the Docs retention policy, so it was not created."
   },
   {
     "id": "app.space.create.team_lookup_failed.app_error",
@@ -666,6 +730,42 @@
   {
     "id": "model.page.patch.search_text_without_content.app_error",
     "translation": "Search text cannot be set without page content."
+  },
+  {
+    "id": "model.page_comment.create.anchor_not_allowed.app_error",
+    "translation": "An anchor can only be set on an inline comment."
+  },
+  {
+    "id": "model.page_comment.create.anchor_required.app_error",
+    "translation": "An inline comment requires an anchor."
+  },
+  {
+    "id": "model.page_comment.create.anchor_too_long.app_error",
+    "translation": "The anchor ID exceeds the maximum length of {{.MaxLength}} characters."
+  },
+  {
+    "id": "model.page_comment.create.invalid_comment_type.app_error",
+    "translation": "The comment type must be footer or inline."
+  },
+  {
+    "id": "model.page_comment.create.message_required.app_error",
+    "translation": "A comment message is required."
+  },
+  {
+    "id": "model.page_comment.create.message_too_long.app_error",
+    "translation": "The comment message exceeds the maximum length of {{.MaxLength}} characters."
+  },
+  {
+    "id": "model.page_comment.patch.message_required.app_error",
+    "translation": "The edited comment message must not be empty."
+  },
+  {
+    "id": "model.page_comment.patch.message_too_long.app_error",
+    "translation": "The comment message exceeds the maximum length of {{.MaxLength}} characters."
+  },
+  {
+    "id": "model.page_comment.patch.nothing_to_update.app_error",
+    "translation": "The patch must include a resolved value or a message."
   },
   {
     "id": "model.shared.props_invalid.app_error",

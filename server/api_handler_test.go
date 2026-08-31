@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -40,6 +41,24 @@ type apiTestHarness struct {
 	// db is the schema-scoped handle, exposed so tests can seed core-table stand-ins
 	// (e.g. ChannelMembers rows for the team-listing visibility join).
 	db *sql.DB
+
+	// auditMu guards auditRecords, which collects every record the handlers emit through
+	// LogAuditRec so tests can assert on the audit trail.
+	auditMu      sync.Mutex
+	auditRecords []*mmmodel.AuditRecord
+}
+
+// auditRecordsNamed returns the collected audit records carrying eventName, oldest first.
+func (h *apiTestHarness) auditRecordsNamed(eventName string) []*mmmodel.AuditRecord {
+	h.auditMu.Lock()
+	defer h.auditMu.Unlock()
+	var out []*mmmodel.AuditRecord
+	for _, rec := range h.auditRecords {
+		if rec.EventName == eventName {
+			out = append(out, rec)
+		}
+	}
+	return out
 }
 
 // openTestPlugin wires a real *Plugin over an isolated test DB. When mockAPI is non-nil the
@@ -69,11 +88,22 @@ func openTestPlugin(t *testing.T, mockAPI *plugintest.API) *apiTestHarness {
 	client = pluginapi.NewClient(mockAPI, nil)
 	t.Cleanup(func() { mockAPI.AssertExpectations(t) })
 
-	p := &Plugin{store: s, service: app.New(s, nil, client)}
+	p := &Plugin{store: s, service: app.New(s, nil, client), client: client}
 	p.API = mockAPI
 	p.snapshotFeatureFlags(p.API.GetConfig())
 	p.router = p.initRouter()
-	return &apiTestHarness{plugin: p, store: s, db: db}
+	h := &apiTestHarness{plugin: p, store: s, db: db}
+
+	// Every mutating handler emits an audit record; collect them universally (like LogError
+	// above) so any test can assert on the trail and none fails on an unexpected mock call.
+	mockAPI.On("LogAuditRec", mock.AnythingOfType("*model.AuditRecord")).Run(func(args mock.Arguments) {
+		rec, recOk := args.Get(0).(*mmmodel.AuditRecord)
+		require.True(t, recOk)
+		h.auditMu.Lock()
+		h.auditRecords = append(h.auditRecords, rec)
+		h.auditMu.Unlock()
+	}).Return().Maybe()
+	return h
 }
 
 // newEnabledMockAPI returns a plugintest mock pre-stubbed with the EnableDocs flag on and

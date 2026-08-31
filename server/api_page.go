@@ -40,6 +40,8 @@ func (p *Plugin) resolveTargetSpace(w http.ResponseWriter, invalidIDErr *mmmodel
 func (p *Plugin) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
+	auditRec := p.makeAuditRecord(r, auditEventCreatePage, userID)
+	defer p.client.Audit.Record(auditRec)
 	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
 		return
 	}
@@ -58,6 +60,9 @@ func (p *Plugin) handleCreatePage(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
+	auditRec.Success()
+	auditRec.AddEventObjectType("page")
+	auditRec.AddEventResultState(page)
 	writeJSON(w, http.StatusCreated, page)
 }
 
@@ -81,6 +86,8 @@ func (p *Plugin) handleGetPage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
+	auditRec := p.makeAuditRecord(r, auditEventUpdatePage, userID)
+	defer p.client.Audit.Record(auditRec)
 	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
 		return
 	}
@@ -107,6 +114,9 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
+	auditRec.Success()
+	auditRec.AddEventObjectType("page")
+	auditRec.AddEventResultState(updated)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -114,6 +124,8 @@ func (p *Plugin) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
+	auditRec := p.makeAuditRecord(r, auditEventDeletePage, userID)
+	defer p.client.Audit.Record(auditRec)
 	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
 		return
 	}
@@ -121,6 +133,8 @@ func (p *Plugin) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
+	auditRec.Success()
+	auditRec.AddEventObjectType("page")
 	writeStatusOK(w)
 }
 
@@ -128,6 +142,8 @@ func (p *Plugin) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
+	auditRec := p.makeAuditRecord(r, auditEventRestorePage, userID)
+	defer p.client.Audit.Record(auditRec)
 	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
 		return
 	}
@@ -136,6 +152,9 @@ func (p *Plugin) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
+	auditRec.Success()
+	auditRec.AddEventObjectType("page")
+	auditRec.AddEventResultState(restored)
 	writeJSON(w, http.StatusOK, restored)
 }
 
@@ -147,6 +166,8 @@ func (p *Plugin) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleMovePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
+	auditRec := p.makeAuditRecord(r, auditEventMovePage, userID)
+	defer p.client.Audit.Record(auditRec)
 	if _, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false); !ok {
 		return
 	}
@@ -165,6 +186,9 @@ func (p *Plugin) handleMovePage(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
+	auditRec.Success()
+	auditRec.AddEventObjectType("page")
+	auditRec.AddEventResultState(moved)
 	writeJSON(w, http.StatusOK, moved)
 }
 
@@ -175,6 +199,8 @@ func (p *Plugin) handleMovePage(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleDuplicatePage(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
+	auditRec := p.makeAuditRecord(r, auditEventDuplicatePage, userID)
+	defer p.client.Audit.Record(auditRec)
 	sourceSpace, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false)
 	if !ok {
 		return
@@ -202,6 +228,9 @@ func (p *Plugin) handleDuplicatePage(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
+	auditRec.Success()
+	auditRec.AddEventObjectType("page")
+	auditRec.AddEventResultState(duplicated)
 	writeJSON(w, http.StatusCreated, duplicated)
 }
 
@@ -229,6 +258,8 @@ func (p *Plugin) handleGetPageChildren(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)
+	auditRec := p.makeAuditRecord(r, auditEventMovePageToSpace, userID)
+	defer p.client.Audit.Record(auditRec)
 	sourceSpace, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false)
 	if !ok {
 		return
@@ -261,5 +292,9 @@ func (p *Plugin) handleMovePageToSpace(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
+	auditRec.Success()
+	auditRec.AddEventObjectType("page")
+	mmmodel.AddEventParameterToAuditRec(auditRec, "target_space_id", req.TargetSpaceId)
+	auditRec.AddEventResultState(moved)
 	writeJSON(w, http.StatusOK, moved)
 }

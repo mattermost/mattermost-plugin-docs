@@ -5,6 +5,7 @@ package testutil
 
 import (
 	"database/sql"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -44,7 +45,60 @@ func OpenTestStore(t *testing.T) (*store.Store, *sql.DB) {
 	)`)
 	require.NoError(t, err, "create ChannelMembers stand-in")
 
+	// The comment store reads core's Posts table (a page comment is a Posts row); the isolated
+	// test database contains only plugin tables, so create a minimal stand-in with the columns
+	// the comment queries read. Production never creates this table — core owns it there.
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS Posts (
+		Id varchar(26) PRIMARY KEY,
+		CreateAt bigint NOT NULL DEFAULT 0,
+		UpdateAt bigint NOT NULL DEFAULT 0,
+		EditAt bigint NOT NULL DEFAULT 0,
+		DeleteAt bigint NOT NULL DEFAULT 0,
+		UserId varchar(26) NOT NULL,
+		ChannelId varchar(26) NOT NULL,
+		RootId varchar(26) NOT NULL DEFAULT '',
+		OriginalId varchar(26) NOT NULL DEFAULT '',
+		Message varchar(65535) NOT NULL DEFAULT '',
+		Type varchar(26) NOT NULL DEFAULT '',
+		Props jsonb
+	)`)
+	require.NoError(t, err, "create Posts stand-in")
+
+	// The retention sweep probes core's RetentionPoliciesChannels; same stand-in rules as
+	// above. The primary key mirrors core's: the channel alone, so a channel carries at most
+	// one policy assignment — the constraint the sweep's re-home behavior exists for.
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS RetentionPoliciesChannels (
+		PolicyId varchar(26) NOT NULL,
+		ChannelId varchar(26) NOT NULL,
+		PRIMARY KEY (ChannelId)
+	)`)
+	require.NoError(t, err, "create RetentionPoliciesChannels stand-in")
+
 	return s, db
+}
+
+// MustInsertPost seeds a Posts row into the stand-in table (see OpenTestStore) so comment store
+// queries can see it. Zero CreateAt/UpdateAt are stamped with the current millis, mirroring the
+// platform's PreSave.
+func MustInsertPost(t *testing.T, db *sql.DB, post *mmmodel.Post) *mmmodel.Post {
+	t.Helper()
+	if post.Id == "" {
+		post.Id = mmmodel.NewId()
+	}
+	now := mmmodel.GetMillis()
+	if post.CreateAt == 0 {
+		post.CreateAt = now
+	}
+	if post.UpdateAt == 0 {
+		post.UpdateAt = post.CreateAt
+	}
+	props, err := json.Marshal(post.GetProps())
+	require.NoError(t, err, "marshal post props")
+	_, err = db.Exec(`INSERT INTO Posts (Id, CreateAt, UpdateAt, EditAt, DeleteAt, UserId, ChannelId, RootId, OriginalId, Message, Type, Props)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		post.Id, post.CreateAt, post.UpdateAt, post.EditAt, post.DeleteAt, post.UserId, post.ChannelId, post.RootId, post.OriginalId, post.Message, post.Type, props)
+	require.NoError(t, err, "insert Posts stand-in row")
+	return post
 }
 
 // MustAddChannelMember seeds a ChannelMembers row (see the stand-in table in OpenTestStore) so

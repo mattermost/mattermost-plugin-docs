@@ -71,6 +71,16 @@ func (p *Plugin) initRouter() *mux.Router {
 	// Presence.
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/active-editors", p.handleGetPageActiveEditors).Methods(http.MethodGet)
 
+	// Page comments. Roots and replies are separate resources: pagination is roots-only (a flat
+	// list would let a page boundary split a thread), with replies as a sub-resource.
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/comments", p.handleGetPageComments).Methods(http.MethodGet)
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/comments", p.handleCreatePageComment).Methods(http.MethodPost)
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/comments/{comment_id}", p.handleGetPageComment).Methods(http.MethodGet)
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/comments/{comment_id}", p.handleUpdatePageComment).Methods(http.MethodPatch)
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/comments/{comment_id}", p.handleDeletePageComment).Methods(http.MethodDelete)
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/comments/{comment_id}/replies", p.handleGetPageCommentReplies).Methods(http.MethodGet)
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/comments/{comment_id}/replies", p.handleCreatePageCommentReply).Methods(http.MethodPost)
+
 	return router
 }
 
@@ -151,6 +161,13 @@ func (p *Plugin) writeAppError(w http.ResponseWriter, appErr *mmmodel.AppError) 
 type conflictResponse struct {
 	Error       *mmmodel.AppError `json:"error"`
 	CurrentPage *model.Page       `json:"current_page"`
+
+	// ReplyCount is present only on the comment has-replies 409, so the client can say how many
+	// replies a force-delete would destroy; omitempty keeps it absent on the page conflicts.
+	// CurrentPage stays unconditional (no omitempty): the shipped publish-conflict client
+	// recognises the conflict shape by the current_page key existing in the body — even as null —
+	// so every 409 must carry the key.
+	ReplyCount int `json:"reply_count,omitempty"`
 }
 
 // writeConflictWithPage writes a conflictResponse using the AppError's own StatusCode (409) as the
@@ -159,6 +176,15 @@ func (p *Plugin) writeConflictWithPage(w http.ResponseWriter, appErr *mmmodel.Ap
 	safe := *appErr
 	safe.WipeDetailed()
 	writeJSON(w, appErr.StatusCode, conflictResponse{Error: &safe, CurrentPage: current})
+}
+
+// writeConflictWithReplyCount writes a conflictResponse carrying the has-replies reply count.
+// The comment delete handler writes its 409 through this rather than falling through
+// writeAppError's StatusConflict branch, which has no count to pass.
+func (p *Plugin) writeConflictWithReplyCount(w http.ResponseWriter, appErr *mmmodel.AppError, replyCount int) {
+	safe := *appErr
+	safe.WipeDetailed()
+	writeJSON(w, appErr.StatusCode, conflictResponse{Error: &safe, ReplyCount: replyCount})
 }
 
 // writeJSON serialises v as a JSON body with the given status.
@@ -194,6 +220,30 @@ func writePaginatedJSON[T any](w http.ResponseWriter, items []T, page, perPage i
 		Page:    page,
 		PerPage: perPage,
 		HasMore: hasMore,
+	})
+}
+
+// cursorResponse wraps a keyset-paged window of results. It is distinct from paginatedResponse
+// because Page is meaningless on a cursor route, and bolting next_after onto the shared generic
+// would add a permanently-empty field to every offset-paged route.
+type cursorResponse[T any] struct {
+	Items     []T     `json:"items"`
+	NextAfter *string `json:"next_after,omitempty"`
+	PerPage   int     `json:"per_page"`
+	HasMore   bool    `json:"has_more"`
+}
+
+// writeCursorJSON wraps items in a cursorResponse and writes it as a 200 JSON body. nextAfter is
+// nil when no further window exists.
+func writeCursorJSON[T any](w http.ResponseWriter, items []T, nextAfter *string, perPage int, hasMore bool) {
+	if items == nil {
+		items = []T{}
+	}
+	writeJSON(w, http.StatusOK, cursorResponse[T]{
+		Items:     items,
+		NextAfter: nextAfter,
+		PerPage:   perPage,
+		HasMore:   hasMore,
 	})
 }
 

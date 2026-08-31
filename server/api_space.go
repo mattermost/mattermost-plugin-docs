@@ -32,6 +32,8 @@ func (p *Plugin) handleGetTeamSpaces(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	teamID := mux.Vars(r)["team_id"]
+	auditRec := p.makeAuditRecord(r, auditEventCreateSpace, userID)
+	defer p.client.Audit.Record(auditRec)
 
 	var req struct {
 		Title       string `json:"title"`
@@ -56,6 +58,9 @@ func (p *Plugin) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
+	auditRec.Success()
+	auditRec.AddEventObjectType("space")
+	auditRec.AddEventResultState(created)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -77,6 +82,8 @@ func (p *Plugin) handleGetSpace(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
+	auditRec := p.makeAuditRecord(r, auditEventUpdateSpace, userID)
+	defer p.client.Audit.Record(auditRec)
 	space, ok := p.requireSpaceMembership(w, spaceID, userID, false)
 	if !ok {
 		return
@@ -99,6 +106,10 @@ func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
+	auditRec.Success()
+	auditRec.AddEventObjectType("space")
+	auditRec.AddEventPriorState(space)
+	auditRec.AddEventResultState(updated)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -106,6 +117,8 @@ func (p *Plugin) handleUpdateSpace(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
+	auditRec := p.makeAuditRecord(r, auditEventDeleteSpace, userID)
+	defer p.client.Audit.Record(auditRec)
 	space, ok := p.requireSpaceMembership(w, spaceID, userID, false)
 	if !ok {
 		return
@@ -114,6 +127,9 @@ func (p *Plugin) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
+	auditRec.Success()
+	auditRec.AddEventObjectType("space")
+	auditRec.AddEventPriorState(space)
 	writeStatusOK(w)
 }
 
@@ -122,6 +138,8 @@ func (p *Plugin) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleRestoreSpace(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
+	auditRec := p.makeAuditRecord(r, auditEventRestoreSpace, userID)
+	defer p.client.Audit.Record(auditRec)
 	if _, ok := p.requireSpaceMembership(w, spaceID, userID, true); !ok {
 		return
 	}
@@ -130,6 +148,9 @@ func (p *Plugin) handleRestoreSpace(w http.ResponseWriter, r *http.Request) {
 		p.writeAppError(w, appErr)
 		return
 	}
+	auditRec.Success()
+	auditRec.AddEventObjectType("space")
+	auditRec.AddEventResultState(restored)
 	writeJSON(w, http.StatusOK, restored)
 }
 
@@ -172,6 +193,8 @@ func (p *Plugin) handleListSpaceMembers(w http.ResponseWriter, r *http.Request) 
 func (p *Plugin) handleAddSpaceMember(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	spaceID := mux.Vars(r)["space_id"]
+	auditRec := p.makeAuditRecord(r, auditEventAddSpaceMember, userID)
+	defer p.client.Audit.Record(auditRec)
 	space, ok := p.requireSpaceMembership(w, spaceID, userID, false)
 	if !ok {
 		return
@@ -182,11 +205,14 @@ func (p *Plugin) handleAddSpaceMember(w http.ResponseWriter, r *http.Request) {
 	if !p.decodeJSONBody(w, r, maxSpaceBodyBytes, &req, "handleAddSpaceMember", false) {
 		return
 	}
+	mmmodel.AddEventParameterToAuditRec(auditRec, "user_id", req.UserID)
 	member, appErr := p.service.AddSpaceMember(space, req.UserID)
 	if appErr != nil {
 		p.writeAppError(w, appErr)
 		return
 	}
+	auditRec.Success()
+	auditRec.AddEventObjectType("space_member")
 	writeJSON(w, http.StatusCreated, member)
 }
 
@@ -197,6 +223,8 @@ func (p *Plugin) handleRemoveSpaceMember(w http.ResponseWriter, r *http.Request)
 	vars := mux.Vars(r)
 	spaceID := vars["space_id"]
 	targetUserID := vars["user_id"]
+	auditRec := p.makeAuditRecord(r, auditEventRemoveSpaceMember, userID)
+	defer p.client.Audit.Record(auditRec)
 	space, ok := p.requireSpaceMembership(w, spaceID, userID, false)
 	if !ok {
 		return
@@ -205,5 +233,7 @@ func (p *Plugin) handleRemoveSpaceMember(w http.ResponseWriter, r *http.Request)
 		p.writeAppError(w, appErr)
 		return
 	}
+	auditRec.Success()
+	auditRec.AddEventObjectType("space_member")
 	writeStatusOK(w)
 }
