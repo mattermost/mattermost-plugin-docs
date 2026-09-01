@@ -21,14 +21,20 @@ import {getMustJoinSpace} from './permissions';
 import {getPage, getPagesById, getSpace} from './selectors';
 
 // Orders every writer of a space's stored record. Each read and each write claims an issue slot
-// before its request is sent; the dispatch is dropped when a later-issued response for the same
-// space has already been applied, so a slower earlier response cannot overwrite the state a
-// fresher one wrote. An eviction claims a slot too, which keeps a response already in flight from
+// before its request is sent; a read's dispatch is dropped when a later-issued response for the
+// same space has already been applied, so a slower earlier read cannot overwrite the state a
+// fresher one wrote. A write is ordered by completion instead (spaceMutationAction), because what
+// it returns is state the server has committed and no already-applied read can have seen. An
+// eviction claims a slot too, which keeps a response already in flight — read or write — from
 // resurrecting a space evicted on a definitive denial. Team listings claim a slot as well, so a
 // listing cannot regress a space a later single-space response already resolved. The per-member
 // counterpart is useSpacePermissions's write-generation guard.
 let spaceAccessIssueCounter = 0;
 const appliedSpaceAccessGeneration = new Map<string, number>();
+
+// The slot each space's last eviction claimed. A write that completes afterwards still loses to it:
+// the server may have committed the write before it refused the read that evicted.
+const evictedSpaceAccessGeneration = new Map<string, number>();
 
 /** Claims the next issue slot. Call before sending the request whose response will be applied. */
 export function nextSpaceAccessGeneration(): number {
@@ -45,22 +51,39 @@ const spaceAccessAction = (space: Space, generation: number) => {
     return {type: SpaceTypes.RECEIVED_SPACES, spaces: [space]};
 };
 
+// Builds the received-spaces action for a record the server has just committed. A write's response
+// describes state no already-applied read can have seen, so it claims its slot on completion rather
+// than on issue: ordering it by issue would let a read that overtook it — and so read the pre-write
+// record — discard the write, leaving a stale update_at that fails the next edit's optimistic lock.
+// An eviction claimed while the write was in flight still wins.
+const spaceMutationAction = (space: Space, generation: number) => {
+    if (generation < (evictedSpaceAccessGeneration.get(space.id) ?? 0)) {
+        return {type: SpaceTypes.RECEIVED_SPACES, spaces: [] as Space[]};
+    }
+    return spaceAccessAction(space, nextSpaceAccessGeneration());
+};
+
 // Reconciles a team listing against the guard. A listing carries bare spaces and, when it names a
-// team, is the authoritative set of that team's spaces, so a superseded entry is replaced by the
-// stored record rather than dropped: dropping it would take the space out of the team index even
-// though it is still there. Entries the listing does win keep their claim, so a read issued before
-// it cannot overwrite them afterwards.
-const reconcileListing = (state: GlobalState, spaces: Space[], generation: number): Space[] => spaces.map((space) => {
+// team, is the authoritative set of that team's spaces, so a superseded entry resolves to the
+// stored record rather than to the listing's own: replacing it keeps the space in the team index,
+// which dropping it would not. An entry with no stored record was evicted while the listing was in
+// flight, so it is omitted instead — carrying the bare space would put a space the server refused
+// back in the index and show its metadata again. Entries the listing does win keep their claim, so
+// a read issued before it cannot overwrite them afterwards.
+const reconcileListing = (state: GlobalState, spaces: Space[], generation: number): Space[] => spaces.flatMap((space) => {
     if (generation < (appliedSpaceAccessGeneration.get(space.id) ?? 0)) {
-        return getSpace(state, space.id) ?? space;
+        const stored = getSpace(state, space.id);
+        return stored ? [stored] : [];
     }
     appliedSpaceAccessGeneration.set(space.id, generation);
-    return space;
+    return [space];
 });
 
 /** Drops spaceId from the store and supersedes any of its responses still in flight. */
 export function evictSpace(spaceId: string) {
-    appliedSpaceAccessGeneration.set(spaceId, ++spaceAccessIssueCounter);
+    const generation = ++spaceAccessIssueCounter;
+    appliedSpaceAccessGeneration.set(spaceId, generation);
+    evictedSpaceAccessGeneration.set(spaceId, generation);
     return {type: SpaceTypes.DELETED_SPACE, spaceId};
 }
 
@@ -432,13 +455,12 @@ export function ensureSpaceMembership(spaceId: string): DocsThunkAction<Promise<
 }
 
 /**
- * Stores the server-resolved access record shared by permission-gated surfaces. generation is the
- * issue slot (nextSpaceAccessGeneration) claimed before the request that produced `space` was
- * sent; a record superseded by a later-issued response or an eviction resolves to an empty
- * received-spaces action, which the reducer ignores.
+ * Stores the access record a write returned, for the permission-gated surfaces that share it.
+ * generation is the issue slot (nextSpaceAccessGeneration) claimed before the write was sent; an
+ * eviction issued after it resolves to an empty received-spaces action, which the reducer ignores.
  */
 export function receivedSpaceAccess(space: SpaceAccess, generation: number) {
-    return spaceAccessAction(space, generation);
+    return spaceMutationAction(space, generation);
 }
 
 /** Invalidates the hook-local per-member grant matrix. */
@@ -521,7 +543,7 @@ export function updateSpace(spaceId: string, patch: UpdateSpacePatch): DocsThunk
         const expectedUpdateAt = getSpace(getState(), spaceId)?.update_at ?? 0;
         const generation = nextSpaceAccessGeneration();
         const updated = await docsDataSource.updateSpace(spaceId, patch, expectedUpdateAt);
-        dispatch(spaceAccessAction(updated, generation));
+        dispatch(spaceMutationAction(updated, generation));
         return updated;
     };
 }

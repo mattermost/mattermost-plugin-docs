@@ -9,7 +9,7 @@ import {ClientError} from '@mattermost/client';
 import {makePage, makeSpace, makeTeam} from 'store/test_fixtures';
 
 import {DraftTypes, SpaceTypes} from './action_types';
-import {addSpaceMember, addSpaceMembers, createDraft, createSpace, ensureSpaceMembership, fetchAllSpaces, fetchSpace, fetchSpaces, isLastSpaceAdminError, isLastSpaceMemberError, isNotTeamMemberError, isSpaceLockTimeoutError, leaveSpace, movePage, refreshSpaceAccess, refreshSpaceAfterMemberPermissionsChanged, refreshSpaceAfterSelfRemoval, removeSpaceMember, saveDraft} from './actions';
+import {addSpaceMember, addSpaceMembers, createDraft, createSpace, ensureSpaceMembership, fetchAllSpaces, fetchSpace, fetchSpaces, isLastSpaceAdminError, isLastSpaceMemberError, isNotTeamMemberError, isSpaceLockTimeoutError, leaveSpace, movePage, refreshSpaceAccess, refreshSpaceAfterMemberPermissionsChanged, refreshSpaceAfterSelfRemoval, removeSpaceMember, saveDraft, updateSpace} from './actions';
 
 import {makeTestState} from '../../tests/react_testing_utils';
 
@@ -24,6 +24,7 @@ const mockListSpaceMembers = jest.fn();
 const mockCreateSpaceDraft = jest.fn();
 const mockUpdatePageDraft = jest.fn();
 const mockJoinSpace = jest.fn();
+const mockUpdateSpace = jest.fn();
 
 jest.mock('data', () => ({
     docsDataSource: {
@@ -38,6 +39,7 @@ jest.mock('data', () => ({
         createSpaceDraft: (...args: unknown[]) => mockCreateSpaceDraft(...args as []),
         updatePageDraft: (...args: unknown[]) => mockUpdatePageDraft(...args as []),
         joinSpace: (...args: unknown[]) => mockJoinSpace(...args as []),
+        updateSpace: (...args: unknown[]) => mockUpdateSpace(...args as []),
     },
 }));
 
@@ -471,6 +473,69 @@ describe('space access ordering', () => {
             spaces: [fresh, other],
             teamId: team.id,
         });
+    });
+
+    // The eviction removed the record, so there is nothing to replace the superseded listing entry
+    // with. Carrying the listing's own bare space instead put a space the server had just refused
+    // back into the team index, and its metadata back on screen, until the next listing.
+    it('omits a space evicted while the team listing was in flight', async () => {
+        const team = makeTeam('team1', 'one');
+        const denied = makeSpace('space1', 'Denied', team.id);
+        const other = makeSpace('space2', 'Other', team.id);
+        const listing = deferred<unknown>();
+        mockListSpaces.mockReturnValueOnce(listing.promise);
+        mockGetSpace.mockRejectedValueOnce(new RestError('/spaces/space1', 403, 'denied', undefined));
+
+        // The store no longer holds space1, because the denial below has already evicted it.
+        const state = makeTestState({currentTeam: team, currentUser: {id: 'user1'}, docs: {spaces: {}}});
+
+        const earlier = run((d, g) => fetchSpaces()(d as never, g as never, undefined as never), state);
+        await run((d, g) => refreshSpaceAccess('space1')(d as never, g as never, undefined as never), state).result;
+        listing.resolve([denied, other]);
+        await earlier.result;
+
+        expect(earlier.dispatch).toHaveBeenCalledWith({
+            type: SpaceTypes.RECEIVED_SPACES,
+            spaces: [other],
+            teamId: team.id,
+        });
+    });
+
+    // A read issued after a write can still return before it, having read the pre-write record.
+    // Ordering the write by issue discarded it, leaving the old update_at in the store, so the next
+    // edit sent a stale optimistic-lock baseline and failed as a conflict on an uncontended space.
+    it('applies a successful update that a later read overtook', async () => {
+        const stored = {...makeSpace('space1', 'Stored'), update_at: 100};
+        const updated = {...makeSpace('space1', 'Renamed'), update_at: 200};
+        const write = deferred<unknown>();
+        mockUpdateSpace.mockReturnValueOnce(write.promise);
+        mockGetSpace.mockResolvedValueOnce(stored);
+        const state = makeTestState({currentUser: {id: 'user1'}, docs: {spaces: {[stored.id]: stored}}});
+
+        const update = run((d, g) => updateSpace('space1', {title: 'Renamed'})(d as never, g as never, undefined as never), state);
+        await run((d, g) => refreshSpaceAccess('space1')(d as never, g as never, undefined as never), state).result;
+        write.resolve(updated);
+        await update.result;
+
+        expect(update.dispatch).toHaveBeenCalledWith({type: SpaceTypes.RECEIVED_SPACES, spaces: [updated]});
+    });
+
+    // Completion ordering must not reach past an eviction: the server may have committed the write
+    // before it refused the read that evicted, so the refusal is the later word on access.
+    it('does not restore a space evicted while the update was in flight', async () => {
+        const stored = {...makeSpace('space1', 'Stored'), update_at: 100};
+        const updated = {...makeSpace('space1', 'Renamed'), update_at: 200};
+        const write = deferred<unknown>();
+        mockUpdateSpace.mockReturnValueOnce(write.promise);
+        mockGetSpace.mockRejectedValueOnce(new RestError('/spaces/space1', 403, 'denied', undefined));
+        const state = makeTestState({currentUser: {id: 'user1'}, docs: {spaces: {[stored.id]: stored}}});
+
+        const update = run((d, g) => updateSpace('space1', {title: 'Renamed'})(d as never, g as never, undefined as never), state);
+        await run((d, g) => refreshSpaceAccess('space1')(d as never, g as never, undefined as never), state).result;
+        write.resolve(updated);
+        await update.result;
+
+        expect(update.dispatch).toHaveBeenCalledWith({type: SpaceTypes.RECEIVED_SPACES, spaces: []});
     });
 
     // fetchSpace is the reconciliation path for access changes no event announces: an open space
