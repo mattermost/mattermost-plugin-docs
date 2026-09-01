@@ -213,6 +213,7 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
                             contentType='json'
                             extensions={DOCS_EXTENSIONS}
                             onContentError={onContentError}
+                            readOnly={!editing && !contentError}
                             disabled={contentError || !editing}
                             channelId=''
                             placeholder={formatMessage({id: 'docs.editor.bodyPlaceholder', defaultMessage: 'Start writing…'})}
