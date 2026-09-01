@@ -79,9 +79,9 @@ export function useSpaceAccessEditor(space: Space, {onClose}: {onClose: () => vo
         defaultMessage: "Couldn't load this space's permissions. Close and reopen to try again.",
     }) : undefined;
 
-    // The only reason a control the caller owns is unusable: an authority denial withholds the
-    // control instead, so it has no reason left to report.
-    const busyReason = accessBusy ? formatMessage({
+    // Named from the write alone: a control disabled by the initial read is not saving anything,
+    // and an authority denial withholds the control instead of disabling it.
+    const busyReason = permissions.busy ? formatMessage({
         id: 'docs.spaceSettings.permissions.saving',
         defaultMessage: 'Saving…',
     }) : undefined;
@@ -98,14 +98,17 @@ export function useSpaceAccessEditor(space: Space, {onClose}: {onClose: () => vo
     }, [permissions.members]);
 
     // Every grant this caller could not make on this member is dropped from the vocabulary
-    // rather than offered and refused: a guest may hold nothing beyond read_page, a member
-    // cannot raise themselves, and admin_space is a space administrator's grant to give.
+    // rather than offered and refused: a guest may hold nothing beyond read_page, and both
+    // raising oneself and editing an administrator are a space administrator's act.
     const grantOptionsFor = useCallback((profile: MemberProfile): readonly Permission[] => {
         const record = permissions.members.get(profile.id);
         if (!record || !permissions.canManageMembers || record.is_guest) {
             return [];
         }
-        if (profile.id === currentUserId && !permissions.canAdminister) {
+
+        // Editing an administrator, like raising oneself, is a space administrator's act: without
+        // that authority the server refuses the write, so no editor is offered at all.
+        if (!permissions.canAdminister && (profile.id === currentUserId || record.is_admin)) {
             return [];
         }
         return permissions.canAdminister ? MEMBER_PERMISSION_ORDER : DEFAULT_PERMISSION_ORDER;

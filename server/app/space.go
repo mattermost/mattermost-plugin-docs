@@ -515,7 +515,10 @@ func (s *Service) GetSpacesForTeam(teamID, userID string, page, perPage int) ([]
 		return nil, false, mmmodel.NewAppError("GetSpacesForTeam", "app.space.get_for_team.forbidden.app_error", nil, "", http.StatusForbidden)
 	}
 	callerHasOpenFallthrough := !sysadmin && s.hasOpenTeamFallthrough(userID, teamID)
-	spaces, err := s.store.GetSpacesForTeam(teamID, userID, sysadmin, callerHasOpenFallthrough, offset, limit)
+	spaces, err := s.store.GetSpacesForTeam(teamID, userID, store.SpaceVisibility{
+		SeesEverySpace:     sysadmin,
+		HasOpenFallthrough: callerHasOpenFallthrough,
+	}, offset, limit)
 	if err != nil {
 		return nil, false, storeAppError("GetSpacesForTeam", err)
 	}

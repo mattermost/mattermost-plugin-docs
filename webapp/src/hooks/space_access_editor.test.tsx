@@ -144,6 +144,15 @@ describe('useSpaceAccessEditor', () => {
             expect(render().hook.current.busyReason).toBe('Saving…');
         });
 
+        // The initial read disables the same controls, but nothing is being saved during it.
+        it('stays silent while the permission read is still loading', () => {
+            mockPermissionsState = {...mockPermissionsState, loading: true};
+            const {hook} = render();
+
+            expect(hook.current.accessBusy).toBe(true);
+            expect(hook.current.busyReason).toBeUndefined();
+        });
+
         it('names a failed read so the surface can say so, and nothing otherwise', () => {
             expect(render().hook.current.loadFailedReason).toBeUndefined();
 
@@ -195,6 +204,19 @@ describe('useSpaceAccessEditor', () => {
             const {hook} = render();
 
             expect(hook.current.grantOptionsFor(profile('u2'))).toEqual(DEFAULT_PERMISSION_ORDER);
+        });
+
+        // Editing an administrator requires admin_space, and the visible vocabulary omits it, so
+        // every change a plain manager could make here would strip it and be refused.
+        it('offers nothing on an administrator row to a manager who does not administer the space', () => {
+            mockPermissionsState = {
+                ...mockPermissionsState,
+                canAdminister: false,
+                members: new Map([['u2', member('u2', {is_admin: true, granted_permissions: ['admin_space']})]]),
+            };
+            const {hook} = render();
+
+            expect(hook.current.grantOptionsFor(profile('u2'))).toEqual([]);
         });
 
         it('offers the whole vocabulary to an administrator', () => {

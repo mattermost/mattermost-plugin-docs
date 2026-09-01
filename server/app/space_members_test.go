@@ -69,6 +69,53 @@ func TestServiceRemoveSpaceMember_SoleAdminLastAdminConflict(t *testing.T) {
 	mockAPI.AssertNotCalled(t, "DeleteChannelMember", space.ChannelId, soleAdminID)
 }
 
+// TestServiceSetSpaceMemberPermissions_SoleAdminLastAdminConflict pins the last-admin invariant on
+// the grant path, not just the removal path. Revoking admin_space through a permission-set write
+// strips the same authority RemoveSpaceMember refuses to strip, so it must be refused the same way;
+// without this the guard's SetSpaceMemberPermissions call site is only reachable in tests through
+// its sibling, and dropping it here would leave the space with no admin at all.
+func TestServiceSetSpaceMemberPermissions_SoleAdminLastAdminConflict(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	sysadminID := mmmodel.NewId()
+	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true).Maybe()
+	h := openTestServiceWithAPI(t, mockAPI)
+	space, _ := createSpaceForMemberTests(t, h, mockAPI)
+
+	soleAdminID := mmmodel.NewId()
+	testutil.MustAddChannelAdmin(t, h.db, space.ChannelId, soleAdminID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, soleAdminID, 0)
+
+	// A grantable set that omits admin_space: the write demotes the sole admin.
+	_, appErr := h.svc.SetSpaceMemberPermissions(space, soleAdminID, []string{mmmodel.PermissionEditPage.Id}, sysadminID)
+	require.NotNil(t, appErr)
+	require.Equal(t, http.StatusConflict, appErr.StatusCode)
+	require.Equal(t, "app.space.member.last_admin.app_error", appErr.Id)
+	mockAPI.AssertNotCalled(t, "UpdateChannelMemberRoles", space.ChannelId, soleAdminID, mock.Anything)
+}
+
+// TestServiceSetSpaceMemberPermissions_SoleAdminKeepingAdminAllowed is the positive counterpart:
+// the same sole admin may have other permissions changed as long as admin_space is retained, so the
+// guard keys on losing the admin tier rather than on any write touching an admin.
+func TestServiceSetSpaceMemberPermissions_SoleAdminKeepingAdminAllowed(t *testing.T) {
+	mockAPI := &plugintest.API{}
+	sysadminID := mmmodel.NewId()
+	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true).Maybe()
+	h := openTestServiceWithAPI(t, mockAPI)
+	space, _ := createSpaceForMemberTests(t, h, mockAPI)
+
+	soleAdminID := mmmodel.NewId()
+	testutil.MustAddChannelAdmin(t, h.db, space.ChannelId, soleAdminID)
+	testutil.MustAddTeamMember(t, h.db, space.TeamId, soleAdminID, 0)
+	mockAPI.On("UpdateChannelMemberRoles", space.ChannelId, soleAdminID, mock.Anything).
+		Return(&mmmodel.ChannelMember{ChannelId: space.ChannelId, UserId: soleAdminID, SchemeUser: true, SchemeAdmin: true}, nil)
+
+	member, appErr := h.svc.SetSpaceMemberPermissions(space, soleAdminID,
+		[]string{mmmodel.PermissionAdminSpace.Id, mmmodel.PermissionEditPage.Id}, sysadminID)
+	require.Nil(t, appErr)
+	require.NotNil(t, member)
+	mockAPI.AssertCalled(t, "UpdateChannelMemberRoles", space.ChannelId, soleAdminID, mock.Anything)
+}
+
 // TestServiceRemoveSpaceMember_OtherAdminAllowsRemoval is the positive counterpart: removing one of
 // two admins succeeds once another reachable admin remains.
 func TestServiceRemoveSpaceMember_OtherAdminAllowsRemoval(t *testing.T) {

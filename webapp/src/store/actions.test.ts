@@ -9,7 +9,7 @@ import {ClientError} from '@mattermost/client';
 import {makePage, makeSpace, makeTeam} from 'store/test_fixtures';
 
 import {DraftTypes, SpaceTypes} from './action_types';
-import {addSpaceMember, addSpaceMembers, createDraft, createSpace, ensureSpaceMembership, fetchAllSpaces, fetchSpace, isLastSpaceAdminError, isLastSpaceMemberError, isNotTeamMemberError, isSpaceLockTimeoutError, leaveSpace, movePage, refreshSpaceAccess, refreshSpaceAfterMemberPermissionsChanged, refreshSpaceAfterSelfRemoval, removeSpaceMember, saveDraft} from './actions';
+import {addSpaceMember, addSpaceMembers, createDraft, createSpace, ensureSpaceMembership, fetchAllSpaces, fetchSpace, fetchSpaces, isLastSpaceAdminError, isLastSpaceMemberError, isNotTeamMemberError, isSpaceLockTimeoutError, leaveSpace, movePage, refreshSpaceAccess, refreshSpaceAfterMemberPermissionsChanged, refreshSpaceAfterSelfRemoval, removeSpaceMember, saveDraft} from './actions';
 
 import {makeTestState} from '../../tests/react_testing_utils';
 
@@ -437,6 +437,40 @@ describe('space access ordering', () => {
         expect(later.dispatch).toHaveBeenCalledWith({type: SpaceTypes.RECEIVED_SPACES, spaces: [fresh]});
         expect(earlier.dispatch).toHaveBeenCalledWith({type: SpaceTypes.RECEIVED_SPACES, spaces: []});
         expect(earlier.dispatch).not.toHaveBeenCalledWith({type: SpaceTypes.RECEIVED_SPACES, spaces: [stale]});
+    });
+
+    // A team listing carries bare spaces, so an earlier-issued one landing late must not regress the
+    // record a fresher single-space response already wrote. view_access and update_at are the fields
+    // at stake: the reducer's own merge only rescues the three access fields, and update_at is the
+    // optimistic-lock baseline every later write reads, so a regressed one turns the next edit into a
+    // spurious conflict on an uncontended space.
+    it('a slower earlier team listing does not regress a fresher space record', async () => {
+        const team = makeTeam('team1', 'one');
+        const fresh = {...makeSpace('space1', 'Fresh', team.id), view_access: 'private' as const, update_at: 200};
+        const stale = {...makeSpace('space1', 'Stale', team.id), view_access: 'open' as const, update_at: 100};
+        const other = makeSpace('space2', 'Other', team.id);
+        const listing = deferred<unknown>();
+        mockListSpaces.mockReturnValueOnce(listing.promise);
+        mockGetSpace.mockResolvedValueOnce(fresh);
+        const state = makeTestState({
+            currentTeam: team,
+            currentUser: {id: 'user1'},
+            docs: {spaces: {[fresh.id]: fresh}},
+        });
+
+        // The listing is issued first, so it claims the earlier slot; the single-space read is issued
+        // and applied while it is still in flight.
+        const earlier = run((d, g) => fetchSpaces()(d as never, g as never, undefined as never), state);
+        await run((d, g) => refreshSpaceAccess('space1')(d as never, g as never, undefined as never), state).result;
+        listing.resolve([stale, other]);
+        await earlier.result;
+
+        // space1 keeps the fresher record, and is still present so the team index does not lose it.
+        expect(earlier.dispatch).toHaveBeenCalledWith({
+            type: SpaceTypes.RECEIVED_SPACES,
+            spaces: [fresh, other],
+            teamId: team.id,
+        });
     });
 
     // fetchSpace is the reconciliation path for access changes no event announces: an open space

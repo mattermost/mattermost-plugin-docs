@@ -4,6 +4,8 @@
 import {RestError, getServerErrorId} from 'client/rest';
 import {docsDataSource} from 'data';
 
+import type {GlobalState} from '@mattermost/types/store';
+
 import {getCurrentTeamId, getMyTeams} from 'mattermost-redux/selectors/entities/teams';
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
@@ -18,14 +20,13 @@ import {collectSubtreeIds} from './entities';
 import {getMustJoinSpace} from './permissions';
 import {getPage, getPagesById, getSpace} from './selectors';
 
-// Orders the single-space writers of a space's resolved access record. Each single-space read
-// claims an issue slot before its request is sent; the dispatch is dropped when a later-issued
-// response for the same space has already been applied, so a slower earlier read cannot overwrite
-// the state a fresher response wrote. An eviction claims a slot too, which keeps a single-space
-// response already in flight from resurrecting a space evicted on a definitive denial. The
-// fetchSpaces team listing does not consult this guard, so a listing already in flight can still
-// re-add an evicted space until the next refresh corrects it. The per-member counterpart is
-// useSpacePermissions's write-generation guard.
+// Orders every writer of a space's stored record. Each read and each write claims an issue slot
+// before its request is sent; the dispatch is dropped when a later-issued response for the same
+// space has already been applied, so a slower earlier response cannot overwrite the state a
+// fresher one wrote. An eviction claims a slot too, which keeps a response already in flight from
+// resurrecting a space evicted on a definitive denial. Team listings claim a slot as well, so a
+// listing cannot regress a space a later single-space response already resolved. The per-member
+// counterpart is useSpacePermissions's write-generation guard.
 let spaceAccessIssueCounter = 0;
 const appliedSpaceAccessGeneration = new Map<string, number>();
 
@@ -44,6 +45,19 @@ const spaceAccessAction = (space: Space, generation: number) => {
     return {type: SpaceTypes.RECEIVED_SPACES, spaces: [space]};
 };
 
+// Reconciles a team listing against the guard. A listing carries bare spaces and, when it names a
+// team, is the authoritative set of that team's spaces, so a superseded entry is replaced by the
+// stored record rather than dropped: dropping it would take the space out of the team index even
+// though it is still there. Entries the listing does win keep their claim, so a read issued before
+// it cannot overwrite them afterwards.
+const reconcileListing = (state: GlobalState, spaces: Space[], generation: number): Space[] => spaces.map((space) => {
+    if (generation < (appliedSpaceAccessGeneration.get(space.id) ?? 0)) {
+        return getSpace(state, space.id) ?? space;
+    }
+    appliedSpaceAccessGeneration.set(space.id, generation);
+    return space;
+});
+
 /** Drops spaceId from the store and supersedes any of its responses still in flight. */
 export function evictSpace(spaceId: string) {
     appliedSpaceAccessGeneration.set(spaceId, ++spaceAccessIssueCounter);
@@ -58,13 +72,18 @@ export function fetchSpaces(): DocsThunkAction<Promise<void>> {
         if (!teamId) {
             return;
         }
+        const generation = nextSpaceAccessGeneration();
         try {
             const spaces = await docsDataSource.listSpaces(teamId);
 
             // `teamId` records that this team's list is now known, so consumers
             // can tell "no spaces" from "not loaded yet" (an empty result would
             // otherwise leave no trace in the index).
-            dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces, teamId});
+            dispatch({
+                type: SpaceTypes.RECEIVED_SPACES,
+                spaces: reconcileListing(getState(), spaces, generation),
+                teamId,
+            });
         } catch (error) {
             // eslint-disable-next-line no-console
             console.error('Docs: failed to load spaces', error);
@@ -127,6 +146,7 @@ export function fetchSpace(spaceId: string): DocsThunkAction<Promise<Space | und
 export function fetchAllSpaces(): DocsThunkAction<Promise<void>> {
     return async (dispatch, getState) => {
         const teams = getMyTeams(getState());
+        const generation = nextSpaceAccessGeneration();
         const settled = await Promise.allSettled(teams.map((team) => docsDataSource.listSpaces(team.id)));
         const spaces = settled.flatMap((result, index) => {
             if (result.status === 'fulfilled') {
@@ -137,7 +157,7 @@ export function fetchAllSpaces(): DocsThunkAction<Promise<void>> {
             return [];
         });
         if (spaces.length > 0) {
-            dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces});
+            dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: reconcileListing(getState(), spaces, generation)});
         }
     };
 }
@@ -499,8 +519,9 @@ export function createSpace(input: CreateSpaceInput): DocsThunkAction<Promise<Sp
 export function updateSpace(spaceId: string, patch: UpdateSpacePatch): DocsThunkAction<Promise<Space>> {
     return async (dispatch, getState) => {
         const expectedUpdateAt = getSpace(getState(), spaceId)?.update_at ?? 0;
+        const generation = nextSpaceAccessGeneration();
         const updated = await docsDataSource.updateSpace(spaceId, patch, expectedUpdateAt);
-        dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: [updated]});
+        dispatch(spaceAccessAction(updated, generation));
         return updated;
     };
 }

@@ -81,18 +81,26 @@ func (s *Store) GetSpace(spaceID string, includeDeleted bool) (*model.Space, err
 	return &space, nil
 }
 
+// SpaceVisibility carries the caller's already-resolved reach over a team's spaces. Both fields are
+// decided by the app layer; the store never evaluates permissions itself.
+type SpaceVisibility struct {
+	// SeesEverySpace drops the visibility predicate altogether and returns the team's live spaces
+	// (a sysadmin, who is admitted to any single space by the same override).
+	SeesEverySpace bool
+
+	// HasOpenFallthrough admits ViewAccess='open' spaces the caller is not a member of. It carries
+	// the caller's team-active/read_public_channel/compliance-mode conjunct (see the app-layer read
+	// resolver) as a single boolean.
+	HasOpenFallthrough bool
+}
+
 // GetSpacesForTeam returns one page of the given team's live spaces visible to userID, ordered by
 // SortOrder ascending with CreateAt then Id as stable tie-breakers. A space is visible when the
 // caller is an active member of its team and a member of its backing channel (a read-only EXISTS
 // against core's TeamMembers and ChannelMembers tables: space ("S") channels are excluded from the
 // generic channel-listing plugin APIs, so the caller cannot supply its visible-channel set), or when
-// the space is ViewAccess='open' and
-// callerHasOpenFallthrough is true — a single app-layer-computed boolean carrying the caller's
-// team-active/read_public_channel/compliance-mode conjunct (see the app-layer read resolver);
-// the store never evaluates permissions itself. callerSeesEverySpace drops the visibility predicate
-// altogether and returns the team's live spaces, and is likewise decided by the app layer (a
-// sysadmin, who is admitted to any single space by the same override). limit must be > 0.
-func (s *Store) GetSpacesForTeam(teamID, userID string, callerSeesEverySpace, callerHasOpenFallthrough bool, offset, limit int) ([]*model.Space, error) {
+// visibility admits it. limit must be > 0.
+func (s *Store) GetSpacesForTeam(teamID, userID string, visibility SpaceVisibility, offset, limit int) ([]*model.Space, error) {
 	if teamID == "" {
 		return nil, &ErrInvalidInput{Entity: "Space", Field: "teamID", Value: teamID}
 	}
@@ -107,7 +115,7 @@ func (s *Store) GetSpacesForTeam(teamID, userID string, callerSeesEverySpace, ca
 		Select(columnsWithAlias("sp", spaceSelectColumns)...).
 		From("DOCS_Space sp").
 		Where(sq.Eq{"sp.TeamId": teamID, "sp.DeleteAt": 0})
-	if !callerSeesEverySpace {
+	if !visibility.SeesEverySpace {
 		visible := sq.Or{sq.Expr(`
 		EXISTS (
 			SELECT 1
@@ -118,7 +126,7 @@ func (s *Store) GetSpacesForTeam(teamID, userID string, callerSeesEverySpace, ca
 				AND tm.DeleteAt = 0
 			WHERE cm.ChannelId = sp.ChannelId AND cm.UserId = ?
 		)`, userID)}
-		if callerHasOpenFallthrough {
+		if visibility.HasOpenFallthrough {
 			visible = append(visible, sq.Eq{"sp.ViewAccess": model.ViewAccessOpen})
 		}
 		builder = builder.Where(visible)
