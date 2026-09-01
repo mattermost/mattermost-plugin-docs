@@ -165,3 +165,134 @@ func TestArchiveRejectsUnsafeDeclaredPaths(t *testing.T) {
 	require.ErrorContains(t, err, "not in cleaned form")
 	require.True(t, strings.Contains(err.Error(), ".."), "the rejected path is named in the error")
 }
+
+// exporterBundlePath is a bundle produced by the real mmetl exporter, from a
+// synthetic Confluence backup rather than anyone's private export.
+//
+//	mmetl transform confluence --file <backup>.zip --space ENG \
+//	  --organization-id https://example.atlassian.net --team engineering \
+//	  --output server/importer/testdata/exporter/bundle.zip
+const exporterBundlePath = "testdata/exporter/bundle.zip"
+
+// TestValidateBundleFS_ExporterProducedBundle validates output from the real
+// exporter rather than from this repository's own fixture builders.
+//
+// The golden fixtures prove both sides agree on a contract they were each
+// written against, which cannot catch the shipped exporter drifting away from
+// it. This can: if a change to either side breaks the agreement, this test
+// fails and the bundle has to be regenerated with the command above.
+func TestValidateBundleFS_ExporterProducedBundle(t *testing.T) {
+	reader, err := zip.OpenReader(exporterBundlePath)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, reader.Close()) }()
+
+	manifest, lines, err := ValidateBundleFS(reader)
+	require.NoError(t, err)
+
+	require.Equal(t, ManifestVersion, manifest.Version)
+	require.Equal(t, Generator, manifest.Generator)
+	require.Empty(t, manifest.Errors)
+	require.Equal(t, ManifestFilename, reader.File[0].Name, "the manifest must be the first entry")
+	require.Equal(t, JSONLFilename, reader.File[1].Name)
+
+	var pages, comments, attachments int
+	for _, line := range lines {
+		switch line.Type {
+		case LineTypePage:
+			pages++
+			attachments += len(line.Page.Attachments)
+		case LineTypePageComment:
+			comments++
+		}
+	}
+	require.Equal(t, manifest.Counts.PagesEmitted+manifest.Counts.BlogPostsEmitted, pages)
+	require.Equal(t, manifest.Counts.CommentsEmitted, comments)
+	require.Equal(t, manifest.Counts.AttachmentsEmitted, attachments)
+	require.Len(t, manifest.Users, manifest.Counts.UsersEmitted)
+}
+
+// TestExporterBundleCarriesTheShapesTheImporterMustHandle checks that the
+// committed bundle still exercises the features it was built to cover. A
+// regenerated bundle that quietly lost its hierarchy or its placeholders would
+// keep passing every other assertion here while testing far less.
+func TestExporterBundleCarriesTheShapesTheImporterMustHandle(t *testing.T) {
+	reader, err := zip.OpenReader(exporterBundlePath)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, reader.Close()) }()
+
+	_, lines, err := ValidateBundleFS(reader)
+	require.NoError(t, err)
+
+	var (
+		hasChildPage       bool
+		hasBlogPost        bool
+		hasLabels          bool
+		hasAttachment      bool
+		hasThreadedReply   bool
+		hasPagePlaceholder bool
+		hasUserPlaceholder bool
+	)
+
+	for _, line := range lines {
+		switch line.Type {
+		case LineTypePage:
+			page := line.Page
+			if page.ParentImportSourceID != "" {
+				hasChildPage = true
+			}
+			if page.Props[PropConfluenceContentType] == ContentTypeBlogPost {
+				hasBlogPost = true
+			}
+			if labels, ok := page.Props[PropImportLabels].([]any); ok && len(labels) > 0 {
+				hasLabels = true
+			}
+			if len(page.Attachments) > 0 {
+				hasAttachment = true
+			}
+			if strings.Contains(page.Content, "{{CONF_PAGE_ID:") {
+				hasPagePlaceholder = true
+			}
+			if strings.Contains(page.Content, "{{CONF_USER_ID:") {
+				hasUserPlaceholder = true
+			}
+		case LineTypePageComment:
+			comment := line.PageComment
+			if comment.ParentCommentImportSourceID != "" {
+				hasThreadedReply = true
+				require.Equal(t, comment.ParentCommentImportSourceID, comment.ThreadRootImportSourceID,
+					"a direct reply's thread root is its parent")
+			}
+		}
+	}
+
+	require.True(t, hasChildPage, "a page hierarchy")
+	require.True(t, hasBlogPost, "a blog post imported as a page")
+	require.True(t, hasLabels, "preserved labels")
+	require.True(t, hasAttachment, "an attachment with its checksum")
+	require.True(t, hasThreadedReply, "a comment thread")
+	require.True(t, hasPagePlaceholder, "a page-link placeholder to resolve")
+	require.True(t, hasUserPlaceholder, "a mention placeholder to resolve")
+}
+
+// Every attachment the exporter declared must be present with the checksum it
+// recorded, since that is what the importer verifies before uploading.
+func TestExporterBundleAttachmentsVerify(t *testing.T) {
+	reader, err := zip.OpenReader(exporterBundlePath)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, reader.Close()) }()
+
+	_, lines, err := ValidateBundleFS(reader)
+	require.NoError(t, err)
+
+	for _, line := range lines {
+		if line.Type != LineTypePage {
+			continue
+		}
+		for _, attachment := range line.Page.Attachments {
+			body, err := readArchiveEntry(reader, attachment.Path)
+			require.NoErrorf(t, err, "attachment %s is missing", attachment.Path)
+			require.Equal(t, attachment.Props[PropSHA256], SHA256Hex(body))
+			require.Equal(t, float64(len(body)), attachment.Props[PropSize])
+		}
+	}
+}
