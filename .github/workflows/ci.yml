@@ -127,6 +127,10 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
+    # Declared here so the server under test shows up in a workflow diff; `vars` lets it
+    # be changed from repository settings.
+    env:
+      MM_IMAGE: ${{ vars.MM_IMAGE || 'mattermostdevelopment/mattermost-enterprise-edition:master' }}
     # No `services:` block: testcontainers provisions the server, so CI and local runs
     # take the same path.
     steps:
@@ -141,6 +145,7 @@ jobs:
         uses: ./.github/actions/resolve-e2e-core-image
         with:
           pull-request-body: ${{ github.event.pull_request.body || '' }}
+          default-image: ${{ env.MM_IMAGE }}
 
       # The secrets context is not readable from a step-level `if`, so credential presence is
       # exported as a step output. Fork PRs and repositories without the org secrets resolve to
@@ -185,6 +190,8 @@ jobs:
     env:
       # Selects both the specs and the licensed container setup they need; see tests/helpers/mode.ts.
       MM_E2E_SPACE_PERMISSIONS: "true"
+      # Declared here for the same reason as the authoring job; `vars` overrides both.
+      MM_IMAGE: ${{ vars.MM_IMAGE || 'mattermostdevelopment/mattermost-enterprise-edition:master' }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -198,6 +205,7 @@ jobs:
         uses: ./.github/actions/resolve-e2e-core-image
         with:
           pull-request-body: ${{ github.event.pull_request.body || '' }}
+          default-image: ${{ env.MM_IMAGE }}
 
       # The master image predates the core space-role work (mattermost/mattermost#37685), so it
       # does not define the roles this suite requires. Marker-less runs — every push to master and

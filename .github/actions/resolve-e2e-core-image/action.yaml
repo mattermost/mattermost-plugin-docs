@@ -1,9 +1,13 @@
 name: "resolve-e2e-core-image"
-description: Resolves the Mattermost image for an E2E job from an optional per-PR core commit
+description: Resolves the Mattermost image for an E2E job from an optional per-PR core commit, falling back to the caller's default
 
 inputs:
   pull-request-body:
     description: Pull request body containing an optional e2e-core-commit marker
+    required: false
+    default: ""
+  default-image:
+    description: Image to select when no marker names a core commit. Empty falls back to master.
     required: false
     default: ""
 
@@ -12,7 +16,7 @@ outputs:
     description: The Mattermost image selected for this E2E run
     value: ${{ steps.resolve.outputs.image }}
   is-default:
-    description: Whether the run fell back to the default master image because no marker selected a core commit
+    description: Whether the run fell back to the caller's default image because no marker selected a core commit
     value: ${{ steps.resolve.outputs.is-default }}
 
 runs:
@@ -23,8 +27,11 @@ runs:
       shell: bash
       env:
         PR_BODY: ${{ inputs.pull-request-body }}
+        DEFAULT_IMAGE: ${{ inputs.default-image }}
       run: |
-        image="mattermostdevelopment/mattermost-enterprise-edition:master"
+        # The caller declares the default in its own workflow, so the server under test shows up
+        # in a workflow diff and stays overridable from repository settings.
+        image="${DEFAULT_IMAGE:-mattermostdevelopment/mattermost-enterprise-edition:master}"
         is_default=true
 
         # Only an HTML comment carrying the marker is a selection attempt; the same words in the
