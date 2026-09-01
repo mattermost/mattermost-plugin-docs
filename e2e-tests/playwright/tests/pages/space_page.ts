@@ -173,7 +173,18 @@ export class SpacePage {
     }
 
     async expectBodyReadOnly() {
-        await expect(this.publishedEditor).toHaveAttribute('aria-disabled', 'true');
+        await expect(this.publishedEditor).toHaveAttribute('contenteditable', 'false');
+    }
+
+    async expectCodeHighlighted() {
+        const token = this.bodySurface.locator('pre code span[class^="hljs-"]').first();
+        await expect(token).toBeVisible();
+
+        const paint = await token.evaluate((el) => {
+            const style = getComputedStyle(el);
+            return {color: style.color, fill: style.webkitTextFillColor};
+        });
+        expect(paint.fill, 'a highlighted token must paint in its own colour').toBe(paint.color);
     }
 
     async publish() {

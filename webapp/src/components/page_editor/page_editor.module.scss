@@ -31,17 +31,35 @@
     position: relative;
 }
 
-// View mode still mounts a disabled editor so the body cannot be typed in, but
-// the host greys disabled fields. Reading should look like page copy.
+.surface:not(.reading) :global {
+    .WysiwygEditor .ProseMirror > p:last-child:not(:only-child) {
+        &:empty,
+        &:has(> br:only-child) {
+            display: block;
+        }
+    }
+
+    .WysiwygEditor .ProseMirror {
+        h1,
+        h2,
+        h3,
+        h4,
+        h5,
+        h6 {
+            + p:last-child:empty,
+            + p:last-child:has(> br:only-child),
+            + p.is-editor-empty:last-child {
+                font-size: inherit;
+                line-height: inherit;
+            }
+        }
+    }
+}
+
 .reading :global {
-    .WysiwygEditor,
-    .WysiwygEditor .ProseMirror,
-    .custom-textarea,
-    .custom-textarea[disabled] {
+    .WysiwygEditor--disabled .ProseMirror {
         opacity: 1;
-        color: var(--center-channel-color);
-        -webkit-text-fill-color: var(--center-channel-color);
-        cursor: default;
+        cursor: auto;
     }
 }
 
