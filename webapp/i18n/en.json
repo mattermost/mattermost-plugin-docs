@@ -118,7 +118,7 @@
   "docs.pageTree.draft": "Draft",
   "docs.pageTree.expand": "Expand {title}",
   "docs.pageTree.favorited": "Favorited",
-  "docs.pageTree.keyboardHelp": "Use the arrow keys to move through pages. Hold Alt with an arrow key to move the selected page up, down, in, or out. Press Tab to reach the actions menu for the selected page.",
+  "docs.pageTree.keyboardHelp": "Use the arrow keys to move through pages. Hold Alt with an arrow key to move the focused page up, down, in, or out. Press Tab to reach its actions menu.",
   "docs.pageTree.menu": "Page options for {title}",
   "docs.pageTree.moveBlocked": "Cannot move {title} any further in that direction.",
   "docs.pageTree.moveFailed": "Could not move the page. Please try again.",
