@@ -175,6 +175,11 @@ export async function listComments(page: Page, spaceId: string, pageId: string, 
 export async function listCommentsResponse(page: Page, spaceId: string, pageId: string, filters: CommentListFilters = {}): Promise<APIResponse> {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(filters)) {
+        // An absent filter is not a filter: next_after is optional on the window, so a caller
+        // paging to the end passes it through as undefined rather than omitting the key.
+        if (value === undefined) {
+            continue;
+        }
         params.set(key, String(value));
     }
 
@@ -190,7 +195,7 @@ export async function listCommentReplies(page: Page, spaceId: string, pageId: st
 }
 
 export async function getCommentCounts(page: Page, spaceId: string, pageId: string): Promise<PageCommentCounts> {
-    const response = await page.request.get(`${apiRoot}/spaces/${spaceId}/pages/${pageId}/comments/counts`);
+    const response = await page.request.get(`${apiRoot}/spaces/${spaceId}/pages/${pageId}/comments/counts`, requestedWith);
 
     return readJsonOrThrow<PageCommentCounts>(response, `Unable to read comment counts for page ${pageId}`);
 }

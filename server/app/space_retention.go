@@ -72,7 +72,23 @@ func (s *Service) ReconcileSpaceRetention() error {
 			}
 		}
 		if err := s.client.System.AddChannelsToRetentionPolicy(policyID, channelIDs); err != nil {
+			s.restorePriorRetentionPolicies(byCurrentPolicy)
 			return err
+		}
+	}
+}
+
+// restorePriorRetentionPolicies puts channels back on the policy the re-home removed them from.
+// The remove has to precede the add — core keys the assignment on the channel alone — so a failed
+// add leaves those channels on no policy at all, following the standard clock instead of the
+// stricter one an admin configured. Restoring is best effort: it is a recovery path, and the error
+// the caller is already returning is the one worth reporting. A restore that does not land is no
+// worse than not attempting it, because the channels stay in the detection read either way.
+func (s *Service) restorePriorRetentionPolicies(byPriorPolicy map[string][]string) {
+	for priorPolicyID, ids := range byPriorPolicy {
+		if err := s.client.System.AddChannelsToRetentionPolicy(priorPolicyID, ids); err != nil {
+			s.log.Warn("Failed to restore space channels to their prior data-retention policy after a failed re-home",
+				"policy_id", priorPolicyID, "channel_count", len(ids), "err", err)
 		}
 	}
 }
@@ -81,7 +97,9 @@ func (s *Service) ReconcileSpaceRetention() error {
 // to the standard retention clock. This is what clearing the Docs retention setting means: the
 // enrolment is an exception Docs asked for, so withdrawing the setting has to withdraw the
 // assignments too, or spaces keep following a policy nothing in the configuration still names.
-// Only channels sitting in policyID are touched, so a policy an admin assigned by hand survives.
+// Only channels sitting in policyID are touched, so a space channel an admin moved to a different
+// policy survives. One inside policyID does not: core records no owner for an assignment, so a
+// hand-made one cannot be told apart from an enrolment Docs made.
 // Idempotent and re-runnable; a no-op when policyID is empty.
 func (s *Service) ReleaseSpaceRetention(policyID string) error {
 	if policyID == "" || s.client == nil {

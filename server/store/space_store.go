@@ -68,9 +68,11 @@ func (s *Store) GetSpaceChannelsNotInRetentionPolicy(policyID string, limit int)
 // to the given data-retention policy. It is the inverse of the detection above and drives the
 // release path: when the Docs retention setting is cleared, the channels Docs enrolled must be
 // removed from the policy it enrolled them in, or they keep following that policy's clock instead
-// of the standard one. Scoping the read to the policy Docs was configured with is what keeps an
-// assignment an admin made by hand out of the release. Deleted spaces are included for the same
-// reason they are included in the detection: their content is still restorable.
+// of the standard one. Scoping the read to the policy Docs was configured with keeps an assignment
+// to any other policy out of the release; an assignment to this policy is released whoever made it,
+// because core records no owner and a hand-made assignment is therefore indistinguishable from an
+// enrolment. Deleted spaces are included for the same reason they are included in the detection:
+// their content is still restorable.
 func (s *Store) GetSpaceChannelsInRetentionPolicy(policyID string, limit int) ([]string, error) {
 	if err := requirePositiveLimit("Space", limit); err != nil {
 		return nil, err

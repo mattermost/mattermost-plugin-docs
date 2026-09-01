@@ -100,3 +100,40 @@ func TestAuditRecord_DeletePageComment(t *testing.T) {
 	assert.Equal(t, page.Id, audit.EventData.Parameters["page_id"])
 	assert.Equal(t, root.Id, audit.EventData.Parameters["comment_id"])
 }
+
+// TestAuditRecord_DeletePageCommentCommittedFailure covers the branch recordAuditOutcome exists
+// for: the platform soft-deletes the row and then reports an error. The caller sees a 500, but the
+// deletion is durable, so the audit trail has to carry it as a success with the object type the
+// other comment events use — a record the handler's success branch never reaches.
+func TestAuditRecord_DeletePageCommentCommittedFailure(t *testing.T) {
+	mockAPI := newEnabledMockAPI()
+	mockAPI.On("GetChannelMember", mock.Anything, mock.Anything).Return(&mmmodel.ChannelMember{}, nil)
+	mockAPI.On("GetTeamMember", mock.Anything, mock.Anything).Return(&mmmodel.TeamMember{}, nil)
+	h := openTestPlugin(t, mockAPI)
+
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	page := seedPage(t, h.store, space.Id, channelID, "")
+	author := mmmodel.NewId()
+	root := seedCommentPost(t, h, channelID, page.Id, "", author, 1000)
+
+	mockAPI.On("DeletePost", mock.AnythingOfType("string")).Return(
+		func(postID string) *mmmodel.AppError {
+			_, err := h.db.Exec(`UPDATE Posts SET DeleteAt = $1 WHERE (Id = $2 OR RootId = $2) AND DeleteAt = 0`,
+				mmmodel.GetMillis(), postID)
+			require.NoError(t, err)
+			return mmmodel.NewAppError("DeletePost", "test.cleanup_failure", nil, "", http.StatusInternalServerError)
+		}).Once()
+
+	rec := h.do(t, http.MethodDelete, "/api/v1/spaces/"+space.Id+"/pages/"+page.Id+"/comments/"+root.Id, author, nil)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+
+	records := h.auditRecordsNamed(auditEventDeletePageComment)
+	require.Len(t, records, 1)
+	audit := records[0]
+	assert.Equal(t, mmmodel.AuditStatusSuccess, audit.Status, "the deletion committed, so the log must not call it a failure")
+	assert.Equal(t, auditObjectTypePageComment, audit.EventData.ObjectType)
+	assert.Equal(t, space.Id, audit.EventData.Parameters["space_id"])
+	assert.Equal(t, page.Id, audit.EventData.Parameters["page_id"])
+	assert.Equal(t, root.Id, audit.EventData.Parameters["comment_id"])
+}

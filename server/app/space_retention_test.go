@@ -158,6 +158,46 @@ func TestServiceReconcileSpaceRetention(t *testing.T) {
 		}
 	})
 
+	t.Run("a failed re-home restores the prior policy instead of leaving channels bare", func(t *testing.T) {
+		// The remove must precede the add, so a failing add is the one path that can strand a
+		// channel on no policy at all — following the standard clock rather than the stricter
+		// one an admin configured. The restore is what keeps that window closed.
+		mockAPI := &plugintest.API{}
+		h := openTestServiceWithAPI(t, mockAPI)
+		newPolicyID := "policy0000000000000000000y"
+		var addCalls [][]string
+		mockAPI.On("AddChannelsToRetentionPolicy", mock.AnythingOfType("string"), mock.AnythingOfType("[]string")).Return(
+			func(targetPolicyID string, channelIDs []string) *mmmodel.AppError {
+				addCalls = append(addCalls, channelIDs)
+				if targetPolicyID == newPolicyID {
+					return mmmodel.NewAppError("AddChannelsToRetentionPolicy", "test.enrol_failure", nil, "", http.StatusInternalServerError)
+				}
+				_, err := h.db.Exec(`INSERT INTO RetentionPoliciesChannels (PolicyId, ChannelId)
+					SELECT $1, id FROM unnest($2::varchar[]) AS ids(id)`, targetPolicyID, pq.Array(channelIDs))
+				require.NoError(t, err)
+				return nil
+			}).Maybe()
+		mockAPI.On("RemoveChannelsFromRetentionPolicy", mock.AnythingOfType("string"), mock.AnythingOfType("[]string")).Return(
+			func(targetPolicyID string, channelIDs []string) *mmmodel.AppError {
+				_, err := h.db.Exec(`DELETE FROM RetentionPoliciesChannels WHERE PolicyId = $1 AND ChannelId = ANY($2)`, targetPolicyID, pq.Array(channelIDs))
+				require.NoError(t, err)
+				return nil
+			}).Maybe()
+
+		space := mustCreateSpace(t, h.store, mmmodel.NewId())
+		h.svc.SetRetentionPolicyID(policyID)
+		require.NoError(t, h.svc.ReconcileSpaceRetention())
+
+		h.svc.SetRetentionPolicyID(newPolicyID)
+		require.Error(t, h.svc.ReconcileSpaceRetention())
+
+		var got string
+		require.NoError(t, h.db.QueryRow(`SELECT PolicyId FROM RetentionPoliciesChannels WHERE ChannelId = $1`, space.ChannelId).Scan(&got),
+			"the channel must still carry a policy after the failed re-home")
+		assert.Equal(t, policyID, got, "a failed re-home leaves the channel on the policy it came from")
+		require.Len(t, addCalls, 3, "the initial enrolment, the failed re-home, and the restore")
+	})
+
 	t.Run("a deleted space is swept too", func(t *testing.T) {
 		mockAPI := &plugintest.API{}
 		h := openTestServiceWithAPI(t, mockAPI)
