@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -1092,4 +1094,398 @@ func TestServiceCreatePageCommentCursorRoundTrip(t *testing.T) {
 		after = next
 	}
 	assert.Equal(t, ids, walked)
+}
+
+func TestServiceAutoResolveOrphanedComments(t *testing.T) {
+	bodyWithAnchors := func(ids ...string) string {
+		marks := make([]string, 0, len(ids))
+		for _, id := range ids {
+			marks = append(marks, `{"type":"text","text":"anchored","marks":[{"type":"commentAnchor","attrs":{"anchorId":"`+id+`"}}]}`)
+		}
+		return `{"type":"doc","content":[{"type":"paragraph","content":[` + strings.Join(marks, ",") + `]}]}`
+	}
+	inline := func(anchorID string) *model.PageCommentCreate {
+		return &model.PageCommentCreate{Message: "m", CommentType: model.CommentTypeInline, AnchorId: anchorID}
+	}
+
+	t.Run("a comment whose anchor left the body is resolved as dangling, with no actor", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		comment, _, appErr := ch.svc.CreatePageComment(space, page.Id, inline("anchor-1"), mmmodel.NewId())
+		require.Nil(t, appErr)
+
+		require.NoError(t, ch.svc.AutoResolveOrphanedComments(space.Id, space.ChannelId, page.Id, bodyWithAnchors()))
+
+		got, appErr := ch.svc.GetPageComment(space, page.Id, comment.Id)
+		require.Nil(t, appErr)
+		assert.True(t, got.Resolved)
+		assert.Equal(t, model.ResolvedReasonDangling, got.ResolvedReason)
+		assert.Empty(t, got.ResolvedBy, "no person resolved this")
+		assert.NotZero(t, got.ResolvedAt, "a dangling resolve keeps its timestamp")
+	})
+
+	t.Run("a comment whose anchor is still in the body is untouched", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		comment, _, appErr := ch.svc.CreatePageComment(space, page.Id, inline("anchor-1"), mmmodel.NewId())
+		require.Nil(t, appErr)
+
+		require.NoError(t, ch.svc.AutoResolveOrphanedComments(space.Id, space.ChannelId, page.Id, bodyWithAnchors("anchor-1")))
+
+		got, appErr := ch.svc.GetPageComment(space, page.Id, comment.Id)
+		require.Nil(t, appErr)
+		assert.False(t, got.Resolved)
+		assert.Empty(t, got.ResolvedReason)
+	})
+
+	t.Run("footer comments are never swept: they have no anchor to lose", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		footer, _, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "m"}, mmmodel.NewId())
+		require.Nil(t, appErr)
+
+		require.NoError(t, ch.svc.AutoResolveOrphanedComments(space.Id, space.ChannelId, page.Id, bodyWithAnchors()))
+
+		got, appErr := ch.svc.GetPageComment(space, page.Id, footer.Id)
+		require.Nil(t, appErr)
+		assert.False(t, got.Resolved)
+	})
+
+	t.Run("the anchor coming back does not reopen the thread", func(t *testing.T) {
+		// Confluence's behaviour on a revert: the comment stays resolved and a reader restores it.
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		comment, _, appErr := ch.svc.CreatePageComment(space, page.Id, inline("anchor-1"), mmmodel.NewId())
+		require.Nil(t, appErr)
+
+		require.NoError(t, ch.svc.AutoResolveOrphanedComments(space.Id, space.ChannelId, page.Id, bodyWithAnchors()))
+		require.NoError(t, ch.svc.AutoResolveOrphanedComments(space.Id, space.ChannelId, page.Id, bodyWithAnchors("anchor-1")))
+
+		got, appErr := ch.svc.GetPageComment(space, page.Id, comment.Id)
+		require.Nil(t, appErr)
+		assert.True(t, got.Resolved, "a returning anchor must not auto-reopen")
+		assert.Equal(t, model.ResolvedReasonDangling, got.ResolvedReason)
+	})
+
+	t.Run("unresolving a dangling thread makes it manual", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		author := mmmodel.NewId()
+		comment, _, appErr := ch.svc.CreatePageComment(space, page.Id, inline("anchor-1"), author)
+		require.Nil(t, appErr)
+		require.NoError(t, ch.svc.AutoResolveOrphanedComments(space.Id, space.ChannelId, page.Id, bodyWithAnchors()))
+
+		reopened, _, appErr := ch.svc.UpdatePageComment(space, page.Id, comment.Id,
+			&model.PageCommentPatch{Resolved: mmmodel.NewPointer(false)}, author)
+		require.Nil(t, appErr)
+		assert.False(t, reopened.Resolved)
+		assert.Empty(t, reopened.ResolvedReason, "an unresolved comment reports no reason")
+
+		resolved, _, appErr := ch.svc.UpdatePageComment(space, page.Id, comment.Id,
+			&model.PageCommentPatch{Resolved: mmmodel.NewPointer(true)}, author)
+		require.Nil(t, appErr)
+		assert.Equal(t, model.ResolvedReasonManual, resolved.ResolvedReason)
+		assert.Equal(t, author, resolved.ResolvedBy)
+	})
+
+	t.Run("an already-resolved comment is left alone whatever its reason", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		author := mmmodel.NewId()
+		comment, _, appErr := ch.svc.CreatePageComment(space, page.Id, inline("anchor-1"), author)
+		require.Nil(t, appErr)
+		_, _, appErr = ch.svc.UpdatePageComment(space, page.Id, comment.Id,
+			&model.PageCommentPatch{Resolved: mmmodel.NewPointer(true)}, author)
+		require.Nil(t, appErr)
+
+		require.NoError(t, ch.svc.AutoResolveOrphanedComments(space.Id, space.ChannelId, page.Id, bodyWithAnchors()))
+
+		got, appErr := ch.svc.GetPageComment(space, page.Id, comment.Id)
+		require.Nil(t, appErr)
+		assert.Equal(t, model.ResolvedReasonManual, got.ResolvedReason, "the sweep must not overwrite a manual resolve")
+		assert.Equal(t, author, got.ResolvedBy)
+	})
+
+	t.Run("only the orphaned comment in a mixed page is closed", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		kept, _, appErr := ch.svc.CreatePageComment(space, page.Id, inline("keep"), mmmodel.NewId())
+		require.Nil(t, appErr)
+		lost, _, appErr := ch.svc.CreatePageComment(space, page.Id, inline("lose"), mmmodel.NewId())
+		require.Nil(t, appErr)
+
+		require.NoError(t, ch.svc.AutoResolveOrphanedComments(space.Id, space.ChannelId, page.Id, bodyWithAnchors("keep")))
+
+		gotKept, appErr := ch.svc.GetPageComment(space, page.Id, kept.Id)
+		require.Nil(t, appErr)
+		assert.False(t, gotKept.Resolved)
+		gotLost, appErr := ch.svc.GetPageComment(space, page.Id, lost.Id)
+		require.Nil(t, appErr)
+		assert.True(t, gotLost.Resolved)
+	})
+
+	t.Run("an empty body orphans every inline comment", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		comment, _, appErr := ch.svc.CreatePageComment(space, page.Id, inline("anchor-1"), mmmodel.NewId())
+		require.Nil(t, appErr)
+
+		require.NoError(t, ch.svc.AutoResolveOrphanedComments(space.Id, space.ChannelId, page.Id, ""))
+
+		got, appErr := ch.svc.GetPageComment(space, page.Id, comment.Id)
+		require.Nil(t, appErr)
+		assert.True(t, got.Resolved)
+	})
+
+	t.Run("an inline root with no anchor is left alone", func(t *testing.T) {
+		// Create-time validation forbids this shape, so only a direct row write reaches it. The
+		// sweep must skip it rather than close a thread on the strength of a prop-shape bug.
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		anchorless := &mmmodel.Post{
+			Id:        mmmodel.NewId(),
+			CreateAt:  1000,
+			UserId:    mmmodel.NewId(),
+			ChannelId: space.ChannelId,
+			Message:   "inline comment with no anchor",
+			Type:      model.PostTypePageComment,
+		}
+		anchorless.SetProps(mmmodel.StringInterface{
+			model.PropKeyPageId:      page.Id,
+			model.PropKeyCommentType: model.CommentTypeInline,
+		})
+		insertStandInPost(t, ch.db, anchorless)
+
+		require.NoError(t, ch.svc.AutoResolveOrphanedComments(space.Id, space.ChannelId, page.Id, model.EmptyTipTapJSON))
+
+		assert.Zero(t, readStandInPost(t, ch.db, anchorless.Id).GetProps()[model.PropKeyResolved])
+	})
+
+	t.Run("a page in another space is not swept", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		comment, _, appErr := ch.svc.CreatePageComment(space, page.Id, inline("anchor-1"), mmmodel.NewId())
+		require.Nil(t, appErr)
+
+		require.NoError(t, ch.svc.AutoResolveOrphanedComments(mmmodel.NewId(), space.ChannelId, page.Id, bodyWithAnchors()))
+
+		got, appErr := ch.svc.GetPageComment(space, page.Id, comment.Id)
+		require.Nil(t, appErr)
+		assert.False(t, got.Resolved, "a stale space scope must not close threads")
+	})
+}
+
+func TestPageWriteSweepsOrphanedComments(t *testing.T) {
+	anchored := func(id string) string {
+		return `{"type":"doc","content":[{"type":"paragraph","content":[` +
+			`{"type":"text","text":"anchored","marks":[{"type":"commentAnchor","attrs":{"anchorId":"` + id + `"}}]}]}]}`
+	}
+	seed := func(t *testing.T, ch *commentHarness) (*model.Space, *model.Page, *model.PageComment) {
+		t.Helper()
+		space, page := seedCommentFixture(t, ch)
+		updated, appErr := ch.svc.UpdatePage(page.Id, space.Id, &model.PagePatch{
+			Body: mmmodel.NewPointer(anchored("anchor-1")),
+		}, nil, true, mmmodel.NewId())
+		require.Nil(t, appErr)
+		comment, _, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{
+			Message: "m", CommentType: model.CommentTypeInline, AnchorId: "anchor-1",
+		}, mmmodel.NewId())
+		require.Nil(t, appErr)
+		return space, updated, comment
+	}
+
+	t.Run("editing the anchor out of the page closes the thread", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page, comment := seed(t, ch)
+
+		_, appErr := ch.svc.UpdatePage(page.Id, space.Id, &model.PagePatch{
+			Body: mmmodel.NewPointer(model.EmptyTipTapJSON),
+		}, nil, true, mmmodel.NewId())
+		require.Nil(t, appErr)
+
+		got, appErr := ch.svc.GetPageComment(space, page.Id, comment.Id)
+		require.Nil(t, appErr)
+		assert.True(t, got.Resolved)
+		assert.Equal(t, model.ResolvedReasonDangling, got.ResolvedReason)
+	})
+
+	t.Run("a title-only edit leaves the thread open", func(t *testing.T) {
+		// The body is untouched, so no anchor can have moved and the sweep must not run.
+		ch := openCommentHarness(t)
+		space, page, comment := seed(t, ch)
+
+		_, appErr := ch.svc.UpdatePage(page.Id, space.Id, &model.PagePatch{
+			Title: mmmodel.NewPointer("Renamed"),
+		}, nil, true, mmmodel.NewId())
+		require.Nil(t, appErr)
+
+		got, appErr := ch.svc.GetPageComment(space, page.Id, comment.Id)
+		require.Nil(t, appErr)
+		assert.False(t, got.Resolved)
+	})
+
+	t.Run("an edit that keeps the anchor leaves the thread open", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page, comment := seed(t, ch)
+
+		_, appErr := ch.svc.UpdatePage(page.Id, space.Id, &model.PagePatch{
+			Body: mmmodel.NewPointer(anchored("anchor-1")),
+		}, nil, true, mmmodel.NewId())
+		require.Nil(t, appErr)
+
+		got, appErr := ch.svc.GetPageComment(space, page.Id, comment.Id)
+		require.Nil(t, appErr)
+		assert.False(t, got.Resolved)
+	})
+}
+
+func TestServiceGetPageCommentCounts(t *testing.T) {
+	t.Run("an empty page reports zeroes", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+
+		counts, appErr := ch.svc.GetPageCommentCounts(space, page.Id)
+		require.Nil(t, appErr)
+		assert.Equal(t, &model.PageCommentCounts{}, counts)
+	})
+
+	t.Run("roots are counted and split by resolve state", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		author := mmmodel.NewId()
+		open1, _, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "a"}, author)
+		require.Nil(t, appErr)
+		_, _, appErr = ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "b"}, author)
+		require.Nil(t, appErr)
+
+		counts, appErr := ch.svc.GetPageCommentCounts(space, page.Id)
+		require.Nil(t, appErr)
+		assert.Equal(t, &model.PageCommentCounts{Total: 2, Open: 2, Resolved: 0}, counts)
+
+		_, _, appErr = ch.svc.UpdatePageComment(space, page.Id, open1.Id,
+			&model.PageCommentPatch{Resolved: mmmodel.NewPointer(true)}, author)
+		require.Nil(t, appErr)
+
+		counts, appErr = ch.svc.GetPageCommentCounts(space, page.Id)
+		require.Nil(t, appErr)
+		assert.Equal(t, &model.PageCommentCounts{Total: 2, Open: 1, Resolved: 1}, counts)
+	})
+
+	t.Run("replies do not count: a thread is one discussion", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		root, _, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "a"}, mmmodel.NewId())
+		require.Nil(t, appErr)
+		_, _, appErr = ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r1", mmmodel.NewId())
+		require.Nil(t, appErr)
+		_, _, appErr = ch.svc.CreatePageCommentReply(space, page.Id, root.Id, "r2", mmmodel.NewId())
+		require.Nil(t, appErr)
+
+		counts, appErr := ch.svc.GetPageCommentCounts(space, page.Id)
+		require.Nil(t, appErr)
+		assert.Equal(t, &model.PageCommentCounts{Total: 1, Open: 1}, counts)
+	})
+
+	t.Run("a deleted thread stops counting", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		author := mmmodel.NewId()
+		root, _, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{Message: "a"}, author)
+		require.Nil(t, appErr)
+		_, _, appErr = ch.svc.DeletePageComment(space, page.Id, root.Id, author)
+		require.Nil(t, appErr)
+
+		counts, appErr := ch.svc.GetPageCommentCounts(space, page.Id)
+		require.Nil(t, appErr)
+		assert.Equal(t, &model.PageCommentCounts{}, counts)
+	})
+
+	t.Run("an orphan sweep moves a thread from open to resolved", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		_, _, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{
+			Message: "m", CommentType: model.CommentTypeInline, AnchorId: "anchor-1",
+		}, mmmodel.NewId())
+		require.Nil(t, appErr)
+
+		require.NoError(t, ch.svc.AutoResolveOrphanedComments(space.Id, space.ChannelId, page.Id, model.EmptyTipTapJSON))
+
+		counts, appErr := ch.svc.GetPageCommentCounts(space, page.Id)
+		require.Nil(t, appErr)
+		assert.Equal(t, &model.PageCommentCounts{Total: 1, Open: 0, Resolved: 1}, counts)
+	})
+
+	t.Run("another page's comments are not counted", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		space, page := seedCommentFixture(t, ch)
+		other := mustCreatePage(t, ch.store, space.Id, space.ChannelId, mmmodel.NewId(), "")
+		_, _, appErr := ch.svc.CreatePageComment(space, other.Id, &model.PageCommentCreate{Message: "a"}, mmmodel.NewId())
+		require.Nil(t, appErr)
+
+		counts, appErr := ch.svc.GetPageCommentCounts(space, page.Id)
+		require.Nil(t, appErr)
+		assert.Equal(t, &model.PageCommentCounts{}, counts)
+	})
+
+	t.Run("a page in another space reads as not-found", func(t *testing.T) {
+		ch := openCommentHarness(t)
+		_, page := seedCommentFixture(t, ch)
+		otherSpace := mustCreateSpace(t, ch.store, mmmodel.NewId())
+
+		_, appErr := ch.svc.GetPageCommentCounts(otherSpace, page.Id)
+		require.NotNil(t, appErr)
+		assert.Equal(t, http.StatusNotFound, appErr.StatusCode)
+	})
+}
+
+// TestAutoResolveOrphanedCommentsPagesBeyondOneWindow drives the sweep past orphanSweepChunkSize.
+// The cursor has to keep advancing as resolved rows leave the unresolved filter it pages over, so
+// a window boundary is the one place the walk could stall or skip.
+func TestAutoResolveOrphanedCommentsPagesBeyondOneWindow(t *testing.T) {
+	ch := openCommentHarness(t)
+	space, page := seedCommentFixture(t, ch)
+
+	// Must exceed the sweep's unexported window size (100); this file is an external test package.
+	const total = 125
+	kept := make([]string, 0, total/2)
+	doomed := make([]string, 0, total)
+	liveAnchors := make([]string, 0, total/2)
+	for i := range total {
+		anchorID := "anchor-" + strconv.Itoa(i)
+		comment, _, appErr := ch.svc.CreatePageComment(space, page.Id, &model.PageCommentCreate{
+			Message: "m", CommentType: model.CommentTypeInline, AnchorId: anchorID,
+		}, mmmodel.NewId())
+		require.Nil(t, appErr)
+		// Every other comment keeps its anchor, so surviving rows stay interleaved with resolved
+		// ones across every window rather than clustering in the first.
+		if i%2 == 0 {
+			kept = append(kept, comment.Id)
+			liveAnchors = append(liveAnchors, anchorID)
+		} else {
+			doomed = append(doomed, comment.Id)
+		}
+	}
+
+	marks := make([]string, 0, len(liveAnchors))
+	for _, id := range liveAnchors {
+		marks = append(marks, `{"type":"text","text":"a","marks":[{"type":"commentAnchor","attrs":{"anchorId":"`+id+`"}}]}`)
+	}
+	body := `{"type":"doc","content":[{"type":"paragraph","content":[` + strings.Join(marks, ",") + `]}]}`
+
+	require.NoError(t, ch.svc.AutoResolveOrphanedComments(space.Id, space.ChannelId, page.Id, body))
+
+	counts, appErr := ch.svc.GetPageCommentCounts(space, page.Id)
+	require.Nil(t, appErr)
+	assert.Equal(t, &model.PageCommentCounts{Total: total, Open: len(kept), Resolved: len(doomed)}, counts,
+		"every orphan past the first window must be closed, and no survivor may be")
+
+	// Spot-check the last of each set: a stalled cursor would leave the tail untouched.
+	lastDoomed, appErr := ch.svc.GetPageComment(space, page.Id, doomed[len(doomed)-1])
+	require.Nil(t, appErr)
+	assert.True(t, lastDoomed.Resolved)
+	assert.Equal(t, model.ResolvedReasonDangling, lastDoomed.ResolvedReason)
+
+	lastKept, appErr := ch.svc.GetPageComment(space, page.Id, kept[len(kept)-1])
+	require.Nil(t, appErr)
+	assert.False(t, lastKept.Resolved)
 }

@@ -119,6 +119,24 @@ func (p *Plugin) handleGetPageComments(w http.ResponseWriter, r *http.Request) {
 
 // handleGetPageComment handles GET /api/v1/spaces/{space_id}/pages/{page_id}/comments/{comment_id} —
 // the deep-link target. Unlike the replies sub-resource it accepts both roots and replies.
+// handleGetPageCommentCounts serves the page's thread tally. It is a separate route rather than a
+// field on the page response because the page listing projection deliberately omits per-page
+// aggregates, and a client needs the counts on the page it is reading, not on every node of a tree.
+func (p *Plugin) handleGetPageCommentCounts(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	userID := userIDFromRequest(r)
+	space, ok := p.requireSpaceMembership(w, vars["space_id"], userID, false)
+	if !ok {
+		return
+	}
+	counts, appErr := p.service.GetPageCommentCounts(space, vars["page_id"])
+	if appErr != nil {
+		p.writeAppError(w, appErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, counts)
+}
+
 func (p *Plugin) handleGetPageComment(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userID := userIDFromRequest(r)

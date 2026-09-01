@@ -270,6 +270,68 @@ func TestGetPageCommentReplyCounts(t *testing.T) {
 	assert.Empty(t, empty)
 }
 
+func TestGetPageCommentCounts(t *testing.T) {
+	resolved := func(p *mmmodel.Post) {
+		p.SetProps(mmmodel.StringInterface{
+			model.PropKeyPageId:   p.GetProps()[model.PropKeyPageId],
+			model.PropKeyResolved: true,
+		})
+	}
+
+	t.Run("a page with no comments counts zero", func(t *testing.T) {
+		f := newCommentFixture(t)
+		counts, err := f.store.GetPageCommentCounts(f.space.ChannelId, f.page.Id)
+		require.NoError(t, err)
+		assert.Equal(t, store.PageCommentCounts{}, counts)
+	})
+
+	t.Run("roots split by resolve state; replies, deleted rows and history never count", func(t *testing.T) {
+		f := newCommentFixture(t)
+		rootA := f.seedComment(t, "", 1000, nil)
+		f.seedComment(t, "", 2000, nil)
+		f.seedComment(t, "", 3000, resolved)
+		f.seedComment(t, rootA.Id, 4000, nil)                                // reply
+		f.seedComment(t, "", 5000, func(p *mmmodel.Post) { p.DeleteAt = 1 }) // soft-deleted root
+		f.seedComment(t, "", 5500, func(p *mmmodel.Post) {                   // a root's edit-history row
+			p.OriginalId = rootA.Id
+			p.DeleteAt = 1
+		})
+
+		counts, err := f.store.GetPageCommentCounts(f.space.ChannelId, f.page.Id)
+		require.NoError(t, err)
+		assert.Equal(t, store.PageCommentCounts{Total: 3, Open: 2, Resolved: 1}, counts)
+		assert.Equal(t, counts.Total, counts.Open+counts.Resolved, "the split must reconcile")
+	})
+
+	t.Run("resolved is read as a string 'true' too", func(t *testing.T) {
+		// Props round-trip through JSON, so the flag can come back either encoding.
+		f := newCommentFixture(t)
+		f.seedComment(t, "", 1000, func(p *mmmodel.Post) {
+			p.SetProps(mmmodel.StringInterface{
+				model.PropKeyPageId:   p.GetProps()[model.PropKeyPageId],
+				model.PropKeyResolved: "true",
+			})
+		})
+
+		counts, err := f.store.GetPageCommentCounts(f.space.ChannelId, f.page.Id)
+		require.NoError(t, err)
+		assert.Equal(t, store.PageCommentCounts{Total: 1, Open: 0, Resolved: 1}, counts)
+	})
+
+	t.Run("another page and another channel are out of scope", func(t *testing.T) {
+		f := newCommentFixture(t)
+		f.seedComment(t, "", 1000, nil)
+		f.seedComment(t, "", 2000, func(p *mmmodel.Post) {
+			p.SetProps(mmmodel.StringInterface{model.PropKeyPageId: mmmodel.NewId()})
+		})
+		f.seedComment(t, "", 3000, func(p *mmmodel.Post) { p.ChannelId = mmmodel.NewId() })
+
+		counts, err := f.store.GetPageCommentCounts(f.space.ChannelId, f.page.Id)
+		require.NoError(t, err)
+		assert.Equal(t, store.PageCommentCounts{Total: 1, Open: 1}, counts)
+	})
+}
+
 func TestGetMisplacedCommentRoots(t *testing.T) {
 	f := newCommentFixture(t)
 	strandedChannelID := mmmodel.NewId()

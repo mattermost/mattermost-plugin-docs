@@ -36,12 +36,24 @@ const (
 	PropKeyResolved = "resolved"
 
 	// PropKeyResolvedBy and PropKeyResolvedAt attribute the last resolve-state change in either
-	// direction (resolve or unresolve); they are set together or not at all.
+	// direction (resolve or unresolve); they are set together or not at all, except on an
+	// orphan resolve, which has a time but no actor.
 	PropKeyResolvedBy = "resolved_by"
 	PropKeyResolvedAt = "resolved_at"
 
+	// PropKeyResolvedReason separates a resolve the server performed because the comment's anchor
+	// left the page from one a person chose. Absence reads as manual, so comments written before
+	// the key existed need no backfill.
+	PropKeyResolvedReason = "resolved_reason"
+
 	CommentTypeFooter = "footer"
 	CommentTypeInline = "inline"
+
+	// ResolvedReasonManual and ResolvedReasonDangling are the values of PropKeyResolvedReason.
+	// "dangling" matches Confluence's own name for a comment resolved because its text went away,
+	// and clients use it to offer restoring the thread to the page.
+	ResolvedReasonManual   = "manual"
+	ResolvedReasonDangling = "dangling"
 
 	// MaxAnchorIdRunes bounds the client-generated anchor marker id. Enforced at create and
 	// clamped again by the projector, since other writers of comment rows are not bound by the
@@ -68,30 +80,42 @@ type PageComment struct {
 	Resolved    bool   `json:"resolved"`
 	ResolvedBy  string `json:"resolved_by,omitempty"`
 	ResolvedAt  int64  `json:"resolved_at,omitempty"`
-	CreateAt    int64  `json:"create_at"`
-	UpdateAt    int64  `json:"update_at"`
-	EditAt      int64  `json:"edit_at,omitempty"`
+	// ResolvedReason is empty on an unresolved comment and otherwise names why the thread closed.
+	ResolvedReason string `json:"resolved_reason,omitempty"`
+	CreateAt       int64  `json:"create_at"`
+	UpdateAt       int64  `json:"update_at"`
+	EditAt         int64  `json:"edit_at,omitempty"`
 }
 
 // Auditable returns the comment's audit projection. Message is excluded: comment text is user
 // content and does not belong in audit records, matching Page.Auditable and Draft.Auditable.
 func (c *PageComment) Auditable() map[string]any {
 	return map[string]any{
-		"id":           c.Id,
-		"space_id":     c.SpaceId,
-		"page_id":      c.PageId,
-		"user_id":      c.UserId,
-		"root_id":      c.RootId,
-		"comment_type": c.CommentType,
-		"anchor_id":    c.AnchorId,
-		"reply_count":  c.ReplyCount,
-		"resolved":     c.Resolved,
-		"resolved_by":  c.ResolvedBy,
-		"resolved_at":  c.ResolvedAt,
-		"create_at":    c.CreateAt,
-		"update_at":    c.UpdateAt,
-		"edit_at":      c.EditAt,
+		"id":              c.Id,
+		"space_id":        c.SpaceId,
+		"page_id":         c.PageId,
+		"user_id":         c.UserId,
+		"root_id":         c.RootId,
+		"comment_type":    c.CommentType,
+		"anchor_id":       c.AnchorId,
+		"reply_count":     c.ReplyCount,
+		"resolved":        c.Resolved,
+		"resolved_by":     c.ResolvedBy,
+		"resolved_at":     c.ResolvedAt,
+		"resolved_reason": c.ResolvedReason,
+		"create_at":       c.CreateAt,
+		"update_at":       c.UpdateAt,
+		"edit_at":         c.EditAt,
 	}
+}
+
+// PageCommentCounts is a page's thread tally, the shape behind the page's comment affordance.
+// The numbers cover root comments only: a thread is one discussion however many replies it holds.
+// Total is always Open + Resolved, computed in one scan so the three cannot disagree.
+type PageCommentCounts struct {
+	Total    int `json:"total"`
+	Open     int `json:"open"`
+	Resolved int `json:"resolved"`
 }
 
 // PageCommentCreate is the request body for both comment-create routes. CommentType and AnchorId
@@ -183,7 +207,7 @@ func (p *PageCommentPatch) IsValid() *mmmodel.AppError {
 // roots) must not be applied to it. Props are untyped
 // JSON, so values are coerced defensively rather than asserted. The projector also enforces the
 // one invariant the struct cannot express: ResolvedBy and ResolvedAt are set together or not at
-// all.
+// all, the sole exception being a dangling resolve, which carries a time and no actor.
 func NewPageCommentFromPost(post, root *mmmodel.Post, spaceID string, replyCount int) *PageComment {
 	props := post.GetProps()
 
@@ -198,28 +222,44 @@ func NewPageCommentFromPost(post, root *mmmodel.Post, spaceID string, replyCount
 		anchorID, _ = mmmodel.LimitRunes(propString(typeSource, PropKeyAnchorId), MaxAnchorIdRunes)
 	}
 
+	resolved := propBool(props, PropKeyResolved)
+	resolvedReason := ""
+	if resolved {
+		resolvedReason = ResolvedReasonManual
+		if propString(props, PropKeyResolvedReason) == ResolvedReasonDangling {
+			resolvedReason = ResolvedReasonDangling
+		}
+	}
+
 	resolvedBy := propString(props, PropKeyResolvedBy)
 	resolvedAt := propInt64(props, PropKeyResolvedAt)
-	if resolvedBy == "" || resolvedAt == 0 {
+	// A dangling resolve has a time but no actor, so it is the one case the pair-or-neither rule
+	// must not collapse: dropping its timestamp would leave the client unable to say when the
+	// anchor went away.
+	if resolvedReason != ResolvedReasonDangling && (resolvedBy == "" || resolvedAt == 0) {
 		resolvedBy, resolvedAt = "", 0
+	}
+	if resolvedReason == ResolvedReasonDangling {
+		resolvedBy = ""
 	}
 
 	return &PageComment{
-		Id:          post.Id,
-		SpaceId:     spaceID,
-		PageId:      propString(props, PropKeyPageId),
-		UserId:      post.UserId,
-		RootId:      post.RootId,
-		Message:     post.Message,
-		CommentType: commentType,
-		AnchorId:    anchorID,
-		ReplyCount:  replyCount,
-		Resolved:    propBool(props, PropKeyResolved),
-		ResolvedBy:  resolvedBy,
-		ResolvedAt:  resolvedAt,
-		CreateAt:    post.CreateAt,
-		UpdateAt:    post.UpdateAt,
-		EditAt:      post.EditAt,
+		Id:             post.Id,
+		SpaceId:        spaceID,
+		PageId:         propString(props, PropKeyPageId),
+		UserId:         post.UserId,
+		RootId:         post.RootId,
+		Message:        post.Message,
+		CommentType:    commentType,
+		AnchorId:       anchorID,
+		ReplyCount:     replyCount,
+		Resolved:       resolved,
+		ResolvedBy:     resolvedBy,
+		ResolvedAt:     resolvedAt,
+		ResolvedReason: resolvedReason,
+		CreateAt:       post.CreateAt,
+		UpdateAt:       post.UpdateAt,
+		EditAt:         post.EditAt,
 	}
 }
 

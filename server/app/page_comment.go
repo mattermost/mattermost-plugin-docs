@@ -173,6 +173,23 @@ func (s *Service) GetPageComments(space *model.Space, pageID string, resolved *b
 	return comments, nextAfter, hasMore, nil
 }
 
+// GetPageCommentCounts returns a page's root-comment tally split by resolve state. It exists so a
+// client can render the page's comment affordance without walking the listing: the badge needs two
+// integers, and paging every thread to derive them would cost a request per window.
+func (s *Service) GetPageCommentCounts(space *model.Space, pageID string) (*model.PageCommentCounts, *mmmodel.AppError) {
+	if appErr := requirePageCommentArgs("GetPageCommentCounts", space, pageID); appErr != nil {
+		return nil, appErr
+	}
+	if appErr := s.requirePageInSpace("GetPageCommentCounts", space, pageID); appErr != nil {
+		return nil, appErr
+	}
+	counts, err := s.store.GetPageCommentCounts(space.ChannelId, pageID)
+	if err != nil {
+		return nil, storeAppError("GetPageCommentCounts", err)
+	}
+	return &model.PageCommentCounts{Total: counts.Total, Open: counts.Open, Resolved: counts.Resolved}, nil
+}
+
 // GetPageComment returns one comment, root or reply — the deep-link target, needed because a
 // comment beyond the first listing page is otherwise unloadable (core's post permalink 404s on a
 // space channel). A reply inherits its thread's comment_type/anchor_id from the root, so the root
@@ -443,11 +460,15 @@ func (s *Service) UpdatePageComment(space *model.Space, pageID, commentID string
 			post.Message = *patch.Message
 		}
 		if patch.Resolved != nil {
-			props := make(mmmodel.StringInterface, len(post.GetProps())+3)
+			props := make(mmmodel.StringInterface, len(post.GetProps())+4)
 			maps.Copy(props, post.GetProps())
 			props[model.PropKeyResolved] = *patch.Resolved
 			props[model.PropKeyResolvedBy] = userID
 			props[model.PropKeyResolvedAt] = mmmodel.GetMillis()
+			// A person acted, in either direction, so the reason is manual even when the target
+			// was resolved by the orphan sweep: reopening a dangling thread makes it an ordinary
+			// one, and resolving it again is a choice rather than a consequence.
+			props[model.PropKeyResolvedReason] = model.ResolvedReasonManual
 			post.SetProps(props)
 		}
 
@@ -609,6 +630,155 @@ func (s *Service) probeDeleteCommitted(tx *sqlx.Tx, locked store.LockedPage, pag
 		return true
 	}
 	return probe.DeleteAt != 0
+}
+
+// orphanSweepChunkSize bounds one window of the orphan sweep's listing. The sweep walks the
+// page's unresolved inline roots with the same keyset cursor the API listing uses, so the window
+// size only trades round trips against memory.
+const orphanSweepChunkSize = 100
+
+// sweepOrphanedComments runs the orphan sweep for a page write that has already committed, and
+// logs rather than propagates: the page save stands either way, and the next save recomputes the
+// same comparison. bodyChanged is false for a write that left the body alone (a title-only or
+// props-only patch), where no anchor can have moved and the listing would be pure cost.
+//
+// A brand-new page is not swept at all — it has no comments yet — so CreatePage and the new-page
+// publish path deliberately do not call this.
+func (s *Service) sweepOrphanedComments(page *model.Page, bodyChanged bool) {
+	if page == nil || !bodyChanged {
+		return
+	}
+	if err := s.AutoResolveOrphanedComments(page.SpaceId, page.ChannelId, page.Id, page.Body); err != nil {
+		s.log.Error("Orphaned comment sweep failed after a page write",
+			"page_id", page.Id, "space_id", page.SpaceId, "err", err)
+	}
+}
+
+// AutoResolveOrphanedComments resolves every unresolved inline comment on pageID whose anchor is
+// absent from doc, matching Confluence: the comment is kept and closed rather than deleted, and
+// the closure is marked dangling so a client can tell it from one a person chose and offer to
+// restore the thread to the page.
+//
+// The reverse does not hold. An anchor that reappears — a revert, an undo, a re-paste — leaves the
+// comment resolved, because a body the author replaced can resurface anchors they deliberately
+// abandoned; reopening is the reader's call, made through the ordinary unresolve patch.
+//
+// Callers run this after the page write commits, never inside its transaction: each resolve takes
+// the thread's advisory lock, and nesting that under the page write would invert the lock order
+// every other comment write observes. A failure is therefore reported for logging rather than
+// failing a page save that already happened — the next save recomputes the same comparison, so a
+// missed sweep repairs itself.
+func (s *Service) AutoResolveOrphanedComments(spaceID, channelID, pageID, body string) error {
+	if s.client == nil {
+		return errors.New("pluginapi client not wired")
+	}
+	if !mmmodel.IsValidId(spaceID) || !mmmodel.IsValidId(pageID) || channelID == "" {
+		return errors.New("orphan sweep needs a space, its channel, and a valid page id")
+	}
+
+	live, liveErr := model.CollectCommentAnchorIDsFromBody(body)
+	if liveErr != nil {
+		return liveErr
+	}
+	unresolved := false
+	cursor := PageCommentCursor{}
+
+	for {
+		roots, err := s.store.GetPageCommentRoots(channelID, pageID, store.PageCommentListOptions{
+			Resolved:      &unresolved,
+			CommentType:   model.CommentTypeInline,
+			AfterCreateAt: cursor.CreateAt,
+			AfterID:       cursor.Id,
+			Limit:         orphanSweepChunkSize,
+		})
+		if err != nil {
+			return err
+		}
+		if len(roots) == 0 {
+			return nil
+		}
+
+		for _, root := range roots {
+			// The cursor advances over every row read, resolved or not, so the walk terminates
+			// whether or not a resolve removes the row from the filtered set.
+			cursor = PageCommentCursor{CreateAt: root.CreateAt, Id: root.Id}
+
+			anchorID, _ := mmmodel.LimitRunes(propStringOf(root, model.PropKeyAnchorId), model.MaxAnchorIdRunes)
+			if anchorID == "" {
+				// An inline root with no anchor cannot be matched against the body either way.
+				// Leaving it alone keeps the sweep from closing threads on a prop-shape bug.
+				continue
+			}
+			if _, stillPresent := live[anchorID]; stillPresent {
+				continue
+			}
+			if resolveErr := s.resolveOrphanedComment(spaceID, pageID, root.Id); resolveErr != nil {
+				return resolveErr
+			}
+		}
+
+		if len(roots) < orphanSweepChunkSize {
+			return nil
+		}
+	}
+}
+
+// resolveOrphanedComment closes one comment as dangling. It mirrors the resolve half of
+// UpdatePageComment — same thread lock, same read-modify-write over the whole prop map, same
+// event — and differs only in leaving resolved_by unset: no person resolved this.
+func (s *Service) resolveOrphanedComment(spaceID, pageID, commentID string) error {
+	return s.store.WithPageCommentLock(pageID, commentID, func(tx *sqlx.Tx, locked store.LockedPage) error {
+		if locked.SpaceId != spaceID {
+			// The page moved out of the space between the listing and the lock. The sweep for the
+			// new space will see these comments; closing them from here would use a stale scope.
+			return nil
+		}
+		// Re-read under the lock: a concurrent resolve or delete between the listing and here
+		// makes the sweep a no-op for this comment rather than a write over someone's change.
+		current, currentErr := s.resolvePageCommentTx("AutoResolveOrphanedComments", tx, locked, pageID, commentID, false)
+		if currentErr != nil {
+			return currentErr
+		}
+		if propBoolOf(current, model.PropKeyResolved) {
+			return nil
+		}
+
+		post, getErr := s.client.Post.GetPost(commentID)
+		if getErr != nil {
+			return getErr
+		}
+		props := make(mmmodel.StringInterface, len(post.GetProps())+3)
+		maps.Copy(props, post.GetProps())
+		props[model.PropKeyResolved] = true
+		props[model.PropKeyResolvedAt] = mmmodel.GetMillis()
+		props[model.PropKeyResolvedReason] = model.ResolvedReasonDangling
+		delete(props, model.PropKeyResolvedBy)
+		post.SetProps(props)
+
+		if updateErr := s.client.Post.UpdatePost(post); updateErr != nil {
+			return updateErr
+		}
+		s.publishToChannels(wsEventPageCommentUpdated, pageCommentEventPayload(commentID, "", pageID, locked.SpaceId), locked.ChannelId)
+		return nil
+	})
+}
+
+// propStringOf reads a string prop off a post, yielding "" for an absent or non-string value.
+func propStringOf(post *mmmodel.Post, key string) string {
+	v, _ := post.GetProps()[key].(string)
+	return v
+}
+
+// propBoolOf reads a boolean prop off a post across the two encodings a Props round trip produces.
+func propBoolOf(post *mmmodel.Post, key string) bool {
+	switch v := post.GetProps()[key].(type) {
+	case bool:
+		return v
+	case string:
+		return v == "true"
+	default:
+		return false
+	}
 }
 
 // reconcileCommentChunkSize bounds one detection read and one core move call; the sweep loops

@@ -19,16 +19,19 @@ import {
     createComment,
     createCommentReply,
     createCommentResponse,
+    anchoredBody,
     createPage,
     createSpace,
     deleteCommentResponse,
     getComment,
+    getCommentCounts,
     getCommentResponse,
     listComments,
     listCommentReplies,
     listCommentsResponse,
     movePageToSpace,
     patchComment,
+    patchPageBody,
     patchCommentResponse,
     resolveComment,
     resolveCommentResponse,
@@ -268,5 +271,86 @@ test.describe('page comments API', () => {
 
         // * The source space no longer serves the page's comments
         expect((await listCommentsResponse(page, source.id, docsPage.id)).status()).toBe(404);
+    });
+
+    /**
+     * @objective Count a page's threads without walking the listing, and keep the split
+     * honest as threads resolve.
+     * @precondition A team, space and page are seeded via the API.
+     */
+    test('counts a page\'s threads, roots only, split by resolve state', {tag: '@docs'}, async ({page, server}) => {
+        // # Seed a page with no comments
+        await loginAs(page, server.adminUsername, server.adminPassword);
+        const {space, docsPage} = await seedPage(page, 'docs-comment-counts');
+
+        // * A fresh page counts zero
+        expect(await getCommentCounts(page, space.id, docsPage.id)).toEqual({total: 0, open: 0, resolved: 0});
+
+        // # Add two threads and a reply on the first
+        const first = await createComment(page, space.id, docsPage.id, {message: 'First thread'});
+        await createComment(page, space.id, docsPage.id, {message: 'Second thread'});
+        await createCommentReply(page, space.id, docsPage.id, first.id, 'A reply is not a thread');
+
+        // * Only roots count: the reply does not add a third
+        expect(await getCommentCounts(page, space.id, docsPage.id)).toEqual({total: 2, open: 2, resolved: 0});
+
+        // # Resolve the first thread
+        await resolveComment(page, space.id, docsPage.id, first.id, true);
+
+        // * The split moves and still reconciles to the total
+        expect(await getCommentCounts(page, space.id, docsPage.id)).toEqual({total: 2, open: 1, resolved: 1});
+    });
+
+    /**
+     * @objective Match Confluence on orphaned inline comments: editing the anchored text away
+     * closes the thread as dangling with no actor, and putting the anchor back does not reopen it.
+     * @precondition A team, space and an anchored page are seeded via the API.
+     */
+    test('auto-resolves an inline comment whose anchor leaves the page', {tag: '@docs'}, async ({page, server}) => {
+        // # Seed a page whose body carries one comment anchor, with an inline and a footer thread
+        await loginAs(page, server.adminUsername, server.adminPassword);
+        const {space, docsPage} = await seedPage(page, 'docs-comment-orphan');
+        await patchPageBody(page, space.id, docsPage.id, anchoredBody('pw-anchor'));
+        const inline = await createComment(page, space.id, docsPage.id, {
+            message: 'Anchored thread',
+            comment_type: 'inline',
+            anchor_id: 'pw-anchor',
+        });
+        const footer = await createComment(page, space.id, docsPage.id, {message: 'Footer thread'});
+
+        // # Save the body again with the anchor intact
+        await patchPageBody(page, space.id, docsPage.id, anchoredBody('pw-anchor'));
+
+        // * A save that kept the anchor leaves the thread open
+        expect((await getComment(page, space.id, docsPage.id, inline.id)).resolved).toBe(false);
+
+        // # Remove the anchored text from the body
+        await patchPageBody(page, space.id, docsPage.id, JSON.stringify({type: 'doc', content: [{type: 'paragraph'}]}));
+
+        // * The thread is closed, marked dangling, and attributed to nobody
+        const orphaned = await getComment(page, space.id, docsPage.id, inline.id);
+        expect(orphaned.resolved).toBe(true);
+        expect(orphaned.resolved_reason).toBe('dangling');
+        expect(orphaned.resolved_by).toBeFalsy();
+        expect(orphaned.resolved_at).toBeGreaterThan(0);
+
+        // * The footer thread has no anchor to lose and is untouched
+        expect((await getComment(page, space.id, docsPage.id, footer.id)).resolved).toBe(false);
+
+        // * The counts show the thread as resolved rather than gone
+        expect(await getCommentCounts(page, space.id, docsPage.id)).toEqual({total: 2, open: 1, resolved: 1});
+
+        // # Put the anchored text back
+        await patchPageBody(page, space.id, docsPage.id, anchoredBody('pw-anchor'));
+
+        // * A returning anchor does not reopen the thread — restoring is the reader's call
+        expect((await getComment(page, space.id, docsPage.id, inline.id)).resolved).toBe(true);
+
+        // # The reader unresolves it
+        const reopened = await patchComment(page, space.id, docsPage.id, inline.id, {resolved: false});
+
+        // * It is an ordinary open thread again, carrying no reason
+        expect(reopened.resolved).toBe(false);
+        expect(reopened.resolved_reason).toBeFalsy();
     });
 });

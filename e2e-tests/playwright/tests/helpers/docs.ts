@@ -102,9 +102,16 @@ export interface PageComment {
     resolved: boolean;
     resolved_by?: string;
     resolved_at?: number;
+    resolved_reason?: string;
     create_at: number;
     update_at: number;
     edit_at?: number;
+}
+
+export interface PageCommentCounts {
+    total: number;
+    open: number;
+    resolved: number;
 }
 
 // Roots are keyset-paged (next_after cursor); replies are offset-paged (page number).
@@ -180,6 +187,35 @@ export async function listCommentReplies(page: Page, spaceId: string, pageId: st
     const response = await page.request.get(`${commentsRoot(spaceId, pageId)}/${rootId}/replies`, requestedWith);
 
     return readJsonOrThrow<CommentRepliesPage>(response, `Unable to list replies of comment ${rootId}`);
+}
+
+export async function getCommentCounts(page: Page, spaceId: string, pageId: string): Promise<PageCommentCounts> {
+    const response = await page.request.get(`${apiRoot}/spaces/${spaceId}/pages/${pageId}/comments/counts`);
+
+    return readJsonOrThrow<PageCommentCounts>(response, `Unable to read comment counts for page ${pageId}`);
+}
+
+// patchPageBody replaces a page's body, forcing past first-write-wins: these specs drive the body
+// only to move comment anchors, never to test the optimistic lock.
+export async function patchPageBody(page: Page, spaceId: string, pageId: string, body: string): Promise<DocsPage> {
+    const response = await page.request.patch(`${apiRoot}/spaces/${spaceId}/pages/${pageId}`, {
+        ...requestedWith,
+        data: {body, force: true},
+    });
+
+    return readJsonOrThrow<DocsPage>(response, `Unable to patch body for page ${pageId}`);
+}
+
+// anchoredBody renders a TipTap document whose text carries one commentAnchor mark per id, the
+// shape the editor produces for an inline comment.
+export function anchoredBody(...anchorIds: string[]): string {
+    const marks = anchorIds.map((anchorId) => ({
+        type: 'text',
+        text: 'anchored',
+        marks: [{type: 'commentAnchor', attrs: {anchorId}}],
+    }));
+
+    return JSON.stringify({type: 'doc', content: [{type: 'paragraph', content: marks}]});
 }
 
 export async function getComment(page: Page, spaceId: string, pageId: string, commentId: string): Promise<PageComment> {

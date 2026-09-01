@@ -233,3 +233,31 @@ func readStandInCommentPost(t *testing.T, h *apiTestHarness, id string) *mmmodel
 	post.SetProps(propMap)
 	return &post
 }
+
+// TestHandler_PageCommentCounts pins the counts route, including the one thing route order
+// decides: "counts" must not be captured as a comment id by the sibling {comment_id} route.
+func TestHandler_PageCommentCounts(t *testing.T) {
+	h := openTestPlugin(t, nil)
+	channelID := mmmodel.NewId()
+	space := seedSpace(t, h.store, channelID)
+	page := seedPage(t, h.store, space.Id, channelID, "")
+	userID := mmmodel.NewId()
+	path := "/api/v1/spaces/" + space.Id + "/pages/" + page.Id + "/comments/counts"
+
+	rec := h.do(t, http.MethodGet, path, userID, nil)
+	require.Equal(t, http.StatusOK, rec.Code, "counts must not be routed as a comment id")
+	var empty model.PageCommentCounts
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &empty))
+	assert.Equal(t, model.PageCommentCounts{}, empty)
+
+	root := seedCommentPost(t, h, channelID, page.Id, "", mmmodel.NewId(), 1000)
+	seedCommentPost(t, h, channelID, page.Id, root.Id, mmmodel.NewId(), 2000)
+	seedCommentPost(t, h, channelID, page.Id, "", mmmodel.NewId(), 3000)
+
+	rec = h.do(t, http.MethodGet, path, userID, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var counts model.PageCommentCounts
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &counts))
+	assert.Equal(t, model.PageCommentCounts{Total: 2, Open: 2, Resolved: 0}, counts,
+		"two roots; the reply is part of a thread, not a thread of its own")
+}

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/pkg/errors"
 )
 
@@ -40,6 +41,76 @@ func BuildSearchText(doc TipTapDocument) string {
 		appendNodeText(&b, node, 0)
 	}
 	return b.String()
+}
+
+// CollectCommentAnchorIDsFromBody is CollectCommentAnchorIDs over a stored page body. The body
+// has already been through ParseTipTapDocument on the way in, so it is decoded here without a
+// second sanitization pass — and the result is a set of ids, never content that is stored or
+// rendered. An empty body yields an empty set rather than an error: a page with no body has no
+// live anchors, which is exactly what the orphan comparison needs.
+func CollectCommentAnchorIDsFromBody(body string) (map[string]struct{}, error) {
+	if strings.TrimSpace(body) == "" {
+		return map[string]struct{}{}, nil
+	}
+	var doc TipTapDocument
+	if err := json.Unmarshal([]byte(body), &doc); err != nil {
+		return nil, errors.Wrap(err, "failed to decode stored page body")
+	}
+	return CollectCommentAnchorIDs(doc), nil
+}
+
+// CollectCommentAnchorIDs returns the set of anchorId values carried by commentAnchor marks in
+// doc. It is the live-anchor side of the orphan comparison: an inline comment whose anchor is
+// absent from this set no longer points at anything in the page.
+func CollectCommentAnchorIDs(doc TipTapDocument) map[string]struct{} {
+	ids := make(map[string]struct{})
+	for _, node := range doc.Content {
+		collectCommentAnchorIDs(node, 0, ids)
+	}
+	return ids
+}
+
+// collectCommentAnchorIDs walks node the way appendNodeText does, honouring the same depth cap so
+// a pathological document cannot drive the recursion.
+func collectCommentAnchorIDs(node map[string]any, depth int, ids map[string]struct{}) {
+	if depth > maxTipTapDepth {
+		return
+	}
+
+	if marksVal, ok := node["marks"]; ok {
+		if marks, ok := marksVal.([]any); ok {
+			for _, markVal := range marks {
+				mark, ok := markVal.(map[string]any)
+				if !ok {
+					continue
+				}
+				if markType, isString := mark["type"].(string); !isString || markType != commentAnchorMarkType {
+					continue
+				}
+				attrs, ok := mark["attrs"].(map[string]any)
+				if !ok {
+					continue
+				}
+				// The mark is client-authored, so the id is clamped to the same bound the create
+				// route enforces: a longer value cannot match a stored anchor and must not be
+				// allowed to grow the set.
+				if id, ok := attrs["anchorId"].(string); ok && id != "" {
+					clamped, _ := mmmodel.LimitRunes(id, MaxAnchorIdRunes)
+					ids[clamped] = struct{}{}
+				}
+			}
+		}
+	}
+
+	if contentVal, ok := node["content"]; ok {
+		if children, ok := contentVal.([]any); ok {
+			for _, child := range children {
+				if childNode, ok := child.(map[string]any); ok {
+					collectCommentAnchorIDs(childNode, depth+1, ids)
+				}
+			}
+		}
+	}
 }
 
 // ParseTipTapDocument parses and sanitizes a TipTap JSON string into a TipTapDocument. Unlike the
@@ -207,6 +278,10 @@ var allowedNodeTypes = map[string]struct{}{
 // schema plus the page editor's extensions. Like allowedNodeTypes, a mark type not listed here is
 // rejected rather than passed through. "link" is a mark (TipTap's inline hyperlink); its href is
 // sanitized by sanitizeURL.
+// commentAnchorMarkType is the TipTap mark an inline comment anchors to. It is named rather than
+// spelled inline because the orphan sweep matches on it as well as the sanitizer.
+const commentAnchorMarkType = "commentAnchor"
+
 var allowedMarkTypes = map[string]struct{}{
 	// Core WysiwygEditor marks.
 	"bold":      {},
@@ -216,8 +291,8 @@ var allowedMarkTypes = map[string]struct{}{
 	"underline": {},
 	"link":      {},
 	// Page editor extensions.
-	"textStyle":     {},
-	"commentAnchor": {},
+	"textStyle":           {},
+	commentAnchorMarkType: {},
 }
 
 // dangerousAttrKeys are attribute keys (matched case-insensitively) stripped outright regardless of

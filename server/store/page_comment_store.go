@@ -105,6 +105,40 @@ func (s *Store) GetPageCommentRoots(channelID, pageID string, opts PageCommentLi
 	return posts, nil
 }
 
+// PageCommentCounts is a page's thread tally. Replies are deliberately excluded: the counts drive
+// the page's comment affordance, which shows how many discussions a page carries, not how many
+// messages were written in them. A root's own reply tally is already on the projection.
+type PageCommentCounts struct {
+	Total    int
+	Open     int
+	Resolved int
+}
+
+// GetPageCommentCounts returns the live root-comment tally for a page, split by resolve state, in
+// one scan. The split is computed with an aggregate FILTER rather than a second query so the two
+// numbers cannot disagree: a resolve landing between two counts would otherwise produce a total
+// that is not open + resolved.
+func (s *Store) GetPageCommentCounts(channelID, pageID string) (PageCommentCounts, error) {
+	query := s.getQueryBuilder().
+		Select(
+			"COUNT(*) AS total",
+			"COUNT(*) FILTER (WHERE "+resolvedNotTrueExpr+") AS open",
+		).
+		From("Posts").
+		Where(sq.Eq{"ChannelId": channelID, "Type": model.PostTypePageComment}).
+		Where(sq.Expr(pageIdPropExpr, pageID)).
+		Where(sq.Eq{"DeleteAt": 0, "RootId": ""})
+
+	var row struct {
+		Total int
+		Open  int
+	}
+	if err := s.getBuilder(s.db, &row, query); err != nil {
+		return PageCommentCounts{}, errors.Wrap(err, "failed to count page comments")
+	}
+	return PageCommentCounts{Total: row.Total, Open: row.Open, Resolved: row.Total - row.Open}, nil
+}
+
 // GetPageCommentReplies returns one window of a root comment's live replies, ordered
 // CreateAt ASC, Id ASC. Offset paging is kept here (unlike the cursor-paged roots listing)
 // because threads are expected to stay small; the page_id predicate closes cross-page probing by

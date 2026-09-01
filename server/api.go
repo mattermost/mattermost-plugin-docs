@@ -75,6 +75,9 @@ func (p *Plugin) initRouter() *mux.Router {
 	// list would let a page boundary split a thread), with replies as a sub-resource.
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/comments", p.handleGetPageComments).Methods(http.MethodGet)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/comments", p.handleCreatePageComment).Methods(http.MethodPost)
+	// Counts are registered before the {comment_id} route: gorilla matches in order, and
+	// "counts" would otherwise be captured as a comment id and 404.
+	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/comments/counts", p.handleGetPageCommentCounts).Methods(http.MethodGet)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/comments/{comment_id}", p.handleGetPageComment).Methods(http.MethodGet)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/comments/{comment_id}", p.handleUpdatePageComment).Methods(http.MethodPatch)
 	api.HandleFunc("/spaces/{space_id}/pages/{page_id}/comments/{comment_id}", p.handleDeletePageComment).Methods(http.MethodDelete)
