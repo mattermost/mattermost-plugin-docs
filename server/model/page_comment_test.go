@@ -36,6 +36,14 @@ func TestPageCommentCreateIsValid(t *testing.T) {
 		return c.IsValid()
 	}
 
+	t.Run("nil create is rejected without panicking", func(t *testing.T) {
+		var create *PageCommentCreate
+		create.Normalize()
+		appErr := create.IsValid()
+		require.NotNil(t, appErr)
+		assert.Equal(t, "model.page_comment.create.message_required.app_error", appErr.Id)
+	})
+
 	t.Run("footer with message is valid", func(t *testing.T) {
 		require.Nil(t, valid(PageCommentCreate{Message: "hi"}))
 		require.Nil(t, valid(PageCommentCreate{Message: "hi", CommentType: CommentTypeFooter}))
@@ -94,6 +102,7 @@ func TestPageCommentCreateIsValid(t *testing.T) {
 func TestPageCommentPatchIsValid(t *testing.T) {
 	t.Run("nil and empty patches are rejected", func(t *testing.T) {
 		var nilPatch *PageCommentPatch
+		nilPatch.Normalize()
 		appErr := nilPatch.IsValid()
 		require.NotNil(t, appErr)
 		assert.Equal(t, http.StatusBadRequest, appErr.StatusCode)

@@ -71,7 +71,7 @@ test.describe('page comments API', () => {
 
         try {
             // # Create a footer comment
-            const footer = await createComment(page, space.id, docsPage.id, {message: 'A footer comment'});
+            const footer = await createComment(memberPage, space.id, docsPage.id, {message: 'A footer comment'});
 
             // * It starts unresolved, reply-less, and typed as footer
             expect(footer.comment_type).toBe('footer');
@@ -80,6 +80,7 @@ test.describe('page comments API', () => {
             expect(footer.resolved).toBe(false);
             expect(footer.space_id).toBe(space.id);
             expect(footer.page_id).toBe(docsPage.id);
+            expect(footer.user_id).toBe(member.id);
 
             // # Create an inline comment anchored to a document marker
             const anchor = `anchor-${uniqueSuffix()}`;
@@ -166,17 +167,17 @@ test.describe('page comments API', () => {
             expect(editedReplies.items.map((c) => c.message)).toEqual(['An edited reply']);
 
             // # The author tries to delete the root while its reply is live
-            const guarded = await deleteCommentResponse(page, space.id, docsPage.id, footer.id);
+            const guarded = await deleteCommentResponse(memberPage, space.id, docsPage.id, footer.id);
 
             // * The delete is refused, naming how many replies it would destroy
             expect(guarded.status()).toBe(409);
             const conflict = await guarded.json() as {reply_count: number};
             expect(conflict.reply_count).toBe(1);
 
-            // # The other member deletes the same root
-            const forced = await deleteCommentResponse(memberPage, space.id, docsPage.id, footer.id);
+            // # The space creator moderates the same root
+            const forced = await deleteCommentResponse(page, space.id, docsPage.id, footer.id);
 
-            // * That delete goes through and takes the reply with it
+            // * Creator moderation goes through and takes the reply with it
             expect(forced.ok()).toBe(true);
             expect((await getCommentResponse(page, space.id, docsPage.id, footer.id)).status()).toBe(404);
             expect((await getCommentResponse(page, space.id, docsPage.id, reply.id)).status()).toBe(404);

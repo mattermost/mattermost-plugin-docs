@@ -117,9 +117,6 @@ func (p *Plugin) handleDeletePageDraft(w http.ResponseWriter, r *http.Request) {
 	pageID := vars["page_id"]
 	userID := userIDFromRequest(r)
 
-	auditRec := p.makeAuditRecord(r, auditEventDeletePageDraft, userID)
-	defer p.client.Audit.Record(auditRec)
-
 	space, ok := p.requireSpaceMembership(w, spaceID, userID, false)
 	if !ok {
 		return
@@ -130,8 +127,6 @@ func (p *Plugin) handleDeletePageDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	auditRec.Success()
-	auditRec.AddEventObjectType("draft")
 	writeStatusOK(w)
 }
 
@@ -147,8 +142,6 @@ func (p *Plugin) handleCreateSpaceDraft(w http.ResponseWriter, r *http.Request) 
 	vars := mux.Vars(r)
 	spaceID := vars["space_id"]
 	userID := userIDFromRequest(r)
-	auditRec := p.makeAuditRecord(r, auditEventCreateSpaceDraft, userID)
-	defer p.client.Audit.Record(auditRec)
 
 	if _, ok := p.requireSpaceMembership(w, spaceID, userID, false); !ok {
 		return
@@ -168,9 +161,6 @@ func (p *Plugin) handleCreateSpaceDraft(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	auditRec.Success()
-	auditRec.AddEventObjectType("draft")
-	auditRec.AddEventResultState(saved)
 	writeJSON(w, http.StatusCreated, saved)
 }
 
@@ -190,8 +180,6 @@ func (p *Plugin) handlePublishPageDraft(w http.ResponseWriter, r *http.Request) 
 	spaceID := vars["space_id"]
 	pageID := vars["page_id"]
 	userID := userIDFromRequest(r)
-	auditRec := p.makeAuditRecord(r, auditEventPublishPageDraft, userID)
-	defer p.client.Audit.Record(auditRec)
 
 	if _, ok := p.requireSpaceMembership(w, spaceID, userID, false); !ok {
 		return
@@ -217,9 +205,6 @@ func (p *Plugin) handlePublishPageDraft(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	auditRec.Success()
-	auditRec.AddEventObjectType("page")
-	auditRec.AddEventResultState(page)
 	status := http.StatusOK
 	if wasCreated {
 		status = http.StatusCreated

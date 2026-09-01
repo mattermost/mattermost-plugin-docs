@@ -7,6 +7,7 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"reflect"
 
 	"github.com/jmoiron/sqlx"
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -251,7 +252,7 @@ func (s *Service) CreatePageComment(space *model.Space, pageID string, create *m
 	}
 
 	props := mmmodel.StringInterface{model.PropKeyPageId: pageID}
-	if create.IsInline() {
+	if create.CommentType == model.CommentTypeInline {
 		props[model.PropKeyCommentType] = model.CommentTypeInline
 		props[model.PropKeyAnchorId] = create.AnchorId
 	}
@@ -517,10 +518,10 @@ func (s *Service) probePatchCommitted(tx *sqlx.Tx, locked store.LockedPage, page
 		return true
 	}
 	preProps, probeProps := preImage.GetProps(), probe.GetProps()
-	return probe.UpdateAt != preImage.UpdateAt ||
-		preProps[model.PropKeyResolved] != probeProps[model.PropKeyResolved] ||
-		preProps[model.PropKeyResolvedBy] != probeProps[model.PropKeyResolvedBy] ||
-		preProps[model.PropKeyResolvedAt] != probeProps[model.PropKeyResolvedAt]
+	return probe.UpdateAt != preImage.UpdateAt || probe.EditAt != preImage.EditAt || probe.Message != preImage.Message ||
+		!reflect.DeepEqual(preProps[model.PropKeyResolved], probeProps[model.PropKeyResolved]) ||
+		!reflect.DeepEqual(preProps[model.PropKeyResolvedBy], probeProps[model.PropKeyResolvedBy]) ||
+		!reflect.DeepEqual(preProps[model.PropKeyResolvedAt], probeProps[model.PropKeyResolvedAt])
 }
 
 // DeletePageComment soft-deletes a comment. The author deletes their own comment, except a root

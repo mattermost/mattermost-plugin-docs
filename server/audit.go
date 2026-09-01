@@ -8,33 +8,11 @@ import (
 
 	"github.com/gorilla/mux"
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/plugin"
 )
 
-// Audit event names for the plugin's mutating routes, following core's camelCase convention
-// (model.AuditEventCreateChannel and friends). Read routes are not audited.
+// Audit event names for the comment mutation routes, following core's camelCase convention.
 const (
-	auditEventCreateSpace       = "createSpace"
-	auditEventUpdateSpace       = "updateSpace"
-	auditEventDeleteSpace       = "deleteSpace"
-	auditEventRestoreSpace      = "restoreSpace"
-	auditEventAddSpaceMember    = "addSpaceMember"
-	auditEventRemoveSpaceMember = "removeSpaceMember"
-
-	auditEventCreatePage      = "createPage"
-	auditEventUpdatePage      = "updatePage"
-	auditEventDeletePage      = "deletePage"
-	auditEventRestorePage     = "restorePage"
-	auditEventMovePage        = "movePage"
-	auditEventMovePageToSpace = "movePageToSpace"
-	auditEventDuplicatePage   = "duplicatePage"
-
-	// The draft autosave heartbeat (PATCH .../draft) is deliberately not audited: it fires
-	// continuously while a user types, and core's own draft upsert route emits no audit record
-	// either. The draft lifecycle boundaries below are.
-	auditEventCreateSpaceDraft = "createSpaceDraft"
-	auditEventDeletePageDraft  = "deletePageDraft"
-	auditEventPublishPageDraft = "publishPageDraft"
-
 	auditEventCreatePageComment      = "createPageComment"
 	auditEventCreatePageCommentReply = "createPageCommentReply"
 	auditEventUpdatePageComment      = "updatePageComment"
@@ -46,22 +24,12 @@ const (
 // success only after its write lands. The route's path ids are copied into the event parameters,
 // so a refused attempt still records which resources it named.
 func (p *Plugin) makeAuditRecord(r *http.Request, eventName, userID string) *mmmodel.AuditRecord {
-	rec := &mmmodel.AuditRecord{
-		EventName: eventName,
-		Status:    mmmodel.AuditStatusFail,
-		Actor: mmmodel.AuditEventActor{
-			UserId:        userID,
-			Client:        r.UserAgent(),
-			IpAddress:     r.RemoteAddr,
-			XForwardedFor: r.Header.Get("X-Forwarded-For"),
-		},
-		Meta: map[string]any{mmmodel.AuditKeyAPIPath: r.URL.Path},
-		EventData: mmmodel.AuditEventData{
-			Parameters:  map[string]any{},
-			PriorState:  map[string]any{},
-			ResultState: map[string]any{},
-		},
-	}
+	rec := plugin.MakeAuditRecord(eventName, mmmodel.AuditStatusFail)
+	rec.Actor.UserId = userID
+	rec.Actor.Client = r.UserAgent()
+	rec.Actor.IpAddress = r.RemoteAddr
+	rec.Actor.XForwardedFor = r.Header.Get("X-Forwarded-For")
+	rec.AddMeta(mmmodel.AuditKeyAPIPath, r.URL.Path)
 	for key, value := range mux.Vars(r) {
 		mmmodel.AddEventParameterToAuditRec(rec, key, value)
 	}

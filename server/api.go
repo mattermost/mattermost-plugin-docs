@@ -173,18 +173,22 @@ type conflictResponse struct {
 // writeConflictWithPage writes a conflictResponse using the AppError's own StatusCode (409) as the
 // HTTP status. DetailedError is scrubbed first, matching writeAppError.
 func (p *Plugin) writeConflictWithPage(w http.ResponseWriter, appErr *mmmodel.AppError, current *model.Page) {
+	p.writeConflict(w, appErr, conflictResponse{CurrentPage: current})
+}
+
+// writeConflict scrubs the shared error and writes the endpoint-specific conflict fields.
+func (p *Plugin) writeConflict(w http.ResponseWriter, appErr *mmmodel.AppError, response conflictResponse) {
 	safe := *appErr
 	safe.WipeDetailed()
-	writeJSON(w, appErr.StatusCode, conflictResponse{Error: &safe, CurrentPage: current})
+	response.Error = &safe
+	writeJSON(w, appErr.StatusCode, response)
 }
 
 // writeConflictWithReplyCount writes a conflictResponse carrying the has-replies reply count.
 // The comment delete handler writes its 409 through this rather than falling through
 // writeAppError's StatusConflict branch, which has no count to pass.
 func (p *Plugin) writeConflictWithReplyCount(w http.ResponseWriter, appErr *mmmodel.AppError, replyCount int) {
-	safe := *appErr
-	safe.WipeDetailed()
-	writeJSON(w, appErr.StatusCode, conflictResponse{Error: &safe, ReplyCount: replyCount})
+	p.writeConflict(w, appErr, conflictResponse{ReplyCount: replyCount})
 }
 
 // writeJSON serialises v as a JSON body with the given status.

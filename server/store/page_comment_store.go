@@ -5,7 +5,6 @@ package store
 
 import (
 	"database/sql"
-	"encoding/json"
 
 	"github.com/jmoiron/sqlx"
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
@@ -44,54 +43,6 @@ const (
 
 // postColumnList is the set of Posts columns the comment projections read.
 var postColumnList = []string{"Id", "CreateAt", "UpdateAt", "EditAt", "DeleteAt", "UserId", "ChannelId", "RootId", "Message", "Type", "Props"}
-
-// postRow scans a Posts row; Props arrives as raw jsonb bytes.
-type postRow struct {
-	Id        string
-	CreateAt  int64
-	UpdateAt  int64
-	EditAt    int64
-	DeleteAt  int64
-	UserId    string
-	ChannelId string
-	RootId    string
-	Message   string
-	Type      string
-	Props     []byte
-}
-
-// toPost converts the scanned row to a *mmmodel.Post. Props that fail to parse are left nil —
-// model.NewPageCommentFromPost coerces prop values defensively, so a malformed map reads as
-// absent keys rather than failing the whole listing.
-func (r *postRow) toPost() *mmmodel.Post {
-	post := &mmmodel.Post{
-		Id:        r.Id,
-		CreateAt:  r.CreateAt,
-		UpdateAt:  r.UpdateAt,
-		EditAt:    r.EditAt,
-		DeleteAt:  r.DeleteAt,
-		UserId:    r.UserId,
-		ChannelId: r.ChannelId,
-		RootId:    r.RootId,
-		Message:   r.Message,
-		Type:      r.Type,
-	}
-	if len(r.Props) > 0 {
-		var props mmmodel.StringInterface
-		if err := json.Unmarshal(r.Props, &props); err == nil {
-			post.SetProps(props)
-		}
-	}
-	return post
-}
-
-func rowsToPosts(rows []postRow) []*mmmodel.Post {
-	posts := make([]*mmmodel.Post, len(rows))
-	for i := range rows {
-		posts[i] = rows[i].toPost()
-	}
-	return posts
-}
 
 // PageCommentListOptions narrows the roots listing. Resolved nil means all roots; CommentType ""
 // means both kinds. AfterCreateAt/AfterID carry the keyset cursor boundary; both zero values mean
@@ -147,11 +98,11 @@ func (s *Store) GetPageCommentRoots(channelID, pageID string, opts PageCommentLi
 		OrderBy("CreateAt ASC", "Id ASC").
 		Limit(uint64(opts.Limit)) //nolint:gosec // limit>0 enforced above
 
-	var rows []postRow
-	if err := s.selectBuilder(s.db, &rows, query); err != nil {
+	var posts []*mmmodel.Post
+	if err := s.selectBuilder(s.db, &posts, query); err != nil {
 		return nil, errors.Wrap(err, "failed to list page comment roots")
 	}
-	return rowsToPosts(rows), nil
+	return posts, nil
 }
 
 // GetPageCommentReplies returns one window of a root comment's live replies, ordered
@@ -167,11 +118,11 @@ func (s *Store) GetPageCommentReplies(channelID, pageID, rootID string, offset, 
 		OrderBy("CreateAt ASC", "Id ASC")
 	query = applyLimitOffset(query, offset, limit)
 
-	var rows []postRow
-	if err := s.selectBuilder(s.db, &rows, query); err != nil {
+	var posts []*mmmodel.Post
+	if err := s.selectBuilder(s.db, &posts, query); err != nil {
 		return nil, errors.Wrap(err, "failed to list page comment replies")
 	}
-	return rowsToPosts(rows), nil
+	return posts, nil
 }
 
 // GetPageComment resolves a comment through the full identity predicate — id, backing channel,
@@ -196,14 +147,14 @@ func (s *Store) getPageComment(e sqlx.ExtContext, commentID, channelID, pageID s
 	if !includeDeleted {
 		query = query.Where(sq.Eq{"DeleteAt": 0})
 	}
-	var row postRow
-	if err := s.getBuilder(e, &row, query); err != nil {
+	var post mmmodel.Post
+	if err := s.getBuilder(e, &post, query); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, &ErrNotFound{EntityName: "PageComment", ID: commentID}
 		}
 		return nil, errors.Wrap(err, "failed to get page comment")
 	}
-	return row.toPost(), nil
+	return &post, nil
 }
 
 // GetPageCommentReplyCounts returns the live-reply count per root for rootIDs, in one batched

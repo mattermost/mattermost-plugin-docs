@@ -16,7 +16,7 @@ import (
 const (
 	// PostTypePageComment is the Posts.Type of every page comment row. The "custom_" prefix is
 	// required by Post.IsValid (PostCustomTypePrefix).
-	PostTypePageComment = "custom_page_comment"
+	PostTypePageComment = mmmodel.PostCustomTypePrefix + "page_comment"
 
 	// PropKeyPageId ties a comment post to its page. It is the only provenance linking the two,
 	// so it is read and written exclusively through this constant — a misspelling at any site
@@ -105,6 +105,9 @@ type PageCommentCreate struct {
 
 // Normalize trims the message. The anchor is left as-is: it is an opaque marker id, not text.
 func (c *PageCommentCreate) Normalize() {
+	if c == nil {
+		return
+	}
 	c.Message = strings.TrimSpace(mmmodel.SanitizeUnicode(c.Message))
 }
 
@@ -112,6 +115,9 @@ func (c *PageCommentCreate) Normalize() {
 // an inline comment requires an anchor and a footer comment must not carry one — each half-state
 // gets its own error id, since a client fixes one by adding a field and the other by removing one.
 func (c *PageCommentCreate) IsValid() *mmmodel.AppError {
+	if c == nil {
+		return mmmodel.NewAppError("PageCommentCreate.IsValid", "model.page_comment.create.message_required.app_error", nil, "", http.StatusBadRequest)
+	}
 	if c.Message == "" {
 		return mmmodel.NewAppError("PageCommentCreate.IsValid", "model.page_comment.create.message_required.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -136,11 +142,6 @@ func (c *PageCommentCreate) IsValid() *mmmodel.AppError {
 	return nil
 }
 
-// IsInline reports whether the (validated) body creates an inline comment.
-func (c *PageCommentCreate) IsInline() bool {
-	return c.CommentType == CommentTypeInline
-}
-
 // PageCommentPatch is the PATCH body for a comment. Both fields are pointers so an empty body {}
 // is distinguishable from an explicit false or empty string; IsValid rejects an all-nil patch so
 // a malformed PATCH cannot silently unresolve. Mirrors PagePatch and SpacePatch.
@@ -151,6 +152,9 @@ type PageCommentPatch struct {
 
 // Normalize trims the message, when one is being set.
 func (p *PageCommentPatch) Normalize() {
+	if p == nil {
+		return
+	}
 	if p.Message != nil {
 		*p.Message = strings.TrimSpace(mmmodel.SanitizeUnicode(*p.Message))
 	}
@@ -191,7 +195,7 @@ func NewPageCommentFromPost(post, root *mmmodel.Post, spaceID string, replyCount
 	anchorID := ""
 	if propString(typeSource, PropKeyCommentType) == CommentTypeInline {
 		commentType = CommentTypeInline
-		anchorID = truncateRunes(propString(typeSource, PropKeyAnchorId), MaxAnchorIdRunes)
+		anchorID, _ = mmmodel.LimitRunes(propString(typeSource, PropKeyAnchorId), MaxAnchorIdRunes)
 	}
 
 	resolvedBy := propString(props, PropKeyResolvedBy)
@@ -256,10 +260,4 @@ func propInt64(props mmmodel.StringInterface, key string) int64 {
 	default:
 		return 0
 	}
-}
-
-// truncateRunes caps s at maxRunes runes.
-func truncateRunes(s string, maxRunes int) string {
-	truncated, _ := mmmodel.LimitRunes(s, maxRunes)
-	return truncated
 }
