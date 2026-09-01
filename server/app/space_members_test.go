@@ -129,12 +129,19 @@ func TestServiceRemoveSpaceMember_LastAdminIgnoresAdminWithoutTeamReadSpace(t *t
 func TestServiceRemoveSpaceMember_LastAdminIgnoresDeactivatedAdmin(t *testing.T) {
 	mockAPI := &plugintest.API{}
 	sysadminID := mmmodel.NewId()
+	deactivatedAdminID := mmmodel.NewId()
 	mockAPI.On("HasPermissionTo", sysadminID, mmmodel.PermissionManageSystem).Return(true).Maybe()
+	// Core owns account liveness in the bulk permission filter. Registered before the
+	// harness's admit-everyone default so the deactivated account is omitted there rather
+	// than by the plugin's structural ChannelMembers query.
+	mockAPI.On("FilterUsersWithTeamPermission", mock.Anything, mock.Anything, mmmodel.PermissionReadSpace).
+		Return(func(_ string, ids []string, _ *mmmodel.Permission) ([]string, *mmmodel.AppError) {
+			return slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return id == deactivatedAdminID }), nil
+		})
 	h := openTestServiceWithAPI(t, mockAPI)
 	space, _ := createSpaceForMemberTests(t, h, mockAPI)
 
 	targetAdminID := mmmodel.NewId()
-	deactivatedAdminID := mmmodel.NewId()
 	testutil.MustAddChannelAdmin(t, h.db, space.ChannelId, targetAdminID)
 	testutil.MustAddTeamMember(t, h.db, space.TeamId, targetAdminID, 0)
 	testutil.MustAddChannelAdmin(t, h.db, space.ChannelId, deactivatedAdminID)

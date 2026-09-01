@@ -4,6 +4,8 @@
 import {readFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 
+import semver from 'semver';
+
 // Playwright transpiles to CommonJS, so import.meta is unavailable.
 const repoRoot = resolve(__dirname, '../../../..');
 
@@ -17,17 +19,9 @@ function requiredServerVersion(): string {
 }
 
 function isVersionAtLeast(actual: string, required: string): boolean {
-    const toParts = (v: string) => v.split('.').map((n) => parseInt(n, 10) || 0);
-    const [a, r] = [toParts(actual), toParts(required)];
-
-    for (let i = 0; i < Math.max(a.length, r.length); i++) {
-        const diff = (a[i] ?? 0) - (r[i] ?? 0);
-        if (diff !== 0) {
-            return diff > 0;
-        }
-    }
-
-    return true;
+    const actualVersion = semver.valid(actual);
+    const requiredVersion = semver.valid(required);
+    return actualVersion !== null && requiredVersion !== null && semver.gte(actualVersion, requiredVersion);
 }
 
 // Fails setup rather than letting an unsupported server surface later as an unexplained

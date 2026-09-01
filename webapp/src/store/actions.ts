@@ -1,11 +1,8 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {RestError} from 'client/rest';
-import {joinSpace} from 'client/space_permissions';
+import {RestError, getServerErrorId} from 'client/rest';
 import {docsDataSource} from 'data';
-
-import {ClientError} from '@mattermost/client';
 
 import {getCurrentTeamId, getMyTeams} from 'mattermost-redux/selectors/entities/teams';
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
@@ -410,7 +407,7 @@ export function ensureSpaceMembership(spaceId: string): DocsThunkAction<Promise<
             return;
         }
         const generation = nextSpaceAccessGeneration();
-        dispatch(receivedSpaceAccess(await joinSpace(spaceId), generation));
+        dispatch(receivedSpaceAccess(await docsDataSource.joinSpace(spaceId), generation));
     };
 }
 
@@ -540,27 +537,24 @@ export function deleteSpace(spaceId: string): DocsThunkAction<Promise<void>> {
 // retryable lock timeout — so the id, not the status, tells them apart. The REST layer lifts the
 // AppError id into server_error_id (see client/rest.ts).
 
-const spaceErrorId = (error: unknown): string | undefined =>
-    (error instanceof ClientError ? error.server_error_id : undefined);
-
 // The space would be left with no member holding access.
 export function isLastSpaceMemberError(error: unknown): boolean {
-    return spaceErrorId(error) === LAST_SPACE_MEMBER_ERROR_ID;
+    return getServerErrorId(error) === LAST_SPACE_MEMBER_ERROR_ID;
 }
 
 // The space would be left with members but no administrator. Distinct from the above because the
 // remedy is different: another *admin* is required, not another member.
 export function isLastSpaceAdminError(error: unknown): boolean {
-    return spaceErrorId(error) === LAST_SPACE_ADMIN_ERROR_ID;
+    return getServerErrorId(error) === LAST_SPACE_ADMIN_ERROR_ID;
 }
 
 // A space-keyed lock timeout. Retryable as-is, so it must not be reported as a rule violation.
 export function isSpaceLockTimeoutError(error: unknown): boolean {
-    return spaceErrorId(error) === SPACE_LOCK_TIMEOUT_ERROR_ID;
+    return getServerErrorId(error) === SPACE_LOCK_TIMEOUT_ERROR_ID;
 }
 
 export function isNotTeamMemberError(error: unknown): boolean {
-    return spaceErrorId(error) === NOT_TEAM_MEMBER_ERROR_ID;
+    return getServerErrorId(error) === NOT_TEAM_MEMBER_ERROR_ID;
 }
 
 // Leaving a space is removing yourself from its membership. The server rejects

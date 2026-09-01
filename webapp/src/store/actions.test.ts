@@ -25,10 +25,6 @@ const mockCreateSpaceDraft = jest.fn();
 const mockUpdatePageDraft = jest.fn();
 const mockJoinSpace = jest.fn();
 
-jest.mock('client/space_permissions', () => ({
-    joinSpace: (...args: unknown[]) => mockJoinSpace(...args as []),
-}));
-
 jest.mock('data', () => ({
     docsDataSource: {
         addSpaceMember: (...args: unknown[]) => mockAddSpaceMember(...args as []),
@@ -41,6 +37,7 @@ jest.mock('data', () => ({
         listSpaceMembers: (...args: unknown[]) => mockListSpaceMembers(...args as []),
         createSpaceDraft: (...args: unknown[]) => mockCreateSpaceDraft(...args as []),
         updatePageDraft: (...args: unknown[]) => mockUpdatePageDraft(...args as []),
+        joinSpace: (...args: unknown[]) => mockJoinSpace(...args as []),
     },
 }));
 

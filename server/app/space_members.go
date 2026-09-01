@@ -413,22 +413,18 @@ func (s *Service) SetSpaceMemberPermissions(space *model.Space, targetUserID str
 	var defaultPermissions []string
 	var updatedMember *mmmodel.ChannelMember
 	lockErr := s.store.WithSpaceMembershipLock(space.Id, func() error {
-		resolvedRoles, rolesErr := s.getSchemeRolesForChannel(space.ChannelId)
-		if rolesErr != nil {
-			return s.schemeAppError("SetSpaceMemberPermissions", rolesErr)
-		}
-		newRoles, newSchemeAdmin = model.RolesForPermissions(permissions, resolvedRoles.UserRoleName)
 		// Resolved here, before the write below commits, rather than after the lock: the space's
 		// default permission set does not change during a member-permission write (only
 		// SetSpaceDefaultPermissions changes it, serialized behind this same lock), so nothing about
 		// resolving it depends on the write having happened. Doing it here means a failure here is
 		// caught before anything commits, instead of surfacing a committed write as a 500 and
 		// silently skipping the WS event below.
-		defaults, defErr := s.defaultPermissionsForRoles(resolvedRoles)
-		if defErr != nil {
-			return s.schemeAppError("SetSpaceMemberPermissions", defErr)
+		resolvedRoles, rolesErr := s.getSchemeRolesForChannel(space.ChannelId)
+		if rolesErr != nil {
+			return s.schemeAppError("SetSpaceMemberPermissions", rolesErr)
 		}
-		defaultPermissions = defaults
+		newRoles, newSchemeAdmin = model.RolesForPermissions(permissions, resolvedRoles.UserRoleName)
+		defaultPermissions = model.DefaultPermissionsFrom(resolvedRoles.UserPermissions)
 
 		// Master-backed on purpose: this flag decides whether the escalation and last-admin guards
 		// below run at all (see store/membership_store.go for why membership reads here bypass the

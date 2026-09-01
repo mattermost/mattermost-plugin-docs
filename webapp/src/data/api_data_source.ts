@@ -1,7 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {RestError, apiUrl, listAll, restDelete, restGet, restPatch, restPost} from 'client/rest';
+import {RestError, apiUrl, listAll, restDelete, restGet, restPatch, restPost, restPut} from 'client/rest';
 
 import type {CreatePageInput, CreateSpaceInput, Page, Space, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
 import type {Draft, DraftPatch, DraftSummary} from 'types/drafts';
@@ -53,14 +53,30 @@ export const apiDataSource: DocsDataSource = {
         expected_update_at: expectedUpdateAt,
     }),
 
+    setSpaceViewAccess: (spaceId, viewAccess, expectedUpdateAt) => restPatch<SpaceAccess>(`${apiUrl()}/spaces/${seg(spaceId)}`, {
+        view_access: viewAccess,
+        expected_update_at: expectedUpdateAt,
+    }),
+
+    setSpaceDefaultPermissions: (spaceId, permissions) =>
+        restPut<SpaceAccess>(`${apiUrl()}/spaces/${seg(spaceId)}/default-permissions`, {default_permissions: permissions}),
+
     deleteSpace: (spaceId) => restDelete<void>(`${apiUrl()}/spaces/${seg(spaceId)}`),
 
     addSpaceMember: (spaceId, userId) =>
         restPost<SpaceMember>(`${apiUrl()}/spaces/${seg(spaceId)}/members`, {user_id: userId}),
 
+    joinSpace: (spaceId) => restPost<SpaceAccess>(`${apiUrl()}/spaces/${seg(spaceId)}/members/me`, {}),
+
     removeSpaceMember: (spaceId, userId) => restDelete<void>(`${apiUrl()}/spaces/${seg(spaceId)}/members/${seg(userId)}`),
 
     listSpaceMembers: (spaceId) => listAll<SpaceMember>((query) => `${apiUrl()}/spaces/${seg(spaceId)}/members?${query}`),
+
+    setSpaceMemberPermissions: (spaceId, userId, granted) =>
+        restPut<SpaceMember>(
+            `${apiUrl()}/spaces/${seg(spaceId)}/members/${seg(userId)}/permissions`,
+            {granted_permissions: granted},
+        ),
 
     listPages: async (spaceId) => {
         const summaries = await listAll<Page>((query) => `${apiUrl()}/spaces/${seg(spaceId)}/pages?${query}`);

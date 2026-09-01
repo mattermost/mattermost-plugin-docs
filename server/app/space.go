@@ -289,12 +289,6 @@ func (s *Service) spaceDefaultPermissions(space *model.Space) ([]string, error) 
 	if err != nil {
 		return nil, err
 	}
-	return s.defaultPermissionsForRoles(roles)
-}
-
-// defaultPermissionsForRoles is spaceDefaultPermissions for a caller that already holds the
-// backing channel's scheme roles.
-func (s *Service) defaultPermissionsForRoles(roles *schemeRoles) ([]string, error) {
 	return model.DefaultPermissionsFrom(roles.UserPermissions), nil
 }
 

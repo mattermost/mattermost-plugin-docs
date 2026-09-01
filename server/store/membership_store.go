@@ -20,36 +20,6 @@ import (
 // caching and events stay correct, and whether a member still holds team read_space is asked of
 // core rather than derived from TeamMembers here.
 
-// GetMemberSchemeFlags returns the SchemeAdmin and SchemeGuest flags of userID's ChannelMembers row
-// for channelID, answered from the master. Both flags are nullable in core's schema; NULL reads
-// as false, matching core's own scan-time handling. Returns ErrNotFound when no row exists, so
-// callers can distinguish a non-member from an ordinary member.
-func (s *Store) GetMemberSchemeFlags(channelID, userID string) (schemeAdmin, schemeGuest bool, err error) {
-	if channelID == "" || userID == "" {
-		return false, false, &ErrInvalidInput{Entity: "ChannelMember", Field: "id", Value: channelID + "/" + userID}
-	}
-
-	builder := s.getQueryBuilder().
-		Select(
-			"COALESCE(SchemeAdmin, FALSE) AS SchemeAdmin",
-			"COALESCE(SchemeGuest, FALSE) AS SchemeGuest",
-		).
-		From("ChannelMembers").
-		Where(sq.Eq{"ChannelId": channelID, "UserId": userID})
-
-	var row struct {
-		SchemeAdmin bool `db:"schemeadmin"`
-		SchemeGuest bool `db:"schemeguest"`
-	}
-	if qErr := s.getBuilder(s.db, &row, builder); qErr != nil {
-		if errors.Is(qErr, sql.ErrNoRows) {
-			return false, false, &ErrNotFound{EntityName: "ChannelMember", ID: channelID + "/" + userID}
-		}
-		return false, false, errors.Wrap(qErr, "unable_to_get_member_scheme_flags")
-	}
-	return row.SchemeAdmin, row.SchemeGuest, nil
-}
-
 // SpaceMemberRoles is one member's authority on a backing channel: the capability roles held in
 // the membership's explicit roles, plus the scheme flags. It is what projecting a member's
 // permission set needs from the ChannelMembers row.
@@ -97,23 +67,27 @@ func (s *Store) GetSpaceMemberRoles(channelID, userID string) (*SpaceMemberRoles
 	}, nil
 }
 
-// IsChannelMember reports whether userID has a ChannelMembers row for channelID, answered from
-// the master.
+// GetMemberSchemeFlags returns the SchemeAdmin and SchemeGuest flags of userID's ChannelMembers row
+// for channelID. Returns ErrNotFound when no row exists, so callers can distinguish a non-member
+// from an ordinary member.
+func (s *Store) GetMemberSchemeFlags(channelID, userID string) (schemeAdmin, schemeGuest bool, err error) {
+	member, err := s.GetSpaceMemberRoles(channelID, userID)
+	if err != nil {
+		return false, false, err
+	}
+	return member.SchemeAdmin, member.SchemeGuest, nil
+}
+
+// IsChannelMember reports whether userID has a ChannelMembers row for channelID. An absent row is
+// reported as a false result rather than as ErrNotFound.
 func (s *Store) IsChannelMember(channelID, userID string) (bool, error) {
-	if channelID == "" || userID == "" {
-		return false, &ErrInvalidInput{Entity: "ChannelMember", Field: "id", Value: channelID + "/" + userID}
+	if _, err := s.GetSpaceMemberRoles(channelID, userID); err != nil {
+		if IsErrNotFound(err) {
+			return false, nil
+		}
+		return false, err
 	}
-
-	builder := s.getQueryBuilder().
-		Select("COUNT(*) > 0").
-		From("ChannelMembers").
-		Where(sq.Eq{"ChannelId": channelID, "UserId": userID})
-
-	var isMember bool
-	if err := s.getBuilder(s.db, &isMember, builder); err != nil {
-		return false, errors.Wrap(err, "unable_to_check_channel_membership")
-	}
-	return isMember, nil
+	return true, nil
 }
 
 // ChannelMemberRef is one backing-channel membership row reduced to what audience resolution and
@@ -121,12 +95,6 @@ func (s *Store) IsChannelMember(channelID, userID string) (bool, error) {
 type ChannelMemberRef struct {
 	UserID      string
 	SchemeAdmin bool
-
-	// Deactivated reports that the member's user account is deactivated (Users.DeleteAt set) or
-	// that no Users row exists for it. Deactivation clears sessions but leaves TeamMembers and
-	// ChannelMembers rows in place, so without this flag a deactivated account still looks like a
-	// member who can reach the space.
-	Deactivated bool
 }
 
 // ChannelMembership is a backing channel's whole membership together with the channel's team,
@@ -136,19 +104,16 @@ type ChannelMembership struct {
 	Members []ChannelMemberRef
 }
 
-// GetChannelMembership lists every ChannelMembers row of channelID with its SchemeAdmin flag, the
-// account-deactivation state resolved through the Users row, and the channel's team resolved
-// through the Channels row so a caller holding only a channel id can use it. Both joins are outer
-// so a membership row is still listed when its channel or user row is missing; a missing channel
-// row makes the team read as empty and core admits nobody for it, and a missing user row reads as
-// deactivated — both fail closed. SchemeAdmin is nullable in core's schema; a NULL reads as
-// not-admin, matching core's own scan-time handling.
+// GetChannelMembership lists every ChannelMembers row of channelID with its SchemeAdmin flag and
+// the channel's team resolved through the Channels row so a caller holding only a channel id can
+// use it. The join is outer so a membership row is still listed when its channel row is missing; a
+// missing channel row makes the team read as empty and core admits nobody for it. SchemeAdmin is
+// nullable in core's schema; a NULL reads as not-admin, matching core's own scan-time handling.
 //
 // Structural only: whether a listed member may still reach the space — an active team membership
 // whose team scheme grants read_space — is core's decision, asked per audience through the plugin
-// API, never a TeamMembers predicate here. The Users join reports account liveness, which is not
-// part of that permission decision: core resolves the permission from the membership and scheme
-// rows, which deactivation leaves in place.
+// API, never a TeamMembers or Users predicate here. Core's bulk filter also owns account liveness,
+// so deactivated and missing users are dropped by the same authority resolver.
 //
 // Deliberately unpaginated, and it must stay that way. The result feeds a WebSocket omit list
 // (publishToChannels), so a partial answer does not degrade a listing — it delivers the event to
@@ -165,18 +130,15 @@ func (s *Store) GetChannelMembership(channelID string) (*ChannelMembership, erro
 			"COALESCE(c.TeamId, '') AS TeamId",
 			"cm.UserId AS UserId",
 			"COALESCE(cm.SchemeAdmin, FALSE) AS SchemeAdmin",
-			"(u.DeleteAt IS NULL OR u.DeleteAt <> 0) AS Deactivated",
 		).
 		From("ChannelMembers cm").
 		LeftJoin("Channels c ON c.Id = cm.ChannelId").
-		LeftJoin("Users u ON u.Id = cm.UserId").
 		Where(sq.Eq{"cm.ChannelId": channelID})
 
 	var rows []struct {
 		TeamID      string `db:"teamid"`
 		UserID      string `db:"userid"`
 		SchemeAdmin bool   `db:"schemeadmin"`
-		Deactivated bool   `db:"deactivated"`
 	}
 	if err := s.selectBuilder(s.db, &rows, builder); err != nil {
 		return nil, errors.Wrap(err, "unable_to_list_channel_membership")
@@ -184,7 +146,7 @@ func (s *Store) GetChannelMembership(channelID string) (*ChannelMembership, erro
 	membership := &ChannelMembership{Members: make([]ChannelMemberRef, 0, len(rows))}
 	for _, row := range rows {
 		membership.TeamID = row.TeamID
-		membership.Members = append(membership.Members, ChannelMemberRef{UserID: row.UserID, SchemeAdmin: row.SchemeAdmin, Deactivated: row.Deactivated})
+		membership.Members = append(membership.Members, ChannelMemberRef{UserID: row.UserID, SchemeAdmin: row.SchemeAdmin})
 	}
 	return membership, nil
 }

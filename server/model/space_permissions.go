@@ -15,17 +15,32 @@ import (
 // The space permission vocabulary is the core page-permission id strings themselves, so the API
 // speaks the same tokens core enforces — no invented level names.
 
-// grantableMemberPermissions is the wire vocabulary a caller may explicitly grant to a member:
-// five independently grantable page capabilities plus the admin permission. Each page capability
-// maps to a core role that also carries the read_page baseline.
-var grantableMemberPermissions = map[string]bool{
-	mmmodel.PermissionCreatePage.Id:    true,
-	mmmodel.PermissionCommentPage.Id:   true,
-	mmmodel.PermissionEditPage.Id:      true,
-	mmmodel.PermissionDeleteOwnPage.Id: true,
-	mmmodel.PermissionDeletePage.Id:    true,
-	mmmodel.PermissionAdminSpace.Id:    true,
+// corePermissionRegistries projects core's canonical capability-role registry
+// into the plugin's validation and stored-role lookup shapes.
+func corePermissionRegistries() (map[string]bool, map[string]string, map[string]string) {
+	grantable := make(map[string]bool, len(mmmodel.SpaceCapabilityRoles)+1)
+	permissionRoles := make(map[string]string, len(mmmodel.SpaceCapabilityRoles))
+	rolePermissions := make(map[string]string, len(mmmodel.SpaceCapabilityRoles))
+	for _, role := range mmmodel.SpaceCapabilityRoles {
+		permission, ok := mmmodel.SpaceCapabilityPermissionForRole(role)
+		if !ok {
+			panic("core space capability role has no canonical permission: " + role)
+		}
+		grantable[permission.Id] = true
+		permissionRoles[permission.Id] = role
+		rolePermissions[role] = permission.Id
+	}
+	grantable[mmmodel.PermissionAdminSpace.Id] = true
+	return grantable, permissionRoles, rolePermissions
 }
+
+// grantableMemberPermissions is the wire vocabulary a caller may explicitly grant to a member:
+// every page capability registered by core plus the admin permission. Each page capability maps
+// to a core role that also carries the read_page baseline.
+//
+// permissionAtomicRole maps each non-admin grantable permission to its core capability role.
+// atomicRolePermission is the reverse projection used when parsing ExplicitRoles.
+var grantableMemberPermissions, permissionAtomicRole, atomicRolePermission = corePermissionRegistries()
 
 // isGrantableDefault reports whether p may appear in a space-default permission set: the member
 // vocabulary less admin_space, which is member-grant-only and never a space default. Derived from
@@ -34,28 +49,6 @@ var grantableMemberPermissions = map[string]bool{
 func isGrantableDefault(p string) bool {
 	return p != mmmodel.PermissionAdminSpace.Id && grantableMemberPermissions[p]
 }
-
-// permissionAtomicRole maps each non-admin grantable permission to the core capability (atomic)
-// role recorded in ExplicitRoles: a core role carrying exactly one page permission, as opposed to
-// the scheme's generated user/admin roles, which bundle a space's whole default or admin set.
-var permissionAtomicRole = map[string]string{
-	mmmodel.PermissionCreatePage.Id:    mmmodel.SpacePageCreatorRoleId,
-	mmmodel.PermissionCommentPage.Id:   mmmodel.SpacePageCommenterRoleId,
-	mmmodel.PermissionEditPage.Id:      mmmodel.SpacePageEditorRoleId,
-	mmmodel.PermissionDeleteOwnPage.Id: mmmodel.SpacePageDeleterOwnRoleId,
-	mmmodel.PermissionDeletePage.Id:    mmmodel.SpacePageDeleterRoleId,
-}
-
-// atomicRolePermission is the reverse of permissionAtomicRole, used to parse a stored
-// ExplicitRoles string back into the granted permission set. Derived from permissionAtomicRole so
-// the two cannot drift.
-var atomicRolePermission = func() map[string]string {
-	m := make(map[string]string, len(permissionAtomicRole))
-	for permission, roleName := range permissionAtomicRole {
-		m[roleName] = permission
-	}
-	return m
-}()
 
 // stripReadPage returns permissions' wire id strings with read_page removed, so a canonical core
 // permission set can be single-sourced into the read_page-free wire vocabulary without drift.
@@ -71,15 +64,19 @@ func stripReadPage(permissions []*mmmodel.Permission) []string {
 // so the accessor copies without re-deriving the canonical form on every call.
 var spaceAdminEffectivePermissions = mmmodel.NormalizePermissions(mmmodel.PermissionIDs(mmmodel.SpaceAdminRolePermissions))
 
-// presetPermissionSets are the three seeded default-permission presets in wire form (read_page-
-// free — the baseline is implicit and never listed), single-sourced from core's canonical
-// permission slices. Stored already normalized so the lookups below compare and copy without
-// re-deriving the canonical form on every call.
-var presetPermissionSets = map[string][]string{
-	mmmodel.SchemeNameSpaceContribute: mmmodel.NormalizePermissions(stripReadPage(mmmodel.SpaceDefaultContributePermissions)),
-	mmmodel.SchemeNameSpaceComment:    mmmodel.NormalizePermissions(stripReadPage(mmmodel.SpaceDefaultCommentPermissions)),
-	mmmodel.SchemeNameSpaceReadOnly:   mmmodel.NormalizePermissions(stripReadPage(mmmodel.SpaceDefaultReadOnlyPermissions)),
+func corePresetPermissionSets() map[string][]string {
+	presets := mmmodel.SpacePermissionPresets()
+	sets := make(map[string][]string, len(presets))
+	for _, preset := range presets {
+		sets[preset.SchemeName] = mmmodel.NormalizePermissions(stripReadPage(preset.Permissions))
+	}
+	return sets
 }
+
+// presetPermissionSets are core's seeded default-permission presets in wire form (read_page-free
+// because the baseline is implicit and never listed). Stored already normalized so the lookups
+// below compare and copy without re-deriving the canonical form on every call.
+var presetPermissionSets = corePresetPermissionSets()
 
 // validatePermissions validates permissions against allowed, rejecting read_page as the
 // non-grantable baseline, plus admin_space when rejectAdmin is set. An unknown token is rejected.

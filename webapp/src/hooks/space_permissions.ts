@@ -1,8 +1,8 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {RestError} from 'client/rest';
-import {getSpaceAccess, listAllSpaceMembers, setDefaultPermissions, setMemberPermissions, setSpaceViewAccess} from 'client/space_permissions';
+import {RestError, getServerErrorId} from 'client/rest';
+import {docsDataSource} from 'data';
 import {useCanAdministerSpace, useCanManageSpaceMembers} from 'hooks/permissions';
 import {useAppDispatch, useAppSelector} from 'hooks/redux';
 import {useCallback, useEffect, useRef, useState} from 'react';
@@ -10,7 +10,7 @@ import {useIntl} from 'react-intl';
 
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
-import {nextSpaceAccessGeneration, receivedSpaceAccess} from 'store/actions';
+import {loadSpaceAccess, nextSpaceAccessGeneration, receivedSpaceAccess, refreshSpaceAccess} from 'store/actions';
 import {getSpace, getSpaceMemberPermissionsRevision, getSpaceMemberIds} from 'store/selectors';
 
 import {toast} from 'components/toast';
@@ -48,9 +48,6 @@ export type SpacePermissions = {
     setMemberGrants: (userId: string, next: Permission[]) => Promise<void>;
     setViewAccess: (next: SpaceViewAccess) => Promise<void>;
 };
-
-const serverErrorId = (error: unknown): string | undefined =>
-    (error instanceof RestError ? error.server_error_id : undefined);
 
 // Preserve selector identity while defaults are unresolved.
 const EMPTY_PERMISSIONS: Permission[] = [];
@@ -90,9 +87,14 @@ export function useSpacePermissions(space: Space): SpacePermissions {
     // Marks a spaceId resolved only once its access read has actually succeeded, mirroring
     // useResolveSpacePermissions's success-gated marker: a cancelled read (superseded by a
     // same-space rerender before it resolves) must not mark the id resolved, or the surviving
-    // run would skip its own access read and be left with whatever authority was in scope
-    // before either read.
+    // run would skip the shared result and be left with whatever authority was in scope before
+    // the read.
     const accessResolvedFor = useRef<string>();
+
+    // A same-space rerender may replace the effect while its shared access thunk is still in
+    // flight. Let the surviving run await that request instead of issuing a duplicate; only a
+    // non-cancelled run consumes and clears it.
+    const accessLoadInFlight = useRef<{spaceId: string; promise: Promise<{space?: Space}>}>();
 
     // Tracks each member's most recent direct grant write so a slower roster read already in
     // flight cannot revert it: the read is merged per record against whichever is newer,
@@ -108,7 +110,7 @@ export function useSpacePermissions(space: Space): SpacePermissions {
     // Preserve retryable conflicts and rule-specific refusals instead of flattening them into the
     // generic write error. The individual endpoints do not share one concurrency contract.
     const permissionWriteError = useCallback((error: unknown) => {
-        const id = serverErrorId(error);
+        const id = getServerErrorId(error);
         if (id === SPACE_LOCK_TIMEOUT_ERROR_ID) {
             return formatMessage({
                 id: 'docs.spacePermissions.error.busy',
@@ -150,12 +152,9 @@ export function useSpacePermissions(space: Space): SpacePermissions {
 
     // Self-grant changes can alter authority through several independent tiers; re-resolve it.
     const reloadTiers = useCallback(async () => {
-        const generation = nextSpaceAccessGeneration();
-        try {
-            dispatch(receivedSpaceAccess(await getSpaceAccess(space.id), generation));
-        } catch {
-            // The grant write succeeded; a failed follow-up must not report it as rejected.
-        }
+        // refreshSpaceAccess owns response ordering and definitive-denial eviction. It never
+        // rejects, so a failed follow-up cannot make the successful grant write look rejected.
+        await dispatch(refreshSpaceAccess(space.id));
     }, [dispatch, space.id]);
 
     useEffect(() => {
@@ -173,16 +172,30 @@ export function useSpacePermissions(space: Space): SpacePermissions {
             try {
                 let canManage = storeCanManageMembers;
                 if (loadAccess) {
-                    const generation = nextSpaceAccessGeneration();
-                    const access = await getSpaceAccess(space.id);
+                    // The shared thunk owns generation ordering and evicts a space on a
+                    // definitive 403/404. A transient failure leaves the stored record alone but
+                    // still makes this permission matrix unavailable.
+                    let pending = accessLoadInFlight.current;
+                    if (!pending || pending.spaceId !== space.id) {
+                        pending = {spaceId: space.id, promise: dispatch(loadSpaceAccess(space.id))};
+                        accessLoadInFlight.current = pending;
+                    }
+                    const {space: access} = await pending.promise;
                     if (cancelled) {
+                        return;
+                    }
+                    if (accessLoadInFlight.current === pending) {
+                        accessLoadInFlight.current = undefined;
+                    }
+                    if (!access) {
+                        clearResolved();
+                        setLoadFailed(true);
                         return;
                     }
 
                     // The server-resolved record is authoritative even when the caller is absent
                     // from the roster, as a system administrator may be.
-                    dispatch(receivedSpaceAccess(access, generation));
-                    canManage = access.permissions.some((permission) =>
+                    canManage = (access.permissions ?? []).some((permission) =>
                         permission === Permissions.MANAGE_SPACE || permission === Permissions.ADMIN_SPACE);
                     accessResolvedFor.current = space.id;
                 }
@@ -193,7 +206,7 @@ export function useSpacePermissions(space: Space): SpacePermissions {
                     clearResolved();
                     return;
                 }
-                const roster = await listAllSpaceMembers(space.id);
+                const roster = await docsDataSource.listSpaceMembers(space.id);
                 if (cancelled) {
                     return;
                 }
@@ -235,7 +248,7 @@ export function useSpacePermissions(space: Space): SpacePermissions {
         setBusy(true);
         const generation = nextSpaceAccessGeneration();
         try {
-            dispatch(receivedSpaceAccess(await setDefaultPermissions(space.id, next), generation));
+            dispatch(receivedSpaceAccess(await docsDataSource.setSpaceDefaultPermissions(space.id, next), generation));
         } catch (error) {
             toast.error(permissionWriteError(error));
             throw error;
@@ -247,7 +260,7 @@ export function useSpacePermissions(space: Space): SpacePermissions {
     const setMemberGrants = useCallback(async (userId: string, next: Permission[]) => {
         setBusy(true);
         try {
-            const updated = await setMemberPermissions(space.id, userId, next);
+            const updated = await docsDataSource.setSpaceMemberPermissions(space.id, userId, next);
             writeCounter.current += 1;
             memberWriteGeneration.current.set(updated.user_id, writeCounter.current);
             setMembers((current) => new Map(current).set(updated.user_id, updated));
@@ -269,7 +282,7 @@ export function useSpacePermissions(space: Space): SpacePermissions {
         setBusy(true);
         const generation = nextSpaceAccessGeneration();
         try {
-            dispatch(receivedSpaceAccess(await setSpaceViewAccess(space.id, next, stored.update_at), generation));
+            dispatch(receivedSpaceAccess(await docsDataSource.setSpaceViewAccess(space.id, next, stored.update_at), generation));
         } catch (error) {
             toast.error(permissionWriteError(error));
             throw error;

@@ -133,23 +133,17 @@ func TestPermissionsFromChannelMember(t *testing.T) {
 	require.Equal(t, fromFields, fromRow)
 }
 
-// TestPresetRoundTrip verifies the default-preset <-> scheme-name maps invert each other for the
-// three seeded presets, and that preset recognition is order-insensitive and dedup-tolerant.
+// TestPresetRoundTrip verifies the default-preset <-> scheme-name maps invert each other for every
+// preset core registers, and that preset recognition is order-insensitive and dedup-tolerant.
 func TestPresetRoundTrip(t *testing.T) {
-	presetNames := []string{
-		mmmodel.SchemeNameSpaceContribute,
-		mmmodel.SchemeNameSpaceComment,
-		mmmodel.SchemeNameSpaceReadOnly,
-	}
-
-	for _, name := range presetNames {
-		t.Run(name, func(t *testing.T) {
-			permissions, ok := model.DefaultPermissionsForSchemeName(name)
+	for _, preset := range mmmodel.SpacePermissionPresets() {
+		t.Run(preset.SchemeName, func(t *testing.T) {
+			permissions, ok := model.DefaultPermissionsForSchemeName(preset.SchemeName)
 			require.True(t, ok)
 
 			recognizedName, ok := model.SchemeNameForDefaultPermissions(permissions)
 			require.True(t, ok)
-			require.Equal(t, name, recognizedName)
+			require.Equal(t, preset.SchemeName, recognizedName)
 
 			roundTripped, ok := model.DefaultPermissionsForSchemeName(recognizedName)
 			require.True(t, ok)

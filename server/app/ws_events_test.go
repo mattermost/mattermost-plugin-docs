@@ -825,7 +825,7 @@ func TestServiceRemoveSpaceMember_PublishesMemberRemovedEvent(t *testing.T) {
 }
 
 // TestServiceSetSpaceMemberPermissions_DefaultPermissionsFailureAbortsBeforeCommit covers the
-// ordering fix: resolving the space's default permissions (defaultPermissionsForRoles) now runs
+// ordering fix: resolving the space's default permissions (getSchemeRolesForChannel) now runs
 // inside the lock, before the role write, rather than after it. A failure there must abort before
 // UpdateChannelMemberRoles ever runs — not surface a write that already committed as an error while
 // silently skipping its WS event.

@@ -45,6 +45,10 @@ export class RestError extends ClientError {
     }
 }
 
+/** Returns Mattermost's stable server error id from a client error, if present. */
+export const getServerErrorId = (error: unknown): string | undefined =>
+    (error instanceof ClientError ? error.server_error_id : undefined);
+
 // Single fetch idiom shared by every Docs API call. Client4.getOptions injects
 // the session credentials and CSRF header the server expects (it reads the
 // platform-supplied Mattermost-User-Id header), so this never hand-rolls auth.

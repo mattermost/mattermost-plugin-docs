@@ -10,13 +10,11 @@ import (
 )
 
 // spaceAudience is a space backing channel's membership split by whether each member can still
-// reach the space: an active (non-deactivated) account holding the team half of the read gate.
-// Core makes the permission split: FilterUsersWithTeamPermission resolves team read_space per
-// member from the active team membership, its team scheme and the user's system roles, exactly as
-// the per-request gates resolve it, so the plugin never derives it from TeamMembers itself.
-// Account deactivation is the axis that split cannot see — it revokes sessions but leaves the
-// TeamMembers and ChannelMembers rows in place — so it is read alongside the membership and
-// resolved here: a deactivated member cannot authenticate, so they are never admitted.
+// reach the space: an active account holding the team half of the read gate. Core makes the whole
+// permission split: FilterUsersWithTeamPermission resolves team read_space per member from the
+// active team membership, its team scheme and the user's system roles, and drops deactivated or
+// missing accounts. The plugin therefore reads only structural channel membership and never
+// duplicates account-liveness or TeamMembers policy locally.
 type spaceAudience struct {
 	// admitted holds the members who pass, with their SchemeAdmin flag.
 	admitted []store.ChannelMemberRef
@@ -24,10 +22,10 @@ type spaceAudience struct {
 	omitted []string
 }
 
-// resolveSpaceAudience lists channelID's members and asks core which of them hold team read_space;
-// deactivated accounts are omitted without asking. Resolved on every call: a team departure, a
-// team-scheme change, or a deactivation has no plugin-visible hook, so a cached answer could not
-// be kept current. Requires a wired client.
+// resolveSpaceAudience lists channelID's members and asks core which of them hold team read_space
+// and remain active accounts. Resolved on every call: a team departure, a team-scheme change, or a
+// deactivation has no plugin-visible hook, so a cached answer could not be kept current. Requires
+// a wired client.
 func (s *Service) resolveSpaceAudience(channelID string) (*spaceAudience, error) {
 	membership, err := s.store.GetChannelMembership(channelID)
 	if err != nil {
@@ -39,9 +37,7 @@ func (s *Service) resolveSpaceAudience(channelID string) (*spaceAudience, error)
 	}
 	ids := make([]string, 0, len(membership.Members))
 	for _, member := range membership.Members {
-		if !member.Deactivated {
-			ids = append(ids, member.UserID)
-		}
+		ids = append(ids, member.UserID)
 	}
 	var granted []string
 	if len(ids) > 0 {
@@ -55,7 +51,7 @@ func (s *Service) resolveSpaceAudience(channelID string) (*spaceAudience, error)
 		admitted[id] = true
 	}
 	for _, member := range membership.Members {
-		if !member.Deactivated && admitted[member.UserID] {
+		if admitted[member.UserID] {
 			audience.admitted = append(audience.admitted, member)
 		} else {
 			audience.omitted = append(audience.omitted, member.UserID)

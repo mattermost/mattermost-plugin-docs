@@ -1,7 +1,26 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {EDIT_QUERY, draftPath, editDraftPath, editPagePath, pagePath} from './paths';
+import {EDIT_QUERY, draftPath, editDraftPath, editPagePath, pagePath, routedSpaceId} from './paths';
+
+describe('routedSpaceId', () => {
+    it.each([
+        ['/team-1/spaces/eng', 'eng'],
+        ['/team-1/spaces/eng/runbook', 'eng'],
+        ['/team-1/spaces/eng/overview', 'eng'],
+        ['/team-1/spaces/eng/drafts/runbook', 'eng'],
+    ])('reads the space from %s', (pathname, expected) => {
+        expect(routedSpaceId(pathname)).toBe(expected);
+    });
+
+    it.each([
+        '/team-1/spaces',
+        '/team-1/channels/town-square',
+        '/team-1/spaces/Invalid',
+    ])('returns undefined for %s', (pathname) => {
+        expect(routedSpaceId(pathname)).toBeUndefined();
+    });
+});
 
 describe('editPagePath', () => {
     it('appends the edit query to the page path', () => {

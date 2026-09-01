@@ -7,8 +7,8 @@ import manifest from 'manifest';
 import React from 'react';
 import {IntlProvider} from 'react-intl';
 import {Provider} from 'react-redux';
-import {legacy_createStore as createStore} from 'redux';
-import type {UnknownAction} from 'redux';
+import {applyMiddleware, legacy_createStore as createStore} from 'redux';
+import type {Middleware, UnknownAction} from 'redux';
 
 import type {GlobalState} from '@mattermost/types/store';
 
@@ -32,12 +32,14 @@ const mockSetDefaultPermissions = jest.fn();
 const mockSetMemberPermissions = jest.fn();
 const mockSetSpaceViewAccess = jest.fn();
 
-jest.mock('client/space_permissions', () => ({
-    getSpaceAccess: (...args: unknown[]) => mockGetSpaceAccess(...args as []),
-    listAllSpaceMembers: (...args: unknown[]) => mockListAllSpaceMembers(...args as []),
-    setDefaultPermissions: (...args: unknown[]) => mockSetDefaultPermissions(...args as []),
-    setMemberPermissions: (...args: unknown[]) => mockSetMemberPermissions(...args as []),
-    setSpaceViewAccess: (...args: unknown[]) => mockSetSpaceViewAccess(...args as []),
+jest.mock('data', () => ({
+    docsDataSource: {
+        getSpace: (...args: unknown[]) => mockGetSpaceAccess(...args as []),
+        listSpaceMembers: (...args: unknown[]) => mockListAllSpaceMembers(...args as []),
+        setSpaceDefaultPermissions: (...args: unknown[]) => mockSetDefaultPermissions(...args as []),
+        setSpaceMemberPermissions: (...args: unknown[]) => mockSetMemberPermissions(...args as []),
+        setSpaceViewAccess: (...args: unknown[]) => mockSetSpaceViewAccess(...args as []),
+    },
 }));
 
 jest.mock('components/toast', () => ({toast: {error: jest.fn()}}));
@@ -75,13 +77,16 @@ const restError = (status: number, serverErrorId?: string) =>
 // A store running the real Docs reducer, so the hook's own dispatches land: it writes each resolved
 // read into the spaces slice and reads the caller's tiers back out of it.
 const pluginKey = 'plugins-' + manifest.id;
+const thunk: Middleware = ({dispatch, getState}) => (next) => (action) =>
+    (typeof action === 'function' ? action(dispatch, getState) : next(action));
+
 const makeLiveStore = (docs: Record<string, unknown> = {}) => {
     const initial = makeTestState({currentUser: {id: 'me'}, docs});
 
     return createStore((state: GlobalState = initial, action: UnknownAction): GlobalState => ({
         ...state,
         [pluginKey]: docsReducer((state as unknown as Record<string, DocsPluginState>)[pluginKey], action),
-    } as unknown as GlobalState));
+    } as unknown as GlobalState), applyMiddleware(thunk));
 };
 
 let liveStore = makeLiveStore();
@@ -400,11 +405,11 @@ describe('useSpacePermissions', () => {
     });
 
     // The regression this exists for: a same-space rerender that starts a second effect run
-    // before the first access read resolves used to mark the space resolved anyway (on entry
-    // to the effect, before the read finished), so the surviving run skipped its own access
-    // read and never applied the resolved authority at all.
+    // before the access read resolves used to mark the space resolved anyway (on entry to the
+    // effect, before the read finished), so the surviving run never applied the resolved
+    // authority. The shared thunk request is now reused by that surviving run.
     describe('a cancelled access read', () => {
-        it('does not mark the space resolved, so the surviving run still fetches access', async () => {
+        it('lets the surviving run consume the in-flight access read', async () => {
             const store = makeRosterStore();
             const rosterWrapper = ({children}: {children: React.ReactNode}) => (
                 <Provider store={store}>
@@ -434,13 +439,13 @@ describe('useSpacePermissions', () => {
 
             // The cancelled read settles after the cancellation. If it had marked the space
             // resolved on entry, the surviving run (already committed above) would have
-            // skipped its own access read and left the caller without the authority either
-            // read actually resolved.
-            resolveFirst(access(['read_page']));
+            // skipped the in-flight result and left the caller without the authority it
+            // resolved.
+            resolveFirst(access(['manage_space']));
 
             await waitFor(() => expect(result.current.loading).toBe(false));
 
-            expect(mockGetSpaceAccess).toHaveBeenCalledTimes(2);
+            expect(mockGetSpaceAccess).toHaveBeenCalledTimes(1);
             expect(result.current.canManageMembers).toBe(true);
         });
     });
