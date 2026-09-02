@@ -21,9 +21,13 @@ import (
 	"github.com/mattermost/mattermost-plugin-docs/server/store"
 )
 
-// Logger is the logging surface the service needs.
+// Logger is the logging surface the service needs. Info exists for the operator-facing audit lines
+// the importer must emit (plan §24: upload accepted/rejected, import started/finished, cleanup
+// counts) — those must be visible without turning on debug logging, unlike the Debug tracing used
+// elsewhere in the service.
 type Logger interface {
 	Debug(msg string, keyValuePairs ...any)
+	Info(msg string, keyValuePairs ...any)
 	Warn(msg string, keyValuePairs ...any)
 	Error(msg string, keyValuePairs ...any)
 }
@@ -31,6 +35,7 @@ type Logger interface {
 type noopLogger struct{}
 
 func (noopLogger) Debug(_ string, _ ...any) {}
+func (noopLogger) Info(_ string, _ ...any)  {}
 func (noopLogger) Warn(_ string, _ ...any)  {}
 func (noopLogger) Error(_ string, _ ...any) {}
 
@@ -56,6 +61,11 @@ type Service struct {
 	// lastPresenceSweepAt is the timestamp (ms) of the most recent presenceBroadcastTimes sweep, used
 	// to rate-limit the sweep itself to once per presenceBroadcastSweepIntervalMs.
 	lastPresenceSweepAt atomic.Int64
+
+	// importRetries paces retries of import jobs whose worker pass failed, so one job failing repeatedly
+	// steps aside instead of monopolizing every pass. Its zero value is ready to use; see import_retry.go
+	// for why it is deliberately per-process rather than durable.
+	importRetries importRetryTracker
 }
 
 // New creates a Service wired to the given store, logger, and optional pluginapi client.
@@ -131,6 +141,8 @@ func requireBaseline(where, field string, baseline *int64, force bool) *mmmodel.
 // UpdatePage's conflict carrying ModifiedBy/ModifiedAt).
 func storeAppError(where string, err error) *mmmodel.AppError {
 	switch {
+	case store.IsErrImportSourceMissing(err):
+		return mmmodel.NewAppError(where, "app.import.source.missing.app_error", nil, "", http.StatusNotFound).Wrap(err)
 	case store.IsErrNotFound(err):
 		return mmmodel.NewAppError(where, "app.store.not_found.app_error", nil, "", http.StatusNotFound).Wrap(err)
 	case store.IsErrCircularReference(err):
