@@ -231,6 +231,7 @@ func TestExporterBundleCarriesTheShapesTheImporterMustHandle(t *testing.T) {
 		hasThreadedReply   bool
 		hasPagePlaceholder bool
 		hasUserPlaceholder bool
+		hasRestrictions    bool
 	)
 
 	for _, line := range lines {
@@ -255,6 +256,23 @@ func TestExporterBundleCarriesTheShapesTheImporterMustHandle(t *testing.T) {
 			if strings.Contains(page.Content, "{{CONF_USER_ID:") {
 				hasUserPlaceholder = true
 			}
+			if restrictions, ok := page.Props[PropConfluenceRestrictions].(map[string]any); ok && len(restrictions) > 0 {
+				hasRestrictions = true
+
+				// Restricted users are named by canonical account ID, the only
+				// identity this importer resolves. A placeholder here would mean
+				// the exporter had left a reference for someone else to fix.
+				for _, field := range []string{"view_users", "edit_users"} {
+					values, ok := restrictions[field].([]any)
+					require.Truef(t, ok, "%s must be present as a list", field)
+					for _, value := range values {
+						text, ok := value.(string)
+						require.True(t, ok)
+						require.NotEmpty(t, text)
+						require.NotContains(t, text, "{{")
+					}
+				}
+			}
 		case LineTypePageComment:
 			comment := line.PageComment
 			if comment.ParentCommentImportSourceID != "" {
@@ -272,6 +290,7 @@ func TestExporterBundleCarriesTheShapesTheImporterMustHandle(t *testing.T) {
 	require.True(t, hasThreadedReply, "a comment thread")
 	require.True(t, hasPagePlaceholder, "a page-link placeholder to resolve")
 	require.True(t, hasUserPlaceholder, "a mention placeholder to resolve")
+	require.True(t, hasRestrictions, "a page carrying restrictions to store")
 }
 
 // Every attachment the exporter declared must be present with the checksum it
