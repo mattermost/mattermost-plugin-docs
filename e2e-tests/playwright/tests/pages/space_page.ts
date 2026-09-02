@@ -17,6 +17,9 @@ export class SpacePage {
     readonly publishButton: Locator;
     readonly editButton: Locator;
     readonly shareButton: Locator;
+    readonly memberAvatars: Locator;
+    readonly memberOverflowChip: Locator;
+    readonly profilePopover: Locator;
 
     constructor(page: Page) {
         this.page = page;
@@ -40,6 +43,36 @@ export class SpacePage {
         this.publishButton = page.getByRole('button', {name: 'Publish', exact: true});
         this.editButton = page.getByRole('button', {name: 'Edit', exact: true});
         this.shareButton = page.getByRole('button', {name: 'Share', exact: true});
+
+        // Core's Avatars markup, rendered into the hero's stats row. Docs owns no
+        // avatar styles of its own, so these are the host's class names by design.
+        this.memberAvatars = page.locator('.Avatars').first();
+        this.memberOverflowChip = this.memberAvatars.locator('.Avatar-plain');
+        this.profilePopover = page.getByTestId('user-profile-popover');
+    }
+
+    // Excludes the "+N" chip, which core renders as an Avatar too.
+    memberAvatarImages(): Locator {
+        return this.memberAvatars.locator('.Avatar:not(.Avatar-plain)');
+    }
+
+    async openMemberProfile(index = 0) {
+        await this.memberAvatarImages().nth(index).click();
+    }
+
+    // The reported bug (MM-70358) was a translucent chip letting the avatar beneath
+    // show through, so assert the resolved alpha rather than a specific colour.
+    async expectOverflowChipOpaque() {
+        await expect(this.memberOverflowChip).toBeVisible();
+
+        const background = await this.memberOverflowChip.evaluate(
+            (el) => window.getComputedStyle(el).backgroundColor,
+        );
+
+        const alpha = (/^rgba\(.*,\s*([\d.]+)\)$/).exec(background);
+
+        expect(background).not.toBe('transparent');
+        expect(alpha ? Number(alpha[1]) : 1).toBe(1);
     }
 
     // The space header's title trigger, exact so the sidebar's "Space options for
