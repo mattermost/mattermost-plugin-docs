@@ -85,6 +85,8 @@ const renderPanel = ({drafts = []}: {drafts?: Draft[]} = {}) => renderWithContex
 // by their title text and walked up to the treeitem.
 const row = (title: string) => screen.getByText(title).closest('[role="treeitem"]') as HTMLElement;
 
+const menuTriggers = () => screen.getAllByRole('button', {name: /^Page options for /});
+
 // Rows are anchors so a page can be opened in a new tab, copied, or middle-clicked
 // like any other address; a div with an onClick supports none of that.
 describe('PageTreePanel row links', () => {
@@ -117,6 +119,30 @@ describe('PageTreePanel keyboard support', () => {
         const tabbable = screen.getAllByRole('treeitem').filter((item) => item.getAttribute('tabindex') === '0');
         expect(tabbable).toHaveLength(1);
         expect(tabbable[0]).toHaveTextContent('a');
+    });
+
+    // Shift+F10 and the Menu key are the platform conventions for this, but Apple
+    // keyboards have neither — so Tab has to reach the menu too, or the tree's
+    // per-page actions are unreachable by keyboard on a Mac.
+    it('puts the menu of the tab-stop row in the tab order, and no other', () => {
+        renderPanel();
+
+        const tabbable = menuTriggers().filter((button) => button.getAttribute('tabindex') === '0');
+
+        expect(tabbable).toHaveLength(1);
+        expect(tabbable[0]).toHaveAccessibleName('Page options for a');
+    });
+
+    it('moves the tabbable menu along with the tab stop', () => {
+        renderPanel();
+
+        row('a').focus();
+        fireEvent.keyDown(row('a'), {key: 'ArrowDown'});
+
+        const tabbable = menuTriggers().filter((button) => button.getAttribute('tabindex') === '0');
+
+        expect(tabbable).toHaveLength(1);
+        expect(tabbable[0]).toHaveAccessibleName('Page options for a1');
     });
 
     it('nests child rows in a group so nesting is exposed', () => {

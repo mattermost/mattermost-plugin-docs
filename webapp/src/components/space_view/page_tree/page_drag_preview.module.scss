@@ -1,9 +1,12 @@
 // Rendered into a detached container the browser snapshots as the drag image, so
 // it can't inherit the tree's width — the title's own max-width does the
-// truncating instead of the row's flex context.
+// truncating instead of the row's flex context. Sized against a widened sidebar
+// (MAX_SIDEBAR_WIDTH in ../sidebar/width.ts) so a dragged row doesn't truncate
+// far sooner than the row it was picked up from; kept under the full cap because
+// a drag image spanning the whole sidebar is unwieldy to aim with.
 .preview {
     display: flex;
-    max-width: 240px;
+    max-width: 320px;
     align-items: center;
     gap: 8px;
     padding: 6px 8px;
