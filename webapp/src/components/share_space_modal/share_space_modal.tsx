@@ -1,14 +1,15 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {useCopyText} from 'hooks/copy_text';
 import {useSpaceMemberProfiles} from 'hooks/members';
 import {useDocsNavigation} from 'hooks/navigation';
 import {useCanManageSpaceMembers} from 'hooks/permissions';
 import {useManageSpaceMembers} from 'hooks/space_members';
 import React, {useMemo} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
-import {copyToClipboard} from 'utils/clipboard';
 
+import CheckIcon from '@mattermost/compass-icons/components/check';
 import ChevronDownIcon from '@mattermost/compass-icons/components/chevron-down';
 import ContentCopyIcon from '@mattermost/compass-icons/components/content-copy';
 import LockOutlineIcon from '@mattermost/compass-icons/components/lock-outline';
@@ -48,7 +49,9 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
         disabled: busy,
     };
 
-    const copyLink = () => copyToClipboard(absolutePaths.space(space.id));
+    const copyLink = useCopyText(absolutePaths.space(space.id), {
+        announcement: formatMessage({id: 'docs.share.linkCopied', defaultMessage: 'Copied'}),
+    });
 
     const title = (
         <FormattedMessage
@@ -62,13 +65,20 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
         <SecondaryButton
             size='sm'
             className={styles.copyLink}
-            onClick={copyLink}
+            onClick={copyLink.copy}
         >
-            <ContentCopyIcon size={16}/>
-            <FormattedMessage
-                id='docs.share.copyLink'
-                defaultMessage='Copy link'
-            />
+            {copyLink.copied ? <CheckIcon size={16}/> : <ContentCopyIcon size={16}/>}
+            {copyLink.copied ? (
+                <FormattedMessage
+                    id='docs.share.linkCopied'
+                    defaultMessage='Copied'
+                />
+            ) : (
+                <FormattedMessage
+                    id='docs.share.copyLink'
+                    defaultMessage='Copy link'
+                />
+            )}
         </SecondaryButton>
     );
 
