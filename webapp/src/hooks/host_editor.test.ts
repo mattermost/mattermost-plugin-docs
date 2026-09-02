@@ -20,6 +20,17 @@ describe('useHostEditor', () => {
         expect(result.current.editorReady).toBe(false);
     });
 
+    it('does not look for an editor that is never coming', async () => {
+        const getEditor = jest.fn(() => ({}));
+        const editorRef = {current: {getEditor} as unknown as PublishedWysiwygEditorHandle};
+
+        renderHook(() => useHostEditor(editorRef, false));
+
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+
+        expect(getEditor).not.toHaveBeenCalled();
+    });
+
     it('waits for an editor that mounts after the page does', async () => {
         const editorRef: {current: PublishedWysiwygEditorHandle | null} = {current: null};
 

@@ -41,8 +41,16 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
         editorRef,
     });
 
+    const editorWillMount = editing && hostCanUseEditor() && !load.loading && !load.error && !load.notFound;
+
     const {formattingBarRef, surfaceRef, getEditor, applyFormatting, editorReady, documentMode} =
-        useHostEditor(editorRef, editing && !load.loading && !load.error);
+        useHostEditor(editorRef, editorWillMount);
+
+    const keepSelection = useCallback((e: React.MouseEvent) => {
+        if (!(e.target as HTMLElement).closest('input, textarea')) {
+            e.preventDefault();
+        }
+    }, []);
 
     const publish = usePublishDraft(spaceId);
     const onSubmit = useCallback(() => {
@@ -125,7 +133,10 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
     return (
         <div className={styles.root}>
             {editing && pinned && editorReady && FormattingBar && toolbarSlot && createPortal(
-                <div className={styles.pinnedToolbar}>
+                <div
+                    className={styles.pinnedToolbar}
+                    onMouseDown={keepSelection}
+                >
                     <FormattingBar
                         ref={formattingBarRef}
                         applyFormatting={applyFormatting}
