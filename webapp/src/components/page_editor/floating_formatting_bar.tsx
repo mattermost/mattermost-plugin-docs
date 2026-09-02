@@ -117,6 +117,10 @@ const FloatingFormattingBar = ({editorRef, applyFormatting, getEditor, barRef, a
     }, [editorRef, update]);
 
     useEffect(() => {
+        // Unpinning mounts this bar with a selection already made, and no
+        // selectionchange follows to open it.
+        sync();
+
         document.addEventListener('selectionchange', sync);
         return () => document.removeEventListener('selectionchange', sync);
     }, [sync]);

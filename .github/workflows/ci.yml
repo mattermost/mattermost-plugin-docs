@@ -176,7 +176,6 @@ jobs:
       - name: ci/playwright-e2e-test
         uses: ./.github/actions/playwright-e2e-test
 
-
   # The space-permission specs, which the job above deliberately does not collect: they need the
   # Enterprise license secret, which fork runs cannot see. Kept as its own job so the authoring
   # suite above keeps running on every PR, license or not.
@@ -269,6 +268,24 @@ jobs:
           # Distinct from the authoring job's, which uploads under the same names.
           ARTIFACT_SUFFIX: "-space-permissions"
           MM_LICENSE: ${{ secrets.MM_E2E_TEST_LICENSE_ONPREM_ENT }}
+
+  # Publishes the PR bundle to the S3 path matterwick HEAD-polls when the
+  # "Setup Cloud Test Server" label is applied:
+  # <bucket>/mattermost-plugin-docs/mattermost-plugin-docs-<sha7>.tar.gz
+  dist:
+    if: ${{ github.repository_owner == 'mattermost' && github.event_name == 'pull_request' }}
+    # The called workflow requests id-token: write, which the workflow-level default of
+    # contents: read does not cover — without this the run fails to start at all.
+    permissions:
+      contents: read
+      id-token: write
+    uses: mattermost/actions-workflows/.github/workflows/plugin-dist-pr.yml@main
+    secrets: inherit
+    with:
+      dist-target: "dist-linux"
+      # The build job already gates on a full multi-platform `make dist`.
+      verify-target: "manifest-check"
+      s3-prefix: "mattermost-plugin-docs"
 
   delivery:
     if: ${{ github.repository_owner == 'mattermost' && github.event_name != 'schedule' && github.ref_name == 'master' }}
