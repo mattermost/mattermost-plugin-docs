@@ -17,6 +17,7 @@ import SectionNotice from 'components/section_notice/section_notice';
 import {DOCS_EXTENSIONS} from './docs_extensions';
 import FloatingFormattingBar from './floating_formatting_bar';
 import styles from './page_editor.module.scss';
+import SlashMenu from './slash_menu';
 import {CalloutControl, OverflowControl, PinToolbarControl} from './toolbar_controls';
 import {useToolbarSlot} from './toolbar_slot';
 
@@ -42,7 +43,7 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
     });
 
     const {formattingBarRef, surfaceRef, getEditor, applyFormatting, documentMode} =
-        useHostEditor(editorRef, editing && !load.loading && !load.error);
+        useHostEditor(editorRef, {editing, loaded: !load.loading && !load.error});
 
     const keepSelection = useCallback((e: React.MouseEvent) => {
         if (!(e.target as HTMLElement).closest('input, textarea')) {
@@ -194,6 +195,12 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
                         ref={surfaceRef}
                         className={classNames(styles.surface, {[styles.reading]: !editing})}
                     >
+                        <SlashMenu
+                            editing={editing}
+                            getEditor={getEditor}
+                            surfaceRef={surfaceRef}
+                        />
+
                         {editing && !pinned && (
                             <FloatingFormattingBar
                                 editorRef={surfaceRef}
