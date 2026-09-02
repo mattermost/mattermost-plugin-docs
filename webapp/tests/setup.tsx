@@ -30,6 +30,23 @@ class ResizeObserverStub {
 }
 global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 
+// jsdom doesn't implement DOMRect (used by floating element positioning).
+if (!global.DOMRect) {
+    global.DOMRect = class {
+        x = 0;
+        y = 0;
+        width = 0;
+        height = 0;
+        top = 0;
+        right = 0;
+        bottom = 0;
+        left = 0;
+        toJSON() {
+            return {};
+        }
+    } as unknown as typeof DOMRect;
+}
+
 // jsdom doesn't implement scrollIntoView (used by list keyboard navigation).
 if (!Element.prototype.scrollIntoView) {
     Element.prototype.scrollIntoView = () => {};
