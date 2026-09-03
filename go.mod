@@ -1,13 +1,11 @@
 module github.com/mattermost/mattermost-plugin-docs
 
-go 1.26.7
+go 1.26.8
 
 // Dev-only pins: server/public is pinned to the paired Core comments commit, which includes the
 // Space backing-channel post, thread-move, and retention APIs not yet in a released server/public.
-// server/v8 is the test harness only (storetest helpers); it does not contribute any runtime
-// symbols and is pinned independently to an older commit. The two modules live in the same
-// monorepo but are versioned independently, so their pseudo-version timestamps will always
-// differ; what matters is that server/public has the APIs this plugin calls.
+// server/v8 is the test harness only (storetest helpers) and contributes no runtime symbols; it is
+// pinned to the same commit, so the harness and the APIs under test come from one core tree.
 // Bump both to a release tag once the core space-channel changes ship.
 require (
 	github.com/gorilla/mux v1.8.1
