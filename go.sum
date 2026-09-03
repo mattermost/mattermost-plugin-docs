@@ -138,10 +138,10 @@ github.com/mattermost/ldap v0.0.0-20231116144001-0f480c025956 h1:Y1Tu/swM31pVwwb
 github.com/mattermost/ldap v0.0.0-20231116144001-0f480c025956/go.mod h1:SRl30Lb7/QoYyohYeVBuqYvvmXSZJxZgiV3Zf6VbxjI=
 github.com/mattermost/logr/v2 v2.0.22 h1:npFkXlkAWR9J8payh8ftPcCZvLbHSI125mAM5/r/lP4=
 github.com/mattermost/logr/v2 v2.0.22/go.mod h1:0sUKpO+XNMZApeumaid7PYaUZPBIydfuWZ0dqixXo+s=
-github.com/mattermost/mattermost/server/public v0.4.5-0.20260903090143-6cbb9b6ba852 h1:P+nPa6Yk214HaAzy491kEGfwDG/UNhzrdPque8n1qIE=
-github.com/mattermost/mattermost/server/public v0.4.5-0.20260903090143-6cbb9b6ba852/go.mod h1:zW0LL+/wOKxlCsJwQg6+N47NvUOugtOfx4tL7xxRaKo=
-github.com/mattermost/mattermost/server/v8 v8.0.0-20260903090143-6cbb9b6ba852 h1:A8Y0E/pWuH9ZApla18mCpqNOe1tKjD7U5BwFRn2fP1M=
-github.com/mattermost/mattermost/server/v8 v8.0.0-20260903090143-6cbb9b6ba852/go.mod h1:SL5+rHW3UT4aJ1VcgH/kL5PuEsG0GFqbNmx+TyvOgRw=
+github.com/mattermost/mattermost/server/public v0.4.5-0.20260903122834-a3490755b397 h1:OcJsbr/YYRFxgki8vW2riSUgbeRVXRvo1ZjKy5Ym6As=
+github.com/mattermost/mattermost/server/public v0.4.5-0.20260903122834-a3490755b397/go.mod h1:zW0LL+/wOKxlCsJwQg6+N47NvUOugtOfx4tL7xxRaKo=
+github.com/mattermost/mattermost/server/v8 v8.0.0-20260903122834-a3490755b397 h1:KGiA6e9Tp80XXF6Ab/HMfBs+w/RHJ/RTQSEavu7niAY=
+github.com/mattermost/mattermost/server/v8 v8.0.0-20260903122834-a3490755b397/go.mod h1:SL5+rHW3UT4aJ1VcgH/kL5PuEsG0GFqbNmx+TyvOgRw=
 github.com/mattermost/morph v1.1.0 h1:Q9vrJbeM3s2jfweGheq12EFIzdNp9a/6IovcbvOQ6Cw=
 github.com/mattermost/morph v1.1.0/go.mod h1:gD+EaqX2UMyyuzmF4PFh4r33XneQ8Nzi+0E8nXjMa3A=
 github.com/mattermost/squirrel v0.5.0 h1:81QPS0aA+inQbpA7Pzmv6O9sWwB6VaBh/VYw3oJf8ZY=
