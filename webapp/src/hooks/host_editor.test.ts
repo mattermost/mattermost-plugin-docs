@@ -15,7 +15,7 @@ describe('useHostEditor', () => {
     it('is not ready while the page is still loading', () => {
         const editorRef = {current: handleFor({})};
 
-        const {result} = renderHook(() => useHostEditor(editorRef, false));
+        const {result} = renderHook(() => useHostEditor(editorRef, {editing: true, loaded: false}));
 
         expect(result.current.editorReady).toBe(false);
     });
@@ -24,7 +24,7 @@ describe('useHostEditor', () => {
         const getEditor = jest.fn(() => ({}));
         const editorRef = {current: {getEditor} as unknown as PublishedWysiwygEditorHandle};
 
-        renderHook(() => useHostEditor(editorRef, false));
+        renderHook(() => useHostEditor(editorRef, {editing: true, loaded: false}));
 
         await new Promise((resolve) => requestAnimationFrame(resolve));
 
@@ -34,7 +34,7 @@ describe('useHostEditor', () => {
     it('waits for an editor that mounts after the page does', async () => {
         const editorRef: {current: PublishedWysiwygEditorHandle | null} = {current: null};
 
-        const {result} = renderHook(() => useHostEditor(editorRef, true));
+        const {result} = renderHook(() => useHostEditor(editorRef, {editing: true, loaded: true}));
 
         expect(result.current.editorReady).toBe(false);
 
@@ -46,13 +46,13 @@ describe('useHostEditor', () => {
     it('drops readiness when editing stops', async () => {
         const editorRef = {current: handleFor({})};
 
-        const {result, rerender} = renderHook(({ready}) => useHostEditor(editorRef, ready), {
-            initialProps: {ready: true},
+        const {result, rerender} = renderHook(({editing}) => useHostEditor(editorRef, {editing, loaded: true}), {
+            initialProps: {editing: true},
         });
 
         await waitFor(() => expect(result.current.editorReady).toBe(true));
 
-        rerender({ready: false});
+        rerender({editing: false});
 
         expect(result.current.editorReady).toBe(false);
     });

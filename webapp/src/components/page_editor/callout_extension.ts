@@ -47,7 +47,12 @@ export const Callout = Node.create({
 
     addCommands() {
         return {
-            setCallout: (type: CalloutType) => ({commands}) => commands.wrapIn(this.name, {type}),
+            setCallout: (type: CalloutType) => ({editor, commands}) => {
+                if (editor.isActive(this.name)) {
+                    return commands.updateAttributes(this.name, {type});
+                }
+                return commands.wrapIn(this.name, {type});
+            },
 
             toggleCallout: (type: CalloutType) => ({editor, commands}) => {
                 if (editor.isActive(this.name) && !editor.isActive(this.name, {type})) {

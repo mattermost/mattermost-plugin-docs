@@ -17,6 +17,7 @@ import SectionNotice from 'components/section_notice/section_notice';
 import {DOCS_EXTENSIONS} from './docs_extensions';
 import FloatingFormattingBar from './floating_formatting_bar';
 import styles from './page_editor.module.scss';
+import SlashMenu from './slash_menu';
 import {CalloutControl, OverflowControl, PinToolbarControl} from './toolbar_controls';
 import {useToolbarSlot} from './toolbar_slot';
 
@@ -41,10 +42,12 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
         editorRef,
     });
 
-    const editorWillMount = editing && hostCanUseEditor() && !load.loading && !load.error && !load.notFound;
+    // Mirrors every condition below that decides whether WysiwygEditor mounts at
+    // all: waiting on an editor that will never arrive would wait forever.
+    const editorWillMount = hostCanUseEditor() && !load.loading && !load.error && !load.notFound;
 
     const {formattingBarRef, surfaceRef, getEditor, applyFormatting, editorReady, documentMode} =
-        useHostEditor(editorRef, editorWillMount);
+        useHostEditor(editorRef, {editing, loaded: editorWillMount});
 
     const keepSelection = useCallback((e: React.MouseEvent) => {
         if (!(e.target as HTMLElement).closest('input, textarea')) {
@@ -196,6 +199,12 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
                         ref={surfaceRef}
                         className={classNames(styles.surface, {[styles.reading]: !editing})}
                     >
+                        <SlashMenu
+                            editing={editing}
+                            getEditor={getEditor}
+                            surfaceRef={surfaceRef}
+                        />
+
                         {editing && !pinned && editorReady && (
                             <FloatingFormattingBar
                                 editorRef={surfaceRef}

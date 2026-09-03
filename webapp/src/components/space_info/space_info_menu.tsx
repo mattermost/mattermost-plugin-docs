@@ -1,13 +1,14 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {useCopyText} from 'hooks/copy_text';
 import {useDocsNavigation} from 'hooks/navigation';
 import {useCanManageSpaceMembers} from 'hooks/permissions';
 import React, {useCallback} from 'react';
 import {useIntl} from 'react-intl';
-import {copyToClipboard} from 'utils/clipboard';
 
 import AccountMultipleOutlineIcon from '@mattermost/compass-icons/components/account-multiple-outline';
+import CheckIcon from '@mattermost/compass-icons/components/check';
 import ChevronRightIcon from '@mattermost/compass-icons/components/chevron-right';
 import CogOutlineIcon from '@mattermost/compass-icons/components/cog-outline';
 import LinkVariantIcon from '@mattermost/compass-icons/components/link-variant';
@@ -84,9 +85,9 @@ const SpaceInfoMenu = ({space, memberCount, onShowMembers}: Props) => {
         ));
     }, [space]);
 
-    const copyLink = useCallback(() => {
-        copyToClipboard(absolutePaths.space(space.id));
-    }, [absolutePaths, space.id]);
+    const copyLink = useCopyText(absolutePaths.space(space.id), {
+        announcement: formatMessage({id: 'docs.spaceInfo.menu.linkCopied', defaultMessage: 'Copied'}),
+    });
 
     return (
         <nav
@@ -108,9 +109,9 @@ const SpaceInfoMenu = ({space, memberCount, onShowMembers}: Props) => {
                 onClick={onShowMembers}
             />
             <SpaceInfoMenuItem
-                icon={<LinkVariantIcon size={18}/>}
-                text={formatMessage({id: 'docs.spaceInfo.menu.copyLink', defaultMessage: 'Copy link'})}
-                onClick={copyLink}
+                icon={copyLink.copied ? <CheckIcon size={18}/> : <LinkVariantIcon size={18}/>}
+                text={copyLink.copied ? formatMessage({id: 'docs.spaceInfo.menu.linkCopied', defaultMessage: 'Copied'}) : formatMessage({id: 'docs.spaceInfo.menu.copyLink', defaultMessage: 'Copy link'})}
+                onClick={copyLink.copy}
             />
         </nav>
     );
