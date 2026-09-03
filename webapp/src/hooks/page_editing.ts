@@ -5,6 +5,7 @@ import {useCallback, useEffect, useState} from 'react';
 
 import type {DraftAutosave} from './draft_autosave';
 import {useDraftAutosave} from './draft_autosave';
+import {useEditBaseline} from './edit_baseline';
 import type {EditorContent} from './editor_content';
 import {useEditorContent} from './editor_content';
 import type {EditorRef} from './host_editor';
@@ -32,7 +33,8 @@ export function usePageEditing({spaceId, pageId, editing, editorRef}: Options): 
 
     const [contentError, setContentError] = useState(false);
     const [actionError, setActionError] = useState<unknown>(null);
-    const [baseEditAt, setBaseEditAt] = useState<number | undefined>(undefined);
+
+    const baseEditAt = useEditBaseline(pageId, load.baseEditAt);
 
     const autosave = useDraftAutosave({
         spaceId,
@@ -41,10 +43,6 @@ export function usePageEditing({spaceId, pageId, editing, editorRef}: Options): 
         baseEditAt,
         onError: setActionError,
     });
-
-    useEffect(() => {
-        setBaseEditAt(load.baseEditAt);
-    }, [load.baseEditAt]);
 
     useEffect(() => {
         setContentError(false);

@@ -4,20 +4,19 @@
 import {fireEvent, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 
-import {makePage} from 'store/test_fixtures';
+import {makeDraft, makePage} from 'store/test_fixtures';
 
 import PageContent from './page_content';
 
 import {renderWithContext} from '../../../../tests/react_testing_utils';
 
 const mockUpdatePage = jest.fn();
+const mockSaveDraft = jest.fn();
 const mockToastError = jest.fn();
 
-// updatePage is a thunk, so the mock has to be a thunk too rather than a bare
-// promise — otherwise the thunk middleware never touches it and the rejection
-// in the failed-write test goes unhandled.
 jest.mock('store/actions', () => ({
     updatePage: (...args: unknown[]) => () => mockUpdatePage(...args),
+    saveDraft: (...args: unknown[]) => () => mockSaveDraft(...args),
 }));
 jest.mock('components/toast', () => ({toast: {error: (...args: unknown[]) => mockToastError(...args)}}));
 jest.mock('hooks/members', () => ({useUserProfile: () => undefined}));
@@ -39,12 +38,18 @@ const renderContent = () => renderWithContext(content());
 
 const field = () => screen.getByRole('textbox', {name: 'Page title'});
 
-describe('PageContent title commit', () => {
-    beforeEach(() => {
-        mockUpdatePage.mockReset().mockReturnValue(Promise.resolve(PAGE));
-        mockToastError.mockReset();
-    });
+const noWrites = () => {
+    expect(mockSaveDraft).not.toHaveBeenCalled();
+    expect(mockUpdatePage).not.toHaveBeenCalled();
+};
 
+beforeEach(() => {
+    mockUpdatePage.mockReset().mockReturnValue(Promise.resolve(PAGE));
+    mockSaveDraft.mockReset().mockReturnValue(Promise.resolve(makeDraft('runbook', 'eng', 'Runbook')));
+    mockToastError.mockReset();
+});
+
+describe('PageContent title commit', () => {
     // The whole point of the placeholder treatment: a page nobody has named yet
     // opens with an empty field, so typing a name doesn't start with clearing one.
     it('presents an unnamed page as an empty field, not the literal placeholder', () => {
@@ -60,7 +65,7 @@ describe('PageContent title commit', () => {
         fireEvent.change(field(), {target: {value: 'Runbooks'}});
         fireEvent.keyDown(field(), {key: 'Enter'});
 
-        await waitFor(() => expect(mockUpdatePage).toHaveBeenCalledWith('eng', 'fresh', {title: 'Runbooks'}));
+        await waitFor(() => expect(mockSaveDraft).toHaveBeenCalledWith('eng', 'fresh', {title: 'Runbooks'}));
     });
 
     // Leaving a fresh page untouched must not look like a rename back to the same
@@ -70,7 +75,7 @@ describe('PageContent title commit', () => {
 
         fireEvent.keyDown(field(), {key: 'Enter'});
 
-        expect(mockUpdatePage).not.toHaveBeenCalled();
+        noWrites();
     });
 
     it('does not write while typing', () => {
@@ -78,7 +83,7 @@ describe('PageContent title commit', () => {
 
         fireEvent.change(field(), {target: {value: 'Runbooks'}});
 
-        expect(mockUpdatePage).not.toHaveBeenCalled();
+        noWrites();
     });
 
     it('writes the trimmed title on Enter', async () => {
@@ -87,7 +92,7 @@ describe('PageContent title commit', () => {
         fireEvent.change(field(), {target: {value: '  Runbooks  '}});
         fireEvent.keyDown(field(), {key: 'Enter'});
 
-        await waitFor(() => expect(mockUpdatePage).toHaveBeenCalledWith('eng', 'runbook', {title: 'Runbooks'}));
+        await waitFor(() => expect(mockSaveDraft).toHaveBeenCalledWith('eng', 'runbook', {title: 'Runbooks'}));
     });
 
     it('writes on blur', async () => {
@@ -96,7 +101,7 @@ describe('PageContent title commit', () => {
         fireEvent.change(field(), {target: {value: 'Runbooks'}});
         fireEvent.blur(field());
 
-        await waitFor(() => expect(mockUpdatePage).toHaveBeenCalledWith('eng', 'runbook', {title: 'Runbooks'}));
+        await waitFor(() => expect(mockSaveDraft).toHaveBeenCalledWith('eng', 'runbook', {title: 'Runbooks'}));
     });
 
     it('does not write when the title is unchanged', () => {
@@ -104,7 +109,7 @@ describe('PageContent title commit', () => {
 
         fireEvent.keyDown(field(), {key: 'Enter'});
 
-        expect(mockUpdatePage).not.toHaveBeenCalled();
+        noWrites();
     });
 
     // The server rejects an empty title, so clearing the field returns the page to
@@ -116,7 +121,7 @@ describe('PageContent title commit', () => {
         fireEvent.change(field(), {target: {value: ''}});
         fireEvent.keyDown(field(), {key: 'Enter'});
 
-        await waitFor(() => expect(mockUpdatePage).toHaveBeenCalledWith('eng', 'runbook', {title: 'Untitled'}));
+        await waitFor(() => expect(mockSaveDraft).toHaveBeenCalledWith('eng', 'runbook', {title: 'Untitled'}));
         expect(field()).toHaveValue('');
     });
 
@@ -127,11 +132,11 @@ describe('PageContent title commit', () => {
         fireEvent.keyDown(field(), {key: 'Escape'});
 
         expect(field()).toHaveValue('Runbook');
-        expect(mockUpdatePage).not.toHaveBeenCalled();
+        noWrites();
     });
 
     it('keeps the typed title and reports a failed write', async () => {
-        mockUpdatePage.mockReturnValue(Promise.reject(new Error('nope')));
+        mockSaveDraft.mockReturnValue(Promise.reject(new Error('nope')));
         renderContent();
 
         fireEvent.change(field(), {target: {value: 'Runbooks'}});
@@ -142,9 +147,9 @@ describe('PageContent title commit', () => {
     });
 
     it('does not fire a second write while the first is still in flight', async () => {
-        let resolveWrite: (value: typeof PAGE) => void = () => {};
-        mockUpdatePage.mockReturnValue(new Promise((resolve) => {
-            resolveWrite = resolve;
+        let resolveWrite: () => void = () => {};
+        mockSaveDraft.mockReturnValue(new Promise((resolve) => {
+            resolveWrite = () => resolve(makeDraft('runbook', 'eng', 'Runbook'));
         }));
         renderContent();
 
@@ -152,16 +157,16 @@ describe('PageContent title commit', () => {
         fireEvent.keyDown(field(), {key: 'Enter'});
         fireEvent.blur(field());
 
-        expect(mockUpdatePage).toHaveBeenCalledTimes(1);
+        expect(mockSaveDraft).toHaveBeenCalledTimes(1);
 
-        resolveWrite(PAGE);
-        await waitFor(() => expect(mockUpdatePage).toHaveBeenCalledTimes(1));
+        resolveWrite();
+        await waitFor(() => expect(mockSaveDraft).toHaveBeenCalledTimes(1));
     });
 
     it('sends what was typed while the first write was in flight, once it settles', async () => {
-        let resolveWrite: (value: typeof PAGE) => void = () => {};
-        mockUpdatePage.mockReturnValueOnce(new Promise((resolve) => {
-            resolveWrite = resolve;
+        let resolveWrite: () => void = () => {};
+        mockSaveDraft.mockReturnValueOnce(new Promise((resolve) => {
+            resolveWrite = () => resolve(makeDraft('runbook', 'eng', 'Runbook'));
         }));
         const {rerender} = renderContent();
 
@@ -170,15 +175,15 @@ describe('PageContent title commit', () => {
         fireEvent.change(field(), {target: {value: 'Runbooks and drills'}});
         fireEvent.blur(field());
 
-        expect(mockUpdatePage).toHaveBeenCalledTimes(1);
+        expect(mockSaveDraft).toHaveBeenCalledTimes(1);
 
         // The first write lands, so the store's title catches up before the promise
         // the caller is awaiting resolves.
         rerender(content({page: makePage('runbook', 'eng', 'Runbooks')}));
-        resolveWrite(PAGE);
+        resolveWrite();
 
-        await waitFor(() => expect(mockUpdatePage).toHaveBeenCalledTimes(2));
-        expect(mockUpdatePage).toHaveBeenLastCalledWith('eng', 'runbook', {title: 'Runbooks and drills'});
+        await waitFor(() => expect(mockSaveDraft).toHaveBeenCalledTimes(2));
+        expect(mockSaveDraft).toHaveBeenLastCalledWith('eng', 'runbook', {title: 'Runbooks and drills'});
         expect(field()).toHaveValue('Runbooks and drills');
     });
 
@@ -196,12 +201,13 @@ describe('PageContent title commit', () => {
 
         fireEvent.change(field(), {target: {value: 'Runbooks'}});
         fireEvent.blur(field());
-        await waitFor(() => expect(mockUpdatePage).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(mockSaveDraft).toHaveBeenCalledTimes(1));
 
         rerender(content({page: makePage('runbook', 'eng', 'Runbooks'), editing: false}));
 
         await Promise.resolve();
-        expect(mockUpdatePage).toHaveBeenCalledTimes(1);
+        expect(mockSaveDraft).toHaveBeenCalledTimes(1);
+        expect(mockUpdatePage).not.toHaveBeenCalled();
     });
 
     it('shows the stored title, not the rejected one, once back in reading mode', async () => {
@@ -216,12 +222,41 @@ describe('PageContent title commit', () => {
     });
 });
 
-describe('PageContent title buffer', () => {
-    beforeEach(() => {
-        mockUpdatePage.mockReset().mockReturnValue(Promise.resolve(PAGE));
-        mockToastError.mockReset();
+describe('PageContent title during an edit session', () => {
+    it('drafts a rename rather than patching the published page', async () => {
+        renderContent();
+
+        fireEvent.change(field(), {target: {value: 'Runbooks'}});
+        fireEvent.keyDown(field(), {key: 'Enter'});
+
+        await waitFor(() => expect(mockSaveDraft).toHaveBeenCalled());
+        expect(mockUpdatePage).not.toHaveBeenCalled();
     });
 
+    it('drafts a rename made after leaving the field, while a draft is open', async () => {
+        const {rerender} = renderContent();
+
+        fireEvent.change(field(), {target: {value: 'Runbooks'}});
+        rerender(content({draft: makeDraft('runbook', 'eng', 'Runbook'), editing: false}));
+
+        await waitFor(() => expect(mockSaveDraft).toHaveBeenCalledWith('eng', 'runbook', {title: 'Runbooks'}));
+        expect(mockUpdatePage).not.toHaveBeenCalled();
+    });
+
+    it('shows the drafted title, not the published one', () => {
+        renderWithContext(content({draft: makeDraft('runbook', 'eng', 'Drafted name')}));
+
+        expect(field()).toHaveValue('Drafted name');
+    });
+
+    it('shows the published title to a reader', () => {
+        renderWithContext(content({draft: makeDraft('runbook', 'eng', 'Drafted name'), editing: false}));
+
+        expect(screen.getByRole('heading', {name: 'Runbook'})).toBeInTheDocument();
+    });
+});
+
+describe('PageContent title buffer', () => {
     it('follows a title changed elsewhere while nothing is typed', () => {
         const {rerender} = renderContent();
 
@@ -246,6 +281,6 @@ describe('PageContent title buffer', () => {
         rerender(content({page: makePage('oncall', 'eng', 'On call')}));
 
         expect(field()).toHaveValue('On call');
-        await waitFor(() => expect(mockUpdatePage).toHaveBeenCalledWith('eng', 'runbook', {title: 'Runbooks'}));
+        await waitFor(() => expect(mockSaveDraft).toHaveBeenCalledWith('eng', 'runbook', {title: 'Runbooks'}));
     });
 });
