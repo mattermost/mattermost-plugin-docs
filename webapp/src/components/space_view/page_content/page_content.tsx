@@ -1,6 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {useEditBaseline} from 'hooks/edit_baseline';
 import {useUserProfile} from 'hooks/members';
 import {useAppDispatch} from 'hooks/redux';
 import React, {useCallback, useEffect, useRef, useState} from 'react';
@@ -52,10 +53,13 @@ type TitleSubject = {
 const PageContent = ({page, draft, editing}: Props) => {
     const dispatch = useAppDispatch();
 
+    const baseEditAt = useEditBaseline(page?.id ?? '', page?.edit_at);
+
     const subject: TitleSubject | undefined = page ? {
         id: page.id,
         spaceId: page.space_id,
-        title: page.title,
+
+        title: (editing && draft?.title) || page.title,
         authorId: page.user_id,
     } : draft && {
         id: draft.page_id,
@@ -68,12 +72,14 @@ const PageContent = ({page, draft, editing}: Props) => {
     // autosave against the draft. Same gesture, different endpoint — so the title
     // area takes the write as a callback rather than knowing which it is.
     const saveTitle = useCallback(async (title: string) => {
-        if (page) {
+        if (page && (editing || draft)) {
+            await dispatch(saveDraft(page.space_id, page.id, {title, base_edit_at: baseEditAt}));
+        } else if (page) {
             await dispatch(updatePage(page.space_id, page.id, {title}));
         } else if (draft) {
             await dispatch(saveDraft(draft.space_id, draft.page_id, {title}));
         }
-    }, [dispatch, page, draft]);
+    }, [dispatch, page, draft, editing, baseEditAt]);
 
     return (
         <div className={styles.frame}>
