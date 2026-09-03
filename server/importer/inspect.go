@@ -50,8 +50,22 @@ type Manifest struct {
 	Checksums       ManifestChecksums        `json:"checksums"`
 	Users           []ManifestUser           `json:"users"`
 	RestrictedPages []ManifestRestrictedPage `json:"restricted_pages"`
-	Warnings        []string                 `json:"warnings"`
-	Errors          []string                 `json:"errors"`
+	Warnings        []ManifestIssue          `json:"warnings"`
+	Errors          []ManifestIssue          `json:"errors"`
+}
+
+// ManifestIssue is one structured finding the producer reports in the manifest's warnings or errors
+// array. Code is the stable machine-readable classification and the only field the contract
+// guarantees; EntityType, SourceID, and Message are optional.
+//
+// These arrays carry objects rather than strings because the contract forbids keying logic off
+// human-readable messages. Flattening each finding to its message in the producer would leave this
+// importer — and every consumer of the issue rows it emits — with nothing but prose to match on.
+type ManifestIssue struct {
+	Code       string `json:"code"`
+	EntityType string `json:"entity_type,omitempty"`
+	SourceID   string `json:"source_id,omitempty"`
+	Message    string `json:"message,omitempty"`
 }
 
 // ManifestSource is the bundle's source namespace metadata.
@@ -205,13 +219,19 @@ const (
 
 // InspectionIssue is one non-fatal finding recorded during inspection.
 type InspectionIssue struct {
-	Severity    string         `json:"severity"`
-	Code        string         `json:"code"`
-	ExternalID  string         `json:"external_id,omitempty"`
-	Title       string         `json:"title,omitempty"`
-	Message     string         `json:"message"`
-	Remediation string         `json:"remediation,omitempty"`
-	Details     map[string]any `json:"details,omitempty"`
+	Severity string `json:"severity"`
+	Code     string `json:"code"`
+	// ProducerCode is the producer's own classification of a finding this issue relays, carried
+	// verbatim from ManifestIssue.Code. It is deliberately separate from Code, which stays this
+	// importer's stable code — IssueManifestWarning for every relayed warning. A consumer needs both
+	// to distinguish "the producer warned about something" from "the producer warned about *this*"
+	// without parsing Message.
+	ProducerCode string         `json:"producer_code,omitempty"`
+	ExternalID   string         `json:"external_id,omitempty"`
+	Title        string         `json:"title,omitempty"`
+	Message      string         `json:"message"`
+	Remediation  string         `json:"remediation,omitempty"`
+	Details      map[string]any `json:"details,omitempty"`
 }
 
 // StagedPage is one normalized page handed to the sink. It is not retained by the inspector: the
@@ -337,7 +357,9 @@ func Inspect(a *Archive, opts InspectOptions, sink StreamSink) (*InspectionSumma
 
 	// A producer that reported its own errors yields a failed upload.
 	if len(manifest.Errors) > 0 {
-		return nil, inspectErr(InspectErrManifestHasErrors, "manifest reports %d producer error(s): %s", len(manifest.Errors), manifest.Errors[0])
+		first := manifest.Errors[0]
+		return nil, inspectErr(InspectErrManifestHasErrors, "manifest reports %d producer error(s); the first is %q: %s",
+			len(manifest.Errors), first.Code, manifestIssueText(first))
 	}
 	// A source space key is mandatory: it becomes the ImportSource's ExternalSpaceKey. It is also
 	// indexed, so it must satisfy the bounded-identifier contract.
@@ -459,13 +481,37 @@ func emitManifestIssues(manifest *Manifest, sink StreamSink) error {
 		warnings = warnings[:MaxManifestWarnings]
 	}
 	for _, w := range warnings {
-		if !IsStorableText(w) {
+		// Every field of a warning is persisted, so all of them are checked, not just the message.
+		if !manifestIssueStorable(w) {
 			return inspectErr(InspectErrUnstorableText, "a manifest warning contains invalid UTF-8 or a NUL character")
 		}
-		if err := sink.Issue(&InspectionIssue{
-			Severity: SeverityWarning, Code: IssueManifestWarning, Message: truncateIssueText(w),
-			Remediation: "Review the producer warning; it does not block import.",
-		}); err != nil {
+		issue := &InspectionIssue{
+			Severity: SeverityWarning, Code: IssueManifestWarning,
+			ProducerCode: truncateIssueText(w.Code),
+			Message:      truncateIssueText(manifestIssueText(w)),
+			Remediation:  "Review the producer warning; it does not block import.",
+		}
+		// A warning about a specific entity is attached to the issue's own entity reference, so a
+		// report can link the finding to the page it concerns instead of burying the id in prose.
+		//
+		// An id that does not satisfy the bounded-identifier contract is kept in the details rather
+		// than dropped or forced into the reference: external_id reaches an indexed column that
+		// rejects exactly those values, and a producer warning must not be able to make the issue row
+		// it becomes unwritable.
+		if IsValidIdentifier(w.SourceID, ExternalIDMaxBytes) {
+			issue.ExternalID = w.SourceID
+		} else if w.SourceID != "" {
+			issue.Details = map[string]any{"source_id": truncateIssueText(w.SourceID)}
+		}
+		// The producer's entity type is a free-form contract value, while the persisted issue row's
+		// own entity_type column is a closed enumeration, so it travels in the details.
+		if w.EntityType != "" {
+			if issue.Details == nil {
+				issue.Details = map[string]any{}
+			}
+			issue.Details["entity_type"] = truncateIssueText(w.EntityType)
+		}
+		if err := sink.Issue(issue); err != nil {
 			return err
 		}
 	}
@@ -1198,6 +1244,29 @@ func lineHasForeignPayload(l *Line, declaredType string) bool {
 // plausibleTimestamp reports whether ms is a positive epoch-millis value at or below futureCeiling.
 func plausibleTimestamp(ms, futureCeiling int64) bool {
 	return ms > 0 && ms <= futureCeiling
+}
+
+// manifestIssueStorable reports whether every field of a producer finding is safe to persist. All
+// four reach a column — the code and the message directly, the entity type and the source id either
+// directly or inside the issue's details JSON — so a NUL in any of them has to be caught here rather
+// than at write time.
+func manifestIssueStorable(mi ManifestIssue) bool {
+	return IsStorableText(mi.Code) && IsStorableText(mi.EntityType) &&
+		IsStorableText(mi.SourceID) && IsStorableText(mi.Message)
+}
+
+// manifestIssueText is the human-facing text for a producer finding. The contract makes the message
+// optional while always requiring a code, so a code-only finding still has to read as something: an
+// issue row with a blank message is invalid, and one that says nothing is useless in a report.
+func manifestIssueText(mi ManifestIssue) string {
+	switch {
+	case mi.Message != "":
+		return mi.Message
+	case mi.Code != "":
+		return fmt.Sprintf("the producer reported %q without a message", mi.Code)
+	default:
+		return "the producer reported a finding with no code and no message"
+	}
 }
 
 // truncateIssueText clips producer-supplied text to the issue-text bound, marking that it was cut so

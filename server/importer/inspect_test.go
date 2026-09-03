@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -102,10 +103,32 @@ func TestInspect_MissingChecksum(t *testing.T) {
 
 func TestInspect_ManifestReportsErrors(t *testing.T) {
 	b := validBundle(t)
-	b.manifest.Errors = []string{"conversion failed"}
+	b.manifest.Errors = []ManifestIssue{{
+		Code: "space_conversion_failed", EntityType: "space", SourceID: "DOCS",
+		Message: "conversion failed",
+	}}
 	_, err := b.inspect(t, InspectOptions{})
 	if got := inspectErrCode(err); got != InspectErrManifestHasErrors {
 		t.Fatalf("code = %q, want %q", got, InspectErrManifestHasErrors)
+	}
+	// The failure has to name the producer's code, not just its prose: that code is what an operator
+	// looks up and what a client keys off.
+	if msg := err.Error(); !strings.Contains(msg, "space_conversion_failed") || !strings.Contains(msg, "conversion failed") {
+		t.Errorf("error = %q, want it to carry both the producer code and message", msg)
+	}
+}
+
+func TestInspect_ManifestReportsErrorsWithoutMessage(t *testing.T) {
+	// The contract makes message optional, so a code-only error must still produce readable text
+	// rather than a dangling colon.
+	b := validBundle(t)
+	b.manifest.Errors = []ManifestIssue{{Code: "space_conversion_failed"}}
+	_, err := b.inspect(t, InspectOptions{})
+	if got := inspectErrCode(err); got != InspectErrManifestHasErrors {
+		t.Fatalf("code = %q, want %q", got, InspectErrManifestHasErrors)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "space_conversion_failed") {
+		t.Errorf("error = %q, want it to carry the producer code", msg)
 	}
 }
 
@@ -414,9 +437,9 @@ func TestInspect_TitleTooLong(t *testing.T) {
 func TestInspect_ManifestWarningsCapped(t *testing.T) {
 	b := validBundle(t)
 	total := MaxManifestWarnings + 500
-	b.manifest.Warnings = make([]string, total)
+	b.manifest.Warnings = make([]ManifestIssue, total)
 	for i := range b.manifest.Warnings {
-		b.manifest.Warnings[i] = "w"
+		b.manifest.Warnings[i] = ManifestIssue{Code: "page_missing_body", Message: "w"}
 	}
 	res, err := b.inspect(t, InspectOptions{})
 	if err != nil {
@@ -440,6 +463,167 @@ func TestInspect_ManifestWarningsCapped(t *testing.T) {
 	}
 	if !sawSuppressionNote {
 		t.Errorf("expected an aggregate suppression issue when warnings exceed the cap")
+	}
+}
+
+func TestParseManifest_StructuredWarningsWireFormat(t *testing.T) {
+	// Parsed from literal producer JSON rather than from a marshalled Manifest, so this asserts the
+	// wire format the contract specifies in §5 and not just that this package round-trips itself.
+	raw := `{
+		"version": "2",
+		"source": {"type": "confluence", "space_key": "DOCS", "space_name": "Docs"},
+		"warnings": [{"code": "page_missing_body", "entity_type": "page",
+		              "source_id": "262147", "message": "no body content was found; the page was empty"}],
+		"errors": []
+	}`
+	m, err := parseManifest([]byte(raw))
+	if err != nil {
+		t.Fatalf("parseManifest: %v", err)
+	}
+	if len(m.Warnings) != 1 {
+		t.Fatalf("warnings = %d, want 1", len(m.Warnings))
+	}
+	want := ManifestIssue{
+		Code: "page_missing_body", EntityType: "page", SourceID: "262147",
+		Message: "no body content was found; the page was empty",
+	}
+	if m.Warnings[0] != want {
+		t.Errorf("warning = %+v, want %+v", m.Warnings[0], want)
+	}
+	if len(m.Errors) != 0 {
+		t.Errorf("errors = %d, want 0", len(m.Errors))
+	}
+}
+
+// firstManifestWarning returns the first relayed producer warning, skipping the aggregate
+// suppression note, and fails when there is none.
+func firstManifestWarning(t *testing.T, res *collected) InspectionIssue {
+	t.Helper()
+	for _, is := range res.Issues {
+		if is.Code != IssueManifestWarning {
+			continue
+		}
+		if _, suppression := is.Details["suppressed"]; suppression {
+			continue
+		}
+		return is
+	}
+	t.Fatalf("no relayed manifest warning among %d issues", len(res.Issues))
+	return InspectionIssue{}
+}
+
+func TestInspect_ManifestWarningStructuredFieldsReachIssue(t *testing.T) {
+	// The warning fixture is the contract's own §5 example, verbatim. Its point is the code: a
+	// consumer must be able to key off page_missing_body without matching the message text.
+	b := validBundle(t)
+	b.manifest.Warnings = []ManifestIssue{{
+		Code:       "page_missing_body",
+		EntityType: "page",
+		SourceID:   "262147",
+		Message:    "no body content was found; the page was exported with an empty body",
+	}}
+	res, err := b.inspect(t, InspectOptions{})
+	if err != nil {
+		t.Fatalf("a structured manifest warning must not fail inspection: %v", err)
+	}
+	got := firstManifestWarning(t, res)
+	if got.ProducerCode != "page_missing_body" {
+		t.Errorf("ProducerCode = %q, want %q", got.ProducerCode, "page_missing_body")
+	}
+	// The importer's own code stays what it always was; the producer's code does not overwrite it.
+	if got.Code != IssueManifestWarning {
+		t.Errorf("Code = %q, want %q", got.Code, IssueManifestWarning)
+	}
+	// The source id identifies the entity, so it belongs in the entity reference, not only the text.
+	if got.ExternalID != "262147" {
+		t.Errorf("ExternalID = %q, want %q", got.ExternalID, "262147")
+	}
+	if got.Message != "no body content was found; the page was exported with an empty body" {
+		t.Errorf("Message = %q, want the producer message verbatim", got.Message)
+	}
+	if got.Details["entity_type"] != "page" {
+		t.Errorf("Details[entity_type] = %v, want %q", got.Details["entity_type"], "page")
+	}
+}
+
+func TestInspect_ManifestWarningOptionalFieldsAbsent(t *testing.T) {
+	// entity_type, source_id, and message are all optional; only the code is guaranteed. A warning
+	// carrying nothing else must still relay a readable issue with the code intact.
+	b := validBundle(t)
+	b.manifest.Warnings = []ManifestIssue{{Code: "page_missing_body"}}
+	res, err := b.inspect(t, InspectOptions{})
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	got := firstManifestWarning(t, res)
+	if got.ProducerCode != "page_missing_body" {
+		t.Errorf("ProducerCode = %q, want %q", got.ProducerCode, "page_missing_body")
+	}
+	if got.ExternalID != "" {
+		t.Errorf("ExternalID = %q, want empty when the warning names no entity", got.ExternalID)
+	}
+	// An issue row with a blank message is invalid, so the code has to stand in for the prose.
+	if !strings.Contains(got.Message, "page_missing_body") {
+		t.Errorf("Message = %q, want it to fall back to naming the code", got.Message)
+	}
+}
+
+func TestInspect_ManifestWarningUnusableSourceIDKeptInDetails(t *testing.T) {
+	// external_id reaches an indexed column that rejects values failing the identifier contract. A
+	// producer warning must not be able to make its own issue row unwritable, so an unusable id is
+	// preserved in the details instead of being forced into the reference.
+	b := validBundle(t)
+	b.manifest.Warnings = []ManifestIssue{{
+		Code: "page_missing_body", SourceID: "not a valid identifier/262147", Message: "empty body",
+	}}
+	res, err := b.inspect(t, InspectOptions{})
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	got := firstManifestWarning(t, res)
+	if got.ExternalID != "" {
+		t.Errorf("ExternalID = %q, want empty for an id that fails the identifier contract", got.ExternalID)
+	}
+	if got.Details["source_id"] != "not a valid identifier/262147" {
+		t.Errorf("Details[source_id] = %v, want the id preserved", got.Details["source_id"])
+	}
+}
+
+func TestInspect_ManifestWarningUnstorableCodeRejected(t *testing.T) {
+	// The code is persisted like the message, so it gets the same storability check. Without it the
+	// NUL surfaces as a database write failure instead of a rejected bundle.
+	b := validBundle(t)
+	b.manifest.Warnings = []ManifestIssue{{Code: "page_missing\x00body", Message: "empty body"}}
+	_, err := b.inspect(t, InspectOptions{})
+	if got := inspectErrCode(err); got != InspectErrUnstorableText {
+		t.Fatalf("code = %q, want %q", got, InspectErrUnstorableText)
+	}
+}
+
+func TestInspect_ManifestWarningsAsProducedAreAccepted(t *testing.T) {
+	// The end-to-end shape this change exists for: a manifest whose warnings array holds the
+	// producer's objects is parsed and inspected as produced. Before it, parseManifest failed with
+	// "cannot unmarshal object into Go struct field Manifest.warnings of type string" and no other
+	// check in Inspect ever ran, so an aligned mmetl bundle had to have its warnings flattened first.
+	b := validBundle(t)
+	b.manifest.Warnings = []ManifestIssue{
+		{Code: "page_missing_body", EntityType: "page", SourceID: "262147", Message: "no body content was found"},
+		{Code: "attachment_skipped", EntityType: "attachment", SourceID: "att-99", Message: "unsupported media type"},
+		{Code: "user_unmapped"},
+	}
+	res, err := b.inspect(t, InspectOptions{})
+	if err != nil {
+		t.Fatalf("a bundle with structured warnings must be accepted as produced: %v", err)
+	}
+	var codes []string
+	for _, is := range res.Issues {
+		if is.Code == IssueManifestWarning {
+			codes = append(codes, is.ProducerCode)
+		}
+	}
+	want := []string{"page_missing_body", "attachment_skipped", "user_unmapped"}
+	if !reflect.DeepEqual(codes, want) {
+		t.Errorf("relayed producer codes = %v, want %v in manifest order", codes, want)
 	}
 }
 
