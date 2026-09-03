@@ -1,14 +1,27 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {fireEvent, screen, waitFor} from '@testing-library/react';
+import {act, fireEvent, screen, waitFor} from '@testing-library/react';
+import manifest from 'manifest';
 import React from 'react';
+import {legacy_createStore as createStore} from 'redux';
+import type {UnknownAction} from 'redux';
 
+import type {GlobalState} from '@mattermost/types/store';
+
+import {SpaceTypes} from 'store/action_types';
+import docsReducer from 'store/reducer';
 import {makeDraft, makePage, makeSpace} from 'store/test_fixtures';
+import type {DocsPluginState} from 'store/types';
+
+import {toast} from 'components/toast';
+
+import type {Space} from 'types/docs';
+import type {Permission} from 'types/permissions';
 
 import PageHeader from './page_header';
 
-import {renderWithContext} from '../../../tests/react_testing_utils';
+import {makeTestState, renderWithContext} from '../../../tests/react_testing_utils';
 
 jest.mock('webapp_globals', () => ({Timestamp: () => null}));
 jest.mock('hooks/pages', () => ({useCreateRootPage: () => jest.fn()}));
@@ -20,15 +33,20 @@ jest.mock('hooks/favorites', () => ({
     useToggleFavorite: () => jest.fn(),
 }));
 
-const SPACE = makeSpace('eng', 'Engineering');
+jest.mock('components/toast', () => ({toast: {error: jest.fn()}}));
+
+// Carries a resolved permission set, as the space view's own resolve pass gives the header in the
+// app: the authoring affordances are withheld until the server has answered, so a fixture without
+// one would exercise the unresolved case rather than the ordinary author's.
+const SPACE = {...makeSpace('eng', 'Engineering'), permissions: ['read_page', 'create_page', 'edit_page'] as Permission[]};
 const PAGE = makePage('runbook', 'eng', 'Runbook');
 
 const PAGE_URL = '/myteam/spaces/eng/runbook';
 
-const renderHeader = (props: Partial<React.ComponentProps<typeof PageHeader>> = {}, route = PAGE_URL) =>
+const renderHeader = (props: Partial<React.ComponentProps<typeof PageHeader>> = {}, route = PAGE_URL, space: Space = SPACE) =>
     renderWithContext(
         <PageHeader
-            space={SPACE}
+            space={space}
             page={PAGE}
             treeOpen={false}
             editing={false}
@@ -39,8 +57,30 @@ const renderHeader = (props: Partial<React.ComponentProps<typeof PageHeader>> = 
             onPublish={jest.fn()}
             {...props}
         />,
-        {route},
+        {route, state: {docs: {spaces: {[space.id]: space}}}},
     );
+
+// A space the server has resolved without edit_page: a member of a space whose default grants
+// reading and creating but not editing what is already published.
+const NO_EDIT_SPACE = {...SPACE, permissions: ['read_page', 'create_page'] as Permission[]};
+
+// The mirror: a reader who may edit what is already published but may not add a page. Drafting is
+// admitted by either permission (RequireSpaceDraftWrite), so this caller can hold a draft the
+// publish gate will then refuse.
+const NO_CREATE_SPACE = {...SPACE, permissions: ['read_page', 'edit_page'] as Permission[]};
+
+// A store running the real Docs reducer, so a dispatched RECEIVED_SPACES (the action a
+// re-resolved permission set arrives on) actually lands, exercising the same selector recompute
+// the header sees in the app rather than a prop change the test drives directly.
+const pluginKey = 'plugins-' + manifest.id;
+const makeLiveStore = (space = SPACE) => {
+    const initial = makeTestState({docs: {spaces: {[space.id]: space}}});
+
+    return createStore((state: GlobalState = initial, action: UnknownAction): GlobalState => ({
+        ...state,
+        [pluginKey]: docsReducer((state as unknown as Record<string, DocsPluginState>)[pluginKey], action),
+    } as unknown as GlobalState));
+};
 
 describe('PageHeader edit control', () => {
     it('offers Edit while reading', () => {
@@ -242,5 +282,136 @@ describe('PageHeader fullscreen control', () => {
 
         expect(history.location.search).toBe('?fs=1');
         expect(history.length).toBe(before);
+    });
+});
+
+// The server splits the two publish gates: a new page takes create_page, publishing over a live one
+// takes edit_page. These assert the header offers only what the caller's resolved set allows, so a
+// member without edit_page is never walked into a write the server will refuse.
+describe('PageHeader edit gating', () => {
+    const DRAFT = makeDraft('runbook', 'eng', 'Runbook');
+
+    it('withholds Edit on a published page when the resolved set omits edit_page', () => {
+        renderHeader({}, PAGE_URL, NO_EDIT_SPACE);
+
+        expect(screen.queryByRole('button', {name: 'Edit'})).not.toBeInTheDocument();
+    });
+
+    it('withholds Update from a caller who cannot edit', () => {
+        renderHeader({draft: DRAFT, editing: true}, PAGE_URL, NO_EDIT_SPACE);
+
+        expect(screen.queryByRole('button', {name: 'Update'})).not.toBeInTheDocument();
+    });
+
+    // Publishing an unpublished page for the first time is gated on create_page, which this caller
+    // holds — so their own draft stays editable and publishable.
+    it('still offers Publish and Edit on the caller\'s own unpublished page', () => {
+        renderHeader({page: undefined, draft: DRAFT}, PAGE_URL, NO_EDIT_SPACE);
+
+        expect(screen.getByRole('button', {name: 'Publish'})).toBeEnabled();
+        expect(screen.getByRole('button', {name: 'Edit'})).toBeInTheDocument();
+    });
+
+    it('withholds Publish and Edit on an unpublished page when the resolved set omits create_page', () => {
+        renderHeader({page: undefined, draft: DRAFT}, PAGE_URL, NO_CREATE_SPACE);
+
+        expect(screen.queryByRole('button', {name: 'Publish'})).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Edit'})).not.toBeInTheDocument();
+    });
+
+    // A space opened straight from the sidebar is in the store from the team listing, which answers
+    // with bare spaces. Offering authoring on that record showed Edit and Publish to a reader for
+    // as long as the resolve pass took; they appear once the server has actually granted them.
+    it('withholds Edit and Publish until the permission set has been resolved', () => {
+        const unresolved = makeSpace('eng', 'Engineering');
+        renderHeader({page: undefined, draft: DRAFT}, PAGE_URL, unresolved);
+
+        expect(screen.queryByRole('button', {name: 'Publish'})).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Edit'})).not.toBeInTheDocument();
+    });
+
+    it('does not publish on Cmd/Ctrl+Enter when the caller cannot create', () => {
+        const onPublish = jest.fn();
+        renderHeader({page: undefined, draft: DRAFT, onPublish}, PAGE_URL, NO_CREATE_SPACE);
+
+        fireEvent.keyDown(document, {key: 'Enter', metaKey: true});
+        fireEvent.keyDown(document, {key: 'Enter', ctrlKey: true});
+
+        expect(onPublish).not.toHaveBeenCalled();
+    });
+
+    it('does not enter edit on the `e` shortcut when the caller cannot edit', () => {
+        const onToggleEdit = jest.fn();
+        renderHeader({onToggleEdit}, PAGE_URL, NO_EDIT_SPACE);
+
+        fireEvent.keyDown(document, {key: 'e'});
+
+        expect(onToggleEdit).not.toHaveBeenCalled();
+    });
+
+    it('leaves Close reachable if a caller who cannot edit is already editing', () => {
+        renderHeader({editing: true}, PAGE_URL, NO_EDIT_SPACE);
+
+        expect(screen.getByRole('button', {name: 'Close'})).toBeInTheDocument();
+    });
+});
+
+// Update disappears the moment canEditPage flips false (canCommit depends on it), silently —
+// this notice is what tells a caller mid-edit why the control it was about to press just vanished.
+describe('PageHeader edit access revoked mid-edit', () => {
+    const EDITABLE_SPACE = {...SPACE, permissions: ['read_page', 'create_page', 'edit_page'] as Permission[]};
+
+    beforeEach(() => {
+        jest.clearAllMocks();
+    });
+
+    const renderLive = (space: typeof SPACE, editing: boolean) => {
+        const store = makeLiveStore(space);
+        renderWithContext(
+            <PageHeader
+                space={space}
+                page={PAGE}
+                treeOpen={false}
+                editing={editing}
+                commentsOpen={false}
+                onTogglePages={jest.fn()}
+                onToggleComments={jest.fn()}
+                onToggleEdit={jest.fn()}
+                onPublish={jest.fn()}
+            />,
+            {route: PAGE_URL, store},
+        );
+        return store;
+    };
+
+    it('gives no notice on mount when the caller already cannot edit', () => {
+        renderLive(NO_EDIT_SPACE, true);
+
+        expect(toast.error).not.toHaveBeenCalled();
+    });
+
+    it('notices exactly once when the grant is revoked while editing', () => {
+        const store = renderLive(EDITABLE_SPACE, true);
+
+        act(() => {
+            store.dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: [NO_EDIT_SPACE]});
+        });
+        expect(toast.error).toHaveBeenCalledTimes(1);
+
+        // Nothing has changed the second time around; the transition already fired.
+        act(() => {
+            store.dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: [NO_EDIT_SPACE]});
+        });
+        expect(toast.error).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives no notice when the grant is revoked while only reading', () => {
+        const store = renderLive(EDITABLE_SPACE, false);
+
+        act(() => {
+            store.dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: [NO_EDIT_SPACE]});
+        });
+
+        expect(toast.error).not.toHaveBeenCalled();
     });
 });

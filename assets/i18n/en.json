@@ -24,6 +24,18 @@
     "translation": "The request body exceeds the maximum allowed size of {{.MaxBytes}} bytes."
   },
   {
+    "id": "api.space.add_member.permissions_not_allowed.app_error",
+    "translation": "Permissions cannot be set when adding a member. Add the member first, then set their permissions."
+  },
+  {
+    "id": "api.space.set_default_permissions.permissions_required.app_error",
+    "translation": "The default_permissions field is required. Send an empty list to clear every default permission."
+  },
+  {
+    "id": "api.space.set_member_permissions.permissions_required.app_error",
+    "translation": "The granted_permissions field is required. Send an empty list to clear every granted permission."
+  },
+  {
     "id": "app.optimistic_lock.baseline_required.app_error",
     "translation": "The {{.Field}} field is required unless force is set."
   },
@@ -146,6 +158,10 @@
   {
     "id": "app.page.move_to_space.invalid_user_id.app_error",
     "translation": "Invalid user ID."
+  },
+  {
+    "id": "app.page.move_to_space.subtree_not_owned.app_error",
+    "translation": "You can only move pages you created. This page, or one of its sub-pages, was created by someone else."
   },
   {
     "id": "app.page.not_found.app_error",
@@ -388,12 +404,28 @@
     "translation": "Invalid user ID."
   },
   {
-    "id": "app.space.access.team_lookup_failed.app_error",
-    "translation": "Failed to verify team membership."
+    "id": "app.space.access.member_lookup_failed.app_error",
+    "translation": "Failed to verify space membership."
+  },
+  {
+    "id": "app.space.access.user_lookup_failed.app_error",
+    "translation": "Failed to verify the user's account type."
   },
   {
     "id": "app.space.add_member.failed.app_error",
     "translation": "Unable to add the member to the space."
+  },
+  {
+    "id": "app.space.auto_join.add_member_failed.app_error",
+    "translation": "Failed to add you to the space. Please try again."
+  },
+  {
+    "id": "app.space.auto_join.get_space_failed.app_error",
+    "translation": "Failed to look up the space."
+  },
+  {
+    "id": "app.space.auto_join.provenance_write_failed.app_error",
+    "translation": "Failed to record how this membership was created. Please try again."
   },
   {
     "id": "app.space.client_not_wired.app_error",
@@ -404,12 +436,20 @@
     "translation": "Unable to add the creator to the backing channel for the space."
   },
   {
+    "id": "app.space.create.admin_role_failed.app_error",
+    "translation": "Failed to assign the space admin role to the creator."
+  },
+  {
     "id": "app.space.create.backing_channel_failed.app_error",
     "translation": "Unable to create the backing channel for the space."
   },
   {
     "id": "app.space.create.channel_id_not_allowed.app_error",
     "translation": "A channel ID must not be supplied when creating a space."
+  },
+  {
+    "id": "app.space.create.forbidden.app_error",
+    "translation": "You do not have permission to create a space in this team."
   },
   {
     "id": "app.space.create.invalid_team_id.app_error",
@@ -420,16 +460,20 @@
     "translation": "Invalid user ID."
   },
   {
+    "id": "app.space.create.invalid_view_access.app_error",
+    "translation": "Invalid view access. Must be either \"open\" or \"private\"."
+  },
+  {
     "id": "app.space.create.nil_input.app_error",
     "translation": "A space must be supplied."
   },
   {
-    "id": "app.space.create.not_team_member.app_error",
-    "translation": "You must be a member of the team to create a space in it."
+    "id": "app.space.default_permissions.channel_scheme_missing.app_error",
+    "translation": "The space has no permission scheme."
   },
   {
-    "id": "app.space.create.team_lookup_failed.app_error",
-    "translation": "Unable to verify team membership."
+    "id": "app.space.default_permissions.repoint_failed.app_error",
+    "translation": "Failed to apply the new default permissions."
   },
   {
     "id": "app.space.delete.invalid_id.app_error",
@@ -440,6 +484,10 @@
     "translation": "Invalid space ID."
   },
   {
+    "id": "app.space.get_for_team.forbidden.app_error",
+    "translation": "You do not have permission to view spaces in this team."
+  },
+  {
     "id": "app.space.get_for_team.invalid_team_id.app_error",
     "translation": "Invalid team ID."
   },
@@ -448,36 +496,56 @@
     "translation": "Invalid user ID."
   },
   {
-    "id": "app.space.get_for_team.not_team_member.app_error",
-    "translation": "You must be a member of the team to list its spaces."
-  },
-  {
-    "id": "app.space.get_for_team.team_lookup_failed.app_error",
-    "translation": "Unable to verify team membership."
+    "id": "app.space.get_members.failed.app_error",
+    "translation": "Unable to list the members of the space."
   },
   {
     "id": "app.space.get_pages.invalid_space_id.app_error",
     "translation": "Invalid space ID."
   },
   {
-    "id": "app.space.list_members.failed.app_error",
-    "translation": "Unable to list the members of the space."
+    "id": "app.space.join.nothing_to_grant.app_error",
+    "translation": "Joining this space would grant you nothing beyond the access you already have."
+  },
+  {
+    "id": "app.space.lock_timeout.app_error",
+    "translation": "Another change to this space is in progress. Try again."
+  },
+  {
+    "id": "app.space.member.admin_count_failed.app_error",
+    "translation": "Failed to count the space's administrators."
+  },
+  {
+    "id": "app.space.member.guest_not_assignable.app_error",
+    "translation": "Permissions cannot be assigned to a guest."
   },
   {
     "id": "app.space.member.invalid_user_id.app_error",
     "translation": "The supplied user ID is not valid."
   },
   {
+    "id": "app.space.member.last_admin.app_error",
+    "translation": "The last administrator of a space cannot be removed or demoted."
+  },
+  {
     "id": "app.space.member.not_team_member.app_error",
     "translation": "The specified user is not a member of the space's team."
   },
   {
-    "id": "app.space.member.team_lookup_failed.app_error",
-    "translation": "Unable to verify the user's team membership."
+    "id": "app.space.member.update_permissions_failed.app_error",
+    "translation": "Failed to update the member's permissions."
   },
   {
     "id": "app.space.member.user_not_found.app_error",
     "translation": "The specified user could not be found."
+  },
+  {
+    "id": "app.space.preset_scheme_missing.app_error",
+    "translation": "The built-in space permission schemes are not available on this server."
+  },
+  {
+    "id": "app.space.prune_self_joined.failed.app_error",
+    "translation": "The self-joined members of this space could not be resolved."
   },
   {
     "id": "app.space.remove_member.failed.app_error",
@@ -506,6 +574,18 @@
   {
     "id": "app.space.update.invalid_id.app_error",
     "translation": "Invalid space ID."
+  },
+  {
+    "id": "app.space.update.invalid_view_access.app_error",
+    "translation": "Invalid view access. Must be either \"open\" or \"private\"."
+  },
+  {
+    "id": "app.space.update.prune_raced.app_error",
+    "translation": "Someone joined this space while it was being made private. Please try again."
+  },
+  {
+    "id": "app.space.update.view_access_force.app_error",
+    "translation": "View access cannot be changed with force set."
   },
   {
     "id": "app.store.conflict.app_error",
@@ -716,7 +796,23 @@
     "translation": "Invalid space update time."
   },
   {
+    "id": "model.space.is_valid.view_access.app_error",
+    "translation": "Invalid view access. Must be either \"open\" or \"private\"."
+  },
+  {
     "id": "model.space.patch.nothing_to_update.app_error",
     "translation": "The update contains no changes."
+  },
+  {
+    "id": "model.space_permissions.admin_not_a_default.app_error",
+    "translation": "The admin_space permission cannot be a space default."
+  },
+  {
+    "id": "model.space_permissions.read_page_not_grantable.app_error",
+    "translation": "The read_page permission cannot be granted; every space member holds it."
+  },
+  {
+    "id": "model.space_permissions.unknown_permission.app_error",
+    "translation": "Unknown permission: {{.Permission}}."
   }
 ]

@@ -4,6 +4,7 @@
 import {useDocsNavigation} from 'hooks/navigation';
 import {useCollapsedPages} from 'hooks/page_tree';
 import {useCreateRootPage} from 'hooks/pages';
+import {useCanCreatePage} from 'hooks/permissions';
 import {useAppDispatch, useAppSelector} from 'hooks/redux';
 import React, {useCallback, useLayoutEffect, useMemo, useRef, useState} from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
@@ -47,6 +48,7 @@ const PageTreePanel = ({space}: {space: Space}) => {
     const history = useHistory();
     const {collapsed, toggle, setCollapsedFor} = useCollapsedPages();
     const createRootPage = useCreateRootPage(space.id);
+    const canCreatePage = useCanCreatePage(space.id);
 
     const pages = useAppSelector((state) => getPagesForSpace(state, space.id));
 
@@ -333,18 +335,20 @@ const PageTreePanel = ({space}: {space: Space}) => {
                 className={styles.separator}
                 role='presentation'
             />
-            <Button
-                emphasis='quaternary'
-                size='sm'
-                className={styles.addPage}
-                leadingIcon={<PlusIcon size={16}/>}
-                onClick={createRootPage}
-            >
-                <FormattedMessage
-                    id='docs.pageTree.add'
-                    defaultMessage='Add page'
-                />
-            </Button>
+            {canCreatePage && (
+                <Button
+                    emphasis='quaternary'
+                    size='sm'
+                    className={styles.addPage}
+                    leadingIcon={<PlusIcon size={16}/>}
+                    onClick={createRootPage}
+                >
+                    <FormattedMessage
+                        id='docs.pageTree.add'
+                        defaultMessage='Add page'
+                    />
+                </Button>
+            )}
         </div>
     );
 };

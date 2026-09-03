@@ -1,40 +1,150 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {RestError, getServerErrorId} from 'client/rest';
 import {docsDataSource} from 'data';
 
-import {ClientError} from '@mattermost/client';
+import type {GlobalState} from '@mattermost/types/store';
 
 import {getCurrentTeamId, getMyTeams} from 'mattermost-redux/selectors/entities/teams';
 import {getCurrentUserId} from 'mattermost-redux/selectors/entities/users';
 
 import type {CreatePageInput, CreateSpaceInput, Page, Space, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
 import type {Draft, DraftPatch} from 'types/drafts';
+import type {SpaceAccess} from 'types/permissions';
+import {LAST_SPACE_ADMIN_ERROR_ID, LAST_SPACE_MEMBER_ERROR_ID, NOT_TEAM_MEMBER_ERROR_ID, SPACE_LOCK_TIMEOUT_ERROR_ID} from 'types/server_errors';
 import type {DocsThunkAction} from 'types/store';
 
 import {DraftTypes, PageTypes, SpaceTypes} from './action_types';
 import {collectSubtreeIds} from './entities';
+import {getMustJoinSpace} from './permissions';
 import {getPage, getPagesById, getSpace} from './selectors';
 
-// Spaces the caller belongs to in the current team (the server scopes the list
-// by backing-channel membership). A failed load leaves the store empty rather
-// than crashing the product on mount.
+// Orders every writer of a space's stored record. Each read and each write claims an issue slot
+// before its request is sent; a read's dispatch is dropped when a later-issued response for the
+// same space has already been applied, so a slower earlier read cannot overwrite the state a
+// fresher one wrote. A write is ordered by completion instead (spaceMutationAction), because what
+// it returns is state the server has committed and no already-applied read can have seen. An
+// eviction claims a slot too, which keeps a response already in flight — read or write — from
+// resurrecting a space evicted on a definitive denial. Team listings claim a slot as well, so a
+// listing cannot regress a space a later single-space response already resolved. The per-member
+// counterpart is useSpacePermissions's write-generation guard.
+let spaceAccessIssueCounter = 0;
+const appliedSpaceAccessGeneration = new Map<string, number>();
+
+// The slot each space's last eviction claimed. A write that completes afterwards still loses to it:
+// the server may have committed the write before it refused the read that evicted.
+const evictedSpaceAccessGeneration = new Map<string, number>();
+
+/** Claims the next issue slot. Call before sending the request whose response will be applied. */
+export function nextSpaceAccessGeneration(): number {
+    return ++spaceAccessIssueCounter;
+}
+
+// Builds the received-spaces action for one record — or an empty one, which the reducer ignores,
+// when a later-issued response for the same space has already been applied.
+const spaceAccessAction = (space: Space, generation: number) => {
+    if (generation < (appliedSpaceAccessGeneration.get(space.id) ?? 0)) {
+        return {type: SpaceTypes.RECEIVED_SPACES, spaces: [] as Space[]};
+    }
+    appliedSpaceAccessGeneration.set(space.id, generation);
+    return {type: SpaceTypes.RECEIVED_SPACES, spaces: [space]};
+};
+
+// Builds the received-spaces action for a record the server has just committed. A write's response
+// describes state no already-applied read can have seen, so it claims its slot on completion rather
+// than on issue: ordering it by issue would let a read that overtook it — and so read the pre-write
+// record — discard the write, leaving a stale update_at that fails the next edit's optimistic lock.
+// An eviction claimed while the write was in flight still wins.
+const spaceMutationAction = (space: Space, generation: number) => {
+    if (generation < (evictedSpaceAccessGeneration.get(space.id) ?? 0)) {
+        return {type: SpaceTypes.RECEIVED_SPACES, spaces: [] as Space[]};
+    }
+    return spaceAccessAction(space, nextSpaceAccessGeneration());
+};
+
+// Reconciles a team listing against the guard. A listing carries bare spaces and, when it names a
+// team, is the authoritative set of that team's spaces, so a superseded entry resolves to the
+// stored record rather than to the listing's own: replacing it keeps the space in the team index,
+// which dropping it would not. An entry with no stored record was evicted while the listing was in
+// flight, so it is omitted instead — carrying the bare space would put a space the server refused
+// back in the index and show its metadata again. Entries the listing does win keep their claim, so
+// a read issued before it cannot overwrite them afterwards.
+const reconcileListing = (state: GlobalState, spaces: Space[], generation: number): Space[] => spaces.flatMap((space) => {
+    if (generation < (appliedSpaceAccessGeneration.get(space.id) ?? 0)) {
+        const stored = getSpace(state, space.id);
+        return stored ? [stored] : [];
+    }
+    appliedSpaceAccessGeneration.set(space.id, generation);
+    return [space];
+});
+
+/** Drops spaceId from the store and supersedes any of its responses still in flight. */
+export function evictSpace(spaceId: string) {
+    const generation = ++spaceAccessIssueCounter;
+    appliedSpaceAccessGeneration.set(spaceId, generation);
+    evictedSpaceAccessGeneration.set(spaceId, generation);
+    return {type: SpaceTypes.DELETED_SPACE, spaceId};
+}
+
+// Spaces the caller may read in the current team. The server combines membership with the eligible
+// open-space fall-through. A failed load leaves the store empty rather than crashing on mount.
 export function fetchSpaces(): DocsThunkAction<Promise<void>> {
     return async (dispatch, getState) => {
         const teamId = getCurrentTeamId(getState());
         if (!teamId) {
             return;
         }
+        const generation = nextSpaceAccessGeneration();
         try {
             const spaces = await docsDataSource.listSpaces(teamId);
 
             // `teamId` records that this team's list is now known, so consumers
             // can tell "no spaces" from "not loaded yet" (an empty result would
             // otherwise leave no trace in the index).
-            dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces, teamId});
+            dispatch({
+                type: SpaceTypes.RECEIVED_SPACES,
+                spaces: reconcileListing(getState(), spaces, generation),
+                teamId,
+            });
         } catch (error) {
             // eslint-disable-next-line no-console
             console.error('Docs: failed to load spaces', error);
+        }
+    };
+}
+
+/** The outcome of a space read: `denied` separates a definitive 403/404 from a failed request. */
+export type SpaceAccessLoad = {space?: Space; denied: boolean};
+
+/**
+ * Reads one space's access record and stores it, evicting the space on a definitive denial.
+ *
+ * The read endpoint is the reconciliation path for access changes a client cannot observe any
+ * other way — an open space turned private drops the non-member's channel WebSocket, so no event
+ * announces the loss. Ignoring the denial would leave the stored record, and every affordance
+ * gated on its permissions, in place until a full reload. A request that never completed is not an
+ * answer about access, so a transient failure retains the stored record.
+ *
+ * Never rejects: the caller can only tell "not there" from "not asked yet" by whether this settled.
+ */
+export function loadSpaceAccess(spaceId: string): DocsThunkAction<Promise<SpaceAccessLoad>> {
+    return async (dispatch) => {
+        const generation = nextSpaceAccessGeneration();
+        try {
+            const space = await docsDataSource.getSpace(spaceId);
+            if (space) {
+                dispatch(spaceAccessAction(space, generation));
+            }
+            return {space, denied: false};
+        } catch (error) {
+            if (error instanceof RestError && (error.status === 403 || error.status === 404)) {
+                dispatch(evictSpace(spaceId));
+                return {denied: true};
+            }
+            // eslint-disable-next-line no-console
+            console.error('Docs: failed to load space', spaceId, error);
+            return {denied: false};
         }
     };
 }
@@ -47,24 +157,11 @@ export function fetchSpaces(): DocsThunkAction<Promise<void>> {
  * stale (a space created since), scoped to another team, or simply not to have run
  * yet, and none of those mean the id is bad.
  *
- * Resolves to undefined when the space can't be read (403/404) or the request
- * failed — the caller can only tell "not there" from "not asked yet" by whether
- * this settled, so it must not reject.
+ * Resolves to undefined when the space can't be read or the request failed. A caller that must
+ * separate those two outcomes dispatches loadSpaceAccess instead.
  */
 export function fetchSpace(spaceId: string): DocsThunkAction<Promise<Space | undefined>> {
-    return async (dispatch) => {
-        try {
-            const space = await docsDataSource.getSpace(spaceId);
-            if (space) {
-                dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: [space]});
-            }
-            return space;
-        } catch (error) {
-            // eslint-disable-next-line no-console
-            console.error('Docs: failed to load space', spaceId, error);
-            return undefined;
-        }
-    };
+    return async (dispatch) => (await dispatch(loadSpaceAccess(spaceId))).space;
 }
 
 // Cross-team load for the switcher: fan out over the user's teams. The server
@@ -72,6 +169,7 @@ export function fetchSpace(spaceId: string): DocsThunkAction<Promise<Space | und
 export function fetchAllSpaces(): DocsThunkAction<Promise<void>> {
     return async (dispatch, getState) => {
         const teams = getMyTeams(getState());
+        const generation = nextSpaceAccessGeneration();
         const settled = await Promise.allSettled(teams.map((team) => docsDataSource.listSpaces(team.id)));
         const spaces = settled.flatMap((result, index) => {
             if (result.status === 'fulfilled') {
@@ -82,7 +180,7 @@ export function fetchAllSpaces(): DocsThunkAction<Promise<void>> {
             return [];
         });
         if (spaces.length > 0) {
-            dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces});
+            dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: reconcileListing(getState(), spaces, generation)});
         }
     };
 }
@@ -234,6 +332,10 @@ export function fetchPageDraft(spaceId: string, pageId: string, signal?: AbortSi
  */
 export function createDraft(spaceId: string, title: string, parentId = ''): DocsThunkAction<Promise<Draft>> {
     return async (dispatch) => {
+        // On the two draft writes rather than at the affordance that leads to them, so a membership
+        // records a contribution rather than an intention to make one — see ensureSpaceMembership.
+        await dispatch(ensureSpaceMembership(spaceId));
+
         const draft = await docsDataSource.createSpaceDraft(spaceId, title, parentId);
         dispatch({type: DraftTypes.RECEIVED_DRAFT, draft});
         return draft;
@@ -244,6 +346,9 @@ export function createDraft(spaceId: string, title: string, parentId = ''): Docs
 // just the write and the store update.
 export function saveDraft(spaceId: string, pageId: string, patch: DraftPatch, signal?: AbortSignal): DocsThunkAction<Promise<Draft>> {
     return async (dispatch) => {
+        // A no-op for a member, which is every caller after the first autosave of a session.
+        await dispatch(ensureSpaceMembership(spaceId));
+
         const draft = await docsDataSource.updatePageDraft(spaceId, pageId, patch, signal);
         dispatch({type: DraftTypes.RECEIVED_DRAFT, draft});
         return draft;
@@ -320,6 +425,77 @@ export function removeSpaceMember(spaceId: string, userId: string): DocsThunkAct
     };
 }
 
+/**
+ * Joins the caller to a space when the server has said they may join it, before a write of theirs
+ * is sent.
+ *
+ * This is what the authoring affordances on an open space are offered on the strength of: the
+ * caller holds read_page and nothing else, and the space's defaults are what they would hold as a
+ * member. The write itself is gated on real membership alone — nothing else grants it — so this
+ * call must run first.
+ *
+ * A no-op when the store says there is nothing to join, which is every case but a non-member of an
+ * open space. Idempotent server-side, so a stale "yes" costs a round trip rather than an error.
+ *
+ * Called from the draft writes themselves (createDraft, saveDraft), never from the affordance that
+ * leads to them. Joining on the write keeps membership a record of a contribution, which is also
+ * what makes removing a member worth doing — a removed user rejoins by writing again, not by
+ * opening an editor.
+ *
+ * Rejects on failure so the caller can abandon the write rather than send one that will be refused.
+ */
+export function ensureSpaceMembership(spaceId: string): DocsThunkAction<Promise<void>> {
+    return async (dispatch, getState) => {
+        if (!getMustJoinSpace(getState(), spaceId)) {
+            return;
+        }
+        const generation = nextSpaceAccessGeneration();
+        dispatch(receivedSpaceAccess(await docsDataSource.joinSpace(spaceId), generation));
+    };
+}
+
+/**
+ * Stores the access record a write returned, for the permission-gated surfaces that share it.
+ * generation is the issue slot (nextSpaceAccessGeneration) claimed before the write was sent; an
+ * eviction issued after it resolves to an empty received-spaces action, which the reducer ignores.
+ */
+export function receivedSpaceAccess(space: SpaceAccess, generation: number) {
+    return spaceMutationAction(space, generation);
+}
+
+/** Invalidates the hook-local per-member grant matrix. */
+export function spaceMemberPermissionsChanged(spaceId: string) {
+    return {type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId};
+}
+
+/**
+ * Re-reads spaceId's access record after an event that may have changed what the caller may do.
+ *
+ * A refresh and loss of access are not the same event: the record that comes back may simply carry
+ * a narrowed permission set, in which case it replaces the stored one, while a definitive denial
+ * evicts the space.
+ *
+ * Resolves to the refreshed record, or undefined when the space was evicted or the read failed.
+ */
+export function refreshSpaceAccess(spaceId: string): DocsThunkAction<Promise<Space | undefined>> {
+    return async (dispatch) => (await dispatch(loadSpaceAccess(spaceId))).space;
+}
+
+/**
+ * Refreshes shared access before invalidating grants. A definitive denial evicts the space
+ * (refreshSpaceAccess); on any other failed refresh, retain the matrix rather than reload it under
+ * stale manage authority and mistake a redacted roster for grant data.
+ */
+export function refreshSpaceAfterMemberPermissionsChanged(spaceId: string): DocsThunkAction<Promise<void>> {
+    return async (dispatch) => {
+        const space = await dispatch(refreshSpaceAccess(spaceId));
+        if (!space) {
+            return;
+        }
+        dispatch(spaceMemberPermissionsChanged(spaceId));
+    };
+}
+
 export type FailedMemberAdd = {userId: string; error: unknown};
 
 /**
@@ -365,9 +541,29 @@ export function createSpace(input: CreateSpaceInput): DocsThunkAction<Promise<Sp
 export function updateSpace(spaceId: string, patch: UpdateSpacePatch): DocsThunkAction<Promise<Space>> {
     return async (dispatch, getState) => {
         const expectedUpdateAt = getSpace(getState(), spaceId)?.update_at ?? 0;
+        const generation = nextSpaceAccessGeneration();
         const updated = await docsDataSource.updateSpace(spaceId, patch, expectedUpdateAt);
-        dispatch({type: SpaceTypes.RECEIVED_SPACES, spaces: [updated]});
+        dispatch(spaceMutationAction(updated, generation));
         return updated;
+    };
+}
+
+/**
+ * Re-resolves a space after the caller's own membership was removed, evicting it only once the
+ * server has actually refused the read.
+ *
+ * Removal and loss of access are not the same event. The open-space fall-through may still admit
+ * the caller, in which case the returned record carries their narrowed permission set and remains
+ * in the store; only a definitive denial evicts (refreshSpaceAccess).
+ */
+export function refreshSpaceAfterSelfRemoval(spaceId: string): DocsThunkAction<Promise<void>> {
+    return async (dispatch) => {
+        const space = await dispatch(refreshSpaceAccess(spaceId));
+        if (space) {
+            // The caller is gone from the roster the space view renders its count from, so the
+            // read that survived has a stale member list behind it.
+            await dispatch(fetchSpaceMembers(spaceId));
+        }
     };
 }
 
@@ -376,31 +572,43 @@ export function updateSpace(spaceId: string, patch: UpdateSpacePatch): DocsThunk
 export function deleteSpace(spaceId: string): DocsThunkAction<Promise<void>> {
     return async (dispatch) => {
         await docsDataSource.deleteSpace(spaceId);
-        dispatch({type: SpaceTypes.DELETED_SPACE, spaceId});
+        dispatch(evictSpace(spaceId));
     };
 }
 
-// The server rejects removing a space's last authorized member with
-// `app.space.remove_member.last_member.app_error` (409). The REST layer keeps
-// only {message, status_code} from the AppError, so the status is all a caller
-// has to recognize it by.
+// The removal routes answer 409 for three different rules — last member, sole admin, and a
+// retryable lock timeout — so the id, not the status, tells them apart. The REST layer lifts the
+// AppError id into server_error_id (see client/rest.ts).
+
+// The space would be left with no member holding access.
 export function isLastSpaceMemberError(error: unknown): boolean {
-    return error instanceof ClientError && error.status_code === 409;
+    return getServerErrorId(error) === LAST_SPACE_MEMBER_ERROR_ID;
 }
 
-// The add route answers 403 when the target isn't an active member of the space's
-// team. That is the one add failure a user can act on, so it gets its own message;
-// like isLastSpaceMemberError, the status is all the REST layer preserves.
+// The space would be left with members but no administrator. Distinct from the above because the
+// remedy is different: another *admin* is required, not another member.
+export function isLastSpaceAdminError(error: unknown): boolean {
+    return getServerErrorId(error) === LAST_SPACE_ADMIN_ERROR_ID;
+}
+
+// A space-keyed lock timeout. Retryable as-is, so it must not be reported as a rule violation.
+export function isSpaceLockTimeoutError(error: unknown): boolean {
+    return getServerErrorId(error) === SPACE_LOCK_TIMEOUT_ERROR_ID;
+}
+
 export function isNotTeamMemberError(error: unknown): boolean {
-    return error instanceof ClientError && error.status_code === 403;
+    return getServerErrorId(error) === NOT_TEAM_MEMBER_ERROR_ID;
 }
 
 // Leaving a space is removing yourself from its membership. The server rejects
 // removing the last authorized member (409); the caller surfaces that.
+//
+// Losing membership is not necessarily losing the space: the open-space fall-through may still
+// admit the caller. Re-resolve instead of assuming either outcome.
 export function leaveSpace(spaceId: string): DocsThunkAction<Promise<void>> {
     return async (dispatch, getState) => {
         const userId = getCurrentUserId(getState());
         await docsDataSource.removeSpaceMember(spaceId, userId);
-        dispatch({type: SpaceTypes.DELETED_SPACE, spaceId});
+        await dispatch(refreshSpaceAfterSelfRemoval(spaceId));
     };
 }

@@ -2,52 +2,53 @@
 // See LICENSE.txt for license information.
 
 import {useCopyText} from 'hooks/copy_text';
-import {useSpaceMemberProfiles} from 'hooks/members';
 import {useDocsNavigation} from 'hooks/navigation';
-import {useCanManageSpaceMembers} from 'hooks/permissions';
-import {useManageSpaceMembers} from 'hooks/space_members';
-import React, {useMemo} from 'react';
+import {useCustomDefaultsAvailable} from 'hooks/permissions';
+import {useSpaceAccessEditor} from 'hooks/space_access_editor';
+import React from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
 
 import CheckIcon from '@mattermost/compass-icons/components/check';
-import ChevronDownIcon from '@mattermost/compass-icons/components/chevron-down';
 import ContentCopyIcon from '@mattermost/compass-icons/components/content-copy';
-import LockOutlineIcon from '@mattermost/compass-icons/components/lock-outline';
 
-import {Button, SecondaryButton} from 'components/form_controls/button';
+import {SecondaryButton} from 'components/form_controls/button';
 import GenericModal from 'components/generic_modal/generic_modal';
 import {AddMembersField, MemberList} from 'components/space_members';
-import type {MemberListActions} from 'components/space_members';
 
 import type {Space} from 'types/docs';
+import type {Permission} from 'types/permissions';
 
+import DefaultPermissionsMenu from './default_permissions_menu';
 import styles from './share_space_modal.module.scss';
+import VisibilityMenu from './visibility_menu';
 
 type Props = {
     space: Space;
     onClose: () => void;
 };
 
-// Members, add and remove are real. The visibility and role dropdowns are
-// scaffolding for PR #10's view_access and capabilities.
+// Primary space-sharing surface. The compact controls preserve the approved Share modal: the
+// named tiers come first, and a licensed install can refine the space default permission by
+// permission beneath them. The tiers name the space default only; a member's row edits the
+// permission ids themselves.
 const ShareSpaceModal = ({space, onClose}: Props) => {
     const {formatMessage} = useIntl();
     const {paths: absolutePaths} = useDocsNavigation({absolute: true});
-    const members = useSpaceMemberProfiles(space.id);
-    const canManageMembers = useCanManageSpaceMembers(space.id);
-    const {addMembers, removeMember, leave, busy} = useManageSpaceMembers(space);
+    const {
+        permissions,
+        members,
+        memberIds,
+        canEditAccess,
+        grantOptionsFor,
+        accessBusy,
+        rosterBusy,
+        busyReason,
+        roleForMember,
+        actions,
+        addMembers,
+    } = useSpaceAccessEditor(space, {onClose});
 
-    const memberIds = useMemo(() => members.map((member) => member.id), [members]);
-
-    const actions: MemberListActions = {
-        ...(canManageMembers && {onRemove: removeMember}),
-        onLeave: async () => {
-            if (await leave()) {
-                onClose();
-            }
-        },
-        disabled: busy,
-    };
+    const customDefaultsAvailable = useCustomDefaultsAvailable();
 
     const copyLink = useCopyText(absolutePaths.space(space.id), {
         announcement: formatMessage({id: 'docs.share.linkCopied', defaultMessage: 'Copied'}),
@@ -82,45 +83,25 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
         </SecondaryButton>
     );
 
+    // A caller who does not administer the space still reads its exposure here; what they lose
+    // is the control, not the statement, since either write would be refused.
     const footer = (
         <div className={styles.access}>
-            <div className={styles.accessLeft}>
-                <button
-                    type='button'
-                    className={styles.accessTrigger}
-                    disabled={true}
-                    aria-haspopup='listbox'
-                    title={formatMessage({
-                        id: 'docs.share.visibility.disabledReason',
-                        defaultMessage: 'Public spaces are coming soon',
-                    })}
-                >
-                    <LockOutlineIcon size={16}/>
-                    <FormattedMessage
-                        id='docs.share.visibility.private'
-                        defaultMessage='Private'
-                    />
-                    <ChevronDownIcon size={16}/>
-                </button>
-                <span className={styles.accessHint}>
-                    <FormattedMessage
-                        id='docs.share.visibility.privateHint'
-                        defaultMessage='Only invited members'
-                    />
-                </span>
-            </div>
-            <Button
-                type='button'
-                emphasis='quaternary'
-                size='sm'
-                className={styles.canView}
-            >
-                <FormattedMessage
-                    id='docs.share.access.canView'
-                    defaultMessage='Can View'
-                />
-                <ChevronDownIcon size={16}/>
-            </Button>
+            <VisibilityMenu
+                viewAccess={permissions.viewAccess}
+                disabled={accessBusy}
+                disabledReason={busyReason}
+                readOnly={!canEditAccess}
+                onChange={(next) => permissions.setViewAccess(next).catch(() => {})}
+            />
+            <DefaultPermissionsMenu
+                defaults={permissions.defaults}
+                disabled={accessBusy}
+                disabledReason={busyReason}
+                customDefaultsAvailable={customDefaultsAvailable}
+                readOnly={!canEditAccess}
+                onChange={(next) => permissions.setDefaults(next).catch(() => {})}
+            />
         </div>
     );
 
@@ -137,12 +118,12 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
             footerDivider={true}
         >
             <div className={styles.body}>
-                {canManageMembers && (
+                {permissions.canManageMembers && (
                     <div className={styles.search}>
                         <AddMembersField
                             excludeIds={memberIds}
                             onAdd={addMembers}
-                            disabled={busy}
+                            disabled={rosterBusy}
                             large={true}
                             commitOnSelect={true}
                         />
@@ -156,6 +137,24 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
                         spaceTitle={space.title}
                         comfortable={true}
                         actions={actions}
+                        roleForMember={roleForMember}
+                        permissionMenuForMember={(profile) => {
+                            const record = permissions.members.get(profile.id);
+                            const options = grantOptionsFor(profile);
+                            if (!record || options.length === 0) {
+                                return undefined;
+                            }
+
+                            return {
+                                options,
+                                selected: record.granted_permissions,
+                                disabled: rosterBusy,
+                                disabledReason: busyReason,
+                                onChange: (next: Permission[]) => {
+                                    permissions.setMemberGrants(profile.id, next).catch(() => {});
+                                },
+                            };
+                        }}
                     />
                 </div>
             </div>

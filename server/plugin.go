@@ -69,6 +69,9 @@ func (p *Plugin) OnActivate() error {
 	if !p.enableDocs.Load() {
 		p.API.LogWarn("EnableDocs feature flag is not enabled; every Docs API route returns 501 until a server built with Docs core support enables it")
 	}
+	if configErr := p.OnConfigurationChange(); configErr != nil {
+		return errors.Wrap(configErr, "failed to initialize plugin configuration")
+	}
 
 	p.client = pluginapi.NewClient(p.API, p.Driver)
 
@@ -88,7 +91,7 @@ func (p *Plugin) OnActivate() error {
 		return errors.Wrap(migErr, "failed to run docs migrations")
 	}
 	p.store = s
-	p.service = app.New(p.store, &p.client.Log, p.client)
+	p.service = app.New(p.store, &p.client.Log, p.client, app.WithNewSpaceDefaultPermissions(p.newSpaceDefaultPermissions))
 
 	p.router = p.initRouter()
 

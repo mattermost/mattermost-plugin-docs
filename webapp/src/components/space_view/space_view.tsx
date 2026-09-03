@@ -5,7 +5,7 @@ import {usePageDraft, usePublishDraft} from 'hooks/drafts';
 import {useDocsNavigation, useTogglePageEditMode} from 'hooks/navigation';
 import {useDefaultPagePath, useRoutedPage} from 'hooks/pages';
 import {useRhs} from 'hooks/rhs';
-import {useSpaceStats} from 'hooks/spaces';
+import {useResolveSpacePermissions, useSpaceStats} from 'hooks/spaces';
 import React, {useCallback, useState} from 'react';
 import {Redirect} from 'react-router-dom';
 
@@ -33,6 +33,10 @@ import styles from './space_view.module.scss';
 // (hero) until a page is routed, at which point it shows that page instead.
 // Page bodies are a placeholder until the editor is mounted.
 const SpaceView = ({space}: {space: Space}) => {
+    // Resolves the caller's own permissions for this space, which the sidebar's team listing
+    // does not carry — see useResolveSpacePermissions.
+    useResolveSpacePermissions(space.id);
+
     const {pageId, isDraft, isEditing, paths} = useDocsNavigation();
     const toggleEdit = useTogglePageEditMode(space.id);
 

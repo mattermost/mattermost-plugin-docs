@@ -5,7 +5,7 @@ import type {MemberProfile} from 'hooks/members';
 import {useCallback, useState} from 'react';
 import {useIntl} from 'react-intl';
 
-import {addSpaceMembers, isLastSpaceMemberError, isNotTeamMemberError, removeSpaceMember} from 'store/actions';
+import {addSpaceMembers, isLastSpaceAdminError, isLastSpaceMemberError, isNotTeamMemberError, isSpaceLockTimeoutError, removeSpaceMember} from 'store/actions';
 
 import {toast} from 'components/toast';
 
@@ -81,15 +81,31 @@ export function useManageSpaceMembers(space: Space): ManageSpaceMembers {
         try {
             await dispatch(removeSpaceMember(space.id, userId));
         } catch (error) {
-            // Its own string rather than useLeaveSpace's: that one ends "before you
+            // Its own strings rather than useLeaveSpace's: those end "before you
             // leave", which is wrong when you are removing somebody else.
-            toast.error(isLastSpaceMemberError(error) ? formatMessage({
-                id: 'docs.spaceMembers.remove.error.lastMember',
-                defaultMessage: 'A space must keep at least one member with access.',
-            }) : formatMessage({
-                id: 'docs.spaceMembers.remove.error.generic',
-                defaultMessage: 'Something went wrong. Please try again.',
-            }));
+            let message;
+            if (isLastSpaceMemberError(error)) {
+                message = formatMessage({
+                    id: 'docs.spaceMembers.remove.error.lastMember',
+                    defaultMessage: 'A space must keep at least one member with access.',
+                });
+            } else if (isLastSpaceAdminError(error)) {
+                message = formatMessage({
+                    id: 'docs.spaceMembers.remove.error.lastAdmin',
+                    defaultMessage: 'A space must keep at least one administrator.',
+                });
+            } else if (isSpaceLockTimeoutError(error)) {
+                message = formatMessage({
+                    id: 'docs.spaceMembers.remove.error.busy',
+                    defaultMessage: 'This space is being changed right now. Try again in a moment.',
+                });
+            } else {
+                message = formatMessage({
+                    id: 'docs.spaceMembers.remove.error.generic',
+                    defaultMessage: 'Something went wrong. Please try again.',
+                });
+            }
+            toast.error(message);
         } finally {
             setBusy(false);
         }

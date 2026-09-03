@@ -1,6 +1,8 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import type {Permission} from 'types/permissions';
+
 import {DraftTypes, PageTypes, SpaceTypes} from './action_types';
 import reducer, {collectSubtreeIds, reindexAfterMove} from './entities';
 import {makeDraft, makePage, makeSpace} from './test_fixtures';
@@ -25,6 +27,47 @@ describe('spaces', () => {
         expect(afterSecond.spaces).toEqual({a: spaceA, b: spaceB});
         expect(afterSecond.spacesInTeam.t1).toEqual(new Set(['a']));
         expect(afterSecond.spacesInTeam.t2).toEqual(new Set(['b']));
+    });
+
+    // The single-space read answers with the caller's own permissions; the team listing does
+    // not carry them. A listing must therefore not overwrite what the read resolved, or every
+    // permission-gated affordance reappears on the next refresh.
+    it('RECEIVED_SPACES keeps permissions a detail read resolved when a listing omits them', () => {
+        const detail = {...makeSpace('a', 'Space A', 't1'), permissions: ['read_page'] as Permission[]};
+        const listed = makeSpace('a', 'Space A', 't1');
+
+        const afterDetail = reducer(initialState, {type: SpaceTypes.RECEIVED_SPACES, spaces: [detail]});
+        expect(afterDetail.spaces.a.permissions).toEqual(['read_page']);
+
+        const afterListing = reducer(afterDetail, {type: SpaceTypes.RECEIVED_SPACES, spaces: [listed]});
+        expect(afterListing.spaces.a.permissions).toEqual(['read_page']);
+    });
+
+    // can_join is resolved by the single-space read too. Losing it on a team refresh removes the
+    // authoring journey for an open-space non-member before they have contributed and joined.
+    it('RECEIVED_SPACES keeps can_join a detail read resolved when a listing omits it', () => {
+        const detail = {...makeSpace('a', 'Space A', 't1'), can_join: true};
+        const listed = makeSpace('a', 'Space A', 't1');
+
+        const afterDetail = reducer(initialState, {type: SpaceTypes.RECEIVED_SPACES, spaces: [detail]});
+        const afterListing = reducer(afterDetail, {type: SpaceTypes.RECEIVED_SPACES, spaces: [listed]});
+
+        expect(afterListing.spaces.a.can_join).toBe(true);
+    });
+
+    // But a payload that does carry them is authoritative — a revoked permission must land.
+    it('RECEIVED_SPACES replaces permissions when the payload carries them', () => {
+        const before = {...makeSpace('a', 'Space A', 't1'), permissions: ['read_page', 'create_page'] as Permission[]};
+        const after = {...makeSpace('a', 'Space A', 't1'), permissions: ['read_page'] as Permission[]};
+
+        const state = reducer(initialState, {type: SpaceTypes.RECEIVED_SPACES, spaces: [before]});
+        const next = reducer(state, {type: SpaceTypes.RECEIVED_SPACES, spaces: [after]});
+
+        expect(next.spaces.a.permissions).toEqual(['read_page']);
+
+        // A total revocation arrives as an empty array, not as an omitted field.
+        const revoked = {...makeSpace('a', 'Space A', 't1'), permissions: [] as Permission[]};
+        expect(reducer(next, {type: SpaceTypes.RECEIVED_SPACES, spaces: [revoked]}).spaces.a.permissions).toEqual([]);
     });
 
     it('RECEIVED_SPACES with a teamId marks the team loaded even when it has none', () => {
@@ -424,5 +467,36 @@ describe('reindexAfterMove', () => {
         // closing it up here would disagree with any page later refetched from it.
         expect(next.p.sort_order).toBe(1);
         expect(next.a.sort_order).toBe(2);
+    });
+});
+
+describe('spaceMemberPermissionsRevision', () => {
+    const initialState = reducer(undefined, {type: '@@INIT'});
+
+    it('SPACE_MEMBER_PERMISSIONS_CHANGED counts up from nothing', () => {
+        const once = reducer(initialState, {type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: 's1'});
+        const twice = reducer(once, {type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: 's1'});
+
+        expect(once.spaceMemberPermissionsRevision.s1).toBe(1);
+        expect(twice.spaceMemberPermissionsRevision.s1).toBe(2);
+    });
+
+    // Each space is counted separately, so a change to one does not make every open
+    // permissions surface re-read.
+    it('SPACE_MEMBER_PERMISSIONS_CHANGED leaves other spaces alone', () => {
+        const bumped = reducer(
+            reducer(initialState, {type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: 's1'}),
+            {type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: 's2'},
+        );
+
+        expect(bumped.spaceMemberPermissionsRevision).toEqual({s1: 1, s2: 1});
+    });
+
+    it('DELETED_SPACE prunes that space\'s revision counter', () => {
+        const bumped = reducer(initialState, {type: SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED, spaceId: 's1'});
+
+        const next = reducer(bumped, {type: SpaceTypes.DELETED_SPACE, spaceId: 's1'});
+
+        expect('s1' in next.spaceMemberPermissionsRevision).toBe(false);
     });
 });

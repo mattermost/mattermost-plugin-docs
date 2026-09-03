@@ -1,23 +1,100 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {createWriteStream, existsSync, mkdirSync, readdirSync, statSync, type WriteStream} from 'node:fs';
+import {createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, type WriteStream} from 'node:fs';
 import {join, resolve} from 'node:path';
 
 import {GenericContainer, Network, Wait, type StartedNetwork, type StartedTestContainer} from 'testcontainers';
 import {PostgreSqlContainer, type StartedPostgreSqlContainer} from '@testcontainers/postgresql';
 
-import {assertServerSupportsDocs, pluginId} from './preflight';
+import {spacePermissionsMode} from './mode';
+import {adminToken, assertServerSupportsDocs, pluginId} from './preflight';
 
 // Playwright transpiles to CommonJS, so import.meta is unavailable.
 const projectRoot = resolve(__dirname, '../..');
 const repoRoot = resolve(projectRoot, '../..');
 
-// Local fallback; CI sets MM_IMAGE in ci.yml. Tracks master because stock releases lack
-// Docs core support and min_server_version rises, so a pin goes stale.
 const defaultImage = 'mattermostdevelopment/mattermost-enterprise-edition:master';
 
+function resolveImage(): string {
+    return process.env.MM_IMAGE || defaultImage;
+}
+
+// The images core CI publishes are built for amd64 only, so on an arm64 host the pull fails with
+// "no matching manifest for linux/arm64/v8" before a single spec runs. testcontainers does not read
+// DOCKER_DEFAULT_PLATFORM, so the platform has to be passed to the container explicitly; the env
+// var is honored here so the setting a developer already exports for `docker` still applies.
+// Emulated, the server boots slowly — the migration wait below has room for it.
+//
+// Only the Mattermost image needs this. The Postgres image publishes an arm64 manifest, and
+// pinning it to amd64 would make it emulate for nothing.
+//
+// A caller-supplied single-segment image may be local and native to the Docker daemon. Do not force
+// that override to amd64: unlike the namespaced core-CI images, it may have no multi-arch manifest
+// or remote image to fall back on.
+function resolvePlatform(image: string): string | undefined {
+    const explicit = (process.env.MM_E2E_PLATFORM ?? process.env.DOCKER_DEFAULT_PLATFORM ?? '').trim();
+
+    if (explicit) {
+        return explicit;
+    }
+
+    if (!image.includes('/')) {
+        return undefined;
+    }
+
+    return process.arch === 'arm64' ? 'linux/amd64' : undefined;
+}
+
+// resolveLicense supplies the Enterprise license the guest scenarios need: demoting a user to a
+// guest requires GuestAccountsSettings.Enable, which an unlicensed server refuses (see
+// helpers/guest.ts). Under spacePermissionsMode absence is therefore a hard error naming both
+// sources rather than a skip, so a run never quietly narrows what it proves. The authoring specs
+// touch no licensed feature and run unlicensed.
+//
+// The license is never committed: MM_LICENSE carries it directly (how CI supplies it from a
+// secret), MM_LICENSE_FILE names a file holding it (how a developer points at a local copy).
+function resolveLicense(): string | undefined {
+    const direct = (process.env.MM_LICENSE ?? '').trim();
+
+    if (direct) {
+        return direct;
+    }
+
+    const file = (process.env.MM_LICENSE_FILE ?? '').trim();
+
+    if (file) {
+        const contents = readFileSync(file, 'utf8').trim();
+
+        if (!contents) {
+            throw new Error(`MM_LICENSE_FILE points at ${file}, which is empty.`);
+        }
+
+        return contents;
+    }
+
+    if (spacePermissionsMode) {
+        throw new Error(
+            'No Enterprise license found. The space-permission scenarios demote a user to a guest, which ' +
+            'requires GuestAccountsSettings.Enable — a licensed feature. Set MM_LICENSE to the raw license, ' +
+            'or MM_LICENSE_FILE to a path holding it.',
+        );
+    }
+
+    return undefined;
+}
+
 const postgresImage = 'postgres:15';
+
+// A role the paired core branch seeds as a default. Probed after boot to tell a server that carries
+// the space-permission work from one that merely has the EnableDocs flag.
+const spacePermissionProbeRole = 'docs_pg_create';
+
+// Matches the Go suite's own budget for the same wait. Generous because the migration job
+// competes with first-boot schema work, and more so on an emulated architecture.
+const phase2MigrationTimeoutMs = 120_000;
+
+const probeRequestTimeoutMs = 30_000;
 
 export const adminUsername = 'sysadmin';
 export const adminPassword = 'Sys@dmin-sample1';
@@ -53,11 +130,14 @@ export class DocsServerContainer {
         return `http://${this.container.getHost()}:${this.container.getMappedPort(8065)}`;
     }
 
-    private async exec(command: string[]): Promise<string> {
+    // displayCommand names the command in a failure without reproducing its arguments.
+    // Defaults to the command itself; a caller passing a secret overrides it, since this
+    // message reaches the terminal and the CI job log.
+    private async exec(command: string[], displayCommand = command.join(' ')): Promise<string> {
         const {output, exitCode} = await this.container.exec(command);
 
         if (exitCode !== 0) {
-            throw new Error(`Command failed (${exitCode}): ${command.join(' ')}\n${output}`);
+            throw new Error(`Command failed (${exitCode}): ${displayCommand}\n${output}`);
         }
 
         return output;
@@ -67,7 +147,12 @@ export class DocsServerContainer {
     // and the network, because globalSetup never returns its teardown closure and Ryuk is
     // disabled on some CI images.
     async start(): Promise<DocsServerContainer> {
-        const image = process.env.MM_IMAGE || defaultImage;
+        const image = resolveImage();
+
+        // Resolved here rather than at its point of use: it is a pure environment check with the
+        // same failure semantics as resolveImage, and leaving it below meant a CI job with an unset
+        // license secret paid a full image pull and boot to learn it.
+        const license = resolveLicense();
 
         try {
             await this.startContainers(image);
@@ -75,7 +160,20 @@ export class DocsServerContainer {
             await this.exec(['mmctl', '--local', 'config', 'set', 'ServiceSettings.SiteURL', this.url()]);
             await assertServerSupportsDocs(this.url(), 'Pin a newer dev tag via MM_IMAGE.');
 
+            if (license) {
+                await this.applyLicense(license);
+            }
+
             await this.createAdmin();
+
+            // After createAdmin: the migration check needs a session and every CreateSpace route
+            // reads through that gate. The role probe is permission-specific; keeping it behind
+            // the same mode switch as those specs lets generic authoring jobs follow core master.
+            await this.waitForPhase2Migration();
+            if (spacePermissionsMode) {
+                await this.assertSupportsSpacePermissions();
+            }
+
             await this.createTeam(defaultTeamName, defaultTeamDisplayName);
             await this.addUserToTeam(adminUsername, defaultTeamName);
             await this.installPlugin();
@@ -99,13 +197,27 @@ export class DocsServerContainer {
             withStartupTimeout(startupTimeoutMs).
             start();
 
-        this.container = await new GenericContainer(image).
+        // Assigned before the chain rather than inside it: withPlatform must not be called at all
+        // when no platform applies, and the fluent chain has no way to skip a link.
+        const platform = resolvePlatform(image);
+        let server = new GenericContainer(image);
+
+        if (platform) {
+            server = server.withPlatform(platform);
+        }
+
+        this.container = await server.
             withEnvironment({
                 MM_SQLSETTINGS_DRIVERNAME: 'postgres',
                 MM_SQLSETTINGS_DATASOURCE: 'postgres://mmuser:mostest@db:5432/mattermost_test?sslmode=disable',
 
                 // Every Docs route 501s without this.
                 MM_FEATUREFLAGS_ENABLEDOCS: 'true',
+
+                // The published images are production builds, which default to the production
+                // service environment and reject a test/development license outright. The
+                // licensed permission scenarios therefore need this set.
+                MM_SERVICEENVIRONMENT: 'test',
 
                 // Lets setup drive mmctl over a socket instead of bootstrapping over HTTP.
                 MM_SERVICESETTINGS_ENABLELOCALMODE: 'true',
@@ -138,6 +250,78 @@ export class DocsServerContainer {
                 stream.on('data', (data: string | Buffer) => this.logStream?.write(String(data)));
             }).
             start();
+    }
+
+    private async applyLicense(license: string) {
+        // upload-string rather than upload: the license arrives as an environment value, so there is
+        // no file to copy into the container. The command is named without its argument, so a
+        // rejected license does not print itself into the log.
+        await this.exec(
+            ['mmctl', '--local', 'license', 'upload-string', license],
+            'mmctl --local license upload-string <license>',
+        );
+    }
+
+    private async adminToken(): Promise<string> {
+        return adminToken(this.url(), adminUsername, adminPassword);
+    }
+
+    // The advanced-permissions phase-2 migration runs as a job after boot, and every
+    // scheme-backed route answers 501 until it finishes — so the first CreateSpace fails
+    // with app.space.create.admin_role_failed wrapping
+    // app.schemes.is_phase_2_migration_completed.not_completed.
+    private async waitForPhase2Migration() {
+        const token = await this.adminToken();
+        const deadline = Date.now() + phase2MigrationTimeoutMs;
+        let lastBody = '';
+
+        while (Date.now() < deadline) {
+            const response = await fetch(`${this.url()}/api/v4/schemes?page=0&per_page=1`, {
+                headers: {Authorization: `Bearer ${token}`},
+                signal: AbortSignal.timeout(probeRequestTimeoutMs),
+            });
+
+            if (response.ok) {
+                return;
+            }
+
+            lastBody = await response.text();
+
+            // Only a pending migration is worth waiting out. A bad token or a 500 will not
+            // resolve on its own, so it surfaces now rather than after two minutes that would
+            // report it as a migration which never finished.
+            if (!lastBody.includes('is_phase_2_migration_completed')) {
+                throw new Error(
+                    `Polling for the advanced-permissions phase-2 migration failed (HTTP ${response.status}): ${lastBody}`,
+                );
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 2_000));
+        }
+
+        throw new Error(
+            `The advanced-permissions phase-2 migration did not complete within ${phase2MigrationTimeoutMs}ms. Last response: ${lastBody}`,
+        );
+    }
+
+    // An image that predates the paired core branch boots cleanly, reports EnableDocs on, and then
+    // fails permission assertions as unexplained 403s. Probing a role that branch seeds as a default
+    // turns that into one named failure at setup.
+    private async assertSupportsSpacePermissions() {
+        const token = await this.adminToken();
+
+        const response = await fetch(`${this.url()}/api/v4/roles/name/${spacePermissionProbeRole}`, {
+            headers: {Authorization: `Bearer ${token}`},
+            signal: AbortSignal.timeout(probeRequestTimeoutMs),
+        });
+
+        if (!response.ok) {
+            throw new Error(
+                `Mattermost image does not define the ${spacePermissionProbeRole} role (HTTP ${response.status}), ` +
+                'so it predates the paired core branch\'s space-permission work. Point MM_IMAGE at a compatible ' +
+                'paired-core image.',
+            );
+        }
     }
 
     private async createAdmin() {

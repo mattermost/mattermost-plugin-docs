@@ -289,13 +289,14 @@ func (s *Service) GetPageDraftsForSpace(userID, spaceID string, page, perPage in
 //   - wasCreated=false → an existing page was updated, or a concurrent create was adopted (return 200)
 //   - appErr is a 409 edit conflict → page is the current server page (or nil if the re-read failed),
 //     so the caller can surface a diff without a follow-up read; on every other error page is nil.
-func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (*model.Page, bool, *mmmodel.AppError) {
+func (s *Service) PublishPageDraft(space *model.Space, userID, pageID string, force bool) (publishedPage *model.Page, wasCreated bool, appErr *mmmodel.AppError) {
 	if !mmmodel.IsValidId(userID) {
 		return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.invalid_user_id.app_error", nil, "", http.StatusBadRequest)
 	}
-	if !mmmodel.IsValidId(spaceID) {
+	if space == nil || !mmmodel.IsValidId(space.Id) {
 		return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.invalid_space_id.app_error", nil, "", http.StatusBadRequest)
 	}
+	spaceID := space.Id
 	if !mmmodel.IsValidId(pageID) {
 		return nil, false, mmmodel.NewAppError("PublishPageDraft", "app.page_draft.publish.invalid_page_id.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -315,6 +316,14 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 	isNewPage, targetErr := derivePublishTarget(existing, existingErr, spaceID)
 	if targetErr != nil {
 		return nil, false, targetErr
+	}
+
+	// Authorization runs here, after the create/edit classification above and before the writes
+	// below: RequireSpacePublish needs isNewPage, and the draft writes that produced this content
+	// were gated by RequireSpaceDraftWrite, which requires only create-or-edit authority; the exact
+	// permission the content needs is enforced here.
+	if permErr := s.RequireSpacePublish("PublishPageDraft", space, userID, isNewPage); permErr != nil {
+		return nil, false, permErr
 	}
 
 	// 3. Parent guard (new-page path only): a new page's parent must be a published live page; a

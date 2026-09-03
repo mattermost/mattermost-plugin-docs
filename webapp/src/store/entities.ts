@@ -24,6 +24,7 @@ type MovedPageAction = {pageId: string; spaceId: string; parentId: string; sibli
 type DeletedPageAction = {pageId: string; spaceId: string; pageIds: string[]};
 type ReceivedSpaceMembersAction = {spaceId: string; userIds: string[]};
 type SpaceMemberAction = {spaceId: string; userId: string};
+type SpaceMemberPermissionsChangedAction = {spaceId: string};
 
 // `spaceId` marks a full list for that space, seeding its index entry even when the
 // space has no drafts — the same "loaded" signal RECEIVED_PAGES uses.
@@ -118,7 +119,17 @@ function spaces(state: Record<string, Space> = {}, action: UnknownAction): Recor
         }
         const next = {...state};
         for (const space of received) {
-            next[space.id] = space;
+            // The team listing answers with bare spaces, so it must not erase the permission
+            // fields a single-space read already resolved: without this, opening a space and then
+            // any later listing would drop them back to unresolved, and every permission-gated
+            // affordance would reappear.
+            const previous = next[space.id];
+            next[space.id] = {
+                ...space,
+                permissions: space.permissions ?? previous?.permissions,
+                default_permissions: space.default_permissions ?? previous?.default_permissions,
+                can_join: space.can_join ?? previous?.can_join,
+            };
         }
         return next;
     }
@@ -292,7 +303,7 @@ function pagesInSpace(state: Record<string, Set<string>> = {}, action: UnknownAc
     }
 }
 
-// Space member user ids, keyed by space id. Roles/capabilities are hidden by
+// Space member user ids, keyed by space id. Roles/permissions are hidden by
 // the server, so this is just membership (count today, avatars later).
 function spaceMembers(state: Record<string, string[]> = {}, action: UnknownAction): Record<string, string[]> {
     switch (action.type) {
@@ -352,9 +363,7 @@ function drafts(state: Record<string, StoredDraft> = {}, action: UnknownAction):
         const next = {...state};
         for (const draft of received) {
             const current = next[draft.page_id];
-            next[draft.page_id] = current && isFullDraft(current) && !isFullDraft(draft) ?
-                {...current, ...draft} :
-                draft;
+            next[draft.page_id] = current && isFullDraft(current) && !isFullDraft(draft) ? {...current, ...draft} : draft;
         }
         return next;
     }
@@ -461,8 +470,37 @@ function draftsInSpace(state: Record<string, Set<string>> = {}, action: UnknownA
     }
 }
 
+// A counter per space, bumped each time the server says that space's per-member grant matrix
+// changed.
+//
+// The matrix itself is not held here: only the Share modal and Space Settings → Permissions display
+// it (via useSpaceAccessEditor), and only a caller holding the manage tier may read it at all, so
+// those surfaces fetch it and keep their own snapshot. Everything else about a space's permission
+// state — its default set, its view access, the caller's own tier — lives in the spaces slice and
+// re-renders on its own. A grant change moves none of that, which is why this counter exists and
+// why it covers nothing else.
+function spaceMemberPermissionsRevision(state: Record<string, number> = {}, action: UnknownAction): Record<string, number> {
+    switch (action.type) {
+    case SpaceTypes.SPACE_MEMBER_PERMISSIONS_CHANGED: {
+        const {spaceId} = action as unknown as SpaceMemberPermissionsChangedAction;
+        return {...state, [spaceId]: (state[spaceId] ?? 0) + 1};
+    }
+    case SpaceTypes.DELETED_SPACE: {
+        const {spaceId} = action as unknown as DeletedSpaceAction;
+        if (!(spaceId in state)) {
+            return state;
+        }
+        const next = {...state};
+        delete next[spaceId];
+        return next;
+    }
+    default:
+        return state;
+    }
+}
+
 // Normalized server entities, kept separate from view/UI state so future
 // top-level reducers (e.g. `views`) can sit beside this one.
-const entities = combineReducers({spaces, spacesInTeam, pages, pagesInSpace, spaceMembers, drafts, draftsInSpace});
+const entities = combineReducers({spaces, spacesInTeam, pages, pagesInSpace, spaceMembers, spaceMemberPermissionsRevision, drafts, draftsInSpace});
 
 export default entities;

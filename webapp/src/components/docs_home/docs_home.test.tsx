@@ -38,6 +38,14 @@ describe('DocsHome', () => {
         expect(screen.queryByText('Welcome to Docs.')).not.toBeInTheDocument();
     });
 
+    it('hides the create-space CTAs when no onCreateSpace handler is wired', () => {
+        renderWithContext(<DocsHome/>, {state: spacesLoaded});
+
+        expect(screen.queryByRole('button', {name: 'New Space'})).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: /Create a space/})).not.toBeInTheDocument();
+        expect(screen.getByRole('button', {name: 'Browse spaces'})).toBeInTheDocument();
+    });
+
     it('shows the welcome hero and wires the create CTAs when there are no spaces', () => {
         const onCreateSpace = jest.fn();
         renderWithContext(<DocsHome onCreateSpace={onCreateSpace}/>, {state: spacesLoaded});

@@ -15,10 +15,11 @@ import (
 
 func validSpace() *model.Space {
 	s := &model.Space{
-		ChannelId: mmmodel.NewId(),
-		TeamId:    mmmodel.NewId(),
-		CreatorId: mmmodel.NewId(),
-		Title:     "Title",
+		ChannelId:  mmmodel.NewId(),
+		TeamId:     mmmodel.NewId(),
+		CreatorId:  mmmodel.NewId(),
+		Title:      "Title",
+		ViewAccess: model.ViewAccessOpen,
 	}
 	s.PreSave()
 	return s
@@ -129,6 +130,28 @@ func TestSpaceIsValid(t *testing.T) {
 		require.NotNil(t, aerr)
 		require.Equal(t, "model.shared.props_too_large.app_error", aerr.Id)
 	})
+
+	t.Run("empty ViewAccess rejected", func(t *testing.T) {
+		s := validSpace()
+		s.ViewAccess = ""
+		aerr := s.IsValid()
+		require.NotNil(t, aerr)
+		require.Equal(t, "model.space.is_valid.view_access.app_error", aerr.Id)
+	})
+
+	t.Run("unknown ViewAccess rejected", func(t *testing.T) {
+		s := validSpace()
+		s.ViewAccess = "public"
+		aerr := s.IsValid()
+		require.NotNil(t, aerr)
+		require.Equal(t, "model.space.is_valid.view_access.app_error", aerr.Id)
+	})
+
+	t.Run("private ViewAccess accepted", func(t *testing.T) {
+		s := validSpace()
+		s.ViewAccess = model.ViewAccessPrivate
+		require.Nil(t, s.IsValid())
+	})
 }
 
 func TestSpacePatchIsValid(t *testing.T) {
@@ -163,6 +186,11 @@ func TestSpacePatchIsValid(t *testing.T) {
 	t.Run("Props only accepted", func(t *testing.T) {
 		props := mmmodel.StringInterface{"k": "v"}
 		aerr := (&model.SpacePatch{Props: &props}).IsValid()
+		require.Nil(t, aerr)
+	})
+
+	t.Run("ViewAccess only accepted", func(t *testing.T) {
+		aerr := (&model.SpacePatch{ViewAccess: mmmodel.NewPointer(model.ViewAccessPrivate)}).IsValid()
 		require.Nil(t, aerr)
 	})
 }
@@ -212,6 +240,15 @@ func TestSpacePatch(t *testing.T) {
 	t.Run("nil patch is a no-op", func(t *testing.T) {
 		s := base()
 		s.Patch(nil)
+		require.Equal(t, "orig", s.Title)
+	})
+
+	t.Run("ViewAccess is applied", func(t *testing.T) {
+		s := base()
+		s.ViewAccess = model.ViewAccessOpen
+		s.Patch(&model.SpacePatch{ViewAccess: mmmodel.NewPointer(model.ViewAccessPrivate)})
+		require.Equal(t, model.ViewAccessPrivate, s.ViewAccess)
+		// A ViewAccess-only patch must leave every other field alone.
 		require.Equal(t, "orig", s.Title)
 	})
 }
