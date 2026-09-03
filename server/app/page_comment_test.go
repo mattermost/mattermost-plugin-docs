@@ -39,7 +39,7 @@ type commentAPIBehavior struct {
 	failDeleteBeforeSave bool
 	failDeleteAfterSave  bool
 
-	// failMoveToChannel makes MovePostsToChannel error without moving anything;
+	// failMoveToChannel makes MoveThreadsToBackingChannel error without moving anything;
 	// dropMoveEffect makes it report success while moving nothing (the non-convergence case).
 	failMoveToChannel bool
 	dropMoveEffect    bool
@@ -64,8 +64,8 @@ type commentHarness struct {
 	moveCalls [][]string
 }
 
-// movePostsCalls returns the recorded MovePostsToChannel batches.
-func (ch *commentHarness) movePostsCalls() [][]string {
+// moveThreadsCalls returns the recorded MoveThreadsToBackingChannel batches.
+func (ch *commentHarness) moveThreadsCalls() [][]string {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
 	return slices.Clone(ch.moveCalls)
@@ -175,13 +175,13 @@ func (ch *commentHarness) stubPostAPI(t *testing.T) {
 
 	// Emulates the core move primitive: the root's whole thread lands on the target channel in
 	// one call, edit-history rows included via the OriginalId leg of the predicate.
-	ch.mockAPI.On("MovePostsToChannel", mock.AnythingOfType("[]string"), mock.AnythingOfType("string")).Return(
+	ch.mockAPI.On("MoveThreadsToBackingChannel", mock.AnythingOfType("[]string"), mock.AnythingOfType("string")).Return(
 		func(rootIDs []string, channelID string) *mmmodel.AppError {
 			ch.mu.Lock()
 			ch.moveCalls = append(ch.moveCalls, slices.Clone(rootIDs))
 			ch.mu.Unlock()
 			if ch.behavior.failMoveToChannel {
-				return mmmodel.NewAppError("MovePostsToChannel", "test.move_failure", nil, "", http.StatusInternalServerError)
+				return mmmodel.NewAppError("MoveThreadsToBackingChannel", "test.move_failure", nil, "", http.StatusInternalServerError)
 			}
 			if ch.behavior.dropMoveEffect {
 				return nil
@@ -971,7 +971,7 @@ func TestServiceMovePageToSpaceRehomesComments(t *testing.T) {
 			"a page staying behind keeps its comments")
 
 		// Only roots are handed to the move; the thread moves with them.
-		calls := ch.movePostsCalls()
+		calls := ch.moveThreadsCalls()
 		require.Len(t, calls, 1)
 		assert.Equal(t, []string{root.Id}, calls[0])
 
@@ -997,7 +997,7 @@ func TestServiceMovePageToSpaceRehomesComments(t *testing.T) {
 		_, appErr = ch.svc.MovePageToSpace(page.Id, source, target, nil, nil, true, mmmodel.NewId())
 		require.Nil(t, appErr)
 
-		calls := ch.movePostsCalls()
+		calls := ch.moveThreadsCalls()
 		require.Len(t, calls, 1)
 		assert.Equal(t, []string{root.Id}, calls[0], "only the root may be named; history rides its OriginalId leg")
 		assert.Equal(t, target.ChannelId, readStandInPost(t, ch.db, root.Id).ChannelId)
@@ -1040,7 +1040,7 @@ func TestServiceMovePageToSpaceRehomesComments(t *testing.T) {
 		_, appErr := ch.svc.MovePageToSpace(page.Id, source, target, nil, nil, true, mmmodel.NewId())
 		require.Nil(t, appErr)
 
-		calls := ch.movePostsCalls()
+		calls := ch.moveThreadsCalls()
 		require.Len(t, calls, 2, "101 roots at a chunk size of 100 is two calls")
 		assert.Len(t, calls[0], 100)
 		assert.Len(t, calls[1], 1)
@@ -1060,7 +1060,7 @@ func TestServiceMovePageToSpaceRehomesComments(t *testing.T) {
 		require.Nil(t, appErr, "the page move still succeeds; the sweep failure is logged")
 
 		// The non-convergence guard fires after one fruitless move rather than spinning.
-		assert.Len(t, ch.movePostsCalls(), 1)
+		assert.Len(t, ch.moveThreadsCalls(), 1)
 		assert.Equal(t, source.ChannelId, readStandInPost(t, ch.db, root.Id).ChannelId)
 	})
 }

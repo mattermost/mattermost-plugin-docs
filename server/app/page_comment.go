@@ -452,10 +452,10 @@ func (s *Service) UpdatePageComment(space *model.Space, pageID, commentID string
 		}
 		replyCount = counts[commentID]
 
-		post, getErr := s.client.Post.GetPost(commentID)
-		if getErr != nil {
-			return mmmodel.NewAppError("UpdatePageComment", "app.page_comment.patch.get_post_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(getErr)
-		}
+		// The write is built from the pre-image the lock already read on this transaction. Fetching
+		// the post again through the plugin API would read a replica, and the update replaces the
+		// prop map wholesale, so a lagging row would drop a resolve this lock just serialized.
+		post := preImage.Clone()
 		if patch.Message != nil {
 			post.Message = *patch.Message
 		}
@@ -703,7 +703,7 @@ func (s *Service) AutoResolveOrphanedComments(spaceID, channelID, pageID, body s
 			// whether or not a resolve removes the row from the filtered set.
 			cursor = PageCommentCursor{CreateAt: root.CreateAt, Id: root.Id}
 
-			anchorID, _ := mmmodel.LimitRunes(propStringOf(root, model.PropKeyAnchorId), model.MaxAnchorIdRunes)
+			anchorID := model.PageCommentAnchorID(root)
 			if anchorID == "" {
 				// An inline root with no anchor cannot be matched against the body either way.
 				// Leaving it alone keeps the sweep from closing threads on a prop-shape bug.
@@ -737,16 +737,19 @@ func (s *Service) resolveOrphanedComment(spaceID, pageID, commentID string) erro
 		// makes the sweep a no-op for this comment rather than a write over someone's change.
 		current, currentErr := s.resolvePageCommentTx("AutoResolveOrphanedComments", tx, locked, pageID, commentID, false)
 		if currentErr != nil {
+			if currentErr.StatusCode == http.StatusNotFound {
+				// Deleted between the listing and the lock, like the moved-page arm above: this
+				// comment is a no-op, and the rest of the sweep still has to run.
+				return nil
+			}
 			return currentErr
 		}
-		if propBoolOf(current, model.PropKeyResolved) {
+		if model.PageCommentIsResolved(current) {
 			return nil
 		}
 
-		post, getErr := s.client.Post.GetPost(commentID)
-		if getErr != nil {
-			return getErr
-		}
+		// Built from the locked read for the same reason as UpdatePageComment.
+		post := current.Clone()
 		props := make(mmmodel.StringInterface, len(post.GetProps())+3)
 		maps.Copy(props, post.GetProps())
 		props[model.PropKeyResolved] = true
@@ -761,24 +764,6 @@ func (s *Service) resolveOrphanedComment(spaceID, pageID, commentID string) erro
 		s.publishToChannels(wsEventPageCommentUpdated, pageCommentEventPayload(commentID, "", pageID, locked.SpaceId), locked.ChannelId)
 		return nil
 	})
-}
-
-// propStringOf reads a string prop off a post, yielding "" for an absent or non-string value.
-func propStringOf(post *mmmodel.Post, key string) string {
-	v, _ := post.GetProps()[key].(string)
-	return v
-}
-
-// propBoolOf reads a boolean prop off a post across the two encodings a Props round trip produces.
-func propBoolOf(post *mmmodel.Post, key string) bool {
-	switch v := post.GetProps()[key].(type) {
-	case bool:
-		return v
-	case string:
-		return v == "true"
-	default:
-		return false
-	}
 }
 
 // reconcileCommentChunkSize bounds one detection read and one core move call; the sweep loops
@@ -812,7 +797,7 @@ func (s *Service) reconcileCommentChannels(space *model.Space, sourceChannelIDs 
 			return errors.New("comment re-home is not converging; root " + roots[0] + " is still misplaced after a move")
 		}
 		lastFirst = roots[0]
-		if err := s.client.Post.MovePostsToChannel(roots, space.ChannelId); err != nil {
+		if err := s.client.Post.MoveThreadsToBackingChannel(roots, space.ChannelId); err != nil {
 			return err
 		}
 	}

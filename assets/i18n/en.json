@@ -252,10 +252,6 @@
     "translation": "The comment could not be found."
   },
   {
-    "id": "app.page_comment.patch.get_post_failed.app_error",
-    "translation": "The comment could not be read."
-  },
-  {
     "id": "app.page_comment.patch.message_not_author.app_error",
     "translation": "Only the comment's author can edit its message."
   },

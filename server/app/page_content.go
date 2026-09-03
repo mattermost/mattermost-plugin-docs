@@ -80,11 +80,11 @@ func normalizeContent(content string) (normBody string, doc model.TipTapDocument
 	if empty {
 		return content, doc, true, nil
 	}
-	normBody, err = marshalTipTapDoc(doc)
+	encoded, err := json.Marshal(doc)
 	if err != nil {
 		return "", model.TipTapDocument{}, false, err
 	}
-	return normBody, doc, false, nil
+	return string(encoded), doc, false, nil
 }
 
 // normalizeContentToDoc normalizes content and returns its TipTap document, validating it and
@@ -120,15 +120,6 @@ func normalizeContentToDoc(content string) (doc model.TipTapDocument, empty bool
 		return model.TipTapDocument{}, false, err
 	}
 	return wrapped, false, nil
-}
-
-// marshalTipTapDoc serializes a TipTapDocument to its stored JSON form.
-func marshalTipTapDoc(doc model.TipTapDocument) (string, error) {
-	sanitized, err := json.Marshal(doc)
-	if err != nil {
-		return "", err
-	}
-	return string(sanitized), nil
 }
 
 // maxPlainTextParagraphs caps the number of paragraph nodes produced when converting plain text

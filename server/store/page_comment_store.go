@@ -41,7 +41,8 @@ const (
 	notInlineTypeExpr = "Props->>'" + model.PropKeyCommentType + "' IS DISTINCT FROM '" + model.CommentTypeInline + "'"
 )
 
-// postColumnList is the set of Posts columns the comment projections read.
+// postColumnList is the set of Posts columns the comment projections read. Rows scan directly
+// into mmmodel.Post; its StringInterface Props field implements sql.Scanner for the JSONB value.
 var postColumnList = []string{"Id", "CreateAt", "UpdateAt", "EditAt", "DeleteAt", "UserId", "ChannelId", "RootId", "Message", "Type", "Props"}
 
 // PageCommentListOptions narrows the roots listing. Resolved nil means all roots; CommentType ""
@@ -56,13 +57,14 @@ type PageCommentListOptions struct {
 }
 
 // pageCommentBaseQuery is the shared identity predicate of every comment read: bounded to the
-// space's backing channel (no Posts index covers Type or Props, so ChannelId is what bounds the
-// scan) and keyed on the page_id prop.
+// space's backing channel and keyed on the page_id prop. Excluding edit-history rows selects no
+// differently — a comment always carries an empty OriginalId — but it is what lets the page_id
+// index, whose predicate names the column, serve these reads.
 func (s *Store) pageCommentBaseQuery(channelID, pageID string) sq.SelectBuilder {
 	return s.getQueryBuilder().
 		Select(postColumnList...).
 		From("Posts").
-		Where(sq.Eq{"ChannelId": channelID, "Type": model.PostTypePageComment}).
+		Where(sq.Eq{"ChannelId": channelID, "Type": model.PostTypePageComment, "OriginalId": ""}).
 		Where(sq.Expr(pageIdPropExpr, pageID))
 }
 
@@ -127,7 +129,7 @@ func (s *Store) GetPageCommentCounts(channelID, pageID string) (PageCommentCount
 		From("Posts").
 		Where(sq.Eq{"ChannelId": channelID, "Type": model.PostTypePageComment}).
 		Where(sq.Expr(pageIdPropExpr, pageID)).
-		Where(sq.Eq{"DeleteAt": 0, "RootId": ""})
+		Where(sq.Eq{"DeleteAt": 0, "RootId": "", "OriginalId": ""})
 
 	var row struct {
 		Total int
@@ -245,6 +247,11 @@ func (s *Store) GetMisplacedCommentRoots(spaceID, channelID string, sourceChanne
 		Select("c.Id").
 		From("Posts c").
 		Join("DOCS_Page p ON p.Id = c." + pageIdProp).
+		// Only rows already on a space's backing channel are movable: the core move rejects the
+		// whole batch if any channel it touches is not one. Without this, a post carrying the
+		// comment type and a page_id prop — neither of which core sanitizes — planted on an
+		// ordinary channel would fail every future sweep and strand the real stragglers.
+		Join("DOCS_Space sp ON sp.ChannelId = c.ChannelId").
 		Where(sq.Eq{"p.SpaceId": spaceID, "p.OriginalId": "", "c.Type": model.PostTypePageComment, "c.RootId": ""}).
 		// A root's edit-history row carries RootId='' with OriginalId set, so a roots-only
 		// predicate admits it — and the move primitive then rejects the whole batch as

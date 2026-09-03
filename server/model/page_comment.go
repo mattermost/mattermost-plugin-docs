@@ -211,18 +211,18 @@ func (p *PageCommentPatch) IsValid() *mmmodel.AppError {
 func NewPageCommentFromPost(post, root *mmmodel.Post, spaceID string, replyCount int) *PageComment {
 	props := post.GetProps()
 
-	typeSource := props
+	typeSource := post
 	if post.RootId != "" && root != nil {
-		typeSource = root.GetProps()
+		typeSource = root
 	}
 	commentType := CommentTypeFooter
 	anchorID := ""
-	if propString(typeSource, PropKeyCommentType) == CommentTypeInline {
+	if propString(typeSource.GetProps(), PropKeyCommentType) == CommentTypeInline {
 		commentType = CommentTypeInline
-		anchorID, _ = mmmodel.LimitRunes(propString(typeSource, PropKeyAnchorId), MaxAnchorIdRunes)
+		anchorID = PageCommentAnchorID(typeSource)
 	}
 
-	resolved := propBool(props, PropKeyResolved)
+	resolved := PageCommentIsResolved(post)
 	resolvedReason := ""
 	if resolved {
 		resolvedReason = ResolvedReasonManual
@@ -261,6 +261,23 @@ func NewPageCommentFromPost(post, root *mmmodel.Post, spaceID string, replyCount
 		UpdateAt:       post.UpdateAt,
 		EditAt:         post.EditAt,
 	}
+}
+
+// PageCommentAnchorID returns a comment post's bounded anchor id, or "" when absent or malformed.
+// Keeping this projection in the model prevents background reconciliation and API serialization
+// from drifting on how untyped Props values are interpreted.
+func PageCommentAnchorID(post *mmmodel.Post) string {
+	if post == nil {
+		return ""
+	}
+	anchorID, _ := mmmodel.LimitRunes(propString(post.GetProps(), PropKeyAnchorId), MaxAnchorIdRunes)
+	return anchorID
+}
+
+// PageCommentIsResolved reports the resolved state across the two boolean encodings a Props JSON
+// round trip may produce.
+func PageCommentIsResolved(post *mmmodel.Post) bool {
+	return post != nil && propBool(post.GetProps(), PropKeyResolved)
 }
 
 // propString reads a string prop, yielding "" for an absent or non-string value.

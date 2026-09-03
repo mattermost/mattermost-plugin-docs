@@ -23,6 +23,16 @@ func (s *Service) enrolSpaceChannelInRetention(channelID string) *mmmodel.AppErr
 		return nil
 	}
 	if err := s.client.System.AddChannelsToRetentionPolicy(policyID, []string{channelID}); err != nil {
+		// An unlicensed server cannot hold the assignment at all, and the setting outlives the
+		// licence that made it reachable. Refusing the space would make every creation fail for
+		// as long as the licence is gone, so the exception is dropped and the space follows the
+		// standard clock; the reconcile sweep enrols it if the licence returns.
+		var appErr *mmmodel.AppError
+		if errors.As(err, &appErr) && appErr.StatusCode == http.StatusNotImplemented {
+			s.log.Warn("Skipped Docs retention enrolment: the server is not licensed for data retention",
+				"channel_id", channelID, "policy_id", policyID)
+			return nil
+		}
 		return mmmodel.NewAppError("CreateSpace", "app.space.create.retention_enrol_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
 	}
 	return nil
@@ -66,10 +76,16 @@ func (s *Service) ReconcileSpaceRetention() error {
 			}
 			channelIDs = append(channelIDs, row.ChannelId)
 		}
+		// Removals already applied are restored if a later one fails, for the same reason a failed
+		// add restores them: a channel between the two legs sits on no policy at all, following
+		// the standard clock instead of the stricter one an admin configured.
+		removed := make(map[string][]string, len(byCurrentPolicy))
 		for currentPolicyID, ids := range byCurrentPolicy {
 			if err := s.client.System.RemoveChannelsFromRetentionPolicy(currentPolicyID, ids); err != nil {
+				s.restorePriorRetentionPolicies(removed)
 				return err
 			}
+			removed[currentPolicyID] = ids
 		}
 		if err := s.client.System.AddChannelsToRetentionPolicy(policyID, channelIDs); err != nil {
 			s.restorePriorRetentionPolicies(byCurrentPolicy)

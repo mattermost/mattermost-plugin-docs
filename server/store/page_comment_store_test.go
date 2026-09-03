@@ -334,7 +334,10 @@ func TestGetPageCommentCounts(t *testing.T) {
 
 func TestGetMisplacedCommentRoots(t *testing.T) {
 	f := newCommentFixture(t)
+	// A stranded comment sits on the backing channel of the space its page was moved out of, so
+	// the source is always a real space channel — which is what makes the core move accept it.
 	strandedChannelID := mmmodel.NewId()
+	testutil.MustCreateSpace(t, f.store, strandedChannelID, mmmodel.NewId())
 
 	misplacedA := f.seedComment(t, "", 1000, func(p *mmmodel.Post) { p.ChannelId = strandedChannelID })
 	misplacedB := f.seedComment(t, "", 2000, func(p *mmmodel.Post) { p.ChannelId = strandedChannelID })
@@ -370,6 +373,19 @@ func TestGetMisplacedCommentRoots(t *testing.T) {
 		got, err = f.store.GetMisplacedCommentRoots(f.space.Id, f.space.ChannelId, []string{mmmodel.NewId()}, 10)
 		require.NoError(t, err)
 		assert.Empty(t, got, "stragglers on other channels are the repair path's job")
+	})
+
+	t.Run("a comment-shaped row on an ordinary channel is never named", func(t *testing.T) {
+		// Core rejects a whole move batch containing a channel that is not a space, so a row
+		// anyone can post — the type and the page_id prop are both writable through the ordinary
+		// post API — would otherwise fail every sweep and strand the real ones for good.
+		f.seedComment(t, "", 7000, func(p *mmmodel.Post) { p.ChannelId = mmmodel.NewId() })
+
+		got, err := f.store.GetMisplacedCommentRoots(f.space.Id, f.space.ChannelId, nil, 10)
+		require.NoError(t, err)
+		want := []string{misplacedA.Id, misplacedB.Id, deletedMisplaced.Id}
+		slices.Sort(want)
+		assert.Equal(t, want, got)
 	})
 
 	t.Run("the limit bounds one chunk", func(t *testing.T) {

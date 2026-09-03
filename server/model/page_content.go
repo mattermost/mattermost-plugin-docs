@@ -37,9 +37,7 @@ type TipTapDocument struct {
 // BuildSearchText extracts searchable plain text from a TipTap document.
 func BuildSearchText(doc TipTapDocument) string {
 	var b strings.Builder
-	for _, node := range doc.Content {
-		appendNodeText(&b, node, 0)
-	}
+	walkTipTapDocument(doc, func(node map[string]any) { appendNodeText(&b, node) })
 	return b.String()
 }
 
@@ -64,19 +62,11 @@ func CollectCommentAnchorIDsFromBody(body string) (map[string]struct{}, error) {
 // absent from this set no longer points at anything in the page.
 func CollectCommentAnchorIDs(doc TipTapDocument) map[string]struct{} {
 	ids := make(map[string]struct{})
-	for _, node := range doc.Content {
-		collectCommentAnchorIDs(node, 0, ids)
-	}
+	walkTipTapDocument(doc, func(node map[string]any) { collectCommentAnchorIDs(node, ids) })
 	return ids
 }
 
-// collectCommentAnchorIDs walks node the way appendNodeText does, honouring the same depth cap so
-// a pathological document cannot drive the recursion.
-func collectCommentAnchorIDs(node map[string]any, depth int, ids map[string]struct{}) {
-	if depth > maxTipTapDepth {
-		return
-	}
-
+func collectCommentAnchorIDs(node map[string]any, ids map[string]struct{}) {
 	if marksVal, ok := node["marks"]; ok {
 		if marks, ok := marksVal.([]any); ok {
 			for _, markVal := range marks {
@@ -97,16 +87,6 @@ func collectCommentAnchorIDs(node map[string]any, depth int, ids map[string]stru
 				if id, ok := attrs["anchorId"].(string); ok && id != "" {
 					clamped, _ := mmmodel.LimitRunes(id, MaxAnchorIdRunes)
 					ids[clamped] = struct{}{}
-				}
-			}
-		}
-	}
-
-	if contentVal, ok := node["content"]; ok {
-		if children, ok := contentVal.([]any); ok {
-			for _, child := range children {
-				if childNode, ok := child.(map[string]any); ok {
-					collectCommentAnchorIDs(childNode, depth+1, ids)
 				}
 			}
 		}
@@ -149,14 +129,9 @@ func ParseTipTapDocument(contentJSON string) (TipTapDocument, error) {
 	return doc, nil
 }
 
-// appendNodeText walks a node subtree once, appending each text leaf and mention label to b. A
-// single shared builder keeps extraction O(total text) instead of re-joining every subtree at each
-// ancestor, which would copy a leaf once per level of nesting.
-func appendNodeText(b *strings.Builder, node map[string]any, depth int) {
-	if depth > maxTipTapDepth {
-		return
-	}
-
+// appendNodeText appends one node's text or mention label to b. walkTipTapDocument supplies nodes
+// in document order, and a single shared builder keeps extraction O(total text).
+func appendNodeText(b *strings.Builder, node map[string]any) {
 	if textVal, ok := node["text"]; ok {
 		if text, ok := textVal.(string); ok && text != "" {
 			if normalized := strings.Join(strings.Fields(text), " "); normalized != "" {
@@ -174,14 +149,29 @@ func appendNodeText(b *strings.Builder, node map[string]any, depth int) {
 			}
 		}
 	}
+}
 
-	if contentVal, ok := node["content"]; ok {
-		if children, ok := contentVal.([]any); ok {
-			for _, child := range children {
-				if childNode, ok := child.(map[string]any); ok {
-					appendNodeText(b, childNode, depth+1)
-				}
-			}
+// walkTipTapDocument is the bounded, defensive preorder traversal shared by read-only document
+// projections. Sanitization has its own mutating walk because it must reject, not skip, malformed
+// child shapes and enforce the total node budget while rewriting attributes.
+func walkTipTapDocument(doc TipTapDocument, visit func(map[string]any)) {
+	for _, node := range doc.Content {
+		walkTipTapNode(node, 0, visit)
+	}
+}
+
+func walkTipTapNode(node map[string]any, depth int, visit func(map[string]any)) {
+	if depth > maxTipTapDepth {
+		return
+	}
+	visit(node)
+	children, ok := node["content"].([]any)
+	if !ok {
+		return
+	}
+	for _, child := range children {
+		if childNode, ok := child.(map[string]any); ok {
+			walkTipTapNode(childNode, depth+1, visit)
 		}
 	}
 }
@@ -274,14 +264,14 @@ var allowedNodeTypes = map[string]struct{}{
 	"fileAttachment":   {},
 }
 
-// allowedMarkTypes is the allowlist of TipTap mark type values, keyed to the core WysiwygEditor
-// schema plus the page editor's extensions. Like allowedNodeTypes, a mark type not listed here is
-// rejected rather than passed through. "link" is a mark (TipTap's inline hyperlink); its href is
-// sanitized by sanitizeURL.
 // commentAnchorMarkType is the TipTap mark an inline comment anchors to. It is named rather than
 // spelled inline because the orphan sweep matches on it as well as the sanitizer.
 const commentAnchorMarkType = "commentAnchor"
 
+// allowedMarkTypes is the allowlist of TipTap mark type values, keyed to the core WysiwygEditor
+// schema plus the page editor's extensions. Like allowedNodeTypes, a mark type not listed here is
+// rejected rather than passed through. "link" is a mark (TipTap's inline hyperlink); its href is
+// sanitized by sanitizeURL.
 var allowedMarkTypes = map[string]struct{}{
 	// Core WysiwygEditor marks.
 	"bold":      {},
