@@ -3,6 +3,7 @@
 
 import {act, fireEvent, screen, waitFor} from '@testing-library/react';
 import React from 'react';
+import {copyToClipboard} from 'utils/clipboard';
 
 import {makeSpace} from 'store/test_fixtures';
 
@@ -43,6 +44,8 @@ jest.mock('hooks/members', () => ({
 jest.mock('hooks/navigation', () => ({
     useDocsNavigation: () => ({paths: {space: (id: string) => `/team/spaces/${id}`}}),
 }));
+
+jest.mock('utils/clipboard', () => ({copyToClipboard: jest.fn(() => Promise.resolve(true))}));
 
 // AddMembersField renders the real people picker, which pulls in mattermost-redux's
 // user search actions (published ESM that jest doesn't transform). Stub at the hook
@@ -222,5 +225,14 @@ describe('ShareSpaceModal', () => {
 
         await waitFor(() => expect(mockLeave).toHaveBeenCalled());
         await waitFor(() => expect(onClose).toHaveBeenCalled());
+    });
+
+    it('confirms the copy on the button itself', async () => {
+        renderModal();
+
+        fireEvent.click(screen.getByRole('button', {name: 'Copy link'}));
+
+        expect(await screen.findByRole('button', {name: 'Copied'})).toBeInTheDocument();
+        expect(copyToClipboard).toHaveBeenCalledWith('/team/spaces/space-1');
     });
 });

@@ -1,13 +1,14 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {useCopyText} from 'hooks/copy_text';
 import {useDocsNavigation} from 'hooks/navigation';
 import {useCustomDefaultsAvailable} from 'hooks/permissions';
 import {useSpaceAccessEditor} from 'hooks/space_access_editor';
 import React from 'react';
 import {FormattedMessage, useIntl} from 'react-intl';
-import {copyToClipboard} from 'utils/clipboard';
 
+import CheckIcon from '@mattermost/compass-icons/components/check';
 import ContentCopyIcon from '@mattermost/compass-icons/components/content-copy';
 
 import {SecondaryButton} from 'components/form_controls/button';
@@ -49,7 +50,9 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
 
     const customDefaultsAvailable = useCustomDefaultsAvailable();
 
-    const copyLink = () => copyToClipboard(absolutePaths.space(space.id));
+    const copyLink = useCopyText(absolutePaths.space(space.id), {
+        announcement: formatMessage({id: 'docs.share.linkCopied', defaultMessage: 'Copied'}),
+    });
 
     const title = (
         <FormattedMessage
@@ -63,13 +66,20 @@ const ShareSpaceModal = ({space, onClose}: Props) => {
         <SecondaryButton
             size='sm'
             className={styles.copyLink}
-            onClick={copyLink}
+            onClick={copyLink.copy}
         >
-            <ContentCopyIcon size={16}/>
-            <FormattedMessage
-                id='docs.share.copyLink'
-                defaultMessage='Copy link'
-            />
+            {copyLink.copied ? <CheckIcon size={16}/> : <ContentCopyIcon size={16}/>}
+            {copyLink.copied ? (
+                <FormattedMessage
+                    id='docs.share.linkCopied'
+                    defaultMessage='Copied'
+                />
+            ) : (
+                <FormattedMessage
+                    id='docs.share.copyLink'
+                    defaultMessage='Copy link'
+                />
+            )}
         </SecondaryButton>
     );
 
