@@ -18,7 +18,14 @@ import (
 //
 // If you add non-reference types to your configuration struct, be sure to rewrite Clone as a deep
 // copy appropriate for your types.
-type configuration struct{}
+type configuration struct {
+	// RetentionPolicyId is the id of the custom data-retention policy that governs Docs
+	// content. Empty means Docs content follows the chat retention clock — the default, since
+	// an admin who has configured nothing has not asked for a Docs exception. When set, every
+	// space backing channel is enrolled in the policy at space creation, and a reconcile sweep
+	// enrols spaces that predate the setting.
+	RetentionPolicyId string
+}
 
 // Clone shallow copies the configuration. Your implementation may require a deep copy if
 // your configuration has reference types.
@@ -78,6 +85,8 @@ func (p *Plugin) snapshotFeatureFlags(cfg *mmmodel.Config) {
 func (p *Plugin) OnConfigurationChange() error {
 	p.snapshotFeatureFlags(p.API.GetConfig())
 
+	previousPolicyID := p.getConfiguration().RetentionPolicyId
+
 	configuration := new(configuration)
 
 	// Load the public configuration fields from the Mattermost server configuration.
@@ -86,6 +95,26 @@ func (p *Plugin) OnConfigurationChange() error {
 	}
 
 	p.setConfiguration(configuration)
+
+	// The service is nil until OnActivate wires it; activation pushes the id and sweeps itself.
+	if p.service != nil {
+		p.service.SetRetentionPolicyID(configuration.RetentionPolicyId)
+		if configuration.RetentionPolicyId != previousPolicyID {
+			// A sweep failure is logged rather than failing the configuration change: the sweep
+			// is idempotent and re-runs on the next policy change or activation.
+			if err := p.service.ReconcileSpaceRetention(); err != nil {
+				p.API.LogError("Docs retention reconcile failed after a policy change", "policy_id", configuration.RetentionPolicyId, "err", err)
+			}
+			// Clearing the setting is a policy change like any other, and the one the reconcile
+			// above cannot express: with no target policy to move channels into, returning them
+			// to the standard clock means removing them from the policy they were enrolled in.
+			if configuration.RetentionPolicyId == "" {
+				if err := p.service.ReleaseSpaceRetention(previousPolicyID); err != nil {
+					p.API.LogError("Docs retention release failed after the policy was cleared", "policy_id", previousPolicyID, "err", err)
+				}
+			}
+		}
+	}
 
 	return nil
 }

@@ -13,8 +13,9 @@ import {assertServerSupportsDocs, pluginId} from './preflight';
 const projectRoot = resolve(__dirname, '../..');
 const repoRoot = resolve(projectRoot, '../..');
 
-// Local fallback; CI sets MM_IMAGE in ci.yml. Tracks master because stock releases lack
-// Docs core support and min_server_version rises, so a pin goes stale.
+// Local fallback; CI sets MM_IMAGE from the resolve-e2e-core-image action. Tracks master
+// because stock releases lack Docs core support and min_server_version rises, so a pin
+// goes stale.
 const defaultImage = 'mattermostdevelopment/mattermost-enterprise-edition:master';
 
 const postgresImage = 'postgres:15';

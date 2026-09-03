@@ -201,6 +201,15 @@ func (s *Service) CreateSpace(space *model.Space, userID string) (*model.Space, 
 		return nil, mmmodel.NewAppError("CreateSpace", "app.space.create.add_member_failed.app_error", nil, "", http.StatusInternalServerError).Wrap(addErr)
 	}
 
+	// When a Docs retention policy is configured, the backing channel is enrolled in the same
+	// call that creates it: an enrolment failure core reports fails the create rather than
+	// leaving the space silently on the chat retention clock. The reconcile sweep backstops
+	// the failures core does not report.
+	if enrolErr := s.enrolSpaceChannelInRetention(backingChannel.Id); enrolErr != nil {
+		s.archiveOrphanChannel(backingChannel.Id, "retention enrolment failed", enrolErr)
+		return nil, enrolErr
+	}
+
 	space.ChannelId = backingChannel.Id
 
 	saved, err := s.store.CreateSpace(space)

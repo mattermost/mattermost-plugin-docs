@@ -137,6 +137,15 @@ jobs:
         with:
           persist-credentials: false
 
+      # Comment creation supplies its own post id, which core accepts only on a space channel.
+      # A PR carrying the marker runs against its own core build. Without one — every push to
+      # master, the nightly schedule, a tag, and every later PR — the image above stands.
+      - name: ci/resolve-e2e-core-image
+        uses: ./.github/actions/resolve-e2e-core-image
+        with:
+          pull-request-body: ${{ github.event.pull_request.body || '' }}
+          default-image: ${{ env.MM_IMAGE }}
+
       - name: ci/playwright-e2e-test
         uses: ./.github/actions/playwright-e2e-test
 

@@ -217,7 +217,17 @@ func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model
 				return nil, destErr
 			}
 		}
-		return s.reparentWithinSpace("MovePageToSpace", pageID, sourceSpace.Id, &requestedParent, nil, expectedUpdateAt, force)
+		moved, appErr := s.reparentWithinSpace("MovePageToSpace", pageID, sourceSpace.Id, &requestedParent, nil, expectedUpdateAt, force)
+		if appErr != nil {
+			return nil, appErr
+		}
+		// A same-space re-issue is the repair path for comments a failed cross-space re-home
+		// left stranded, so it must sweep rather than treat an unmoved page as a no-op. The
+		// stragglers' channels are unknown here, hence the space-wide sweep.
+		if reconcileErr := s.reconcileCommentChannels(sourceSpace, nil); reconcileErr != nil {
+			s.log.Error("Comment re-home failed after page move", "page_id", pageID, "space_id", sourceSpace.Id, "err", reconcileErr)
+		}
+		return moved, nil
 	}
 
 	// Pre-check the destination parent's existence for its more specific invalid_parent rejection;
@@ -250,5 +260,13 @@ func (s *Service) MovePageToSpace(pageID string, sourceSpace, targetSpace *model
 		"target_space_id": targetSpace.Id,
 		"new_parent_id":   moved.ParentId,
 	}, moved.ChannelId)
+
+	// The subtree's comments are core Posts rows, which the page/draft transaction cannot carry
+	// (the re-home is a core call), so they move after it commits. A failure strands them on
+	// the source channel — bounded, detectable through the surviving page_id prop, and repaired
+	// by re-issuing the move — so it is logged rather than failing a move that has committed.
+	if reconcileErr := s.reconcileCommentChannels(targetSpace, []string{sourceSpace.ChannelId}); reconcileErr != nil {
+		s.log.Error("Comment re-home failed after page move", "page_id", moved.Id, "space_id", targetSpace.Id, "err", reconcileErr)
+	}
 	return moved, nil
 }

@@ -755,3 +755,60 @@ func TestParseTipTapDocumentSanitizesWhitespacePrefixedAttrKeys(t *testing.T) {
 	require.NotContains(t, attrs, "href", "dropping the padded key must not introduce a canonical one")
 	require.Equal(t, "a cat", attrs["alt"], "clean attr must survive")
 }
+
+func TestCollectCommentAnchorIDsFromBody(t *testing.T) {
+	t.Run("collects ids from nested marks and ignores other marks", func(t *testing.T) {
+		body := `{"type":"doc","content":[
+			{"type":"paragraph","content":[
+				{"type":"text","text":"a","marks":[{"type":"bold"},{"type":"commentAnchor","attrs":{"anchorId":"one"}}]}
+			]},
+			{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[
+				{"type":"text","text":"b","marks":[{"type":"commentAnchor","attrs":{"anchorId":"two"}}]}
+			]}]}]}
+		]}`
+		ids, err := model.CollectCommentAnchorIDsFromBody(body)
+		require.NoError(t, err)
+		require.Equal(t, map[string]struct{}{"one": {}, "two": {}}, ids)
+	})
+
+	t.Run("an empty body has no live anchors and is not an error", func(t *testing.T) {
+		ids, err := model.CollectCommentAnchorIDsFromBody("")
+		require.NoError(t, err)
+		require.Empty(t, ids)
+	})
+
+	t.Run("a body with no anchors yields an empty set", func(t *testing.T) {
+		ids, err := model.CollectCommentAnchorIDsFromBody(model.EmptyTipTapJSON)
+		require.NoError(t, err)
+		require.Empty(t, ids)
+	})
+
+	t.Run("malformed json is reported rather than read as no anchors", func(t *testing.T) {
+		// Silently returning an empty set here would orphan every comment on the page.
+		_, err := model.CollectCommentAnchorIDsFromBody("{not json")
+		require.Error(t, err)
+	})
+
+	t.Run("an anchor id longer than the bound is clamped to match the stored form", func(t *testing.T) {
+		long := strings.Repeat("x", model.MaxAnchorIdRunes+10)
+		body := `{"type":"doc","content":[{"type":"paragraph","content":[
+			{"type":"text","text":"a","marks":[{"type":"commentAnchor","attrs":{"anchorId":"` + long + `"}}]}
+		]}]}`
+		ids, err := model.CollectCommentAnchorIDsFromBody(body)
+		require.NoError(t, err)
+		require.Len(t, ids, 1)
+		for id := range ids {
+			require.Len(t, []rune(id), model.MaxAnchorIdRunes)
+		}
+	})
+
+	t.Run("an empty or missing anchorId is skipped", func(t *testing.T) {
+		body := `{"type":"doc","content":[{"type":"paragraph","content":[
+			{"type":"text","text":"a","marks":[{"type":"commentAnchor","attrs":{"anchorId":""}}]},
+			{"type":"text","text":"b","marks":[{"type":"commentAnchor"}]}
+		]}]}`
+		ids, err := model.CollectCommentAnchorIDsFromBody(body)
+		require.NoError(t, err)
+		require.Empty(t, ids)
+	})
+}
