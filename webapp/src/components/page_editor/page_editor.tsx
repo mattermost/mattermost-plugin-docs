@@ -42,8 +42,12 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
         editorRef,
     });
 
-    const {formattingBarRef, surfaceRef, getEditor, applyFormatting, documentMode} =
-        useHostEditor(editorRef, {editing, loaded: !load.loading && !load.error});
+    // Mirrors every condition below that decides whether WysiwygEditor mounts at
+    // all: waiting on an editor that will never arrive would wait forever.
+    const editorWillMount = hostCanUseEditor() && !load.loading && !load.error && !load.notFound;
+
+    const {formattingBarRef, surfaceRef, getEditor, applyFormatting, editorReady, documentMode} =
+        useHostEditor(editorRef, {editing, loaded: editorWillMount});
 
     const keepSelection = useCallback((e: React.MouseEvent) => {
         if (!(e.target as HTMLElement).closest('input, textarea')) {
@@ -131,7 +135,7 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
 
     return (
         <div className={styles.root}>
-            {editing && pinned && FormattingBar && toolbarSlot && createPortal(
+            {editing && pinned && editorReady && FormattingBar && toolbarSlot && createPortal(
                 <div
                     className={styles.pinnedToolbar}
                     onMouseDown={keepSelection}
@@ -201,7 +205,7 @@ const PageEditor = ({spaceId, pageId, isDraft, editing}: Props) => {
                             surfaceRef={surfaceRef}
                         />
 
-                        {editing && !pinned && (
+                        {editing && !pinned && editorReady && (
                             <FloatingFormattingBar
                                 editorRef={surfaceRef}
                                 applyFormatting={applyFormatting}

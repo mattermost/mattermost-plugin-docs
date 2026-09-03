@@ -22,6 +22,7 @@ export type HostEditor = {
 
     getEditor: () => unknown;
     applyFormatting: (mode: PublishedMarkdownMode) => void;
+    editorReady: boolean;
 
     documentMode: boolean | null;
 };
@@ -31,6 +32,7 @@ export function useHostEditor(editorRef: EditorRef, {editing, loaded}: HostEdito
     const surfaceRef = useRef<HTMLDivElement>(null);
 
     const [documentMode, setDocumentMode] = useState<boolean | null>(null);
+    const [editorReady, setEditorReady] = useState(false);
 
     const ready = editing && loaded;
 
@@ -40,9 +42,34 @@ export function useHostEditor(editorRef: EditorRef, {editing, loaded}: HostEdito
 
     useEffect(() => {
         if (!ready) {
-            return;
+            setEditorReady(false);
+            setDocumentMode(null);
+            return undefined;
         }
-        setDocumentMode(hostSupportsDocumentEditor(editorRef.current));
+
+        let frame = 0;
+        const look = () => {
+            const handle = editorRef.current;
+            if (!handle) {
+                frame = requestAnimationFrame(look);
+                return;
+            }
+
+            if (!hostSupportsDocumentEditor(handle)) {
+                setDocumentMode(false);
+                return;
+            }
+
+            setDocumentMode(true);
+            if (handle.getEditor?.()) {
+                setEditorReady(true);
+                return;
+            }
+            frame = requestAnimationFrame(look);
+        };
+        look();
+
+        return () => cancelAnimationFrame(frame);
     }, [editorRef, ready]);
 
     const applyFormatting = useCallback((mode: PublishedMarkdownMode) => {
@@ -57,5 +84,5 @@ export function useHostEditor(editorRef: EditorRef, {editing, loaded}: HostEdito
         applyWysiwygFormatting(editor, mode);
     }, [getEditor]);
 
-    return {formattingBarRef, surfaceRef, getEditor, applyFormatting, documentMode};
+    return {formattingBarRef, surfaceRef, getEditor, applyFormatting, editorReady, documentMode};
 }
