@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -124,6 +125,26 @@ func TestHandler_PageCommentListParamValidation(t *testing.T) {
 			var appErr mmmodel.AppError
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
 			assert.Equal(t, wantID, appErr.Id)
+		})
+	}
+
+	// A cursor that decodes and splits cleanly but carries a value the keyset walk cannot use is
+	// still refused, so a malformed resume can never widen the window it was meant to bound.
+	encoded := func(raw string) string {
+		return base64.RawURLEncoding.EncodeToString([]byte(raw))
+	}
+	malformed := map[string]string{
+		"a negative timestamp":    encoded("-1|" + mmmodel.NewId()),
+		"a non-numeric timestamp": encoded("later|" + mmmodel.NewId()),
+		"an id that is not an id": encoded("1|not-an-id"),
+	}
+	for name, cursor := range malformed {
+		t.Run(name, func(t *testing.T) {
+			rec := h.do(t, http.MethodGet, base+"?after="+url.QueryEscape(cursor), userID, nil)
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			var appErr mmmodel.AppError
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &appErr))
+			assert.Equal(t, "api.page_comment.invalid_cursor.app_error", appErr.Id)
 		})
 	}
 

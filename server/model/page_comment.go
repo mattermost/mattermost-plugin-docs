@@ -202,9 +202,9 @@ func (p *PageCommentPatch) IsValid() *mmmodel.AppError {
 
 // NewPageCommentFromPost is the single place a page-comment Posts row is read into a PageComment;
 // every handler goes through it so prop-key spellings cannot drift. root is nil when post is
-// itself a root and otherwise carries the thread root, whose comment_type/anchor_id the reply
-// inherits — a reply row carries neither prop, so the root-absence-means-footer rule (correct for
-// roots) must not be applied to it. Props are untyped
+// itself a root and otherwise carries the thread root, whose comment_type/anchor_id and resolve
+// state the reply inherits — a reply row carries none of those props, so the
+// root-absence-means-footer rule (correct for roots) must not be applied to it. Props are untyped
 // JSON, so values are coerced defensively rather than asserted. The projector also enforces the
 // one invariant the struct cannot express: ResolvedBy and ResolvedAt are set together or not at
 // all, the sole exception being a dangling resolve, which carries a time and no actor.
@@ -222,17 +222,21 @@ func NewPageCommentFromPost(post, root *mmmodel.Post, spaceID string, replyCount
 		anchorID = PageCommentAnchorID(typeSource)
 	}
 
-	resolved := PageCommentIsResolved(post)
+	// Resolve state is a property of the thread, and only the root carries it: UpdatePageComment
+	// refuses a resolve aimed at a reply. Reading it off the reply row would report every reply in
+	// a closed thread as open, and unattributed.
+	resolutionProps := typeSource.GetProps()
+	resolved := PageCommentIsResolved(typeSource)
 	resolvedReason := ""
 	if resolved {
 		resolvedReason = ResolvedReasonManual
-		if propString(props, PropKeyResolvedReason) == ResolvedReasonDangling {
+		if propString(resolutionProps, PropKeyResolvedReason) == ResolvedReasonDangling {
 			resolvedReason = ResolvedReasonDangling
 		}
 	}
 
-	resolvedBy := propString(props, PropKeyResolvedBy)
-	resolvedAt := propInt64(props, PropKeyResolvedAt)
+	resolvedBy := propString(resolutionProps, PropKeyResolvedBy)
+	resolvedAt := propInt64(resolutionProps, PropKeyResolvedAt)
 	// A dangling resolve has a time but no actor, so it is the one case the pair-or-neither rule
 	// must not collapse: dropping its timestamp would leave the client unable to say when the
 	// anchor went away.

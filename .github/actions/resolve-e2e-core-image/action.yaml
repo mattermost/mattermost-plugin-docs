@@ -37,33 +37,34 @@ runs:
         # Only an HTML comment carrying the marker is a selection attempt; the same words in the
         # description's prose (a PR documenting this mechanism) are not. Every comment-form
         # occurrence must be a well-formed marker, and there must be at most one, so two E2E jobs
-        # can never resolve different commits from one description.
-        marker_pattern='<!--[[:space:]]*e2e-core-commit:[[:space:]]*([0-9a-f]{40})[[:space:]]*-->'
-        comment_pattern='<!--[^>]*e2e-core-commit:[^>]*-->'
+        # can never resolve different commits from one description. Each comment is cut at its own
+        # closing delimiter rather than matched by a single regex over the whole body, so a ">"
+        # earlier in a comment cannot end it and hide a malformed marker from the check.
+        marker_pattern='^[[:space:]]*e2e-core-commit:[[:space:]]*([0-9a-f]{40})[[:space:]]*$'
 
-        count_matches() {
-          local rest="$PR_BODY" count=0
-          while [[ "$rest" =~ $1 ]]; do
-            count=$((count + 1))
-            rest="${rest#*"${BASH_REMATCH[0]}"}"
-          done
-          echo "$count"
-        }
+        markers=0
+        core_commit=""
+        rest="$PR_BODY"
+        while [[ "$rest" == *"<!--"* ]]; do
+          rest="${rest#*<!--}"
+          [[ "$rest" == *"-->"* ]] || break
+          comment="${rest%%-->*}"
+          rest="${rest#*-->}"
+          [[ "$comment" == *e2e-core-commit:* ]] || continue
+          if [[ ! "$comment" =~ $marker_pattern ]]; then
+            echo "An e2e-core-commit comment in the PR description does not contain one full lowercase 40-character SHA." >&2
+            echo "Use: <!-- e2e-core-commit: 0123456789abcdef0123456789abcdef01234567 -->" >&2
+            exit 1
+          fi
+          markers=$((markers + 1))
+          core_commit="${BASH_REMATCH[1]}"
+        done
 
-        markers=$(count_matches "$marker_pattern")
-        comments=$(count_matches "$comment_pattern")
-        if (( comments != markers )); then
-          echo "An e2e-core-commit comment in the PR description does not contain one full lowercase 40-character SHA." >&2
-          echo "Use: <!-- e2e-core-commit: 0123456789abcdef0123456789abcdef01234567 -->" >&2
-          exit 1
-        fi
         if (( markers > 1 )); then
           echo "The PR description carries $markers e2e-core-commit markers; keep exactly one so both E2E jobs resolve the same core commit." >&2
           exit 1
         fi
         if (( markers == 1 )); then
-          [[ "$PR_BODY" =~ $marker_pattern ]]
-          core_commit="${BASH_REMATCH[1]}"
           # Enterprise like the default: the space-permission suite applies a license, which the
           # team-edition build of the same commit cannot honor.
           image="mattermostdevelopment/mattermost-enterprise-edition:${core_commit:0:7}"

@@ -111,6 +111,27 @@ func TestServiceCreateSpaceRetentionEnrolment(t *testing.T) {
 		assert.Equal(t, "app.space.create.retention_enrol_failed.app_error", appErr.Id)
 		mockAPI.AssertCalled(t, "DeleteChannel", channelID)
 	})
+
+	t.Run("an unlicensed server skips the enrolment instead of failing the create", func(t *testing.T) {
+		// Core gates the whole retention API on the licence before it looks the policy up, so an
+		// unlicensed server answers 501 for any policy id. The setting outlives the licence that
+		// made it reachable, and refusing would make every create fail for as long as the licence
+		// is gone, so the space is created on the standard clock and the backing channel is kept.
+		mockAPI := &plugintest.API{}
+		h := openTestServiceWithAPI(t, mockAPI)
+		h.svc.SetRetentionPolicyID("policy0000000000000000000x")
+
+		space := newSpace()
+		channelID := stubChannelCreate(mockAPI, space.TeamId)
+		mockAPI.On("AddChannelsToRetentionPolicy", mock.AnythingOfType("string"), mock.AnythingOfType("[]string")).
+			Return(mmmodel.NewAppError("AddChannelsToRetentionPolicy", "ent.data_retention.generic.license.error", nil, "", http.StatusNotImplemented)).Once()
+
+		saved, appErr := h.svc.CreateSpace(space, mmmodel.NewId())
+		require.Nil(t, appErr)
+		assert.Equal(t, channelID, saved.ChannelId)
+		assert.False(t, enrolled(t, h.db, "policy0000000000000000000x", channelID))
+		mockAPI.AssertNotCalled(t, "DeleteChannel", channelID)
+	})
 }
 
 func TestServiceReconcileSpaceRetention(t *testing.T) {
@@ -304,5 +325,28 @@ func TestServiceReleaseSpaceRetention(t *testing.T) {
 		require.NoError(t, h.svc.ReleaseSpaceRetention(policyID))
 		require.NoError(t, h.svc.ReleaseSpaceRetention(policyID))
 		assert.Empty(t, assignedPolicy(t, h, space.ChannelId))
+	})
+
+	t.Run("a removal that lands nothing stops instead of looping", func(t *testing.T) {
+		mockAPI := &plugintest.API{}
+		h := openTestServiceWithAPI(t, mockAPI)
+		stubRetentionEnrolment(t, mockAPI, h.db, nil)
+		h.svc.SetRetentionPolicyID(policyID)
+		mustCreateSpace(t, h.store, mmmodel.NewId())
+		require.NoError(t, h.svc.ReconcileSpaceRetention())
+
+		// Report success while removing nothing — the state the non-convergence guard exists for.
+		// Without it the release loop re-reads the same leading channel id forever.
+		mockAPI.ExpectedCalls = nil
+		var calls [][]string
+		mockAPI.On("RemoveChannelsFromRetentionPolicy", mock.AnythingOfType("string"), mock.AnythingOfType("[]string")).Return(
+			func(string, []string) *mmmodel.AppError {
+				calls = append(calls, nil)
+				return nil
+			}).Maybe()
+
+		err := h.svc.ReleaseSpaceRetention(policyID)
+		require.Error(t, err)
+		assert.Len(t, calls, 1, "the non-convergence guard fires after one fruitless removal")
 	})
 }

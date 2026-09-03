@@ -194,6 +194,23 @@ func TestNewPageCommentFromPost(t *testing.T) {
 		assert.Empty(t, c.AnchorId)
 	})
 
+	t.Run("reply inherits the root's resolve state and attribution", func(t *testing.T) {
+		userID := mmmodel.NewId()
+		root := newCommentPost(mmmodel.NewId(), "", mmmodel.StringInterface{
+			PropKeyPageId:     pageID,
+			PropKeyResolved:   true,
+			PropKeyResolvedBy: userID,
+			PropKeyResolvedAt: int64(123),
+		})
+		reply := newCommentPost(mmmodel.NewId(), root.Id, mmmodel.StringInterface{PropKeyPageId: pageID})
+		c := NewPageCommentFromPost(reply, root, spaceID, 0)
+
+		assert.True(t, c.Resolved)
+		assert.Equal(t, userID, c.ResolvedBy)
+		assert.Equal(t, int64(123), c.ResolvedAt)
+		assert.Equal(t, ResolvedReasonManual, c.ResolvedReason)
+	})
+
 	t.Run("resolve state coerces across JSON encodings", func(t *testing.T) {
 		userID := mmmodel.NewId()
 		for name, props := range map[string]mmmodel.StringInterface{

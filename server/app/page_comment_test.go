@@ -578,6 +578,14 @@ func TestServiceGetPageCommentReplies(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 		assert.Equal(t, "app.page_comment.get_replies.target_is_reply.app_error", appErr.Id)
 	})
+
+	t.Run("a page outside the space is rejected 404 before the root is resolved", func(t *testing.T) {
+		// The page gate runs first, so a caller cannot probe for a comment id by naming a page
+		// it cannot reach: the answer is the same whether or not the comment exists.
+		_, _, appErr := ch.svc.GetPageCommentReplies(space, mmmodel.NewId(), root.Id, 0, 10)
+		require.NotNil(t, appErr)
+		assert.Equal(t, http.StatusNotFound, appErr.StatusCode)
+	})
 }
 
 func TestServiceUpdatePageComment(t *testing.T) {
