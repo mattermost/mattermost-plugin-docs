@@ -43,12 +43,25 @@ export function useHostEditor(editorRef: EditorRef, {editing, loaded}: HostEdito
     useEffect(() => {
         if (!ready) {
             setEditorReady(false);
+            setDocumentMode(null);
             return undefined;
         }
 
         let frame = 0;
         const look = () => {
-            if (editorRef.current?.getEditor?.()) {
+            const handle = editorRef.current;
+            if (!handle) {
+                frame = requestAnimationFrame(look);
+                return;
+            }
+
+            if (!hostSupportsDocumentEditor(handle)) {
+                setDocumentMode(false);
+                return;
+            }
+
+            setDocumentMode(true);
+            if (handle.getEditor?.()) {
                 setEditorReady(true);
                 return;
             }
@@ -57,13 +70,6 @@ export function useHostEditor(editorRef: EditorRef, {editing, loaded}: HostEdito
         look();
 
         return () => cancelAnimationFrame(frame);
-    }, [editorRef, ready]);
-
-    useEffect(() => {
-        if (!ready) {
-            return;
-        }
-        setDocumentMode(hostSupportsDocumentEditor(editorRef.current));
     }, [editorRef, ready]);
 
     const applyFormatting = useCallback((mode: PublishedMarkdownMode) => {

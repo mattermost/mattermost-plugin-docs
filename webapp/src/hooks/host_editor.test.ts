@@ -6,7 +6,9 @@ import type {PublishedWysiwygEditorHandle} from 'webapp_globals';
 
 import {useHostEditor} from './host_editor';
 
-jest.mock('webapp_globals', () => ({hostSupportsDocumentEditor: () => true}));
+jest.mock('webapp_globals', () => ({
+    hostSupportsDocumentEditor: (handle: {getEditor?: unknown} | null) => typeof handle?.getEditor === 'function',
+}));
 jest.mock('./caret_anchored_suggestions', () => ({useCaretAnchoredSuggestions: () => undefined}));
 
 const handleFor = (editor: unknown) => ({getEditor: () => editor}) as PublishedWysiwygEditorHandle;
@@ -43,6 +45,27 @@ describe('useHostEditor', () => {
         await waitFor(() => expect(result.current.editorReady).toBe(true));
     });
 
+    it('waits for the handle before calling a host legacy', async () => {
+        const editorRef: {current: PublishedWysiwygEditorHandle | null} = {current: null};
+
+        const {result} = renderHook(() => useHostEditor(editorRef, {editing: true, loaded: true}));
+
+        expect(result.current.documentMode).toBeNull();
+
+        editorRef.current = handleFor({});
+
+        await waitFor(() => expect(result.current.documentMode).toBe(true));
+    });
+
+    it('settles on legacy for a handle that has no editor to give', async () => {
+        const editorRef = {current: {} as PublishedWysiwygEditorHandle};
+
+        const {result} = renderHook(() => useHostEditor(editorRef, {editing: true, loaded: true}));
+
+        await waitFor(() => expect(result.current.documentMode).toBe(false));
+        expect(result.current.editorReady).toBe(false);
+    });
+
     it('drops readiness when editing stops', async () => {
         const editorRef = {current: handleFor({})};
 
@@ -55,5 +78,6 @@ describe('useHostEditor', () => {
         rerender({editing: false});
 
         expect(result.current.editorReady).toBe(false);
+        expect(result.current.documentMode).toBeNull();
     });
 });
