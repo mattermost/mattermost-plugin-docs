@@ -32,10 +32,10 @@ function canonical(value: unknown): unknown {
 
     if (value && typeof value === 'object') {
         const source = value as Record<string, unknown>;
-        }, Object.create(null) as Record<string, unknown>);
+        return Object.keys(source).sort().reduce<Record<string, unknown>>((out, key) => {
             out[key] = canonical(source[key]);
             return out;
-        }, {});
+        }, Object.create(null) as Record<string, unknown>);
     }
 
     return value;

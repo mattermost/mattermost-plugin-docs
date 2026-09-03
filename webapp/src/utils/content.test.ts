@@ -25,6 +25,13 @@ describe('sameContent', () => {
         expect(sameContent(one, other)).toBe(false);
     });
 
+    it('keeps a "__proto__" key as content rather than losing it to the prototype', () => {
+        const withKey = '{"attrs":{"__proto__":"x"},"type":"doc"}';
+        const without = '{"attrs":{},"type":"doc"}';
+
+        expect(sameContent(withKey, without)).toBe(false);
+    });
+
     it('falls back to exact comparison for content that is not JSON', () => {
         expect(sameContent('# Heading', '# Heading')).toBe(true);
         expect(sameContent('# Heading', '# Other')).toBe(false);
