@@ -1,7 +1,8 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {useCallback, useEffect, useState} from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
+import {sameContent} from 'utils/content';
 
 import type {DraftAutosave} from './draft_autosave';
 import {useDraftAutosave} from './draft_autosave';
@@ -51,11 +52,22 @@ export function usePageEditing({spaceId, pageId, editing, editorRef}: Options): 
         setActionError(null);
     }, [spaceId, pageId]);
 
+    const savedBody = useRef(load.body);
+    useEffect(() => {
+        savedBody.current = load.body;
+    }, [load.body]);
+
     const onContentChange = useCallback((content: string) => {
         if (contentError || editorRef.current?.hasContentError?.()) {
             setContentError(true);
             return;
         }
+
+        if (sameContent(content, savedBody.current)) {
+            return;
+        }
+
+        savedBody.current = content;
         autosave.queue({body: content});
     }, [autosave, contentError, editorRef]);
 
