@@ -1,0 +1,76 @@
+name: "resolve-e2e-core-image"
+description: Resolves the Mattermost image for an E2E job from an optional per-PR core commit, falling back to the caller's default
+
+inputs:
+  pull-request-body:
+    description: Pull request body containing an optional e2e-core-commit marker
+    required: false
+    default: ""
+  default-image:
+    description: Image to select when no marker names a core commit. Empty falls back to master.
+    required: false
+    default: ""
+
+outputs:
+  image:
+    description: The Mattermost image selected for this E2E run
+    value: ${{ steps.resolve.outputs.image }}
+  is-default:
+    description: Whether the run fell back to the caller's default image because no marker selected a core commit
+    value: ${{ steps.resolve.outputs.is-default }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: resolve
+      name: ci/resolve-e2e-core-image
+      shell: bash
+      env:
+        PR_BODY: ${{ inputs.pull-request-body }}
+        DEFAULT_IMAGE: ${{ inputs.default-image }}
+      run: |
+        # The caller declares the default in its own workflow, so the server under test shows up
+        # in a workflow diff and stays overridable from repository settings.
+        image="${DEFAULT_IMAGE:-mattermostdevelopment/mattermost-enterprise-edition:master}"
+        is_default=true
+
+        # Only an HTML comment carrying the marker is a selection attempt; the same words in the
+        # description's prose (a PR documenting this mechanism) are not. Every comment-form
+        # occurrence must be a well-formed marker, and there must be at most one, so two E2E jobs
+        # can never resolve different commits from one description.
+        marker_pattern='<!--[[:space:]]*e2e-core-commit:[[:space:]]*([0-9a-f]{40})[[:space:]]*-->'
+        comment_pattern='<!--[^>]*e2e-core-commit:[^>]*-->'
+
+        count_matches() {
+          local rest="$PR_BODY" count=0
+          while [[ "$rest" =~ $1 ]]; do
+            count=$((count + 1))
+            rest="${rest#*"${BASH_REMATCH[0]}"}"
+          done
+          echo "$count"
+        }
+
+        markers=$(count_matches "$marker_pattern")
+        comments=$(count_matches "$comment_pattern")
+        if (( comments != markers )); then
+          echo "An e2e-core-commit comment in the PR description does not contain one full lowercase 40-character SHA." >&2
+          echo "Use: <!-- e2e-core-commit: 0123456789abcdef0123456789abcdef01234567 -->" >&2
+          exit 1
+        fi
+        if (( markers > 1 )); then
+          echo "The PR description carries $markers e2e-core-commit markers; keep exactly one so both E2E jobs resolve the same core commit." >&2
+          exit 1
+        fi
+        if (( markers == 1 )); then
+          [[ "$PR_BODY" =~ $marker_pattern ]]
+          core_commit="${BASH_REMATCH[1]}"
+          # Enterprise like the default: the space-permission suite applies a license, which the
+          # team-edition build of the same commit cannot honor.
+          image="mattermostdevelopment/mattermost-enterprise-edition:${core_commit:0:7}"
+          is_default=false
+        fi
+
+        echo "MM_IMAGE=$image" >> "$GITHUB_ENV"
+        echo "image=$image" >> "$GITHUB_OUTPUT"
+        echo "is-default=$is_default" >> "$GITHUB_OUTPUT"
+        echo "Mattermost E2E image: $image"

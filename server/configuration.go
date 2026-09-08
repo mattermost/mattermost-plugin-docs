@@ -1,10 +1,19 @@
 package main
 
 import (
+	"fmt"
 	"reflect"
 
 	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/pkg/errors"
+
+	docsmodel "github.com/mattermost/mattermost-plugin-docs/server/model"
+)
+
+const (
+	newSpaceDefaultPresetContribute = "contribute"
+	newSpaceDefaultPresetComment    = "comment"
+	newSpaceDefaultPresetReadOnly   = "read_only"
 )
 
 // configuration captures the plugin's external configuration as exposed in the Mattermost server
@@ -18,7 +27,44 @@ import (
 //
 // If you add non-reference types to your configuration struct, be sure to rewrite Clone as a deep
 // copy appropriate for your types.
-type configuration struct{}
+type configuration struct {
+	NewSpaceDefaultPreset string `json:"newSpaceDefaultPreset"`
+}
+
+func defaultConfiguration() *configuration {
+	return &configuration{NewSpaceDefaultPreset: newSpaceDefaultPresetContribute}
+}
+
+func (c *configuration) setDefaults() {
+	if c.NewSpaceDefaultPreset == "" {
+		c.NewSpaceDefaultPreset = newSpaceDefaultPresetContribute
+	}
+}
+
+func (c *configuration) validate() error {
+	switch c.NewSpaceDefaultPreset {
+	case newSpaceDefaultPresetContribute, newSpaceDefaultPresetComment, newSpaceDefaultPresetReadOnly:
+		return nil
+	default:
+		return fmt.Errorf("newSpaceDefaultPreset must be one of %q, %q, or %q", newSpaceDefaultPresetContribute, newSpaceDefaultPresetComment, newSpaceDefaultPresetReadOnly)
+	}
+}
+
+// newSpaceDefaultPermissions resolves the configured logical preset to the wire permission set
+// consumed by CreateSpace. Configuration deliberately stores no database scheme id: core owns
+// those ids, while CreateSpace's Service.resolveSpaceScheme (server/app/space.go) maps this
+// permission set to the appropriate seeded scheme on every creation.
+func (c *configuration) newSpaceDefaultPermissions() []string {
+	schemeName := mmmodel.SchemeNameSpaceContribute
+	switch c.NewSpaceDefaultPreset {
+	case newSpaceDefaultPresetComment:
+		schemeName = mmmodel.SchemeNameSpaceComment
+	case newSpaceDefaultPresetReadOnly:
+		schemeName = mmmodel.SchemeNameSpaceReadOnly
+	}
+	permissions, _ := docsmodel.DefaultPermissionsForSchemeName(schemeName)
+	return permissions
+}
 
 // Clone shallow copies the configuration. Your implementation may require a deep copy if
 // your configuration has reference types.
@@ -35,7 +81,7 @@ func (p *Plugin) getConfiguration() *configuration {
 	defer p.configurationLock.RUnlock()
 
 	if p.configuration == nil {
-		return &configuration{}
+		return defaultConfiguration()
 	}
 
 	return p.configuration
@@ -84,8 +130,16 @@ func (p *Plugin) OnConfigurationChange() error {
 	if err := p.API.LoadPluginConfiguration(configuration); err != nil {
 		return errors.Wrap(err, "failed to load plugin configuration")
 	}
+	configuration.setDefaults()
+	if err := configuration.validate(); err != nil {
+		return errors.Wrap(err, "invalid plugin configuration")
+	}
 
 	p.setConfiguration(configuration)
 
 	return nil
+}
+
+func (p *Plugin) newSpaceDefaultPermissions() []string {
+	return p.getConfiguration().newSpaceDefaultPermissions()
 }

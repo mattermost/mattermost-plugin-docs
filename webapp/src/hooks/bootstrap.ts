@@ -8,7 +8,7 @@ import {fetchSpaces} from 'store/actions';
 
 // Loads the Docs data layer once the product mounts (i.e. an authenticated user
 // has navigated into Docs), rather than at plugin init. Team-scoped: the server
-// returns the current team's spaces the caller belongs to.
+// returns the current team's spaces the caller may read.
 export function useBootstrapDocs(): void {
     const dispatch = useAppDispatch();
 

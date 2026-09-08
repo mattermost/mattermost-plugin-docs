@@ -4,6 +4,7 @@
 import {useBootstrapDocs} from 'hooks/bootstrap';
 import {useFullscreen} from 'hooks/fullscreen';
 import {useDocsNavigation} from 'hooks/navigation';
+import {useCanCreateSpace} from 'hooks/permissions';
 import {useSidebarWidth} from 'hooks/sidebar_width';
 import {useRecordSpaceView} from 'hooks/spaces';
 import React, {useCallback, useState} from 'react';
@@ -33,6 +34,7 @@ const DocsRoot = () => {
     useBootstrapDocs();
 
     const {formatMessage} = useIntl();
+    const canCreateSpace = useCanCreateSpace();
     const {spaceId, goToSpace} = useDocsNavigation();
     const {width, setWidth, commitWidth} = useSidebarWidth('spaces', DEFAULT_SPACES_WIDTH, {
         minWidth: MIN_SPACES_WIDTH,
@@ -73,7 +75,7 @@ const DocsRoot = () => {
                 >
                     <SpacesSidebar
                         onOpenSwitcher={openSwitcher}
-                        onCreateSpace={openCreateSpace}
+                        onCreateSpace={canCreateSpace ? openCreateSpace : undefined}
                     />
                     <ResizableDivider
                         ariaLabel={formatMessage({id: 'docs.sidebar.resizeSpaces', defaultMessage: 'Resize spaces sidebar'})}
@@ -90,7 +92,7 @@ const DocsRoot = () => {
             )}
             <main className={styles.main}>
                 <DocsMainContent
-                    onCreateSpace={openCreateSpace}
+                    onCreateSpace={canCreateSpace ? openCreateSpace : undefined}
                     onBrowseSpaces={openSwitcher}
                 />
             </main>

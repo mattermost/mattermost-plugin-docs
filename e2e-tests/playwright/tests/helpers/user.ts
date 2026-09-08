@@ -19,6 +19,31 @@ function generatePassword(): string {
     return `Aa1!${randomBytes(18).toString('base64url')}`;
 }
 
+// The onboarding task list mounts a portal overlay that intercepts pointer events across the
+// whole product, so a freshly created user cannot be driven through the UI at all until it is
+// dismissed — every click times out on an element that is visible, enabled and stable.
+//
+// The container sets MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW=false, which is why this never
+// surfaced there. A run against an existing server must not reconfigure it (see the page fixture),
+// so the flow is suppressed per user instead, which touches nothing but that user's own
+// preferences. Harmless where the server already has it off.
+//
+// Exported because the admin is not created here — the suite is handed those credentials — and an
+// admin driving the browser hits the same overlay.
+export async function suppressOnboarding(page: Page, userId: string): Promise<void> {
+    const response = await page.request.put(`/api/v4/users/${userId}/preferences`, {
+        ...requestedWith,
+        data: [
+            {user_id: userId, category: 'onboarding_task_list', name: 'onboarding_task_list_open', value: 'false'},
+            {user_id: userId, category: 'onboarding_task_list', name: 'onboarding_task_list_show', value: 'false'},
+        ],
+    });
+
+    if (!response.ok()) {
+        throw new Error(`Unable to suppress onboarding for ${userId}: ${response.status()} ${await response.text()}`);
+    }
+}
+
 export async function createUser(page: Page, userPrefix: string): Promise<SeededUser> {
     const suffix = uniqueSuffix().replace(/-/g, '');
     const normalizedPrefix = slugify(userPrefix, 'playwright-user');
@@ -40,5 +65,7 @@ export async function createUser(page: Page, userPrefix: string): Promise<Seeded
     });
 
     const user = await readJsonOrThrow<SeededUser>(response, 'Unable to create user');
+    await suppressOnboarding(page, user.id);
+
     return {...user, password};
 }

@@ -16,6 +16,7 @@ export const makeSpace = (id: string, title: string, teamId = '', sortOrder = 0)
     update_at: 0,
     delete_at: 0,
     sort_order: sortOrder,
+    view_access: 'private',
 });
 
 // `baseEditAt` 0 is an orphan draft (a page that does not exist yet); non-zero is

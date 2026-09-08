@@ -121,7 +121,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		spaceB, err := s.CreateSpace(newSpace(chB))
 		require.NoError(t, err)
 
-		movedRoot, _, err := s.MovePageToSpace(root.Id, spaceA.Id, spaceB.Id, mmmodel.NewId(), nil, root.UpdateAt, false, store.MaxPageHierarchyDepth)
+		movedRoot, _, err := s.MovePageToSpace(store.MovePageToSpaceParams{PageID: root.Id, SourceSpaceID: spaceA.Id, TargetSpaceID: spaceB.Id, MoverUserID: mmmodel.NewId(), ParentPageID: nil, ExpectedUpdateAt: root.UpdateAt, Force: false, MaxDepth: store.MaxPageHierarchyDepth, RequiredOwnerID: ""})
 		require.NoError(t, err)
 		require.Equal(t, spaceB.Id, movedRoot.SpaceId, "returned page reflects the committed move")
 		require.Equal(t, chB, movedRoot.ChannelId)
@@ -171,7 +171,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, sourceBefore, 2, "both drafts are readable in the source space before the move")
 
-		_, _, err = s.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, user, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, err = s.MovePageToSpace(store.MovePageToSpaceParams{PageID: page.Id, SourceSpaceID: spaceA.Id, TargetSpaceID: spaceB.Id, MoverUserID: user, ParentPageID: nil, ExpectedUpdateAt: page.UpdateAt, Force: false, MaxDepth: store.MaxPageHierarchyDepth, RequiredOwnerID: ""})
 		require.NoError(t, err)
 
 		movedDraft, err := s.GetDraft(user, page.Id)
@@ -210,7 +210,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		_, _, err = s.UpsertDraft(otherDraft, nil, nil, nil)
 		require.NoError(t, err)
 
-		_, _, err = s.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, mover, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, err = s.MovePageToSpace(store.MovePageToSpaceParams{PageID: page.Id, SourceSpaceID: spaceA.Id, TargetSpaceID: spaceB.Id, MoverUserID: mover, ParentPageID: nil, ExpectedUpdateAt: page.UpdateAt, Force: false, MaxDepth: store.MaxPageHierarchyDepth, RequiredOwnerID: ""})
 		require.NoError(t, err)
 
 		moved, err := s.GetDraft(other, page.Id)
@@ -250,7 +250,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-		_, _, err = s.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, mover, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, err = s.MovePageToSpace(store.MovePageToSpaceParams{PageID: page.Id, SourceSpaceID: spaceA.Id, TargetSpaceID: spaceB.Id, MoverUserID: mover, ParentPageID: nil, ExpectedUpdateAt: page.UpdateAt, Force: false, MaxDepth: store.MaxPageHierarchyDepth, RequiredOwnerID: ""})
 		require.Error(t, err)
 		require.True(t, store.IsErrLimitExceeded(err), "expected ErrLimitExceeded, got %T: %v", err, err)
 
@@ -286,7 +286,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, []string{user}, editorsBefore, "the user is an active editor in the source space before the move")
 
-		_, _, err = s.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, user, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, err = s.MovePageToSpace(store.MovePageToSpaceParams{PageID: page.Id, SourceSpaceID: spaceA.Id, TargetSpaceID: spaceB.Id, MoverUserID: user, ParentPageID: nil, ExpectedUpdateAt: page.UpdateAt, Force: false, MaxDepth: store.MaxPageHierarchyDepth, RequiredOwnerID: ""})
 		require.NoError(t, err)
 
 		movedDraft, err := s.GetDraft(user, page.Id)
@@ -300,7 +300,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 
 	t.Run("empty pageID returns invalid-input", func(t *testing.T) {
 		s := openTestDB(t)
-		_, _, err := s.MovePageToSpace("", mmmodel.NewId(), mmmodel.NewId(), mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err := s.MovePageToSpace(store.MovePageToSpaceParams{PageID: "", SourceSpaceID: mmmodel.NewId(), TargetSpaceID: mmmodel.NewId(), MoverUserID: mmmodel.NewId(), ParentPageID: nil, ExpectedUpdateAt: 0, Force: false, MaxDepth: store.MaxPageHierarchyDepth, RequiredOwnerID: ""})
 		require.Error(t, err)
 		var inv *store.ErrInvalidInput
 		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
@@ -308,7 +308,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 
 	t.Run("empty sourceSpaceID returns invalid-input", func(t *testing.T) {
 		s := openTestDB(t)
-		_, _, err := s.MovePageToSpace(mmmodel.NewId(), "", mmmodel.NewId(), mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err := s.MovePageToSpace(store.MovePageToSpaceParams{PageID: mmmodel.NewId(), SourceSpaceID: "", TargetSpaceID: mmmodel.NewId(), MoverUserID: mmmodel.NewId(), ParentPageID: nil, ExpectedUpdateAt: 0, Force: false, MaxDepth: store.MaxPageHierarchyDepth, RequiredOwnerID: ""})
 		require.Error(t, err)
 		var inv *store.ErrInvalidInput
 		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
@@ -316,7 +316,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 
 	t.Run("empty targetSpaceID returns invalid-input", func(t *testing.T) {
 		s := openTestDB(t)
-		_, _, err := s.MovePageToSpace(mmmodel.NewId(), mmmodel.NewId(), "", mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err := s.MovePageToSpace(store.MovePageToSpaceParams{PageID: mmmodel.NewId(), SourceSpaceID: mmmodel.NewId(), TargetSpaceID: "", MoverUserID: mmmodel.NewId(), ParentPageID: nil, ExpectedUpdateAt: 0, Force: false, MaxDepth: store.MaxPageHierarchyDepth, RequiredOwnerID: ""})
 		require.Error(t, err)
 		var inv *store.ErrInvalidInput
 		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
@@ -328,7 +328,7 @@ func TestMovePageToSpace_Store(t *testing.T) {
 		spaceB, err := s.CreateSpace(newSpace(chB))
 		require.NoError(t, err)
 
-		_, _, err = s.MovePageToSpace(mmmodel.NewId(), mmmodel.NewId(), spaceB.Id, mmmodel.NewId(), nil, 0, false, store.MaxPageHierarchyDepth)
+		_, _, err = s.MovePageToSpace(store.MovePageToSpaceParams{PageID: mmmodel.NewId(), SourceSpaceID: mmmodel.NewId(), TargetSpaceID: spaceB.Id, MoverUserID: mmmodel.NewId(), ParentPageID: nil, ExpectedUpdateAt: 0, Force: false, MaxDepth: store.MaxPageHierarchyDepth, RequiredOwnerID: ""})
 		require.Error(t, err)
 		require.True(t, store.IsErrNotFound(err), "expected ErrNotFound, got %T: %v", err, err)
 	})
@@ -529,7 +529,7 @@ func TestPageMutations_ScopedToSpace(t *testing.T) {
 	})
 
 	t.Run("move-to-space with wrong source space is not found", func(t *testing.T) {
-		_, _, mErr := s.MovePageToSpace(page.Id, spaceB.Id, page.SpaceId, user, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+		_, _, mErr := s.MovePageToSpace(store.MovePageToSpaceParams{PageID: page.Id, SourceSpaceID: spaceB.Id, TargetSpaceID: page.SpaceId, MoverUserID: user, ParentPageID: nil, ExpectedUpdateAt: page.UpdateAt, Force: false, MaxDepth: store.MaxPageHierarchyDepth, RequiredOwnerID: ""})
 		require.True(t, store.IsErrNotFound(mErr))
 	})
 
@@ -566,6 +566,111 @@ func TestPageMutations_ScopedToSpace(t *testing.T) {
 	})
 }
 
+// TestMovePageToSpace_RequiredOwnerID covers requiredOwnerID: a mechanical in-transaction
+// ownership check the app layer supplies only when it resolved the caller to the own-scoped
+// delete_own_page gate. A subtree with any live page owned by someone else is rejected; a subtree
+// wholly owned by requiredOwnerID succeeds; an empty requiredOwnerID ignores ownership entirely.
+func TestMovePageToSpace_RequiredOwnerID(t *testing.T) {
+	t.Run("descendant owned by a different user fails with subtree_not_owned", func(t *testing.T) {
+		s := openTestDB(t)
+		chA := mmmodel.NewId()
+		spaceA, err := s.CreateSpace(newSpace(chA))
+		require.NoError(t, err)
+		owner := mmmodel.NewId()
+		root, err := s.CreatePage(newPage(spaceA.Id, chA, owner, ""), testDefaultMaxDepth)
+		require.NoError(t, err)
+		_, err = s.CreatePage(newPage(spaceA.Id, chA, mmmodel.NewId(), root.Id), testDefaultMaxDepth)
+		require.NoError(t, err)
+
+		chB := mmmodel.NewId()
+		spaceB, err := s.CreateSpace(newSpace(chB))
+		require.NoError(t, err)
+
+		_, _, err = s.MovePageToSpace(store.MovePageToSpaceParams{PageID: root.Id, SourceSpaceID: spaceA.Id, TargetSpaceID: spaceB.Id, MoverUserID: owner, ParentPageID: nil, ExpectedUpdateAt: root.UpdateAt, Force: false, MaxDepth: store.MaxPageHierarchyDepth, RequiredOwnerID: owner})
+		require.Error(t, err)
+		var inv *store.ErrInvalidInput
+		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
+		require.Equal(t, store.ReasonSubtreeNotOwned, inv.Reason)
+
+		// The rejected move must leave the subtree in place.
+		gotRoot, gErr := s.GetPage(root.Id, false)
+		require.NoError(t, gErr)
+		require.Equal(t, spaceA.Id, gotRoot.SpaceId)
+	})
+
+	t.Run("root owned by a different user fails with subtree_not_owned", func(t *testing.T) {
+		s := openTestDB(t)
+		chA := mmmodel.NewId()
+		spaceA, err := s.CreateSpace(newSpace(chA))
+		require.NoError(t, err)
+		owner := mmmodel.NewId()
+		// The root is the only page outside requiredOwnerID here — its descendant is owned — so a
+		// check that walked descendants without their root would admit this move.
+		root, err := s.CreatePage(newPage(spaceA.Id, chA, mmmodel.NewId(), ""), testDefaultMaxDepth)
+		require.NoError(t, err)
+		_, err = s.CreatePage(newPage(spaceA.Id, chA, owner, root.Id), testDefaultMaxDepth)
+		require.NoError(t, err)
+
+		chB := mmmodel.NewId()
+		spaceB, err := s.CreateSpace(newSpace(chB))
+		require.NoError(t, err)
+
+		_, _, err = s.MovePageToSpace(store.MovePageToSpaceParams{PageID: root.Id, SourceSpaceID: spaceA.Id, TargetSpaceID: spaceB.Id, MoverUserID: owner, ParentPageID: nil, ExpectedUpdateAt: root.UpdateAt, Force: false, MaxDepth: store.MaxPageHierarchyDepth, RequiredOwnerID: owner})
+		require.Error(t, err)
+		var inv *store.ErrInvalidInput
+		require.True(t, errors.As(err, &inv), "expected ErrInvalidInput, got %T: %v", err, err)
+		require.Equal(t, store.ReasonSubtreeNotOwned, inv.Reason)
+
+		// The rejected move must leave the subtree in place.
+		gotRoot, gErr := s.GetPage(root.Id, false)
+		require.NoError(t, gErr)
+		require.Equal(t, spaceA.Id, gotRoot.SpaceId)
+	})
+
+	t.Run("subtree wholly owned by requiredOwnerID succeeds", func(t *testing.T) {
+		s := openTestDB(t)
+		chA := mmmodel.NewId()
+		spaceA, err := s.CreateSpace(newSpace(chA))
+		require.NoError(t, err)
+		owner := mmmodel.NewId()
+		root, err := s.CreatePage(newPage(spaceA.Id, chA, owner, ""), testDefaultMaxDepth)
+		require.NoError(t, err)
+		child, err := s.CreatePage(newPage(spaceA.Id, chA, owner, root.Id), testDefaultMaxDepth)
+		require.NoError(t, err)
+
+		chB := mmmodel.NewId()
+		spaceB, err := s.CreateSpace(newSpace(chB))
+		require.NoError(t, err)
+
+		moved, _, err := s.MovePageToSpace(store.MovePageToSpaceParams{PageID: root.Id, SourceSpaceID: spaceA.Id, TargetSpaceID: spaceB.Id, MoverUserID: owner, ParentPageID: nil, ExpectedUpdateAt: root.UpdateAt, Force: false, MaxDepth: store.MaxPageHierarchyDepth, RequiredOwnerID: owner})
+		require.NoError(t, err)
+		require.Equal(t, spaceB.Id, moved.SpaceId)
+
+		gotChild, gErr := s.GetPage(child.Id, false)
+		require.NoError(t, gErr)
+		require.Equal(t, spaceB.Id, gotChild.SpaceId, "the owned child follows the subtree")
+	})
+
+	t.Run("empty requiredOwnerID ignores ownership", func(t *testing.T) {
+		s := openTestDB(t)
+		chA := mmmodel.NewId()
+		spaceA, err := s.CreateSpace(newSpace(chA))
+		require.NoError(t, err)
+		root, err := s.CreatePage(newPage(spaceA.Id, chA, mmmodel.NewId(), ""), testDefaultMaxDepth)
+		require.NoError(t, err)
+		_, err = s.CreatePage(newPage(spaceA.Id, chA, mmmodel.NewId(), root.Id), testDefaultMaxDepth)
+		require.NoError(t, err)
+
+		chB := mmmodel.NewId()
+		spaceB, err := s.CreateSpace(newSpace(chB))
+		require.NoError(t, err)
+
+		moved, _, err := s.MovePageToSpace(store.MovePageToSpaceParams{PageID: root.Id, SourceSpaceID: spaceA.Id, TargetSpaceID: spaceB.Id, MoverUserID: mmmodel.NewId(), ParentPageID: nil, ExpectedUpdateAt: root.UpdateAt, Force: false, MaxDepth: store.MaxPageHierarchyDepth, RequiredOwnerID: ""})
+		require.NoError(t, err)
+		require.Equal(t, spaceB.Id, moved.SpaceId)
+	})
+}
+
 // TestMovePageToSpace_ConcurrentAutosaveInvariants exercises the space-row FOR UPDATE
 // serialization that guards a cross-space move against a simultaneous autosave on a draft of the
 // moving page. MovePageToSpace and UpsertDraft both take lockLiveSpace on the source space, so the
@@ -587,7 +692,6 @@ func TestMovePageToSpace_ConcurrentAutosaveInvariants(t *testing.T) {
 		chB := mmmodel.NewId()
 		spaceB, err := s.CreateSpace(newSpace(chB))
 		require.NoError(t, err)
-
 		user := mmmodel.NewId()
 		page, err := s.CreatePage(newPage(spaceA.Id, chA, user, ""), testDefaultMaxDepth)
 		require.NoError(t, err)
@@ -609,7 +713,7 @@ func TestMovePageToSpace_ConcurrentAutosaveInvariants(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, _, _ = s.MovePageToSpace(page.Id, spaceA.Id, spaceB.Id, user, nil, page.UpdateAt, false, store.MaxPageHierarchyDepth)
+			_, _, _ = s.MovePageToSpace(store.MovePageToSpaceParams{PageID: page.Id, SourceSpaceID: spaceA.Id, TargetSpaceID: spaceB.Id, MoverUserID: user, ParentPageID: nil, ExpectedUpdateAt: page.UpdateAt, Force: false, MaxDepth: store.MaxPageHierarchyDepth, RequiredOwnerID: ""})
 		}()
 		go func() {
 			defer wg.Done()

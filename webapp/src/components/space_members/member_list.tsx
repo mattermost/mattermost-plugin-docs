@@ -13,6 +13,7 @@ import {openDocsModal} from 'components/modals';
 
 import MemberRow from './member_row';
 import MemberRowMenu from './member_row_menu';
+import type {MemberPermissionMenu} from './member_row_menu';
 import styles from './space_members.module.scss';
 
 export type MemberListActions = {
@@ -28,6 +29,12 @@ type Props = {
     avatarSize: 'sm' | 'md';
     showYouBadge?: boolean;
 
+    /** The caller may supply a role only when its roster read resolved one. */
+    roleForMember?: (member: MemberProfile) => 'admin' | 'member' | 'guest' | undefined;
+
+    /** Granular grants shown in the existing role dropdown. */
+    permissionMenuForMember?: (member: MemberProfile) => MemberPermissionMenu | undefined;
+
     /** Names the space in the leave confirmation. Only needed alongside `actions`. */
     spaceTitle?: string;
 
@@ -37,6 +44,15 @@ type Props = {
     // Absent means a read-only roster. Expressed as the absence of actions rather
     // than a flag, so a row can never render a menu with nothing behind it.
     actions?: MemberListActions;
+
+    /**
+     * Renders per-member controls beneath each row. A render prop rather than a
+     * permissions-shaped prop because the only caller that needs it is Space Settings →
+     * Permissions, and this roster is shared with the Share modal and the info panel:
+     * taking the rendered node keeps the toggle component (and the permission vocabulary
+     * it uses) out of the shared roster entirely.
+     */
+    renderBelowMember?: (member: MemberProfile) => React.ReactNode;
 };
 
 /**
@@ -48,7 +64,7 @@ type Props = {
  * it — so both confirm first. Confirming here rather than in each surface keeps the
  * copy in one place and means a new surface cannot forget it.
  */
-const MemberList = ({members, avatarSize, showYouBadge = false, spaceTitle, comfortable = false, actions}: Props) => {
+const MemberList = ({members, avatarSize, showYouBadge = false, roleForMember, permissionMenuForMember, spaceTitle, comfortable = false, actions, renderBelowMember}: Props) => {
     const currentUserId = useAppSelector(getCurrentUserId);
 
     const confirmRemove = (member: MemberProfile) => openDocsModal((modal) => (
@@ -139,9 +155,12 @@ const MemberList = ({members, avatarSize, showYouBadge = false, spaceTitle, comf
                         isCurrentUser={isCurrentUser}
                         showYouBadge={showYouBadge}
                         comfortable={comfortable}
+                        below={renderBelowMember?.(member)}
                         trailing={hasAction && actions && (
                             <MemberRowMenu
                                 member={member}
+                                role={roleForMember?.(member)}
+                                permissionMenu={permissionMenuForMember?.(member)}
                                 isCurrentUser={isCurrentUser}
                                 disabled={actions.disabled}
                                 onRemove={() => confirmRemove(member)}

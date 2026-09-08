@@ -1,0 +1,2 @@
+ALTER TABLE DOCS_Space DROP CONSTRAINT IF EXISTS chk_docs_space_view_access;
+ALTER TABLE DOCS_Space DROP COLUMN IF EXISTS ViewAccess;

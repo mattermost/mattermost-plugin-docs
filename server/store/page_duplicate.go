@@ -58,7 +58,7 @@ func (s *Store) CreatePageSubtree(pages []*model.Page, maxDepth int) (_ []*model
 	}
 	root := pages[0]
 
-	tx, err := s.db.Beginx()
+	tx, err := s.beginUnboundedTx()
 	if err != nil {
 		return nil, errors.Wrap(err, "begin_transaction")
 	}

@@ -47,8 +47,8 @@
     color: rgba(var(--center-channel-color-rgb), 0.75);
 }
 
-// Compact 24px dropdown chrome — not a padded `.btn`. Disabled until public
-// spaces exist; keep full opacity so Private still reads as the current state.
+// Compact 24px dropdown chrome — not a padded `.btn`. Keep the current access
+// state legible when editing is unavailable.
 .accessTrigger {
     display: inline-flex;
     height: 24px;
@@ -72,6 +72,20 @@
 .accessHint {
     color: rgba(var(--center-channel-color-rgb), 0.64);
     font-size: 14px;
+    line-height: 20px;
+}
+
+// The same state as `.accessTrigger` renders for a caller who may not change it: no chevron,
+// nothing focusable, and no button affordance suggesting a write that would be refused.
+.accessStatic {
+    display: inline-flex;
+    height: 24px;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px;
+    color: var(--center-channel-color);
+    font-size: 14px;
+    font-weight: 600;
     line-height: 20px;
 }
 

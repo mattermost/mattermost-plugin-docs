@@ -27,16 +27,16 @@ func docWith(text string) string {
 
 // publishNewPage creates a new-page draft, autosaves the given body, and publishes it, returning
 // the live page. It asserts the reserved draft id is preserved through publish.
-func publishNewPage(t *testing.T, h *testHarness, spaceID, userID, title, bodyText string) *model.Page {
+func publishNewPage(t *testing.T, h *testHarness, space *model.Space, userID, title, bodyText string) *model.Page {
 	t.Helper()
-	draft, appErr := h.svc.CreateSpaceDraft(userID, spaceID, title, "")
+	draft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, title, "")
 	require.Nil(t, appErr)
 	reservedID := draft.PageId
 
-	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: spaceID, PageId: reservedID, Title: title, Body: docWith(bodyText)}, nil, nil, nil, "")
+	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: reservedID, Title: title, Body: docWith(bodyText)}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
-	page, wasCreated, appErr := h.svc.PublishPageDraft(userID, spaceID, reservedID, false)
+	page, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, reservedID, false)
 	require.Nil(t, appErr)
 	require.True(t, wasCreated, "publishing a brand-new page must report wasCreated=true")
 	require.Equal(t, reservedID, page.Id, "publish must preserve the reserved draft id")
@@ -68,7 +68,7 @@ func TestPublishEmptyDraftBodyDoesNotWipePage(t *testing.T) {
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
-	page := publishNewPage(t, h, space.Id, userID, "Important", "ORIGINAL")
+	page := publishNewPage(t, h, space, userID, "Important", "ORIGINAL")
 
 	// Start an edit session whose first (and only) autosave carries the title but no body, exactly
 	// the heartbeat case that previously wiped the page on publish.
@@ -78,7 +78,7 @@ func TestPublishEmptyDraftBodyDoesNotWipePage(t *testing.T) {
 	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
-	republished, _, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
+	republished, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, false)
 	require.Nil(t, appErr)
 	require.Contains(t, republished.Body, "ORIGINAL", "publishing a title-only edit must preserve the page body")
 }
@@ -93,7 +93,7 @@ func TestPublishNoOpDraftDiscardsAndReturnsExistingPage(t *testing.T) {
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "original")
+	page := publishNewPage(t, h, space, userID, "Doc", "original")
 
 	// Start an edit session whose only autosave carries the baseline — no Title, no Body.
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
@@ -102,7 +102,7 @@ func TestPublishNoOpDraftDiscardsAndReturnsExistingPage(t *testing.T) {
 	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
-	result, wasCreated, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
+	result, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, page.Id, false)
 	require.Nil(t, appErr)
 	require.False(t, wasCreated, "a no-content publish must not report a creation")
 	require.Equal(t, page.Title, result.Title, "the page's title must be unchanged")
@@ -121,7 +121,7 @@ func TestPublishRejectsMissingBaselineOnEdit(t *testing.T) {
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+	page := publishNewPage(t, h, space, userID, "Doc", "v1")
 
 	// UpsertDraft guards the first edit-draft save: attempting to create a draft for an existing
 	// page without a base_edit_at baseline is rejected at the store layer, so the client must send
@@ -137,7 +137,7 @@ func TestPublishRejectsMissingBaselineOnEdit(t *testing.T) {
 	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
 
-	forced, _, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, true)
+	forced, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, true)
 	require.Nil(t, appErr)
 	require.Contains(t, forced.Body, "v2")
 }
@@ -166,13 +166,13 @@ func TestPublishRejectsNoBaselineOnExistingPageEdit(t *testing.T) {
 	require.NoError(t, err)
 
 	// Without a baseline, a non-force publish of an edit must be rejected.
-	_, _, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
+	_, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusBadRequest, appErr.StatusCode)
 	require.Equal(t, "app.page_draft.publish.baseline_required.app_error", appErr.Id)
 
 	// force=true bypasses the missing-baseline guard and publishes the edit.
-	forced, wasCreated, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, true)
+	forced, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, page.Id, true)
 	require.Nil(t, appErr)
 	require.False(t, wasCreated)
 	require.Equal(t, "Edited", forced.Title)
@@ -184,7 +184,7 @@ func TestPublishStaleBaselineConflicts(t *testing.T) {
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+	page := publishNewPage(t, h, space, userID, "Doc", "v1")
 	staleEditAt := page.EditAt
 
 	// Start an edit session with a draft baselined at the current EditAt. The draft persists (it is
@@ -204,7 +204,7 @@ func TestPublishStaleBaselineConflicts(t *testing.T) {
 	// Publishing the draft against the now-stale baseline must 409, and return the current server
 	// page (the concurrent edit's content + advanced baseline) so the caller can diff without a
 	// follow-up read.
-	current, _, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
+	current, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusConflict, appErr.StatusCode)
 	require.NotNil(t, current, "edit conflict must return the current server page")
@@ -220,7 +220,7 @@ func TestPublishAfterPageDeleteReturns404(t *testing.T) {
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
-	page := publishNewPage(t, h, space.Id, userID, "Doomed", "x")
+	page := publishNewPage(t, h, space, userID, "Doomed", "x")
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
 		UserId: userID, SpaceId: space.Id, PageId: page.Id, Title: "Doomed", Body: docWith("y"),
 		BaseEditAt: page.EditAt,
@@ -228,7 +228,7 @@ func TestPublishAfterPageDeleteReturns404(t *testing.T) {
 	require.Nil(t, appErr)
 	requireStoreDeletePage(t, h.store, page.Id, space.Id, userID)
 
-	_, _, appErr = h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
+	_, _, appErr = h.svc.PublishPageDraft(space, userID, page.Id, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusNotFound, appErr.StatusCode)
 }
@@ -278,7 +278,7 @@ func TestPublishPageDraftConcurrentPublishesConverge(t *testing.T) {
 	for i := range results {
 		wg.Go(func() {
 			<-start
-			p, created, pubErr := h.svc.PublishPageDraft(userID, space.Id, draft.PageId, false)
+			p, created, pubErr := h.svc.PublishPageDraft(space, userID, draft.PageId, false)
 			results[i] = result{page: p, created: created, appErr: pubErr}
 		})
 	}
@@ -329,7 +329,7 @@ func TestGetPageActiveEditorsRejectsWrongSpace(t *testing.T) {
 	spaceB := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
-	page := publishNewPage(t, h, spaceA.Id, userID, "Doc", "x")
+	page := publishNewPage(t, h, spaceA, userID, "Doc", "x")
 
 	// The page lives in space A; querying its editors through space B must not resolve it.
 	_, appErr := h.svc.GetPageActiveEditors(page.Id, spaceB.Id)
@@ -347,7 +347,7 @@ func TestActiveEditorsSurfacesHeartbeat(t *testing.T) {
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "x")
+	page := publishNewPage(t, h, space, userID, "Doc", "x")
 
 	// An autosave is the heartbeat; the editor must then appear as active.
 	_, appErr := h.svc.UpdatePageDraft(&model.Draft{
@@ -368,7 +368,7 @@ func TestPublishSetsLastModifiedBy(t *testing.T) {
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "x")
+	page := publishNewPage(t, h, space, userID, "Doc", "x")
 	require.Equal(t, userID, page.LastModifiedBy, "a page published via draft must record its author as last modifier")
 }
 
@@ -377,7 +377,7 @@ func TestPublishForceOverridesStaleBaseline(t *testing.T) {
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+	page := publishNewPage(t, h, space, userID, "Doc", "v1")
 	staleEditAt := page.EditAt
 
 	// Start an edit session with a draft baselined at the current EditAt; the draft persists.
@@ -393,7 +393,7 @@ func TestPublishForceOverridesStaleBaseline(t *testing.T) {
 	require.Nil(t, appErr)
 
 	// force=true must override the stale-baseline CAS and win with the draft's content.
-	forced, _, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, true)
+	forced, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, true)
 	require.Nil(t, appErr)
 	require.Contains(t, forced.Body, "v3", "force must override a stale baseline")
 	require.Greater(t, forced.EditAt, concurrentPage.EditAt, "a force-publish must still advance the page's EditAt")
@@ -404,7 +404,7 @@ func TestPublishForceDoesNotRevertUntouchedField(t *testing.T) {
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
-	page := publishNewPage(t, h, space.Id, userID, "Original title", "original body")
+	page := publishNewPage(t, h, space, userID, "Original title", "original body")
 	baseEditAt := page.EditAt
 
 	// A title-only edit: the draft carries a new title but no body, baselined at the current EditAt.
@@ -421,7 +421,7 @@ func TestPublishForceDoesNotRevertUntouchedField(t *testing.T) {
 
 	// Force-publish the title-only draft: force overrides the stale baseline, but only the title may
 	// be applied. The concurrent body edit must survive rather than be reverted to the pre-lock value.
-	forced, _, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, true)
+	forced, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, true)
 	require.Nil(t, appErr)
 	require.Equal(t, "New title", forced.Title, "the draft's title must be applied")
 	require.Contains(t, forced.Body, "concurrent body", "a field the draft never set must not be reverted")
@@ -432,7 +432,7 @@ func TestUpdatePageDraftRejectsStaleBaselineAfterPublish(t *testing.T) {
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
-	page := publishNewPage(t, h, space.Id, userID, "Doc", "v1")
+	page := publishNewPage(t, h, space, userID, "Doc", "v1")
 	baseEditAt := page.EditAt
 
 	// Edit and publish: the draft is consumed and the page's EditAt advances.
@@ -441,7 +441,7 @@ func TestUpdatePageDraftRejectsStaleBaselineAfterPublish(t *testing.T) {
 		BaseEditAt: baseEditAt,
 	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
-	_, _, appErr = h.svc.PublishPageDraft(userID, space.Id, page.Id, false)
+	_, _, appErr = h.svc.PublishPageDraft(space, userID, page.Id, false)
 	require.Nil(t, appErr)
 
 	// A late autosave carrying the pre-publish baseline must be rejected, not resurrect a phantom
@@ -528,7 +528,7 @@ func TestPublishCarriesDraftProps(t *testing.T) {
 	}, nil, nil, &mmmodel.StringInterface{"color": "blue"}, "")
 	require.Nil(t, appErr)
 
-	page, wasCreated, appErr := h.svc.PublishPageDraft(userID, space.Id, pageID, false)
+	page, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, pageID, false)
 	require.Nil(t, appErr)
 	require.True(t, wasCreated)
 	require.Equal(t, "blue", page.Props["color"], "a new page must adopt the draft's props on publish")
@@ -538,7 +538,7 @@ func TestPublishCarriesDraftProps(t *testing.T) {
 		UserId: userID, SpaceId: space.Id, PageId: pageID, Title: "Doc", BaseEditAt: page.EditAt,
 	}, nil, nil, &mmmodel.StringInterface{"color": "red"}, "")
 	require.Nil(t, appErr)
-	edited, _, appErr := h.svc.PublishPageDraft(userID, space.Id, pageID, false)
+	edited, _, appErr := h.svc.PublishPageDraft(space, userID, pageID, false)
 	require.Nil(t, appErr)
 	require.Equal(t, "red", edited.Props["color"], "an edit with non-empty draft props must replace the page's props")
 
@@ -547,7 +547,7 @@ func TestPublishCarriesDraftProps(t *testing.T) {
 		UserId: userID, SpaceId: space.Id, PageId: pageID, Body: docWith("v2"), BaseEditAt: edited.EditAt,
 	}, nil, nil, nil, "")
 	require.Nil(t, appErr)
-	preserved, _, appErr := h.svc.PublishPageDraft(userID, space.Id, pageID, false)
+	preserved, _, appErr := h.svc.PublishPageDraft(space, userID, pageID, false)
 	require.Nil(t, appErr)
 	require.Equal(t, "red", preserved.Props["color"], "an edit carrying no props must preserve the page's props")
 	require.Contains(t, preserved.Body, "v2")
@@ -573,14 +573,14 @@ func TestPublishRejectsForeignSpacePage(t *testing.T) {
 	// userA autosaves content and publishes, so the page becomes live in space A.
 	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userA, SpaceId: spaceA.Id, PageId: pageID, Title: "A doc", Body: docWith("a content")}, nil, nil, nil, "")
 	require.Nil(t, appErr)
-	pageA, wasCreated, appErr := h.svc.PublishPageDraft(userA, spaceA.Id, pageID, false)
+	pageA, wasCreated, appErr := h.svc.PublishPageDraft(spaceA, userA, pageID, false)
 	require.Nil(t, appErr)
 	require.True(t, wasCreated)
 
 	// userB has no draft for pageID (the cross-space reservation was rejected above), so publishing
 	// from space B must fail with 404 (draft not found). force cannot bypass this.
 	for _, force := range []bool{false, true} {
-		_, _, appErr = h.svc.PublishPageDraft(userB, spaceB.Id, pageID, force)
+		_, _, appErr = h.svc.PublishPageDraft(spaceB, userB, pageID, force)
 		require.NotNil(t, appErr, "cross-space publish (force=%v) must fail", force)
 		require.Equal(t, http.StatusNotFound, appErr.StatusCode,
 			"cross-space publish (force=%v) must be rejected", force)
@@ -636,7 +636,7 @@ func TestPublishEditIgnoresStaleParentGuard(t *testing.T) {
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
-	parent := publishNewPage(t, h, space.Id, userID, "Parent", "p")
+	parent := publishNewPage(t, h, space, userID, "Parent", "p")
 
 	// Publish a child under the (live) parent.
 	childDraft, appErr := h.svc.CreateSpaceDraft(userID, space.Id, "Child", parent.Id)
@@ -644,7 +644,7 @@ func TestPublishEditIgnoresStaleParentGuard(t *testing.T) {
 	childID := childDraft.PageId
 	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: childID, Title: "Child", Body: docWith("c1")}, nil, nil, nil, "")
 	require.Nil(t, appErr)
-	child, _, appErr := h.svc.PublishPageDraft(userID, space.Id, childID, false)
+	child, _, appErr := h.svc.PublishPageDraft(space, userID, childID, false)
 	require.Nil(t, appErr)
 
 	// Start an edit session whose draft still carries the (currently live) parent id.
@@ -659,7 +659,7 @@ func TestPublishEditIgnoresStaleParentGuard(t *testing.T) {
 	requireStoreDeletePage(t, h.store, parent.Id, space.Id, userID)
 
 	// A content-only edit-publish must still succeed: the edit path does not reparent.
-	republished, wasCreated, appErr := h.svc.PublishPageDraft(userID, space.Id, childID, false)
+	republished, wasCreated, appErr := h.svc.PublishPageDraft(space, userID, childID, false)
 	require.Nil(t, appErr, "edit-publish must not be blocked by a stale parent id")
 	require.False(t, wasCreated)
 	require.Contains(t, republished.Body, "c2")
@@ -691,7 +691,7 @@ func TestCreateSpaceDraftRejectsForeignDraftParent(t *testing.T) {
 	// userA can, and the child then publishes only after the parent does.
 	child, appErr := h.svc.CreateSpaceDraft(userA, space.Id, "Child", parent.PageId)
 	require.Nil(t, appErr)
-	_, _, appErr = h.svc.PublishPageDraft(userA, space.Id, child.PageId, false)
+	_, _, appErr = h.svc.PublishPageDraft(space, userA, child.PageId, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusConflict, appErr.StatusCode, "child cannot publish under an unpublished parent")
 }
@@ -755,7 +755,7 @@ func TestUpdatePageDraftRejectsResurrectionAfterNewPagePublish(t *testing.T) {
 
 	_, appErr = h.svc.UpdatePageDraft(&model.Draft{UserId: userID, SpaceId: space.Id, PageId: pageID, Body: docWith("v1")}, nil, nil, nil, "")
 	require.Nil(t, appErr)
-	_, _, appErr = h.svc.PublishPageDraft(userID, space.Id, pageID, false)
+	_, _, appErr = h.svc.PublishPageDraft(space, userID, pageID, false)
 	require.Nil(t, appErr)
 
 	// Late autosave with no baseline: the draft is gone, so this must be rejected.
@@ -903,7 +903,7 @@ func TestPublishNewPageRejectsCrossSpaceParent(t *testing.T) {
 	userID := mmmodel.NewId()
 
 	// Publish a live parent in spaceA.
-	parentInA := publishNewPage(t, h, spaceA.Id, userID, "Parent", "p")
+	parentInA := publishNewPage(t, h, spaceA, userID, "Parent", "p")
 
 	// The store rejects a draft whose ParentId points at a page in another space.
 	// To simulate the race (parent was in the same space when editing started, then moved),
@@ -920,7 +920,7 @@ func TestPublishNewPageRejectsCrossSpaceParent(t *testing.T) {
 	// Publishing must reject: the parent lives in a different space than the draft's space. The guard
 	// collapses "cross-space" and "not a live page" into a single parent_unpublished 409 so the
 	// response can't be used to probe page ids in spaces the caller cannot read.
-	_, _, appErr := h.svc.PublishPageDraft(userID, spaceB.Id, pageID, false)
+	_, _, appErr := h.svc.PublishPageDraft(spaceB, userID, pageID, false)
 	require.NotNil(t, appErr)
 	require.Equal(t, http.StatusConflict, appErr.StatusCode, "cross-space parent must be rejected: %v", appErr)
 	require.Equal(t, "app.page_draft.publish.parent_unpublished.app_error", appErr.Id)
@@ -1018,7 +1018,7 @@ func TestPublishForceAppliesDraftFieldOverConcurrentEdit(t *testing.T) {
 	space := mustCreateSpace(t, h.store, mmmodel.NewId())
 	userID := mmmodel.NewId()
 
-	page := publishNewPage(t, h, space.Id, userID, "Original title", "original body")
+	page := publishNewPage(t, h, space, userID, "Original title", "original body")
 	baseEditAt := page.EditAt
 
 	// A title-only edit draft baselined at the current EditAt.
@@ -1035,7 +1035,7 @@ func TestPublishForceAppliesDraftFieldOverConcurrentEdit(t *testing.T) {
 		&model.PagePatch{Title: &concurrentTitle, Body: &concurrentBody}, new(baseEditAt), false, userID)
 	require.Nil(t, appErr)
 
-	forced, _, appErr := h.svc.PublishPageDraft(userID, space.Id, page.Id, true)
+	forced, _, appErr := h.svc.PublishPageDraft(space, userID, page.Id, true)
 	require.Nil(t, appErr)
 	require.Equal(t, "Draft title", forced.Title, "the field the draft carries must win under force")
 	require.Contains(t, forced.Body, "concurrent body", "a field the draft never set must keep the concurrent value")

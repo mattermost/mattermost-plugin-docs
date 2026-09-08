@@ -17,6 +17,24 @@
     padding: 16px 20px;
 }
 
+// A row carrying per-member controls stacks them under the identity line rather than
+// beside it: the controls need the row's full width, and the identity has to stay on
+// one line for the roster to remain scannable.
+.memberRowStacked {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    padding: 8px 0;
+    gap: 4px;
+}
+
+.memberRowIdentity {
+    display: flex;
+    min-height: 48px;
+    align-items: center;
+    gap: 12px;
+}
+
 .memberInfo {
     display: flex;
     flex: 1 1 auto;

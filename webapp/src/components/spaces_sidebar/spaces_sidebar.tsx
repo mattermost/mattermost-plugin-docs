@@ -23,7 +23,7 @@ const DND_ENABLED = true;
 
 type Props = {
     onOpenSwitcher: () => void;
-    onCreateSpace: () => void;
+    onCreateSpace?: () => void;
 };
 
 const SpacesSidebar = ({onOpenSwitcher, onCreateSpace}: Props) => {
@@ -84,7 +84,7 @@ const SpacesSidebar = ({onOpenSwitcher, onCreateSpace}: Props) => {
                     collapsible={false}
                 >
                     {spacesOrder.map((id) => renderSpace(id, 'spaces'))}
-                    <CreateSpaceButton onClick={onCreateSpace}/>
+                    {onCreateSpace && <CreateSpaceButton onClick={onCreateSpace}/>}
                 </SpacesCategory>
             </div>
         </nav>

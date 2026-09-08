@@ -31,6 +31,7 @@ type FetchOptions = {
  * AppError body carries that ClientError drops: the raw parsed payload, and a
  * plain `status`. The payload matters for endpoints that answer an error with
  * data — draft publish returns the current page alongside its 409.
+
  */
 export class RestError extends ClientError {
     status: number;
@@ -43,6 +44,10 @@ export class RestError extends ClientError {
         this.body = body;
     }
 }
+
+/** Returns Mattermost's stable server error id from a client error, if present. */
+export const getServerErrorId = (error: unknown): string | undefined =>
+    (error instanceof ClientError ? error.server_error_id : undefined);
 
 // Single fetch idiom shared by every Docs API call. Client4.getOptions injects
 // the session credentials and CSRF header the server expects (it reads the
@@ -66,9 +71,10 @@ async function request<T>(url: string, options: FetchOptions): Promise<T> {
     let serverErrorId: string | undefined;
     try {
         body = await response.json();
-        const data = body as {message?: string; id?: string};
-        message = data.message || message;
-        serverErrorId = data.id;
+        const data = body as {message?: string; id?: string; error?: {message?: string; id?: string}};
+        const errorData = data.error ?? data;
+        message = errorData.message || message;
+        serverErrorId = errorData.id;
     } catch {
         // Non-JSON error body — keep the status-based message.
     }
@@ -80,6 +86,9 @@ export const restGet = <T>(url: string, signal?: AbortSignal): Promise<T> =>
 
 export const restPost = <T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> =>
     request<T>(url, {method: 'POST', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}, signal});
+
+export const restPut = <T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> =>
+    request<T>(url, {method: 'PUT', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}, signal});
 
 export const restPatch = <T>(url: string, body: unknown, signal?: AbortSignal): Promise<T> =>
     request<T>(url, {method: 'PATCH', body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}, signal});
@@ -106,7 +115,9 @@ export const doFetch = <T>(path: string, {method = 'GET', body, signal}: DoFetch
         ...(body === undefined ? {} : {body: JSON.stringify(body), headers: {'Content-Type': 'application/json'}}),
     });
 
-type Paginated<T> = {
+// The list-endpoint envelope (paginatedResponse in server/api.go). Owned here rather than in a
+// per-feature types module: it is transport shape, shared by every paginated Docs endpoint.
+export type Paginated<T> = {
     items: T[];
     page: number;
     per_page: number;

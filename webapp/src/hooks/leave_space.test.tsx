@@ -49,7 +49,8 @@ const render = () => {
     return renderHook(() => useLeaveSpace(SPACE), {wrapper}).result;
 };
 
-const clientError = (status: number) => new ClientError('', {message: 'nope', status_code: status, url: '/x'});
+const clientError = (status: number, serverErrorId?: string) =>
+    new ClientError('', {message: 'nope', status_code: status, url: '/x', server_error_id: serverErrorId});
 
 describe('useLeaveSpace', () => {
     beforeEach(() => {
@@ -80,7 +81,7 @@ describe('useLeaveSpace', () => {
     // The server's 409 means "a space must keep one member", which is actionable;
     // reporting it as a generic failure would tell the user nothing.
     it('explains a last-member refusal specifically', async () => {
-        mockLeaveSpace.mockRejectedValue(clientError(409));
+        mockLeaveSpace.mockRejectedValue(clientError(409, 'app.space.remove_member.last_member.app_error'));
         const {current} = render();
 
         await expect(current()).resolves.toBe(false);
@@ -89,6 +90,32 @@ describe('useLeaveSpace', () => {
         expect(toast.error).toHaveBeenCalledWith(
             'Unable to leave Engineering',
             {description: expect.stringContaining('at least one member')},
+        );
+    });
+
+    // The last-member wording tells the user to add a member, which does not lift a sole-admin
+    // refusal — so this rule needs its own message, not the status it shares with the one above.
+    it('names the administrator requirement on a last-admin refusal', async () => {
+        mockLeaveSpace.mockRejectedValue(clientError(409, 'app.space.member.last_admin.app_error'));
+        const {current} = render();
+
+        await expect(current()).resolves.toBe(false);
+
+        expect(toast.error).toHaveBeenCalledWith(
+            'Unable to leave Engineering',
+            {description: expect.stringContaining('at least one administrator')},
+        );
+    });
+
+    it('reports a lock timeout as retryable rather than as a rule violation', async () => {
+        mockLeaveSpace.mockRejectedValue(clientError(409, 'app.space.lock_timeout.app_error'));
+        const {current} = render();
+
+        await expect(current()).resolves.toBe(false);
+
+        expect(toast.error).toHaveBeenCalledWith(
+            'Unable to leave Engineering',
+            {description: expect.stringContaining('Try again')},
         );
     });
 

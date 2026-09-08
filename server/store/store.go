@@ -69,8 +69,7 @@ const pluginMaxIdleConns = 5
 // pluginConnMaxLifetime bounds how long a pooled connection is reused, as routine hygiene.
 const pluginConnMaxLifetime = 5 * time.Minute
 
-// migrationLockTimeout must exceed the statement timeout: an early expiry could drop the
-// distributed migration lock before DDL completes.
+// Bounds the total time spent acquiring the Morph lock and applying migrations.
 const migrationLockTimeout = 70 * time.Minute
 
 // Store holds the database handle used by the Docs plugin.
@@ -101,9 +100,8 @@ func New(db *sql.DB, driverName string, log *pluginapi.LogService) (*Store, erro
 	return s, nil
 }
 
-// RunMigrations applies all pending morph migrations. Concurrent runs across an HA
-// cluster are serialized internally by a distributed DB-table lock; no external cluster
-// mutex is required.
+// RunMigrations applies pending migrations using Morph's named database lock to coordinate
+// concurrent plugin activations.
 func (s *Store) RunMigrations() error {
 	ctx, cancel := context.WithTimeout(context.Background(), migrationLockTimeout)
 	defer cancel()
@@ -183,6 +181,27 @@ func (s *Store) finalizeTransaction(tx *sqlx.Tx, perr *error) {
 			*perr = merror.Append(*perr, errors.Wrap(err, "failed to rollback transaction"))
 		}
 	}
+}
+
+// Membership-lock closures already hold a pool connection. Transactions reachable from them must
+// use bounded acquisition so a saturated pool cannot deadlock while waiting for itself to drain.
+
+// beginBoundedTx bounds the whole transaction, not only connection acquisition. Callers must defer
+// the returned cancel after arranging commit or rollback.
+func (s *Store) beginBoundedTx() (*sqlx.Tx, context.CancelFunc, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultQueryTimeout)
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return tx, cancel, nil
+}
+
+// beginUnboundedTx is reserved for data-scaled work. Individual statements remain bounded, and
+// callers must not be reachable from a WithSpaceMembershipLock closure.
+func (s *Store) beginUnboundedTx() (*sqlx.Tx, error) {
+	return s.db.Beginx()
 }
 
 // get executes a query and scans one row into dest.
@@ -330,6 +349,7 @@ const (
 	ReasonMaxDepthExceeded          = "max_depth_exceeded"
 	ReasonSubtreeMaxDepthExceeded   = "subtree_max_depth_exceeded"
 	ReasonParentNotLive             = "parent_not_live"
+	ReasonSubtreeNotOwned           = "subtree_not_owned"
 	ReasonDraftCycle                = "draft_cycle"
 	ReasonDraftTooDeep              = "draft_too_deep"
 	ReasonDraftQuotaExceeded        = "draft_quota_exceeded"
@@ -392,6 +412,17 @@ func (e *ErrConflict) Error() string {
 func IsErrConflict(err error) bool {
 	var e *ErrConflict
 	return errors.As(err, &e)
+}
+
+// ReasonLockTimeout marks an ErrConflict raised by a WithSpaceMembershipLock acquisition timeout,
+// distinct from the default CAS/unique-constraint conflict.
+const ReasonLockTimeout = "lock_timeout"
+
+// IsErrLockTimeout reports whether err is an ErrConflict raised by a space-membership advisory
+// lock acquisition timeout.
+func IsErrLockTimeout(err error) bool {
+	var e *ErrConflict
+	return errors.As(err, &e) && e.Reason == ReasonLockTimeout
 }
 
 // ConflictReason returns the Reason of the ErrConflict in err's chain, or "" if err is not an

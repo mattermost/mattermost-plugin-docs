@@ -26,7 +26,7 @@ import type {SpaceSummary} from 'types/docs';
 import styles from './docs_home.module.scss';
 
 type Props = {
-    onCreateSpace: () => void;
+    onCreateSpace?: () => void;
 
     // Browse is not built yet; optional so the CTA can be wired in later.
     onBrowseSpaces?: () => void;
@@ -48,7 +48,7 @@ const DocsHome = ({onCreateSpace, onBrowseSpaces}: Props) => {
                     {formatMessage({id: 'docs.home.title', defaultMessage: 'Home'})}
                 </h1>
             }
-            right={
+            right={onCreateSpace ? (
                 <PrimaryButton
                     size='sm'
                     className={styles.cta}
@@ -57,7 +57,7 @@ const DocsHome = ({onCreateSpace, onBrowseSpaces}: Props) => {
                     <PlusIcon size={16}/>
                     {formatMessage({id: 'docs.home.newSpace', defaultMessage: 'New Space'})}
                 </PrimaryButton>
-            }
+            ) : undefined}
         />
     );
 
@@ -249,13 +249,15 @@ const EmptyHero = ({onCreateSpace, onBrowseSpaces}: Props) => {
                     </p>
                 </div>
                 <div className={styles.heroActions}>
-                    <PrimaryButton
-                        className={styles.cta}
-                        onClick={onCreateSpace}
-                    >
-                        <NotebookOutlineIcon size={18}/>
-                        {formatMessage({id: 'docs.home.createSpace', defaultMessage: 'Create a space'})}
-                    </PrimaryButton>
+                    {onCreateSpace && (
+                        <PrimaryButton
+                            className={styles.cta}
+                            onClick={onCreateSpace}
+                        >
+                            <NotebookOutlineIcon size={18}/>
+                            {formatMessage({id: 'docs.home.createSpace', defaultMessage: 'Create a space'})}
+                        </PrimaryButton>
+                    )}
                     <TertiaryButton onClick={onBrowseSpaces}>
                         {formatMessage({id: 'docs.home.browseSpaces', defaultMessage: 'Browse spaces'})}
                     </TertiaryButton>

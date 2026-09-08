@@ -1,6 +1,8 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {matchPath} from 'react-router-dom';
+
 // Pure URL construction for the Docs product. The single source of truth for
 // the team-scoped /spaces URL scheme (opaque ids, no slugs). Usable by React
 // Router <Link to={...}>, <Route path={DOCS_ROUTE}>/useRouteMatch, and the
@@ -45,6 +47,14 @@ export const DOCS_SPACE_ROUTE = `/:team/${DOCS_KEYWORD}/:spaceId(${SPACE_OR_PAGE
 // a page id.
 export const DOCS_OVERVIEW_SEGMENT = 'overview';
 export const DOCS_SPACE_OVERVIEW_ROUTE = `/:team/${DOCS_KEYWORD}/:spaceId(${SPACE_OR_PAGE_ID})/${DOCS_OVERVIEW_SEGMENT}`;
+
+// The space id (or slug) segment of a docs pathname, or undefined when the path is not a routed
+// space — the product home, another product, or a path whose third segment is not a valid id
+// token. For callers outside the router tree (the WebSocket reconnect handler) that need the
+// currently routed space without a hook.
+export function routedSpaceId(pathname: string): string | undefined {
+    return matchPath<{spaceId: string}>(pathname, {path: DOCS_SPACE_ROUTE, sensitive: true})?.params.spaceId;
+}
 
 const segment = (value: string): string => encodeURIComponent(value);
 

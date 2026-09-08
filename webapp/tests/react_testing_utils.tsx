@@ -13,6 +13,7 @@ import {Router} from 'react-router-dom';
 import {applyMiddleware, legacy_createStore as createStore} from 'redux';
 import type {Middleware, Store} from 'redux';
 
+import type {ClientLicense} from '@mattermost/types/config';
 import type {GlobalState} from '@mattermost/types/store';
 
 import type {DocsEntitiesState} from 'store/types';
@@ -23,6 +24,7 @@ const EMPTY_DOCS_ENTITIES: DocsEntitiesState = {
     pages: {},
     pagesInSpace: {},
     spaceMembers: {},
+    spaceMemberPermissionsRevision: {},
     drafts: {},
     draftsInSpace: {},
 };
@@ -38,6 +40,7 @@ export type TestStateOptions = {
     // the current team.
     teams?: TestTeam[];
     currentUser?: TestUser;
+    license?: ClientLicense;
 
     // Host user preferences, which is where Docs favorites and sidebar order live.
     preferences?: Array<{category: string; name: string; value: string}>;
@@ -46,7 +49,7 @@ export type TestStateOptions = {
 // Builds a host-shaped GlobalState with the Docs plugin subtree under
 // `plugins-<id>` (where the plugin's registered reducer mounts) plus the minimal
 // entities the Docs hooks read (current team + membership + current user).
-export function makeTestState({docs, currentTeam, teams, currentUser, preferences}: TestStateOptions = {}): GlobalState {
+export function makeTestState({docs, currentTeam, teams, currentUser, license, preferences}: TestStateOptions = {}): GlobalState {
     const teamId = currentTeam?.id ?? '';
     const userId = currentUser?.id ?? '';
     const allTeams = teams ?? (currentTeam ? [currentTeam] : []);
@@ -65,6 +68,11 @@ export function makeTestState({docs, currentTeam, teams, currentUser, preference
                 currentUserId: userId,
                 profiles: currentUser ? {[userId]: currentUser} : {},
             },
+
+            // Empty but present: host selectors a Docs component may reach for
+            // (the teammate name-display preference, say) index into these
+            // without guarding, so omitting them throws rather than defaulting.
+            general: {config: {}, license: license ?? {}},
 
             // Keyed `category--name`, as mattermost-redux's preference selectors expect.
             preferences: {

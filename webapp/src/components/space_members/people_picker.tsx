@@ -41,7 +41,7 @@ const PeoplePicker = ({selected, excludeIds, onChange, disabled = false, large =
     // The visible field, which the popup anchors to — see the positioner below.
     const fieldRef = useRef<HTMLDivElement>(null);
 
-    const placeholder = formatMessage({id: 'docs.share.search', defaultMessage: 'Add people or groups'});
+    const placeholder = formatMessage({id: 'docs.share.search', defaultMessage: 'Add people'});
 
     return (
         <Combobox.Root<MemberProfile, true>

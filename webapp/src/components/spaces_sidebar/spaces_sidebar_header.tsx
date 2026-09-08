@@ -107,12 +107,14 @@ const SpacesSidebarHeader = ({teamName, teamDescription, onCreateSpace, onBrowse
                     </button>
                 )}
             >
-                <Menu.Item
-                    leadingIcon={<PlusIcon size={18}/>}
-                    onClick={onCreateSpace}
-                >
-                    {formatMessage({id: 'docs.sidebar.add.create', defaultMessage: 'Create a space'})}
-                </Menu.Item>
+                {onCreateSpace && (
+                    <Menu.Item
+                        leadingIcon={<PlusIcon size={18}/>}
+                        onClick={onCreateSpace}
+                    >
+                        {formatMessage({id: 'docs.sidebar.add.create', defaultMessage: 'Create a space'})}
+                    </Menu.Item>
+                )}
                 <Menu.Item
                     leadingIcon={<LockOutlineIcon size={18}/>}
                     onClick={onBrowseSpaces}

@@ -6,9 +6,10 @@ import {useAutosaveStatus} from 'hooks/autosave_status';
 import {useFullscreen} from 'hooks/fullscreen';
 import {usePagePresence} from 'hooks/page_presence';
 import {useCreateRootPage} from 'hooks/pages';
+import {useCanCreatePage, useCanEditPage} from 'hooks/permissions';
 import {useSidebarWidth} from 'hooks/sidebar_width';
 import {useCurrentUserId} from 'hooks/user';
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {FormattedMessage, defineMessage, useIntl} from 'react-intl';
 import {Timestamp} from 'webapp_globals';
 import type {TimestampUnit} from 'webapp_globals';
@@ -27,6 +28,7 @@ import {Button} from 'components/form_controls/button';
 import AutosaveIndicator from 'components/page_editor/autosave_indicator';
 import PageMenu from 'components/page_menu/page_menu';
 import Spacer from 'components/spacer/spacer';
+import {toast} from 'components/toast';
 
 import type {Page, Space} from 'types/docs';
 import type {Draft} from 'types/drafts';
@@ -91,6 +93,15 @@ type Props = {
 const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogglePages, onToggleComments, onToggleEdit, onPublish}: Props) => {
     const {formatMessage} = useIntl();
     const createRootPage = useCreateRootPage(space.id);
+
+    // Withheld rather than disabled, as the space's other unauthorized actions are
+    // (Space settings, Archive space): an action the server will refuse is not offered.
+    const canCreatePage = useCanCreatePage(space.id);
+
+    // Editing an already-published page commits through edit_page, which a space default can
+    // withhold independently of create_page (see PublishPageDraft's split gate). Withheld the same
+    // way page creation is, rather than disabled: an action the server will refuse is not offered.
+    const canEditPage = useCanEditPage(space.id);
     const autosaveStatus = useAutosaveStatus();
 
     // Read here rather than passed in: the sidebar it hides belongs to the product
@@ -132,8 +143,13 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
     // them).
     const unpublished = !page && Boolean(draft);
     const hasUnpublishedEdits = Boolean(page) && Boolean(draft);
-    const canEnterEdit = Boolean(subject) && !editing;
-    const canCommit = unpublished || (editing && hasUnpublishedEdits);
+
+    // An unpublished page is the caller's own draft, and publishing it for the first time is gated
+    // on create_page rather than edit_page — so it stays editable and publishable for an author who
+    // holds only the former.
+    const canAuthor = unpublished ? canCreatePage : canEditPage;
+    const canEnterEdit = Boolean(subject) && !editing && canAuthor;
+    const canCommit = (unpublished && canCreatePage) || (editing && hasUnpublishedEdits && canEditPage);
     const commitShortcut = isMac() ? 'Meta+Enter' : 'Control+Enter';
 
     // Capture so Cmd/Ctrl+Enter wins over the editor inserting a newline, and
@@ -195,6 +211,22 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
         };
     }, [canCommit, publishing, publish]);
 
+    // canCommit depends on canEditPage, so Update disappears when the grant is revoked
+    // while Close (which does not gate on canAuthor) stays; without this notice the
+    // editor is left mid-edit with no explanation of why the control went away.
+    const wasEditablePage = useRef(canEditPage);
+    useEffect(() => {
+        const wasEditable = wasEditablePage.current;
+        wasEditablePage.current = canEditPage;
+
+        if (editing && wasEditable && !canEditPage) {
+            toast.error(formatMessage({
+                id: 'docs.space.editRevoked',
+                defaultMessage: 'Your permission to edit this page was removed.',
+            }));
+        }
+    }, [canEditPage, editing, formatMessage]);
+
     // The open page's last-updated time, the draft's own while it is unpublished,
     // otherwise the space's.
     const updatedAt = page?.update_at ?? draft?.update_at ?? space.update_at;
@@ -238,7 +270,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                     </span>
                 </Button>
                 {treeOpen && <Spacer/>}
-                {treeOpen && (
+                {treeOpen && canCreatePage && (
                     <Button
                         emphasis='quaternary'
                         size='sm'
@@ -293,7 +325,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                     everyone else until it lands, so that stays offered while reading
                     it. Update is an editing action: with the page already published
                     there is nothing urgent to offer a reader. */}
-                {unpublished ? (
+                {unpublished ? (canCreatePage && (
                     <Button
                         emphasis='primary'
                         size='sm'
@@ -306,7 +338,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                             defaultMessage='Publish'
                         />
                     </Button>
-                ) : (editing && subject && (
+                )) : (editing && subject && canEditPage && (
                     <Button
                         emphasis='primary'
                         size='sm'
@@ -331,7 +363,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
                     </Button>
                 ))}
 
-                {subject && (
+                {subject && (editing || canAuthor) && (
                     <Button
                         emphasis='quaternary'
                         size='sm'

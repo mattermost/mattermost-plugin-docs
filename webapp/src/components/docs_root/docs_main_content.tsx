@@ -11,7 +11,7 @@ import DocsHome from 'components/docs_home/docs_home';
 import SpaceView from 'components/space_view/space_view';
 
 type Props = {
-    onCreateSpace: () => void;
+    onCreateSpace?: () => void;
     onBrowseSpaces: () => void;
 };
 

@@ -10,7 +10,7 @@
     "fix": "eslint --ignore-pattern node_modules --ignore-pattern dist --ext=.js,.jsx,tsx,ts . --quiet --fix --cache",
     "test": "jest --forceExit --detectOpenHandles --verbose",
     "test:watch": "jest --watch",
-    "test-ci": "jest --forceExit --detectOpenHandles --maxWorkers=2",
+    "test-ci": "jest --forceExit --detectOpenHandles --maxWorkers=2 --coverage",
     "check-types": "tsc",
     "i18n-extract": "formatjs extract \"src/**/*.{ts,tsx}\" --ignore \"**/*.d.ts\" --id-interpolation-pattern '[sha512:contenthash:base64:6]' --format simple --out-file i18n/en.json"
   },
@@ -97,8 +97,19 @@
     "clearMocks": true,
     "testEnvironment": "jsdom",
     "collectCoverageFrom": [
-      "src/**/*.{js,jsx}"
+      "src/**/*.{ts,tsx}",
+      "!src/**/*.d.ts",
+      "!src/**/*.test.{ts,tsx}",
+      "!src/**/*.spec.{ts,tsx}"
     ],
+    "coverageThreshold": {
+      "global": {
+        "branches": 62,
+        "functions": 66,
+        "lines": 71,
+        "statements": 71
+      }
+    },
     "coverageReporters": [
       "lcov",
       "text-summary"

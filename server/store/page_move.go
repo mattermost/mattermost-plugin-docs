@@ -39,7 +39,7 @@ func (s *Store) MovePage(pageID, spaceID string, newParentID *string, newIndex *
 		return nil, "", false, &ErrInvalidInput{Entity: "Page", Field: "SpaceId", Value: spaceID}
 	}
 
-	tx, err := s.db.Beginx()
+	tx, err := s.beginUnboundedTx()
 	if err != nil {
 		return nil, "", false, errors.Wrap(err, "begin_transaction")
 	}
@@ -237,9 +237,24 @@ func (s *Store) reindexSiblingGroup(tx *sqlx.Tx, channelID, parentID, movedPageI
 	return nil
 }
 
+// MovePageToSpaceParams bundles MovePageToSpace's inputs.
+type MovePageToSpaceParams struct {
+	PageID           string
+	SourceSpaceID    string
+	TargetSpaceID    string
+	MoverUserID      string
+	ParentPageID     *string
+	ExpectedUpdateAt int64
+	Force            bool
+	MaxDepth         int
+	// RequiredOwnerID, when non-empty, requires every live page in the moved subtree to be owned by
+	// that user, failing the move with ErrInvalidInput otherwise; empty skips the check.
+	RequiredOwnerID string
+}
+
 // MovePageToSpace moves a page and its entire live subtree to a different space in one
 // transaction: every live node's SpaceId/ChannelId is rewritten and the moved root is
-// reparented (parentPageID nil/"" = target root) and appended to the destination sibling group.
+// reparented (ParentPageID nil/"" = target root) and appended to the destination sibling group.
 // Alongside the moved root it returns the parent the root had under the row lock, for callers
 // publishing an old-parent reference (see MovePage).
 // The target's ChannelId is derived from its locked row, never trusted from the caller, so it
@@ -247,7 +262,13 @@ func (s *Store) reindexSiblingGroup(tx *sqlx.Tx, channelID, parentID, movedPageI
 // cycle-safety are all re-validated under lock, so the move is safe regardless of concurrent
 // operations between the caller's pre-checks and this call. Cross-owner resources
 // (page-comment Posts, FileInfo) are not re-homed here.
-func (s *Store) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID, moverUserID string, parentPageID *string, expectedUpdateAt int64, force bool, maxDepth int) (_ *model.Page, priorParentID string, err error) {
+// RequiredOwnerID is checked against the transaction's own locked subtree read, alongside the
+// other re-validations above, so a concurrent reparent cannot graft another user's page into the
+// subtree undetected.
+func (s *Store) MovePageToSpace(params MovePageToSpaceParams) (_ *model.Page, priorParentID string, err error) {
+	pageID, sourceSpaceID, targetSpaceID, moverUserID := params.PageID, params.SourceSpaceID, params.TargetSpaceID, params.MoverUserID
+	parentPageID, expectedUpdateAt, force, maxDepth, requiredOwnerID := params.ParentPageID, params.ExpectedUpdateAt, params.Force, params.MaxDepth, params.RequiredOwnerID
+
 	if pageID == "" {
 		return nil, "", &ErrInvalidInput{Entity: "Page", Field: "Id", Value: pageID}
 	}
@@ -263,7 +284,7 @@ func (s *Store) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID, moverUserI
 		return nil, "", &ErrInvalidInput{Entity: "Page", Field: "MoverUserId", Value: moverUserID}
 	}
 
-	tx, err := s.db.Beginx()
+	tx, err := s.beginUnboundedTx()
 	if err != nil {
 		return nil, "", errors.Wrap(err, "begin_transaction")
 	}
@@ -322,11 +343,20 @@ func (s *Store) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID, moverUserI
 		newParentID = *parentPageID
 	}
 
-	// Collect the live subtree ids (the root is included — every node is re-homed) along with the
-	// subtree's max relative depth, reused by the depth-cap check below instead of a second walk.
-	ids, subtreeMax, e := s.collectLiveSubtreeIDs(tx, pageID)
+	// Collect the live subtree ids (the root is included — every node is re-homed) along with each
+	// row's UserId and the subtree's max relative depth, reused by the depth-cap check below
+	// instead of a second walk.
+	ids, owners, subtreeMax, e := s.collectLiveSubtreeIDs(tx, pageID)
 	if e != nil {
 		return nil, "", e
+	}
+
+	if requiredOwnerID != "" {
+		for _, id := range ids {
+			if owners[id] != requiredOwnerID {
+				return nil, "", &ErrInvalidInput{Entity: "Page", Field: "subtree_owner", Reason: ReasonSubtreeNotOwned}
+			}
+		}
 	}
 
 	if newParentID != "" {
@@ -392,39 +422,57 @@ func (s *Store) MovePageToSpace(pageID, sourceSpaceID, targetSpaceID, moverUserI
 	return &moved, page.ParentId, nil
 }
 
-// collectLiveSubtreeIDs returns the ids of pageID's whole live subtree (the root included) plus
-// the subtree's max relative depth (levels below the root, 0 for a leaf — the same value
-// pageSubtreeMaxDepth computes, read here at no extra cost), run within tx so it observes locked,
-// uncommitted state. It errors — rather than silently truncating — when the subtree exceeds
-// MaxPageDescendantsLimit or MaxPageHierarchyDepth (see pageSubtreeCTE for the recursion/cap
-// mechanics).
-func (s *Store) collectLiveSubtreeIDs(tx *sqlx.Tx, pageID string) ([]string, int, error) {
-	subtreeCTE := pageSubtreeCTE + fmt.Sprintf(`
-		SELECT Id, depth FROM page_subtree ORDER BY depth, Id LIMIT %d`, MaxPageDescendantsLimit+2)
+// pageSubtreeWithOwnerCTE mirrors pageSubtreeCTE (page_hierarchy.go) but also carries each
+// subtree row's UserId, so collectLiveSubtreeIDs can resolve subtree-wide ownership in the same
+// walk. Kept as a local variant here, rather than widening the shared CTE, so pageSubtreeCTE's
+// other caller (pageSubtreeMaxDepth) is unaffected.
+var pageSubtreeWithOwnerCTE = fmt.Sprintf(`
+	WITH RECURSIVE page_subtree AS (
+		SELECT Id, UserId, 0 AS depth, ARRAY[Id]::text[] AS path
+		FROM DOCS_Page WHERE Id = $1 AND DeleteAt = 0 AND OriginalId = ''
+		UNION ALL
+		SELECT p.Id, p.UserId, ps.depth + 1, ps.path || p.Id
+		FROM DOCS_Page p
+		INNER JOIN page_subtree ps ON p.ParentId = ps.Id
+		WHERE p.DeleteAt = 0 AND p.OriginalId = '' AND ps.depth <= %d
+		  AND NOT (p.Id = ANY(ps.path))
+	)`, MaxPageHierarchyDepth)
+
+// collectLiveSubtreeIDs returns the ids of pageID's whole live subtree (the root included), each
+// id's owning UserId, and the subtree's max relative depth (levels below the root, 0 for a leaf —
+// the same value pageSubtreeMaxDepth computes, read here at no extra cost), run within tx so it
+// observes locked, uncommitted state. It errors — rather than silently truncating — when the
+// subtree exceeds MaxPageDescendantsLimit or MaxPageHierarchyDepth.
+func (s *Store) collectLiveSubtreeIDs(tx *sqlx.Tx, pageID string) ([]string, map[string]string, int, error) {
+	subtreeCTE := pageSubtreeWithOwnerCTE + fmt.Sprintf(`
+		SELECT Id, UserId, depth FROM page_subtree ORDER BY depth, Id LIMIT %d`, MaxPageDescendantsLimit+2)
 	var subtreeRows []struct {
-		ID    string
-		Depth int
+		ID     string
+		UserId string
+		Depth  int
 	}
 	if e := s.selectAll(tx, &subtreeRows, subtreeCTE, pageID); e != nil {
-		return nil, 0, errors.Wrap(e, "failed to collect page subtree")
+		return nil, nil, 0, errors.Wrap(e, "failed to collect page subtree")
 	}
 	if len(subtreeRows) == 0 {
-		return nil, 0, &ErrNotFound{EntityName: "Page", ID: pageID}
+		return nil, nil, 0, &ErrNotFound{EntityName: "Page", ID: pageID}
 	}
 	// Exclude the root from the descendant-count cap (subtreeRows always holds at least the root).
 	if len(subtreeRows)-1 > MaxPageDescendantsLimit {
-		return nil, 0, &ErrLimitExceeded{Resource: "Page subtree for page_id=" + pageID + " (size)", Limit: MaxPageDescendantsLimit}
+		return nil, nil, 0, &ErrLimitExceeded{Resource: "Page subtree for page_id=" + pageID + " (size)", Limit: MaxPageDescendantsLimit}
 	}
 	ids := make([]string, 0, len(subtreeRows))
+	owners := make(map[string]string, len(subtreeRows))
 	maxRelDepth := 0
 	for _, row := range subtreeRows {
 		if row.Depth > MaxPageHierarchyDepth {
-			return nil, 0, &ErrLimitExceeded{Resource: "Page subtree for page_id=" + pageID + " (depth)", Limit: MaxPageHierarchyDepth}
+			return nil, nil, 0, &ErrLimitExceeded{Resource: "Page subtree for page_id=" + pageID + " (depth)", Limit: MaxPageHierarchyDepth}
 		}
 		maxRelDepth = max(maxRelDepth, row.Depth)
 		ids = append(ids, row.ID)
+		owners[row.ID] = row.UserId
 	}
-	return ids, maxRelDepth, nil
+	return ids, owners, maxRelDepth, nil
 }
 
 // rewriteSubtreeSpace re-homes the given page IDs onto

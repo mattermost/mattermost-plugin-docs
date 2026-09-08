@@ -1,8 +1,9 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import type {CreatePageInput, CreateSpaceInput, Page, Space, SpaceMember, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
+import type {CreatePageInput, CreateSpaceInput, Page, Space, UpdatePagePatch, UpdateSpacePatch} from 'types/docs';
 import type {Draft, DraftPatch, DraftSummary} from 'types/drafts';
+import type {Permission, SpaceAccess, SpaceMember, SpaceViewAccess} from 'types/permissions';
 
 // The seam between the store's thunks and the Docs server REST API. The
 // API-backed source implements this over the plugin's /api/v1 routes; the
@@ -13,8 +14,7 @@ import type {Draft, DraftPatch, DraftSummary} from 'types/drafts';
 // the server contract.
 export interface DocsDataSource {
 
-    // Spaces the caller is a member of in the given team (the server filters by
-    // backing-channel membership).
+    // Spaces the caller may read in the given team.
     listSpaces(teamId: string): Promise<Space[]>;
 
     // One space by id. This is how a space arrives when the URL names it directly
@@ -22,19 +22,24 @@ export interface DocsDataSource {
     // deep link must not depend on the space being in a list the client already
     // holds. Rejects with a RestError the caller interprets (403/404 = the caller
     // can't see it).
-    getSpace(spaceId: string): Promise<Space | undefined>;
+    getSpace(spaceId: string): Promise<SpaceAccess>;
 
     // Creates a space in the team and returns it (with its server-assigned id
-    // and team_id). Only server-supported fields are sent; the client-only
-    // visibility is dropped by the API source until the server models it (see
-    // PR #10's view_access).
-    createSpace(teamId: string, input: CreateSpaceInput): Promise<Space>;
+    // and team_id).
+    createSpace(teamId: string, input: CreateSpaceInput): Promise<SpaceAccess>;
 
     // Patches a space's editable fields (name/description/icon) and returns the
     // updated space. `expectedUpdateAt` is the space's current update_at for
     // optimistic concurrency (the server rejects a stale write). Only the
     // provided fields are sent.
-    updateSpace(spaceId: string, patch: UpdateSpacePatch, expectedUpdateAt: number): Promise<Space>;
+    updateSpace(spaceId: string, patch: UpdateSpacePatch, expectedUpdateAt: number): Promise<SpaceAccess>;
+
+    // Flips the space between open and private. This is separate from the general metadata patch
+    // because it has its own administration gate and optimistic-concurrency contract.
+    setSpaceViewAccess(spaceId: string, viewAccess: SpaceViewAccess, expectedUpdateAt: number): Promise<SpaceAccess>;
+
+    // Replaces the permissions every ordinary member receives from the space's backing scheme.
+    setSpaceDefaultPermissions(spaceId: string, permissions: Permission[]): Promise<SpaceAccess>;
 
     // Archives (soft-deletes) a space. The server rejects when the caller can't
     // manage the space; the caller surfaces that.
@@ -45,13 +50,19 @@ export interface DocsDataSource {
     // no bulk route: adding several people is several calls.
     addSpaceMember(spaceId: string, userId: string): Promise<SpaceMember>;
 
+    // Joins the caller to an open space. Idempotent when they are already a member.
+    joinSpace(spaceId: string): Promise<SpaceAccess>;
+
     // Removes a member from a space. Leaving a space is removing yourself; the
     // server rejects removing the last authorized member (409).
     removeSpaceMember(spaceId: string, userId: string): Promise<void>;
 
-    // Members of a space (user ids only). Backs the member count and, later,
-    // member avatars.
+    // Members of a space. This general-purpose source consumes only user_id for counts and
+    // avatars; the server redacts the permission fields when the caller lacks the manage tier.
     listSpaceMembers(spaceId: string): Promise<SpaceMember[]>;
+
+    // Replaces one member's direct grants. An empty array deliberately clears them.
+    setSpaceMemberPermissions(spaceId: string, userId: string, granted: Permission[]): Promise<SpaceMember>;
 
     // Pages in a space. The server returns page summaries (no body); the source
     // normalizes them to Page with an empty body for the store.

@@ -3,14 +3,10 @@
 
 import {defineMessage} from 'react-intl';
 
-// Whether a space is visible to the whole team or only invited members. Only
-// 'private' is selectable for now — public (open) spaces wait on view_access.
-export type SpaceVisibility = 'public' | 'private';
+import type {Permission, SpaceViewAccess} from './permissions';
 
 // Field names and shapes mirror the server model (server/model/space.go) —
-// snake_case JSON per @mattermost/types convention. The server model has no
-// `visibility` yet; it stays a client-only field and maps to the server's
-// `view_access` (open/private) once that lands (PR #10 / MM-69269).
+// snake_case JSON per @mattermost/types convention.
 export type Space = {
     id: string;
     team_id: string;
@@ -23,21 +19,28 @@ export type Space = {
     update_at: number;
     delete_at: number;
     sort_order: number;
-    visibility?: SpaceVisibility;
-};
 
-// A space member. The server exposes only the user id (roles/capabilities are
-// hidden); the user profile is resolved from the host store when needed.
-export type SpaceMember = {
-    user_id: string;
+    // Whether eligible team non-members may also read the space; 'private' is members only.
+    view_access: SpaceViewAccess;
+
+    // The caller's server-resolved effective permissions. Team listings omit access fields, so
+    // undefined means unresolved rather than an empty permission set.
+    permissions?: Permission[];
+
+    // What every member may do without a grant. Team listings omit this field too.
+    default_permissions?: Permission[];
+
+    // Server-resolved because read_page plus defaults cannot distinguish a guest from an open-space
+    // non-member. Team listings omit this field.
+    can_join?: boolean;
 };
 
 // The fields the create-space form collects. The data source turns this into a
-// Space (assigning the opaque id, etc.). visibility is client-only for now (maps
-// to the server's view_access later).
+// Space (assigning the opaque id, etc.). view_access is the server's own
+// vocabulary, so nothing maps between the form and the request.
 export type CreateSpaceInput = {
     title: string;
-    visibility: SpaceVisibility;
+    view_access: SpaceViewAccess;
     description?: string;
     icon?: string;
 };

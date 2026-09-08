@@ -36,9 +36,10 @@ func (noopLogger) Error(_ string, _ ...any) {}
 
 // Service is the central service struct for the Docs plugin.
 type Service struct {
-	store  *store.Store
-	log    Logger
-	client *pluginapi.Client
+	store                      *store.Store
+	log                        Logger
+	client                     *pluginapi.Client
+	newSpaceDefaultPermissions func() []string
 
 	// presenceBroadcastTimes records the last channel-wide presence broadcast time (ms) per
 	// (pageID, userID). Autosave cadence is client-driven and unbounded server-side, and every autosave
@@ -58,22 +59,48 @@ type Service struct {
 	lastPresenceSweepAt atomic.Int64
 }
 
+// Option customizes a Service dependency.
+type Option func(*Service)
+
+// WithNewSpaceDefaultPermissions supplies the live site-level template used when CreateSpace is
+// called without an explicit default-permission set. The provider is evaluated once per creation
+// so a plugin configuration change applies to future spaces without mutating existing ones.
+func WithNewSpaceDefaultPermissions(provider func() []string) Option {
+	return func(s *Service) {
+		if provider != nil {
+			s.newSpaceDefaultPermissions = provider
+		}
+	}
+}
+
+func contributeSpaceDefaultPermissions() []string {
+	permissions, _ := model.DefaultPermissionsForSchemeName(mmmodel.SchemeNameSpaceContribute)
+	return permissions
+}
+
 // New creates a Service wired to the given store, logger, and optional pluginapi client.
 // Passing nil for store panics immediately; passing nil for log installs a no-op logger.
 // client may be nil: WS publish methods become no-ops, and channel/team-backed operations
 // (membership checks, member management, space listing) return a client-not-wired error.
-func New(s *store.Store, log Logger, client *pluginapi.Client) *Service {
+func New(s *store.Store, log Logger, client *pluginapi.Client, options ...Option) *Service {
 	if s == nil {
 		panic("app.New: store must not be nil")
 	}
 	if log == nil {
 		log = noopLogger{}
 	}
-	return &Service{
-		store:  s,
-		log:    log,
-		client: client,
+	service := &Service{
+		store:                      s,
+		log:                        log,
+		client:                     client,
+		newSpaceDefaultPermissions: contributeSpaceDefaultPermissions,
 	}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service
 }
 
 // validateTitle sanitizes and validates an entity title, returning the normalized form.
@@ -124,6 +151,53 @@ func requireBaseline(where, field string, baseline *int64, force bool) *mmmodel.
 	return nil
 }
 
+// membershipLockAppError maps a WithSpaceMembershipLock failure to an *AppError: an AppError the
+// locked closure returned is surfaced as-is, and the store's own errors — notably the retryable
+// *store.ErrConflict with ReasonLockTimeout that a lock-acquisition timeout yields — go through
+// storeAppError so they keep their conventional status codes rather than collapsing to a 500.
+func membershipLockAppError(where string, lockErr error) *mmmodel.AppError {
+	var appErr *mmmodel.AppError
+	if errors.As(lockErr, &appErr) {
+		return appErr
+	}
+	return storeAppError(where, lockErr)
+}
+
+// schemeAppError maps a scheme-resolution failure to an *AppError. Resolution reaches core through
+// the pluginapi client rather than the plugin's own store, so the error may already be an
+// *AppError carrying the status core chose — a license denial for a custom scheme, or the refusal
+// the scheme API returns until core finishes the asynchronous permissions migration it runs at
+// startup, during which no scheme can be resolved or created. Neither is a store sentinel, so both
+// are surfaced unchanged. A pooled scheme is a scheme in the shared pool that non-preset
+// permission sets resolve to, shared by every space configured with that set; a corrupt pooled
+// scheme is also surfaced unchanged, but its row-level repair message is logged so an operator
+// sees the action required even when the request's response is not visible to them.
+//
+// A missing preset scheme has its own message key, distinct from the shared not-found key
+// storeAppError uses for ordinary row lookups, so the response identifies an unseeded server.
+func (s *Service) schemeAppError(where string, err error) *mmmodel.AppError {
+	if errors.Is(err, errPresetSchemeMissing) {
+		return mmmodel.NewAppError(where, "app.space.preset_scheme_missing.app_error", nil, "", http.StatusInternalServerError).Wrap(err)
+	}
+	var appErr *mmmodel.AppError
+	if errors.As(err, &appErr) {
+		if appErr.Id == "app.scheme.plugin_scheme.conflict.app_error" && s.log != nil {
+			// Core's translated message names the derived Schemes.Name and the generated Roles
+			// that must be repaired. Keep that message and its 500 intact for the caller, and
+			// put the same actionable condition in the server log for the operator who can fix
+			// store-direct corruption.
+			s.log.Error(
+				"pooled space scheme is inconsistent; inspect and repair the Schemes and Roles rows named by the core error, then retry",
+				"error_id", appErr.Id,
+				"core_message", appErr.Message,
+				"core_details", appErr.DetailedError,
+			)
+		}
+		return appErr
+	}
+	return storeAppError(where, err)
+}
+
 // storeAppError maps a store sentinel error to an *AppError with the conventional status code
 // and a shared message key (app.store.*); the where argument identifies the calling operation for logs.
 // This is the default for translating store errors; hand-roll an inline NewAppError only when a
@@ -137,6 +211,11 @@ func storeAppError(where string, err error) *mmmodel.AppError {
 		return mmmodel.NewAppError(where, "app.page.circular_reference.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 	case store.IsErrInvalidInput(err):
 		return invalidInputAppError(where, err)
+	case store.IsErrLockTimeout(err):
+		// Distinct from the default CAS/unique-constraint conflict below: this is a
+		// WithSpaceMembershipLock acquisition timeout (another mutation on the same space is
+		// still in flight), not a stale-baseline write.
+		return mmmodel.NewAppError(where, "app.space.lock_timeout.app_error", nil, "", http.StatusConflict).Wrap(err)
 	case store.IsErrConflict(err):
 		return mmmodel.NewAppError(where, "app.store.conflict.app_error", nil, "", http.StatusConflict).Wrap(err)
 	case store.IsErrLimitExceeded(err):
@@ -177,6 +256,10 @@ func invalidInputAppError(where string, err error) *mmmodel.AppError {
 			return mmmodel.NewAppError(where, "app.page_draft.update.parent_cycle.app_error", nil, "", http.StatusBadRequest).Wrap(err)
 		case store.ReasonDraftTooDeep:
 			return mmmodel.NewAppError(where, "app.page_draft.update.parent_too_deep.app_error", nil, "", http.StatusBadRequest).Wrap(err)
+		case store.ReasonSubtreeNotOwned:
+			// An authorization denial, not a malformed request: the caller holds only
+			// delete_own_page and the moved subtree contains a page they do not own.
+			return mmmodel.NewAppError(where, "app.page.move_to_space.subtree_not_owned.app_error", nil, "", http.StatusForbidden).Wrap(err)
 		}
 		return mmmodel.NewAppError(where, invErr.Reason, nil, "", http.StatusBadRequest).Wrap(err)
 	}

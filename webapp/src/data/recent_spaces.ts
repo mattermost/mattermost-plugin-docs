@@ -1,11 +1,8 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-// Client-side "recently viewed spaces" store. There is no server view-history
-// API yet; space visibility is already driven by backing-channel membership, so
-// the eventual source is that channel's ChannelMember.LastViewedAt surfaced by
-// the server. Callers use recordSpaceView / getSpaceViews as the seam, so that
-// swap won't touch them.
+// Client-side "recently viewed spaces" store. There is no server view-history API yet; callers use
+// recordSpaceView/getSpaceViews as the seam for a future server-backed implementation.
 
 export type SpaceView = {
     spaceId: string;

@@ -288,7 +288,7 @@ func (s *Store) upsertDraft(draft *model.Draft, parentID *string, fileIDs *mmmod
 		return nil, false, &ErrInvalidInput{Entity: "Draft", Field: "IsValid", Value: validErr.Error(), Reason: validErr.Id}
 	}
 
-	tx, err := s.db.Beginx()
+	tx, err := s.beginUnboundedTx()
 	if err != nil {
 		return nil, false, errors.Wrap(err, "begin_transaction")
 	}
@@ -576,7 +576,7 @@ func (s *Store) DeleteDraftReparenting(userID, spaceID, pageID string) (pageWasL
 		return false, &ErrInvalidInput{Entity: "Draft", Field: "pageId", Value: pageID}
 	}
 
-	tx, err := s.db.Beginx()
+	tx, err := s.beginUnboundedTx()
 	if err != nil {
 		return false, errors.Wrap(err, "begin_transaction")
 	}

@@ -1,9 +1,11 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {ClientError} from '@mattermost/client';
+
 import {Client4} from 'mattermost-redux/client';
 
-import {apiUrl, isPaginationLimitError, listAll, siteRoot} from './rest';
+import {RestError, apiUrl, getServerErrorId, isPaginationLimitError, listAll, siteRoot} from './rest';
 
 const mockFetch = jest.fn();
 const originalFetch = global.fetch;
@@ -48,6 +50,24 @@ describe('siteRoot', () => {
         mattermostWindow.basename = '/mattermost';
 
         expect(siteRoot()).toBe('http://localhost:8065/mattermost');
+    });
+});
+
+describe('getServerErrorId', () => {
+    it('reads the id from Docs and Mattermost client errors', () => {
+        expect(getServerErrorId(new RestError('/x', 409, 'conflict', {}, 'docs.conflict'))).toBe('docs.conflict');
+        expect(getServerErrorId(new ClientError('', {
+            message: 'forbidden',
+            status_code: 403,
+            url: '/x',
+            server_error_id: 'app.forbidden',
+        }))).toBe('app.forbidden');
+    });
+
+    it('returns undefined when no server error id is available', () => {
+        expect(getServerErrorId(new ClientError('', {message: 'failed', status_code: 500, url: '/x'}))).toBeUndefined();
+        expect(getServerErrorId(new Error('failed'))).toBeUndefined();
+        expect(getServerErrorId(undefined)).toBeUndefined();
     });
 });
 

@@ -5,14 +5,16 @@ import type {Page} from '@playwright/test';
 
 import {readJsonOrThrow, requestedWith} from './client';
 
-// Seeding seam for specs whose subject is not authoring itself; the authoring spec
-// drives that journey through the UI instead.
+// Seeding seam for specs whose subject is not authoring itself. E2E outcomes are asserted in the
+// browser; these helpers only arrange prerequisite spaces, pages, and memberships that another
+// test is not trying to exercise.
 const apiRoot = '/plugins/com.mattermost.docs/api/v1';
 
 export interface Space {
     id: string;
     title: string;
     team_id: string;
+    default_permissions?: string[];
 }
 
 export interface DocsPage {
@@ -25,27 +27,13 @@ export interface SpaceMember {
     user_id: string;
 }
 
-export interface PageDraft {
-    page_id: string;
-    title: string;
-    body: string;
-}
-
-// Null, not an error: a published page with no unpublished edits has no draft.
-export async function getPageDraft(page: Page, spaceId: string, pageId: string): Promise<PageDraft | null> {
-    const response = await page.request.get(`${apiRoot}/spaces/${spaceId}/pages/${pageId}/draft`, requestedWith);
-
-    if (response.status() === 404) {
-        return null;
-    }
-
-    return readJsonOrThrow<PageDraft>(response, `Unable to fetch draft for page ${pageId}`);
-}
-
-export async function createSpace(page: Page, teamId: string, title: string): Promise<Space> {
+export async function createSpace(page: Page, teamId: string, title: string, defaultPermissions?: string[]): Promise<Space> {
     const response = await page.request.post(`${apiRoot}/teams/${teamId}/spaces`, {
         ...requestedWith,
-        data: {title},
+        data: {
+            title,
+            ...(defaultPermissions === undefined ? {} : {default_permissions: defaultPermissions}),
+        },
     });
 
     return readJsonOrThrow<Space>(response, `Unable to create space "${title}"`);
@@ -58,16 +46,6 @@ export async function createPage(page: Page, spaceId: string, title: string, bod
     });
 
     return readJsonOrThrow<DocsPage>(response, `Unable to create page "${title}"`);
-}
-
-// force=true overrides first-write-wins.
-export async function publishDraft(page: Page, spaceId: string, pageId: string, force = false): Promise<DocsPage> {
-    const response = await page.request.post(`${apiRoot}/spaces/${spaceId}/pages/${pageId}/draft/publish`, {
-        ...requestedWith,
-        data: {force},
-    });
-
-    return readJsonOrThrow<DocsPage>(response, `Unable to publish draft for page ${pageId}`);
 }
 
 export async function addSpaceMember(page: Page, spaceId: string, userId: string): Promise<SpaceMember> {
