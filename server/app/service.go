@@ -56,6 +56,22 @@ type Service struct {
 	// lastPresenceSweepAt is the timestamp (ms) of the most recent presenceBroadcastTimes sweep, used
 	// to rate-limit the sweep itself to once per presenceBroadcastSweepIntervalMs.
 	lastPresenceSweepAt atomic.Int64
+
+	// retentionPolicyID holds the configured Docs data-retention policy id ("" when unset, which
+	// means Docs content follows the chat retention clock). Refreshed from plugin configuration;
+	// read on every space create.
+	retentionPolicyID atomic.Value
+}
+
+// SetRetentionPolicyID replaces the configured Docs data-retention policy id.
+func (s *Service) SetRetentionPolicyID(policyID string) {
+	s.retentionPolicyID.Store(policyID)
+}
+
+// RetentionPolicyID returns the configured Docs data-retention policy id, "" when unset.
+func (s *Service) RetentionPolicyID() string {
+	policyID, _ := s.retentionPolicyID.Load().(string)
+	return policyID
 }
 
 // New creates a Service wired to the given store, logger, and optional pluginapi client.

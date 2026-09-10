@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	mmmodel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/pkg/errors"
 )
 
@@ -36,10 +37,60 @@ type TipTapDocument struct {
 // BuildSearchText extracts searchable plain text from a TipTap document.
 func BuildSearchText(doc TipTapDocument) string {
 	var b strings.Builder
-	for _, node := range doc.Content {
-		appendNodeText(&b, node, 0)
-	}
+	walkTipTapDocument(doc, func(node map[string]any) { appendNodeText(&b, node) })
 	return b.String()
+}
+
+// CollectCommentAnchorIDsFromBody is CollectCommentAnchorIDs over a stored page body. The body
+// has already been through ParseTipTapDocument on the way in, so it is decoded here without a
+// second sanitization pass — and the result is a set of ids, never content that is stored or
+// rendered. An empty body yields an empty set rather than an error: a page with no body has no
+// live anchors, which is exactly what the orphan comparison needs.
+func CollectCommentAnchorIDsFromBody(body string) (map[string]struct{}, error) {
+	if strings.TrimSpace(body) == "" {
+		return map[string]struct{}{}, nil
+	}
+	var doc TipTapDocument
+	if err := json.Unmarshal([]byte(body), &doc); err != nil {
+		return nil, errors.Wrap(err, "failed to decode stored page body")
+	}
+	return CollectCommentAnchorIDs(doc), nil
+}
+
+// CollectCommentAnchorIDs returns the set of anchorId values carried by commentAnchor marks in
+// doc. It is the live-anchor side of the orphan comparison: an inline comment whose anchor is
+// absent from this set no longer points at anything in the page.
+func CollectCommentAnchorIDs(doc TipTapDocument) map[string]struct{} {
+	ids := make(map[string]struct{})
+	walkTipTapDocument(doc, func(node map[string]any) { collectCommentAnchorIDs(node, ids) })
+	return ids
+}
+
+func collectCommentAnchorIDs(node map[string]any, ids map[string]struct{}) {
+	if marksVal, ok := node["marks"]; ok {
+		if marks, ok := marksVal.([]any); ok {
+			for _, markVal := range marks {
+				mark, ok := markVal.(map[string]any)
+				if !ok {
+					continue
+				}
+				if markType, isString := mark["type"].(string); !isString || markType != commentAnchorMarkType {
+					continue
+				}
+				attrs, ok := mark["attrs"].(map[string]any)
+				if !ok {
+					continue
+				}
+				// The mark is client-authored, so the id is clamped to the same bound the create
+				// route enforces: a longer value cannot match a stored anchor and must not be
+				// allowed to grow the set.
+				if id, ok := attrs["anchorId"].(string); ok && id != "" {
+					clamped, _ := mmmodel.LimitRunes(id, MaxAnchorIdRunes)
+					ids[clamped] = struct{}{}
+				}
+			}
+		}
+	}
 }
 
 // ParseTipTapDocument parses and sanitizes a TipTap JSON string into a TipTapDocument. Unlike the
@@ -78,14 +129,9 @@ func ParseTipTapDocument(contentJSON string) (TipTapDocument, error) {
 	return doc, nil
 }
 
-// appendNodeText walks a node subtree once, appending each text leaf and mention label to b. A
-// single shared builder keeps extraction O(total text) instead of re-joining every subtree at each
-// ancestor, which would copy a leaf once per level of nesting.
-func appendNodeText(b *strings.Builder, node map[string]any, depth int) {
-	if depth > maxTipTapDepth {
-		return
-	}
-
+// appendNodeText appends one node's text or mention label to b. walkTipTapDocument supplies nodes
+// in document order, and a single shared builder keeps extraction O(total text).
+func appendNodeText(b *strings.Builder, node map[string]any) {
 	if textVal, ok := node["text"]; ok {
 		if text, ok := textVal.(string); ok && text != "" {
 			if normalized := strings.Join(strings.Fields(text), " "); normalized != "" {
@@ -103,14 +149,29 @@ func appendNodeText(b *strings.Builder, node map[string]any, depth int) {
 			}
 		}
 	}
+}
 
-	if contentVal, ok := node["content"]; ok {
-		if children, ok := contentVal.([]any); ok {
-			for _, child := range children {
-				if childNode, ok := child.(map[string]any); ok {
-					appendNodeText(b, childNode, depth+1)
-				}
-			}
+// walkTipTapDocument is the bounded, defensive preorder traversal shared by read-only document
+// projections. Sanitization has its own mutating walk because it must reject, not skip, malformed
+// child shapes and enforce the total node budget while rewriting attributes.
+func walkTipTapDocument(doc TipTapDocument, visit func(map[string]any)) {
+	for _, node := range doc.Content {
+		walkTipTapNode(node, 0, visit)
+	}
+}
+
+func walkTipTapNode(node map[string]any, depth int, visit func(map[string]any)) {
+	if depth > maxTipTapDepth {
+		return
+	}
+	visit(node)
+	children, ok := node["content"].([]any)
+	if !ok {
+		return
+	}
+	for _, child := range children {
+		if childNode, ok := child.(map[string]any); ok {
+			walkTipTapNode(childNode, depth+1, visit)
 		}
 	}
 }
@@ -203,6 +264,10 @@ var allowedNodeTypes = map[string]struct{}{
 	"fileAttachment":   {},
 }
 
+// commentAnchorMarkType is the TipTap mark an inline comment anchors to. It is named rather than
+// spelled inline because the orphan sweep matches on it as well as the sanitizer.
+const commentAnchorMarkType = "commentAnchor"
+
 // allowedMarkTypes is the allowlist of TipTap mark type values, keyed to the core WysiwygEditor
 // schema plus the page editor's extensions. Like allowedNodeTypes, a mark type not listed here is
 // rejected rather than passed through. "link" is a mark (TipTap's inline hyperlink); its href is
@@ -216,8 +281,8 @@ var allowedMarkTypes = map[string]struct{}{
 	"underline": {},
 	"link":      {},
 	// Page editor extensions.
-	"textStyle":     {},
-	"commentAnchor": {},
+	"textStyle":           {},
+	commentAnchorMarkType: {},
 }
 
 // dangerousAttrKeys are attribute keys (matched case-insensitively) stripped outright regardless of

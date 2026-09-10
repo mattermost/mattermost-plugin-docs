@@ -40,6 +40,18 @@ const (
 	// follow-up fetch.
 	wsEventPagePresenceUpdated = "page_presence_updated"
 
+	// The three page_comment_* events carry ids only ({id, root_id, page_id, space_id}) — the
+	// plugin's established refetch-signal shape — and never the comment Message: the broadcast is
+	// channel-scoped, so a payload carrying user-authored text would expose the comment body to an
+	// audience no read gate has filtered. page_comment_updated covers a resolve, an unresolve and
+	// any future edit alike; clients refetch the comment rather than branching on event type. A
+	// root's page_comment_deleted also invalidates any locally-held reply list for that thread —
+	// the platform cascade soft-deletes the replies in one statement and never reports which, so
+	// no per-reply event can exist.
+	wsEventPageCommentCreated = "page_comment_created"
+	wsEventPageCommentUpdated = "page_comment_updated"
+	wsEventPageCommentDeleted = "page_comment_deleted"
+
 	wsEventSpaceCreated       = "space_created"
 	wsEventSpaceUpdated       = "space_updated"
 	wsEventSpaceDeleted       = "space_deleted"

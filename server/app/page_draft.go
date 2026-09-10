@@ -340,6 +340,8 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 	// store.deletePublishedDraftTx.
 	var page *model.Page
 	var storeErr error
+	// A publish that carried no body cannot have moved an anchor, so it skips the orphan sweep.
+	bodyPublished := false
 	if isNewPage {
 		pageForWrite, buildErr := s.buildNewPageForPublish(pageID, spaceID, userID, draft)
 		if buildErr != nil {
@@ -357,6 +359,7 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 		if patch.Title == nil && patch.Body == nil && patch.Props == nil {
 			return s.discardBaselineOnlyDraft(userID, pageID, spaceID, draft.UpdateAt)
 		}
+		bodyPublished = patch.Body != nil
 		page, storeErr = s.store.PublishPageEditDraft(pageID, spaceID, patch, draft.BaseEditAt, force, userID, draft.UpdateAt)
 	}
 	if storeErr != nil {
@@ -373,6 +376,7 @@ func (s *Service) PublishPageDraft(userID, spaceID, pageID string, force bool) (
 			"parent_id": page.ParentId,
 		}, page.ChannelId)
 	} else {
+		s.sweepOrphanedComments(page, bodyPublished)
 		s.publishToChannels(wsEventPageUpdated, map[string]any{
 			"page_id":  page.Id,
 			"space_id": page.SpaceId,

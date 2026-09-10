@@ -29,6 +29,69 @@ func (s *Store) spaceSelectQuery() sq.SelectBuilder {
 		From("DOCS_Space")
 }
 
+// SpaceChannelRetention pairs a space backing channel with the data-retention policy it is
+// currently assigned to ("" when unassigned). A channel carries at most one policy — core keys
+// the assignment on the channel alone.
+type SpaceChannelRetention struct {
+	ChannelId string
+	PolicyId  string
+}
+
+// GetSpaceChannelsNotInRetentionPolicy returns up to limit space backing channels that are not
+// assigned to the given data-retention policy, each with the policy it currently carries — a
+// read-only probe of core's RetentionPoliciesChannels on the master handle, in the same class
+// as the other core-table reads in this package. The current policy matters because a channel
+// holds at most one assignment: moving it to the target policy means removing the old one
+// first. Deleted spaces are included: a soft-deleted space is restorable, so its content needs
+// the policy while it waits. Ordered by space id, so a sweeping caller can tell a shrinking
+// backlog from one that is not converging.
+func (s *Store) GetSpaceChannelsNotInRetentionPolicy(policyID string, limit int) ([]SpaceChannelRetention, error) {
+	if err := requirePositiveLimit("Space", limit); err != nil {
+		return nil, err
+	}
+	query := s.getQueryBuilder().
+		Select("sp.ChannelId", "COALESCE(rpc.PolicyId, '') AS PolicyId").
+		From("DOCS_Space sp").
+		LeftJoin("RetentionPoliciesChannels rpc ON rpc.ChannelId = sp.ChannelId").
+		Where(sq.Expr("rpc.PolicyId IS DISTINCT FROM ?", policyID)).
+		OrderBy("sp.Id ASC").
+		Limit(uint64(limit)) //nolint:gosec // limit>0 enforced above
+
+	var rows []SpaceChannelRetention
+	if err := s.selectBuilder(s.db, &rows, query); err != nil {
+		return nil, errors.Wrap(err, "failed to list space channels missing from the retention policy")
+	}
+	return rows, nil
+}
+
+// GetSpaceChannelsInRetentionPolicy returns up to limit space backing channels currently assigned
+// to the given data-retention policy. It is the inverse of the detection above and drives the
+// release path: when the Docs retention setting is cleared, the channels Docs enrolled must be
+// removed from the policy it enrolled them in, or they keep following that policy's clock instead
+// of the standard one. Scoping the read to the policy Docs was configured with keeps an assignment
+// to any other policy out of the release; an assignment to this policy is released whoever made it,
+// because core records no owner and a hand-made assignment is therefore indistinguishable from an
+// enrolment. Deleted spaces are included for the same reason they are included in the detection:
+// their content is still restorable.
+func (s *Store) GetSpaceChannelsInRetentionPolicy(policyID string, limit int) ([]string, error) {
+	if err := requirePositiveLimit("Space", limit); err != nil {
+		return nil, err
+	}
+	query := s.getQueryBuilder().
+		Select("sp.ChannelId").
+		From("DOCS_Space sp").
+		Join("RetentionPoliciesChannels rpc ON rpc.ChannelId = sp.ChannelId").
+		Where(sq.Eq{"rpc.PolicyId": policyID}).
+		OrderBy("sp.Id ASC").
+		Limit(uint64(limit)) //nolint:gosec // limit>0 enforced above
+
+	var channelIDs []string
+	if err := s.selectBuilder(s.db, &channelIDs, query); err != nil {
+		return nil, errors.Wrap(err, "failed to list space channels in the retention policy")
+	}
+	return channelIDs, nil
+}
+
 // CreateSpace inserts a space row, fills in defaults and validates before inserting.
 func (s *Store) CreateSpace(space *model.Space) (*model.Space, error) {
 	if space == nil {

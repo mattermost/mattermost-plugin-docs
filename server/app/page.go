@@ -123,6 +123,7 @@ func (s *Service) UpdatePage(pageID, spaceID string, patch *model.PagePatch, bas
 
 	updatedPage, storeErr := s.store.UpdatePage(pageID, spaceID, patch, mmmodel.SafeDereference(baseEditAt), force, userID)
 	if storeErr == nil {
+		s.sweepOrphanedComments(updatedPage, patch.Body != nil)
 		s.publishToChannels(wsEventPageUpdated, map[string]any{"page_id": updatedPage.Id, "space_id": updatedPage.SpaceId}, updatedPage.ChannelId)
 		return updatedPage, nil
 	}

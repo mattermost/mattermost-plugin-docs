@@ -90,6 +90,13 @@ func (p *Plugin) OnActivate() error {
 	p.store = s
 	p.service = app.New(p.store, &p.client.Log, p.client)
 
+	// Push the retention policy id captured before the service existed, and sweep so spaces
+	// created while the plugin was inactive (or before the setting existed) are enrolled.
+	p.service.SetRetentionPolicyID(p.getConfiguration().RetentionPolicyId)
+	if err := p.service.ReconcileSpaceRetention(); err != nil {
+		p.API.LogError("Docs retention reconcile failed on activation", "err", err)
+	}
+
 	p.router = p.initRouter()
 
 	return nil
