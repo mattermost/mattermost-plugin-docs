@@ -256,8 +256,7 @@ func (s *Store) DeleteSpace(spaceID string) (err error) {
 	}
 
 	// Drafts are left untouched: this soft-delete is reversible (RestoreSpace), so a user's
-	// in-progress work must survive the round trip. Drafts have no DeleteAt, so they are purged
-	// only when their page is explicitly deleted.
+	// in-progress work must survive the round trip, hidden meanwhile by applyDraftLivenessFilter.
 	if err = tx.Commit(); err != nil {
 		return errors.Wrap(err, "commit_transaction")
 	}

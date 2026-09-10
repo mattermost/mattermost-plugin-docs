@@ -35,6 +35,13 @@ var draftMetaColumns = []string{
 // the draft read queries: the space must be live, and the draft's page must be either absent
 // (a new-page draft) or a live page in the draft's own space. The draft table
 // must be aliased "d".
+//
+// This filter is the sole mechanism hiding a draft whose page or space is deleted. Drafts carry
+// no DeleteAt of their own, and neither DeletePage nor DeleteSpace purges them — both deletes are
+// reversible, so destroying a draft would irreversibly discard unpublished work (including other
+// users') as a side effect. A preserved draft is therefore invisible to every read below while its
+// page or space is deleted, and visible again once it is restored. Any new query reading draft
+// rows must apply this filter, or it will surface drafts the product considers deleted.
 func applyDraftLivenessFilter(q sq.SelectBuilder) sq.SelectBuilder {
 	return q.
 		Join("DOCS_Space s ON s.Id = d.SpaceId AND s.DeleteAt = 0").
@@ -45,23 +52,10 @@ func applyDraftLivenessFilter(q sq.SelectBuilder) sq.SelectBuilder {
 		})
 }
 
-// deleteDraftsForPage hard-deletes every user's draft for pageID scoped to spaceID. Drafts have
-// no soft-delete and must be cleaned up when the page is deleted. The spaceID predicate prevents
-// a delete in one space from removing drafts for the same pageID in another space. Must run
-// inside tx.
-func (s *Store) deleteDraftsForPage(tx *sqlx.Tx, pageID, spaceID string) error {
-	query := s.getQueryBuilder().
-		Delete("DOCS_Draft").
-		Where(sq.Eq{"PageId": pageID, "SpaceId": spaceID})
-	if _, err := s.execBuilder(tx, query); err != nil {
-		return errors.Wrap(err, "failed to delete page drafts")
-	}
-	return nil
-}
-
 // reparentDraftsForPage reparents every new-page draft pointing at pageID to newParentID,
 // so drafts don't retain a soft-deleted page as their pending parent. The spaceID predicate
-// scopes the rewrite the same way deleteDraftsForPage scopes its delete. Must run inside tx.
+// keeps a delete in one space from rewriting drafts for the same pageID in another. Must run
+// inside tx.
 //
 // UpdateAt uses GREATEST(now, UpdateAt+1) for the same reason as UpsertDraft: it must be a
 // strictly-monotonic token so the publish CAS-delete (deletePublishedDraftTx) cannot match a row
