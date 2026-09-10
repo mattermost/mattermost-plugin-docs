@@ -1,5 +1,9 @@
 const exec = require('child_process').exec;
 
+const crypto = require('crypto');
+
+const fs = require('fs');
+
 const path = require('path');
 
 const webpack = require('webpack');
@@ -10,11 +14,42 @@ const NPM_TARGET = process.env.npm_lifecycle_event; //eslint-disable-line no-pro
 const isDev = NPM_TARGET === 'debug' || NPM_TARGET === 'debug:watch';
 const isAnalyze = NPM_TARGET === 'build:analyze';
 
+// Excluded rather than allowlisted, so a new source directory cannot silently leave the token stale. Dotfiles and junit.xml are build-irrelevant artifacts; dist is webpack's own output.
+const DIGEST_EXCLUDED = new Set(['node_modules', 'dist', 'junit.xml']);
+
+function digestPath(digest, absolute, relative) {
+    const stats = fs.lstatSync(absolute);
+    if (stats.isDirectory()) {
+        for (const entry of fs.readdirSync(absolute).sort()) {
+            if (entry.startsWith('.') || DIGEST_EXCLUDED.has(entry)) {
+                continue;
+            }
+
+            digestPath(digest, path.join(absolute, entry), `${relative}/${entry}`);
+        }
+        return;
+    }
+
+    const content = stats.isSymbolicLink() ? Buffer.from(fs.readlinkSync(absolute)) : fs.readFileSync(absolute);
+    digest.update(`${relative}\0${content.length}\0`);
+    digest.update(content);
+}
+
+// Identifies the build so an upgraded bundle never shares a chunk-loading global with the previous one still live in the page.
+function resolveBuildToken() {
+    const digest = crypto.createHash('sha256');
+
+    // Debug and production emit very different bundles from identical sources.
+    digest.update(isDev ? 'development' : 'production');
+    digestPath(digest, __dirname, '.');
+
+    return digest.digest('hex').slice(0, 16);
+}
+
+const BUILD_TOKEN = resolveBuildToken();
+
 const plugins = [
-    // Shim Node's `process` for transitive deps whose Node-detection paths read
-    // a bare `process` (e.g. `process && process.versions`) at runtime. The
-    // production build strips these under minification, but the debug build
-    // keeps them and throws "process is not defined" without this shim.
+    // Transitive deps read a bare `process` at runtime; the debug build keeps those paths and throws without this.
     new webpack.ProvidePlugin({
         process: 'process/browser.js',
     }),
@@ -41,7 +76,6 @@ if (NPM_TARGET === 'build:watch' || NPM_TARGET === 'debug:watch') {
 }
 
 if (isAnalyze) {
-    // Only loaded for `npm run build:analyze`, so it stays out of normal builds.
     // eslint-disable-next-line global-require
     const {BundleAnalyzerPlugin} = require('webpack-bundle-analyzer');
     plugins.push(new BundleAnalyzerPlugin({
@@ -83,11 +117,7 @@ const config = {
                     {
                         loader: 'css-loader',
                         options: {
-                            // CSS Modules for *.module.(s)css only (auto-detected by
-                            // filename). Scopes every class to a hashed name so the
-                            // plugin's styles can never collide with or leak into the
-                            // host web app (e.g. core's own .GenericModal). Readable
-                            // names in dev; opaque hashes in production.
+                            // Scopes *.module.(s)css classes so plugin styles cannot collide with the host web app's.
                             modules: {
                                 auto: true,
                                 localIdentName: isDev ? 'docs-[name]__[local]' : 'docs-[hash:base64:6]',
@@ -105,11 +135,6 @@ const config = {
                 ],
             },
             {
-                // Emit binary assets as separate files (not inlined) so large
-                // assets don't bloat the bundle. With output.publicPath: 'auto'
-                // the runtime resolves them relative to the served plugin bundle,
-                // so the host serves them from the plugin's static path without a
-                // hardcoded URL — the same mechanism the async chunks rely on.
                 test: /\.(png|eot|tiff|svg|woff2|woff|ttf|gif|mp3|jpg|jpeg)$/,
                 type: 'asset/resource',
                 generator: {
@@ -130,19 +155,19 @@ const config = {
     },
     output: {
         devtoolNamespace: PLUGIN_ID,
+        uniqueName: `${PLUGIN_ID}_${BUILD_TOKEN}`,
         path: path.join(__dirname, '/dist'),
 
-        // 'auto' makes webpack resolve async-chunk and asset/resource URLs at
-        // runtime from where the plugin bundle is served (its static path),
-        // rather than the site root '/'. This lets code-split chunks and emitted
-        // assets load without a hardcoded plugin URL and keeps subpath-hosted
-        // Mattermost instances working.
+        // The server copies all of dist on every deploy, so stale chunks would accumulate forever.
+        clean: true,
+
+        // Resolves chunk and asset URLs from the served plugin path, keeping subpath-hosted instances working.
         publicPath: 'auto',
         filename: 'main.js',
         chunkFilename: '[name].[contenthash].js',
     },
 
-    mode: (isDev) ? 'eval-source-map' : 'production',
+    mode: isDev ? 'development' : 'production',
     plugins,
 };
 
