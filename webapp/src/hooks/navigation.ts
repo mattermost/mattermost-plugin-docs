@@ -5,7 +5,23 @@ import {siteRoot} from 'client/rest';
 import {useTeamContext} from 'hooks/team';
 import {useCallback} from 'react';
 import {useHistory, useLocation, useRouteMatch} from 'react-router-dom';
-import {DOCS_DRAFT_ROUTE, DOCS_ROUTE, DOCS_SPACE_OVERVIEW_ROUTE, EDIT_QUERY, docsHomePath, docsPath, draftPath, editPagePath, overviewPath, pagePath, spacePath} from 'routing/paths';
+import {
+    DOCS_DRAFT_ROUTE,
+    DOCS_IMPORT_ROUTE,
+    DOCS_ROUTE,
+    DOCS_SPACE_IMPORT_ROUTE,
+    DOCS_SPACE_OVERVIEW_ROUTE,
+    EDIT_QUERY,
+    docsHomePath,
+    docsPath,
+    draftPath,
+    editPagePath,
+    importPath,
+    overviewPath,
+    pagePath,
+    spaceImportPath,
+    spacePath,
+} from 'routing/paths';
 import {withQuery} from 'routing/query';
 
 type DocsRouteParams = {
@@ -26,10 +42,18 @@ type DocsNavigationOptions = {
 export function useDocsNavigation({absolute = false}: DocsNavigationOptions = {}) {
     const history = useHistory();
 
-    // Specific patterns first: DOCS_ROUTE treats the segment after :spaceId as
-    // :pageId, so a draft URL (…/:spaceId/drafts/:pageId) would parse
-    // pageId='drafts', and an overview URL would parse pageId='overview'.
-    const match = useRouteMatch<DocsRouteParams>([DOCS_DRAFT_ROUTE, DOCS_SPACE_OVERVIEW_ROUTE, DOCS_ROUTE]);
+    // Specific patterns first: DOCS_ROUTE treats the segment after :spaceId as :pageId, so every reserved
+    // segment has to be matched ahead of it or it would be read as content — a draft URL would parse
+    // pageId='_drafts', an overview URL pageId='_overview', an import URL its own segment as a space or page id.
+    // Order is what keeps them apart; the leading underscore is what keeps them from colliding with anything a
+    // user names (see RESERVED_SEGMENTS).
+    const match = useRouteMatch<DocsRouteParams>([
+        DOCS_DRAFT_ROUTE,
+        DOCS_SPACE_OVERVIEW_ROUTE,
+        DOCS_SPACE_IMPORT_ROUTE,
+        DOCS_IMPORT_ROUTE,
+        DOCS_ROUTE,
+    ]);
     const {name: currentTeamName} = useTeamContext();
 
     const teamName = match?.params.team || currentTeamName;
@@ -37,6 +61,9 @@ export function useDocsNavigation({absolute = false}: DocsNavigationOptions = {}
     const pageId = match?.params.pageId;
     const isDraft = match?.path === DOCS_DRAFT_ROUTE;
     const isOverview = match?.path === DOCS_SPACE_OVERVIEW_ROUTE;
+
+    // isImport covers both shapes; spaceId then says which kind it is, since only the Space-scoped route has one.
+    const isImport = match?.path === DOCS_IMPORT_ROUTE || match?.path === DOCS_SPACE_IMPORT_ROUTE;
 
     const {search} = useLocation();
 
@@ -75,6 +102,12 @@ export function useDocsNavigation({absolute = false}: DocsNavigationOptions = {}
     )), [history, search, teamName]);
     const goToEditPage = useCallback((space: string, page: string) => history.push(editPagePath(teamName, space, page)), [history, teamName]);
     const goToOverview = useCallback((space: string) => history.push(overviewPath(teamName, space)), [history, teamName]);
+
+    // Omitting the space imports into a new one; passing it imports into that Space.
+    const goToImport = useCallback(
+        (space?: string) => history.push(space ? spaceImportPath(teamName, space) : importPath(teamName)),
+        [history, teamName],
+    );
     const goHome = useCallback(() => history.push(docsHomePath(teamName)), [history, teamName]);
     const navigate = useCallback((space: string, page?: string) => history.push(docsPath(teamName, space, page)), [history, teamName]);
 
@@ -97,6 +130,8 @@ export function useDocsNavigation({absolute = false}: DocsNavigationOptions = {}
         goToEditDraft,
         goToEditPage,
         goToOverview,
+        goToImport,
+        isImport,
         goHome,
         navigate,
         navigateInTeam,
@@ -109,6 +144,7 @@ export function useDocsNavigation({absolute = false}: DocsNavigationOptions = {}
             page: (space: string, page: string) => withBase(pagePath(teamName, space, page)),
             overview: (space: string) => withBase(overviewPath(teamName, space)),
             draft: (space: string, page: string) => withBase(draftPath(teamName, space, page)),
+            import: (space?: string) => withBase(space ? spaceImportPath(teamName, space) : importPath(teamName)),
             to: (space?: string, page?: string) => withBase(docsPath(teamName, space, page)),
         },
     };

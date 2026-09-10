@@ -78,3 +78,17 @@ export async function addSpaceMember(page: Page, spaceId: string, userId: string
 
     return readJsonOrThrow<SpaceMember>(response, `Unable to add user ${userId} to space ${spaceId}`);
 }
+
+// Points a space at the page a bare space URL should open. Mirrors what the space
+// settings modal saves: the default page is a space prop, and props replace wholesale
+// server-side, so this sends the one key it needs onto a freshly seeded space that has
+// no others. force skips the optimistic-lock baseline, which a seeding call that just
+// created the space has no reason to carry.
+export async function setSpaceLandingPage(page: Page, spaceId: string, pageId: string): Promise<Space> {
+    const response = await page.request.patch(`${apiRoot}/spaces/${spaceId}`, {
+        ...requestedWith,
+        data: {props: {default_page_id: pageId}, force: true},
+    });
+
+    return readJsonOrThrow<Space>(response, `Unable to set the landing page of space ${spaceId}`);
+}
