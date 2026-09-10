@@ -27,6 +27,8 @@
 }
 
 .node:focus-visible > .rowHit > .row .menuTrigger {
+    width: 20px;
+    margin-inline-start: 0;
     opacity: 1;
 }
 
@@ -177,14 +179,21 @@
     white-space: nowrap;
 }
 
-// Always laid out (only its opacity changes) so revealing it never shifts the row.
+// Collapsed rather than merely transparent, so the page name gets the space back
+// on every row that isn't showing its menu — which is the whole tree, most of the
+// time. Deliberately not `display: none` or `visibility: hidden`: the row's
+// Shift+F10 handler opens this menu, and either would drop the trigger out of the
+// accessibility tree along with the menu it anchors. The negative margin cancels
+// the row's `gap`, which a zero-width item would otherwise still pay for.
 .menuTrigger {
     display: flex;
-    width: 20px;
+    overflow: hidden;
+    width: 0;
     height: 20px;
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
+    margin-inline-start: -8px;
     padding: 0;
     border: none;
     border-radius: 4px;
@@ -196,12 +205,22 @@
         background: rgba(var(--center-channel-color-rgb), 0.16);
         color: var(--center-channel-color);
     }
+
+    // Its own ring: Tab reaches this button while the row behind it keeps the
+    // treeitem's focus styling for the row itself.
+    &:focus-visible {
+        outline: 2px solid var(--button-bg);
+        outline-offset: -2px;
+    }
 }
 
 .row:hover .menuTrigger,
 .row:focus-visible .menuTrigger,
 .active .menuTrigger,
+.menuTrigger:focus-visible,
 .menuTrigger[data-popup-open] {
+    width: 20px;
+    margin-inline-start: 0;
     opacity: 1;
 }
 

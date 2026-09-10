@@ -6,7 +6,6 @@ import {useAutosaveStatus} from 'hooks/autosave_status';
 import {useFullscreen} from 'hooks/fullscreen';
 import {usePagePresence} from 'hooks/page_presence';
 import {useCreateRootPage} from 'hooks/pages';
-import {useSidebarWidth} from 'hooks/sidebar_width';
 import {useCurrentUserId} from 'hooks/user';
 import React, {useCallback, useEffect, useState} from 'react';
 import {FormattedMessage, defineMessage, useIntl} from 'react-intl';
@@ -32,7 +31,7 @@ import type {Page, Space} from 'types/docs';
 import type {Draft} from 'types/drafts';
 
 import styles from './page_header.module.scss';
-import {DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH} from './sidebar/sidebar';
+import {usePagesSidebarWidth} from './sidebar/width';
 
 // The pages toggle doubles as the accessible label for the page tree section;
 // the tree references it via aria-labelledby.
@@ -111,10 +110,7 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
 
     // Read-only view of the pages sidebar's live width, so the add-page button
     // can sit on its right edge (shared store, no prop threading).
-    const {width: sidebarWidth} = useSidebarWidth('pages', DEFAULT_SIDEBAR_WIDTH, {
-        minWidth: MIN_SIDEBAR_WIDTH,
-        maxWidth: MAX_SIDEBAR_WIDTH,
-    });
+    const {width: sidebarWidth} = usePagesSidebarWidth();
 
     const addPageLabel = formatMessage({id: 'docs.pageTree.add', defaultMessage: 'Add page'});
     const commentsLabel = formatMessage({id: 'docs.space.comments', defaultMessage: 'Comments'});

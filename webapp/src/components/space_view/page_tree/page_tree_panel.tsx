@@ -325,7 +325,7 @@ const PageTreePanel = ({space}: {space: Space}) => {
             >
                 <FormattedMessage
                     id='docs.pageTree.keyboardHelp'
-                    defaultMessage='Use the arrow keys to move through pages. Hold Alt with an arrow key to move the selected page up, down, in, or out.'
+                    defaultMessage='Use the arrow keys to move through pages. Hold Alt with an arrow key to move the focused page up, down, in, or out. Press Tab to reach its actions menu.'
                 />
             </p>
 

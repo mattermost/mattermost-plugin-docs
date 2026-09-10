@@ -141,8 +141,8 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
     const isOwnEvent = (event: React.SyntheticEvent) => event.target === event.currentTarget;
 
     // Shift+F10 and the Menu key are the platform conventions for "open this
-    // row's context menu"; the trigger button itself stays out of the tab order
-    // so the tree keeps a single tab stop.
+    // row's context menu", but Apple keyboards have neither — so the menu trigger
+    // is also reachable with Tab (see its tabIndex below).
     const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
         if (!isOwnEvent(event)) {
             return;
@@ -307,7 +307,14 @@ const PageTreeNode = ({node, activePageId, collapsed, descendants, subtreeHeight
                             <button
                                 type='button'
                                 className={styles.menuTrigger}
-                                tabIndex={-1}
+
+                                // Tabbable only on the row that holds the tree's
+                                // tab stop, so the tree is still a single stop from
+                                // the outside: Tab enters the tree, Tab again moves
+                                // to that row's menu, Tab again leaves. Arrow keys
+                                // already cover the chevron, so this is the one
+                                // control in the row that needs its own stop.
+                                tabIndex={tabStopId === id ? 0 : -1}
                                 aria-label={menuLabel}
                                 onClick={(event) => event.stopPropagation()}
                             >
