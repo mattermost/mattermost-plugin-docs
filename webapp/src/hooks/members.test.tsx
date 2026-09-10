@@ -10,7 +10,7 @@ import type {Store, UnknownAction} from 'redux';
 import type {GlobalState} from '@mattermost/types/store';
 import type {UserProfile} from '@mattermost/types/users';
 
-import {useSpaceMemberProfiles, useUserProfile} from './members';
+import {useSpaceMemberIds, useSpaceMemberProfiles, useUserProfile} from './members';
 
 import {makeTestState} from '../../tests/react_testing_utils';
 
@@ -93,6 +93,22 @@ describe('member profile hooks', () => {
         act(() => addUnrelatedProfile(store));
 
         expect(renders).toBe(1);
+    });
+
+    it('returns a space\'s member ids without resolving profiles', () => {
+        const store = makeProfileStore(['alice']);
+
+        const {result} = renderHook(() => useSpaceMemberIds('eng'), {wrapper: wrapperFor(store)});
+
+        expect(result.current).toEqual(['alice']);
+    });
+
+    it('returns no member ids for a space with no members', () => {
+        const store = makeProfileStore();
+
+        const {result} = renderHook(() => useSpaceMemberIds('eng'), {wrapper: wrapperFor(store)});
+
+        expect(result.current).toEqual([]);
     });
 
     it('does not rerender member profiles for an unrelated user update', () => {

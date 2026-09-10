@@ -46,6 +46,12 @@ export function useUserProfile(userId?: string): MemberProfile | undefined {
     }, [userId, user, nameDisplay]);
 }
 
+// A space's member ids, for callers that resolve profiles themselves (core's
+// Avatars fetches any it's missing).
+export function useSpaceMemberIds(spaceId: string): string[] {
+    return useAppSelector((state) => getSpaceMemberIds(state, spaceId));
+}
+
 // Resolves a space's member ids (from the Docs store) to display profiles,
 // fetching any not yet in the host store. Member ids are loaded by
 // fetchSpaceMembers (see useSpaceStats).

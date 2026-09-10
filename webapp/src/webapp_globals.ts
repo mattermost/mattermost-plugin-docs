@@ -235,12 +235,28 @@ type AvatarProps = {
     name?: string;
 };
 
+// Mirrors core's Avatars props (widgets/users/avatars). Resolves each id to a
+// profile itself and renders an overlapping stack with a "+N" overflow chip, so
+// callers pass ids rather than pre-resolved profiles.
+type AvatarsProps = {
+    userIds: string[];
+    totalUsers?: number;
+    size?: AvatarSize;
+    fetchMissingUsers?: boolean;
+
+    // Lets the "+N" chip open a list of the overflow members. Hosts predating it
+    // ignore the prop and leave the chip as a tooltip.
+    canOpenOverflow?: boolean;
+};
+
 // Core exposes shared React components to plugins on `window.Components`
 // (core's plugins/export.ts). Timestamp renders localized times; Avatar renders
-// a user's profile picture with the host's sizing/fallback.
+// a user's profile picture with the host's sizing/fallback; Avatars stacks
+// several with profile popovers.
 type HostComponents = {
     Timestamp?: ComponentType<TimestampProps>;
     Avatar?: ComponentType<AvatarProps>;
+    Avatars?: ComponentType<AvatarsProps>;
 };
 
 const hostComponents = (): HostComponents => (window as unknown as {Components?: HostComponents}).Components ?? {};
@@ -258,6 +274,20 @@ export const Avatar = (props: AvatarProps): ReactElement | null => {
     const HostAvatar = hostComponents().Avatar;
     return HostAvatar ? React.createElement(HostAvatar, props) : null;
 };
+
+// Renders the host Avatars stack, or nothing on a host that doesn't publish it
+// (hosts predating MM-70358), matching the Avatar fallback above.
+export const Avatars = (props: AvatarsProps): ReactElement | null => {
+    const HostAvatars = hostComponents().Avatars;
+    return HostAvatars ? React.createElement(HostAvatars, props) : null;
+};
+
+// Whether the running host publishes the Avatars stack. Hosts predating MM-70358
+// only publish Avatar, so callers fall back to their own stack rather than
+// rendering nothing.
+export function hostHasAvatars(): boolean {
+    return Boolean(hostComponents().Avatars);
+}
 
 export function getBrowserHistory(): History | undefined {
     return webappUtils().browserHistory;

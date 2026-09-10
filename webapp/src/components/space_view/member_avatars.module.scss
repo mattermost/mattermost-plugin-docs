@@ -6,10 +6,10 @@
 .avatar {
     display: inline-flex;
     border-radius: 50%;
-    box-shadow: 0 0 0 2px var(--center-channel-bg);
+    box-shadow: 0 0 0 1px var(--center-channel-bg);
 
     &:not(:first-child) {
-        margin-left: -8px;
+        margin-left: -5px;
     }
 }
 
@@ -38,11 +38,14 @@
     justify-content: center;
     min-width: 24px;
     height: 24px;
-    margin-left: -8px;
+    margin-left: -5px;
     padding: 0 6px;
     border-radius: 12px;
-    background: rgba(var(--center-channel-color-rgb), 0.08);
-    box-shadow: 0 0 0 2px var(--center-channel-bg);
+
+    // Opaque, not rgba(): the chip overlaps the avatar beside it, and a translucent
+    // fill lets that avatar show through (MM-70358). Mirrors core's tinycolor mix.
+    background: color-mix(in srgb, var(--center-channel-color) 8%, var(--center-channel-bg));
+    box-shadow: 0 0 0 1px var(--center-channel-bg);
     color: rgba(var(--center-channel-color-rgb), 0.72);
     font-size: 11px;
     font-weight: 600;
