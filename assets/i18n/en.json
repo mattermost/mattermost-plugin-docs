@@ -4,6 +4,62 @@
     "translation": "Docs is not enabled."
   },
   {
+    "id": "api.import.body_too_large.app_error",
+    "translation": "The request body is too large. The maximum is {{.MaxBytes}} bytes."
+  },
+  {
+    "id": "api.import.bundle_part_not_second.app_error",
+    "translation": "The import upload must send the bundle part immediately after the request part."
+  },
+  {
+    "id": "api.import.empty_bundle.app_error",
+    "translation": "The uploaded import bundle is empty."
+  },
+  {
+    "id": "api.import.inspection_busy.app_error",
+    "translation": "Another import bundle is being inspected. Try again shortly."
+  },
+  {
+    "id": "api.import.invalid_body.app_error",
+    "translation": "The request body could not be read."
+  },
+  {
+    "id": "api.import.invalid_multipart.app_error",
+    "translation": "The import upload could not be read as a multipart request."
+  },
+  {
+    "id": "api.import.missing_request_part.app_error",
+    "translation": "The import upload is missing its request part."
+  },
+  {
+    "id": "api.import.request_part_not_first.app_error",
+    "translation": "The import upload must send the request part before the bundle part."
+  },
+  {
+    "id": "api.import.request_part_too_large.app_error",
+    "translation": "The import request part must be {{.MaxBytes}} bytes or smaller."
+  },
+  {
+    "id": "api.import.shutting_down.app_error",
+    "translation": "The Docs plugin is shutting down and cannot accept new imports."
+  },
+  {
+    "id": "api.import.temp_storage_failed.app_error",
+    "translation": "The import bundle could not be stored while it was inspected."
+  },
+  {
+    "id": "api.import.unknown_part.app_error",
+    "translation": "The import upload contains an unexpected part."
+  },
+  {
+    "id": "api.import.upload_read_failed.app_error",
+    "translation": "The import bundle could not be read."
+  },
+  {
+    "id": "api.import.upload_too_large.app_error",
+    "translation": "The import upload exceeds the maximum allowed size."
+  },
+  {
     "id": "api.invalid_json.app_error",
     "translation": "The request body could not be parsed."
   },
@@ -22,6 +78,130 @@
   {
     "id": "api.request_too_large.app_error",
     "translation": "The request body exceeds the maximum allowed size of {{.MaxBytes}} bytes."
+  },
+  {
+    "id": "app.import.admission_exhausted.app_error",
+    "translation": "Import capacity is temporarily exhausted ({{.Limit}}). Try again shortly."
+  },
+  {
+    "id": "app.import.bundle_content_not_processable.app_error",
+    "translation": "The import bundle is valid but its content exceeds a Docs limit ({{.Code}})."
+  },
+  {
+    "id": "app.import.bundle_invalid.app_error",
+    "translation": "The import bundle is not a valid mmetl Confluence bundle ({{.Code}})."
+  },
+  {
+    "id": "app.import.bundle_too_large.app_error",
+    "translation": "The import bundle exceeds an allowed size limit ({{.Code}})."
+  },
+  {
+    "id": "app.import.cancel.already_terminal.app_error",
+    "translation": "This import has already finished and cannot be canceled."
+  },
+  {
+    "id": "app.import.confirm.missing_acknowledgement.app_error",
+    "translation": "This import requires the \"{{.Key}}\" acknowledgement before it can start."
+  },
+  {
+    "id": "app.import.confirm.new_space_not_allowed.app_error",
+    "translation": "Space title and description cannot be set when importing into an existing Space."
+  },
+  {
+    "id": "app.import.confirm.new_space_required.app_error",
+    "translation": "A title and description are required when importing into a new Space."
+  },
+  {
+    "id": "app.import.confirm.not_a_conflict.app_error",
+    "translation": "Page \"{{.ExternalId}}\" is not one of this import's conflicts, so it cannot be approved for overwriting."
+  },
+  {
+    "id": "app.import.confirm.not_awaiting_confirmation.app_error",
+    "translation": "This import is not waiting for confirmation."
+  },
+  {
+    "id": "app.import.confirm.preflight_stale_recomputing.app_error",
+    "translation": "The reviewed import plan is out of date because this import source changed. A new plan is being prepared; please review and confirm it."
+  },
+  {
+    "id": "app.import.confirm.revision_mismatch.app_error",
+    "translation": "The confirmed import plan is not the current one. Reload the import and confirm the plan shown."
+  },
+  {
+    "id": "app.import.create.invalid_bundle_digest.app_error",
+    "translation": "The import bundle checksum could not be computed."
+  },
+  {
+    "id": "app.import.create.invalid_user_id.app_error",
+    "translation": "The acting user id is not valid."
+  },
+  {
+    "id": "app.import.create.nil_request.app_error",
+    "translation": "The import request is missing."
+  },
+  {
+    "id": "app.import.entitlement.lookup_failed.app_error",
+    "translation": "Your access to the import target could not be verified."
+  },
+  {
+    "id": "app.import.get.invalid_id.app_error",
+    "translation": "The import job was not found."
+  },
+  {
+    "id": "app.import.issues.invalid_severity.app_error",
+    "translation": "The severity filter is not a valid import issue severity."
+  },
+  {
+    "id": "app.import.issues.invalid_stage.app_error",
+    "translation": "The stage filter is not a valid import stage."
+  },
+  {
+    "id": "app.import.list.invalid_team_id.app_error",
+    "translation": "The team_id parameter is not a valid ID."
+  },
+  {
+    "id": "app.import.report.invalid_stage.app_error",
+    "translation": "The requested report stage is not valid. Use \"preflight\" or \"final\"."
+  },
+  {
+    "id": "app.import.report.not_ready.app_error",
+    "translation": "That report is not available yet. It becomes downloadable once this stage of the import has finished."
+  },
+  {
+    "id": "app.import.results.invalid_action.app_error",
+    "translation": "The planned_action filter is not a valid import action."
+  },
+  {
+    "id": "app.import.source.missing.app_error",
+    "translation": "The import source this import was pointed at no longer exists."
+  },
+  {
+    "id": "app.import.source.new_target_not_selectable.app_error",
+    "translation": "An import into a new Space has only one possible import source, so none can be selected."
+  },
+  {
+    "id": "app.import.source.not_awaiting_source.app_error",
+    "translation": "This import is not waiting for an import source to be selected."
+  },
+  {
+    "id": "app.import.target.actor_inactive.app_error",
+    "translation": "Your account is deactivated, so this import cannot continue."
+  },
+  {
+    "id": "app.import.target.cannot_create_space.app_error",
+    "translation": "You do not have permission to create a Space in this team."
+  },
+  {
+    "id": "app.import.target.not_team_member.app_error",
+    "translation": "You are not an active member of the target team."
+  },
+  {
+    "id": "app.import.target.space_without_team.app_error",
+    "translation": "A Space that does not belong to a team cannot be an import target."
+  },
+  {
+    "id": "app.import.target.team_lookup_failed.app_error",
+    "translation": "The target team membership could not be verified."
   },
   {
     "id": "app.optimistic_lock.baseline_required.app_error",
@@ -578,6 +758,330 @@
   {
     "id": "model.draft.is_valid.user_id.app_error",
     "translation": "Invalid user ID for the draft."
+  },
+  {
+    "id": "model.import_confirm.is_valid.revision.app_error",
+    "translation": "The import plan revision is not a valid 64-character digest."
+  },
+  {
+    "id": "model.import_confirm.is_valid.space_description.app_error",
+    "translation": "The Space description must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_confirm.is_valid.space_title.app_error",
+    "translation": "The Space title must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_confirm.is_valid.space_title_required.app_error",
+    "translation": "A Space title is required."
+  },
+  {
+    "id": "model.import_confirm.is_valid.space_unstorable.app_error",
+    "translation": "The Space title or description contains characters that cannot be stored."
+  },
+  {
+    "id": "model.import_confirm.is_valid.unknown_acknowledgement.app_error",
+    "translation": "\"{{.Key}}\" is not a recognized import acknowledgement."
+  },
+  {
+    "id": "model.import_confirmation.is_valid.duplicate_overwrite.app_error",
+    "translation": "The confirmation lists the same page twice for overwrite."
+  },
+  {
+    "id": "model.import_confirmation.is_valid.external_id.app_error",
+    "translation": "The confirmation contains an invalid source page identifier."
+  },
+  {
+    "id": "model.import_confirmation.is_valid.revision.app_error",
+    "translation": "The confirmation is missing a valid preflight revision."
+  },
+  {
+    "id": "model.import_confirmation.is_valid.space_title.app_error",
+    "translation": "The Space title must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_confirmation.is_valid.too_many_overwrites.app_error",
+    "translation": "The confirmation approves more than {{.Max}} pages for overwrite."
+  },
+  {
+    "id": "model.import_details.invalid.app_error",
+    "translation": "The {{.Field}} could not be encoded."
+  },
+  {
+    "id": "model.import_details.too_large.app_error",
+    "translation": "The {{.Field}} must be {{.MaxBytes}} bytes or smaller."
+  },
+  {
+    "id": "model.import_issue.is_valid.code.app_error",
+    "translation": "The import issue code is required and must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_issue.is_valid.external_id.app_error",
+    "translation": "The import issue source identifier is not valid."
+  },
+  {
+    "id": "model.import_issue.is_valid.local_id.app_error",
+    "translation": "The import issue local page id is not valid."
+  },
+  {
+    "id": "model.import_issue.is_valid.message.app_error",
+    "translation": "The import issue message is required."
+  },
+  {
+    "id": "model.import_issue.is_valid.severity.app_error",
+    "translation": "The import issue severity is not valid."
+  },
+  {
+    "id": "model.import_issue.is_valid.stage.app_error",
+    "translation": "The import issue stage is not valid."
+  },
+  {
+    "id": "model.import_issue.is_valid.text_too_long.app_error",
+    "translation": "An import issue message must be {{.MaxBytes}} bytes or smaller."
+  },
+  {
+    "id": "model.import_issue.is_valid.title_too_long.app_error",
+    "translation": "An import issue title must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_job.is_valid.actor_id.app_error",
+    "translation": "The import job actor id is not valid."
+  },
+  {
+    "id": "model.import_job.is_valid.bundle_sha.app_error",
+    "translation": "The import job bundle checksum must be a 64-character hexadecimal digest."
+  },
+  {
+    "id": "model.import_job.is_valid.byte_accounting.app_error",
+    "translation": "The import job byte accounting is not valid."
+  },
+  {
+    "id": "model.import_job.is_valid.error_code_length.app_error",
+    "translation": "The import job error code must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_job.is_valid.id.app_error",
+    "translation": "The import job id is not valid."
+  },
+  {
+    "id": "model.import_job.is_valid.preflight_revision.app_error",
+    "translation": "The preflight revision must be a 64-character hexadecimal digest."
+  },
+  {
+    "id": "model.import_job.is_valid.source_display_name_length.app_error",
+    "translation": "The import source display name must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_job.is_valid.source_mode.app_error",
+    "translation": "The import source selection mode is not valid."
+  },
+  {
+    "id": "model.import_job.is_valid.space_title_length.app_error",
+    "translation": "The Space title must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_job.is_valid.state.app_error",
+    "translation": "The import job state is not valid."
+  },
+  {
+    "id": "model.import_job.is_valid.target_kind.app_error",
+    "translation": "The import target kind must be either new or existing."
+  },
+  {
+    "id": "model.import_job.is_valid.target_space_id.app_error",
+    "translation": "The import target Space id is not valid."
+  },
+  {
+    "id": "model.import_job.is_valid.team_id.app_error",
+    "translation": "The import job team id is not valid."
+  },
+  {
+    "id": "model.import_job.is_valid.terminal_intent.app_error",
+    "translation": "The import job terminal intent is not valid."
+  },
+  {
+    "id": "model.import_job.is_valid.terminalizing_without_intent.app_error",
+    "translation": "An import job being finalized must record which outcome to publish."
+  },
+  {
+    "id": "model.import_job.is_valid.timestamps.app_error",
+    "translation": "The import job timestamps are not set."
+  },
+  {
+    "id": "model.import_manifest_user.is_valid.account_id.app_error",
+    "translation": "The manifest user account identifier is not valid."
+  },
+  {
+    "id": "model.import_manifest_user.is_valid.job_id.app_error",
+    "translation": "The manifest user import job id is not valid."
+  },
+  {
+    "id": "model.import_manifest_user.is_valid.ordinal.app_error",
+    "translation": "The manifest user ordinal is not valid."
+  },
+  {
+    "id": "model.import_result.is_valid.action.app_error",
+    "translation": "The import result action is not valid."
+  },
+  {
+    "id": "model.import_result.is_valid.entity_type.app_error",
+    "translation": "The import result entity type is not supported."
+  },
+  {
+    "id": "model.import_result.is_valid.external_id.app_error",
+    "translation": "The import result source identifier is not valid."
+  },
+  {
+    "id": "model.import_result.is_valid.local_id.app_error",
+    "translation": "The import result local page id is not valid."
+  },
+  {
+    "id": "model.import_result.is_valid.ordinal.app_error",
+    "translation": "The import result ordinal is not valid."
+  },
+  {
+    "id": "model.import_result.is_valid.outcome.app_error",
+    "translation": "The import result outcome is not valid."
+  },
+  {
+    "id": "model.import_result.is_valid.outcome_required.app_error",
+    "translation": "The import result outcome is required."
+  },
+  {
+    "id": "model.import_result.is_valid.stage.app_error",
+    "translation": "The import result stage is not valid."
+  },
+  {
+    "id": "model.import_result.is_valid.timestamps.app_error",
+    "translation": "The import result timestamps are not set."
+  },
+  {
+    "id": "model.import_result.is_valid.title_too_long.app_error",
+    "translation": "An import result title must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_source.is_valid.created_by.app_error",
+    "translation": "The import source creator id is not valid."
+  },
+  {
+    "id": "model.import_source.is_valid.display_name_length.app_error",
+    "translation": "The import source display name must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_source.is_valid.id.app_error",
+    "translation": "The import source id is not valid."
+  },
+  {
+    "id": "model.import_source.is_valid.mapping_revision.app_error",
+    "translation": "The import source mapping revision is not valid."
+  },
+  {
+    "id": "model.import_source.is_valid.organization_id.app_error",
+    "translation": "The import source organization identifier is not valid."
+  },
+  {
+    "id": "model.import_source.is_valid.source_type.app_error",
+    "translation": "The import source type is not supported."
+  },
+  {
+    "id": "model.import_source.is_valid.space_id.app_error",
+    "translation": "The import source Space id is not valid."
+  },
+  {
+    "id": "model.import_source.is_valid.space_key.app_error",
+    "translation": "The import source external space key is required."
+  },
+  {
+    "id": "model.import_source.is_valid.timestamps.app_error",
+    "translation": "The import source timestamps are not set."
+  },
+  {
+    "id": "model.import_source_selection.is_valid.display_name.app_error",
+    "translation": "A display name is required when creating a new import source."
+  },
+  {
+    "id": "model.import_source_selection.is_valid.display_name_not_allowed.app_error",
+    "translation": "A display name cannot be set when selecting an existing import source."
+  },
+  {
+    "id": "model.import_source_selection.is_valid.display_name_too_long.app_error",
+    "translation": "The import source display name must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_source_selection.is_valid.display_name_unstorable.app_error",
+    "translation": "The import source display name contains characters that cannot be stored."
+  },
+  {
+    "id": "model.import_source_selection.is_valid.import_source_id.app_error",
+    "translation": "A valid import source ID is required when selecting an existing import source."
+  },
+  {
+    "id": "model.import_source_selection.is_valid.import_source_id_not_allowed.app_error",
+    "translation": "An import source ID cannot be set when creating a new import source."
+  },
+  {
+    "id": "model.import_source_selection.is_valid.mode.app_error",
+    "translation": "The import source mode must be \"new\" or \"existing\"."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.author_account_id.app_error",
+    "translation": "The staged page author account identifier is not valid."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.external_id.app_error",
+    "translation": "The staged page source identifier is not valid."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.incoming_hash.app_error",
+    "translation": "The staged page source content hash is not valid."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.job_id.app_error",
+    "translation": "The staged page import job id is not valid."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.ordinal.app_error",
+    "translation": "The staged page ordinal must be below {{.Max}}."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.parent_external_id.app_error",
+    "translation": "The staged page parent source identifier is not valid."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.planned_action.app_error",
+    "translation": "The staged page planned action is not valid."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.preflight_hash.app_error",
+    "translation": "A staged page preflight baseline hash is not valid."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.source_line.app_error",
+    "translation": "The staged page source line number is not valid."
+  },
+  {
+    "id": "model.import_staged_page.is_valid.title.app_error",
+    "translation": "The staged page title is required and must be {{.MaxLength}} characters or fewer."
+  },
+  {
+    "id": "model.import_target.is_valid.kind.app_error",
+    "translation": "The import target kind must be either new or existing."
+  },
+  {
+    "id": "model.import_target.is_valid.space_id.app_error",
+    "translation": "A space_id is required when importing into an existing Space."
+  },
+  {
+    "id": "model.import_target.is_valid.space_id_not_allowed.app_error",
+    "translation": "A space_id must not be supplied when creating a new Space."
+  },
+  {
+    "id": "model.import_target.is_valid.team_id.app_error",
+    "translation": "A team_id is required when creating a new Space."
+  },
+  {
+    "id": "model.import_target.is_valid.team_id_not_allowed.app_error",
+    "translation": "A team_id must not be supplied when importing into an existing Space; it is derived from the Space."
   },
   {
     "id": "model.page.is_valid.body.app_error",

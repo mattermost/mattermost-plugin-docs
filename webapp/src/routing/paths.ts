@@ -11,7 +11,10 @@
 //   /{team}/spaces                          ← product home
 //   /{team}/spaces/:spaceId                 ← space home
 //   /{team}/spaces/:spaceId/:pageId         ← page
-//   /{team}/spaces/:spaceId/drafts/:pageId  ← per-user draft
+//   /{team}/spaces/:spaceId/_drafts/:pageId  ← per-user draft
+//   /{team}/spaces/:spaceId/_overview        ← the space's front door
+//   /{team}/spaces/_import                   ← import into a new space
+//   /{team}/spaces/:spaceId/_import          ← import into that space
 //
 // registerProduct() is called with isTeamScoped: true, so core mounts the
 // product at `/:team${DOCS_BASE_URL}` and initializes team context from the URL
@@ -28,22 +31,51 @@ export const DOCS_SWITCHER_LINK_URL = `/${DOCS_KEYWORD}`;
 // lowercase alphanumeric, then lowercase alphanumerics, dashes, or underscores.
 const SPACE_OR_PAGE_ID = '[a-z0-9][a-z0-9\\-_]*';
 
+// Segments that name something other than content. Every one begins with an underscore, and that is the whole
+// rule.
+//
+// A space id or page id in the URL can never start with one (SPACE_OR_PAGE_ID above), so these segments cannot
+// collide with anything a user names — no reserved-word list to keep, nothing to enforce at creation time, and
+// no migration if custom slugs return.
+//
+// The alternative is a bare word matched ahead of the id routes, and its safety is circumstantial rather than
+// structural: it holds only while no user-chosen string can reach that position. `drafts` got away with it by
+// arity — no content route has three segments after `spaces`, so a page named `drafts` stayed reachable — but a
+// two-segment segment sits exactly where a page id goes and hides any page addressed that way.
+//
+// RESERVED_SEGMENTS exists so that stays true: paths.test.ts asserts every entry is unmatchable as an id, which
+// is a mechanical check on the next one added.
+export const DOCS_DRAFTS_SEGMENT = '_drafts';
+
+// The space's front door, addressed explicitly. A bare space URL redirects to the space's default page when one
+// is set, so "show me the overview" needs a URL of its own — otherwise the redirect would always win.
+export const DOCS_OVERVIEW_SEGMENT = '_overview';
+
+// Where the Confluence import wizard lives. An import is in the URL rather than in component state because it
+// outlives any one view of it: a job runs for minutes on the server, so the page showing it has to survive a
+// reload and be linkable.
+export const DOCS_IMPORT_SEGMENT = '_import';
+
+export const RESERVED_SEGMENTS = [DOCS_DRAFTS_SEGMENT, DOCS_OVERVIEW_SEGMENT, DOCS_IMPORT_SEGMENT] as const;
+
+// The id pattern, anchored, for asserting that a reserved segment cannot be one.
+export const SPACE_OR_PAGE_ID_PATTERN = new RegExp(`^${SPACE_OR_PAGE_ID}$`);
+
 // Route patterns for <Route>/useRouteMatch, matched against the full
 // team-scoped pathname the product mounts under.
 export const DOCS_ROUTE = `/:team/${DOCS_KEYWORD}/:spaceId(${SPACE_OR_PAGE_ID})?/:pageId(${SPACE_OR_PAGE_ID})?`;
-export const DOCS_DRAFT_ROUTE = `/:team/${DOCS_KEYWORD}/:spaceId(${SPACE_OR_PAGE_ID})/drafts/:pageId(${SPACE_OR_PAGE_ID})`;
+export const DOCS_DRAFT_ROUTE = `/:team/${DOCS_KEYWORD}/:spaceId(${SPACE_OR_PAGE_ID})/${DOCS_DRAFTS_SEGMENT}/:pageId(${SPACE_OR_PAGE_ID})`;
 
 // A routed space, with or without a page. Distinct from DOCS_ROUTE (whose params
 // are both optional, for parsing the current location) so it can be matched on
 // its own in a <Switch> — the product home is then the fallthrough.
 export const DOCS_SPACE_ROUTE = `/:team/${DOCS_KEYWORD}/:spaceId(${SPACE_OR_PAGE_ID})/:pageId(${SPACE_OR_PAGE_ID})?`;
 
-// The space's front door, addressed explicitly. A bare space URL redirects to the
-// space's default page when one is set, so "show me the overview" needs a URL of
-// its own — otherwise the redirect would always win. Like `drafts`, this segment
-// must be matched before the generic page route, which would otherwise read it as
-// a page id.
-export const DOCS_OVERVIEW_SEGMENT = 'overview';
+// Both import shapes: into a new space (team-scoped) and into an existing one, which hangs off that space
+// because that is what the import is about and where the user was standing when they asked for it.
+export const DOCS_IMPORT_ROUTE = `/:team/${DOCS_KEYWORD}/${DOCS_IMPORT_SEGMENT}`;
+export const DOCS_SPACE_IMPORT_ROUTE = `/:team/${DOCS_KEYWORD}/:spaceId(${SPACE_OR_PAGE_ID})/${DOCS_IMPORT_SEGMENT}`;
+
 export const DOCS_SPACE_OVERVIEW_ROUTE = `/:team/${DOCS_KEYWORD}/:spaceId(${SPACE_OR_PAGE_ID})/${DOCS_OVERVIEW_SEGMENT}`;
 
 const segment = (value: string): string => encodeURIComponent(value);
@@ -58,10 +90,16 @@ export const pagePath = (teamName: string, spaceId: string, pageId: string): str
 
 export const overviewPath = (teamName: string, spaceId: string): string => `${spacePath(teamName, spaceId)}/${DOCS_OVERVIEW_SEGMENT}`;
 
-export const draftPath = (teamName: string, spaceId: string, pageId: string): string => `${spacePath(teamName, spaceId)}/drafts/${segment(pageId)}`;
+export const draftPath = (teamName: string, spaceId: string, pageId: string): string =>
+    `${spacePath(teamName, spaceId)}/${DOCS_DRAFTS_SEGMENT}/${segment(pageId)}`;
+
+export const importPath = (teamName: string): string => `${teamRoot(teamName)}/${DOCS_IMPORT_SEGMENT}`;
+
+export const spaceImportPath = (teamName: string, spaceId: string): string =>
+    `${spacePath(teamName, spaceId)}/${DOCS_IMPORT_SEGMENT}`;
 
 // Edit mode is a query on the page URL, not a path segment: the page id stays
-// canonical in the path, and /drafts/:pageId is left to mean a page with no
+// canonical in the path, and the drafts segment is left to mean a page with no
 // published version yet.
 export const EDIT_QUERY = 'edit';
 

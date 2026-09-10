@@ -46,6 +46,16 @@ const (
 	wsEventSpaceRestored      = "space_restored"
 	wsEventSpaceMemberAdded   = "space_member_added"
 	wsEventSpaceMemberRemoved = "space_member_removed"
+
+	// wsEventSpaceImported is the channel-scoped invalidation published once per terminal import that changed
+	// the tree. Like space_deleted/space_restored it names only the Space: an import can touch thousands of
+	// pages, so clients treat it as an invalidation of the whole tree rather than expecting per-page events.
+	// It deliberately carries no job, source, or outcome detail — those are actor-scoped, and every member of
+	// the Space receives this one.
+	wsEventSpaceImported = "space_imported"
+	// wsEventImportJobUpdated is the actor-scoped progress event. It is the only import event carrying job
+	// state, because only the job's own actor may see that an import is running at all.
+	wsEventImportJobUpdated = "import_job_updated"
 )
 
 // publishToChannels publishes a WebSocket event broadcast to each non-empty, distinct channel ID.

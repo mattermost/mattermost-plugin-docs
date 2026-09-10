@@ -56,6 +56,18 @@ describe('SpaceItemMenu', () => {
         }
     });
 
+    // Importing into a Space that already exists decides which of its pages the bundle adopts and whose edits an
+    // overwrite discards, so it is offered from the Space itself — and it navigates, because where you are in an
+    // import belongs in the URL rather than in whichever component happened to open it.
+    it('navigates to the import route for this Space', async () => {
+        const {history} = renderMenu();
+
+        await openMenu();
+        fireEvent.click(screen.getByText('Import from Confluence'));
+
+        await waitFor(() => expect(history.location.pathname).toBe('/myteam/spaces/docs/_import'));
+    });
+
     it('opens the leave confirmation from the menu', async () => {
         renderMenu();
 

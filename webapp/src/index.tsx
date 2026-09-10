@@ -1,6 +1,8 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {publishImportJobUpdate} from 'client/import_events';
+import type {ImportJobUpdatedEvent} from 'client/import_events';
 import {publishPagePresence} from 'client/presence_events';
 import type {PagePresenceEvent} from 'client/presence_events';
 import manifest from 'manifest';
@@ -24,6 +26,10 @@ const DocsHeaderCentre = () => null;
 
 const PAGE_PRESENCE_EVENT = `custom_${manifest.id}_page_presence_updated`;
 
+// The import worker's actor-scoped progress event. Registered here rather than in the wizard because a plugin
+// only gets one chance to register handlers, at init.
+const IMPORT_JOB_UPDATED_EVENT = `custom_${manifest.id}_import_job_updated`;
+
 export default class Plugin {
     public async initialize(registry: PluginRegistry) {
         registry.registerTranslations({
@@ -45,6 +51,10 @@ export default class Plugin {
 
         registry.registerWebSocketEventHandler<PagePresenceEvent>(PAGE_PRESENCE_EVENT, (msg) => {
             publishPagePresence(msg.data);
+        });
+
+        registry.registerWebSocketEventHandler<ImportJobUpdatedEvent>(IMPORT_JOB_UPDATED_EVENT, (msg) => {
+            publishImportJobUpdate(msg.data);
         });
 
         registry.registerProduct({

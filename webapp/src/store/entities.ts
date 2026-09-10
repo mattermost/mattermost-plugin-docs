@@ -352,9 +352,7 @@ function drafts(state: Record<string, StoredDraft> = {}, action: UnknownAction):
         const next = {...state};
         for (const draft of received) {
             const current = next[draft.page_id];
-            next[draft.page_id] = current && isFullDraft(current) && !isFullDraft(draft) ?
-                {...current, ...draft} :
-                draft;
+            next[draft.page_id] = current && isFullDraft(current) && !isFullDraft(draft) ? {...current, ...draft} : draft;
         }
         return next;
     }

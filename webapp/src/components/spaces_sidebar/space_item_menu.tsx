@@ -9,6 +9,7 @@ import {FormattedMessage, useIntl} from 'react-intl';
 import {copyToClipboard} from 'utils/clipboard';
 
 import DotsVerticalIcon from '@mattermost/compass-icons/components/dots-vertical';
+import DownloadOutlineIcon from '@mattermost/compass-icons/components/download-outline';
 import ExitToAppIcon from '@mattermost/compass-icons/components/exit-to-app';
 import LinkVariantIcon from '@mattermost/compass-icons/components/link-variant';
 import StarIcon from '@mattermost/compass-icons/components/star';
@@ -27,7 +28,7 @@ type Props = {
 
 const SpaceItemMenu = ({space}: Props) => {
     const {formatMessage} = useIntl();
-    const {paths: absolutePaths} = useDocsNavigation({absolute: true});
+    const {paths: absolutePaths, goToImport} = useDocsNavigation({absolute: true});
     const leaveThisSpace = useLeaveSpace(space);
     const favoriteState = useSpaceFavoriteState(space.id);
     const toggleFavorite = useToggleFavorite();
@@ -96,6 +97,19 @@ const SpaceItemMenu = ({space}: Props) => {
                     <FormattedMessage
                         id='docs.sidebar.space.copyLink'
                         defaultMessage='Copy link'
+                    />
+                </Menu.Item>
+
+                {/* Importing into a Space that already exists is a decision about *this* Space — which of its
+                  * pages the bundle adopts, and whose edits an overwrite would discard — so it is offered here
+                  * rather than only from the "new Space" entry in the sidebar. */}
+                <Menu.Item
+                    leadingIcon={<DownloadOutlineIcon size={18}/>}
+                    onClick={() => goToImport(space.id)}
+                >
+                    <FormattedMessage
+                        id='docs.sidebar.space.import'
+                        defaultMessage='Import from Confluence'
                     />
                 </Menu.Item>
                 <Menu.Separator/>

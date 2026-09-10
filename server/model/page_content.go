@@ -54,7 +54,7 @@ func ParseTipTapDocument(contentJSON string) (TipTapDocument, error) {
 	// map[string]any at a large multiple of its encoded size, and the per-node budget inside the
 	// sanitize walk only applies after that allocation.
 	if len(contentJSON) > PageBodyMaxBytes {
-		return TipTapDocument{}, errors.New("content exceeds the maximum body size")
+		return TipTapDocument{}, ErrTipTapBodyTooLarge
 	}
 
 	var doc TipTapDocument
@@ -136,7 +136,28 @@ const maxTipTapDepth = 100
 // rich documents with ~5 inline nodes per paragraph stay well under 50 000 for any sane document.
 const maxTipTapNodes = 50_000
 
-var errAttrDepthExceeded = errors.New("content attribute nesting exceeds the maximum depth")
+// MaxTipTapNodes and MaxTipTapDepth expose the sanitizer's bounds to other packages (notably the
+// Confluence importer) so there is exactly one node-count and nesting limit for stored content
+// rather than two that can drift apart.
+const (
+	MaxTipTapNodes = maxTipTapNodes
+	MaxTipTapDepth = maxTipTapDepth
+)
+
+// Sentinel errors for the sanitizer's *limit* rejections, as opposed to its structural ones. Callers
+// mapping content failures onto an HTTP contract need the distinction: a document that breaches a size or
+// nesting bound is well-formed but unprocessable, while one the allowlist rejects is malformed. Without
+// these, both arrive as an opaque parse error and can only be reported as the same thing.
+var (
+	// ErrTipTapBodyTooLarge means the encoded document exceeds PageBodyMaxBytes.
+	ErrTipTapBodyTooLarge = errors.New("content exceeds the maximum body size")
+	// ErrTipTapTooDeep means node or attribute nesting exceeds MaxTipTapDepth.
+	ErrTipTapTooDeep = errors.New("content nesting exceeds the maximum depth")
+	// ErrTipTapTooManyNodes means the document exceeds MaxTipTapNodes.
+	ErrTipTapTooManyNodes = errors.New("content exceeds the maximum node count")
+)
+
+var errAttrDepthExceeded = errors.WithMessage(ErrTipTapTooDeep, "content attribute nesting exceeds the maximum depth")
 
 func sanitizeTipTapDocument(doc *TipTapDocument) error {
 	// count is a running node budget shared across the walk: sanitizeTipTapNode increments it per
@@ -381,11 +402,11 @@ func sanitizeTipTapNode(node map[string]any, depth int, count *int) error {
 		return errors.New("content node must not be null")
 	}
 	if depth > maxTipTapDepth {
-		return errors.New("content nesting exceeds the maximum depth")
+		return ErrTipTapTooDeep
 	}
 	*count++
 	if *count > maxTipTapNodes {
-		return errors.Errorf("content exceeds the maximum of %d nodes", maxTipTapNodes)
+		return errors.WithMessagef(ErrTipTapTooManyNodes, "content exceeds the maximum of %d nodes", maxTipTapNodes)
 	}
 
 	// Strip dangerous/URL keys placed directly on the node object, then sanitize its attrs. The
