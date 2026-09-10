@@ -2,6 +2,7 @@
 // See LICENSE.txt for license information.
 
 import {fireEvent, screen, waitFor} from '@testing-library/react';
+import {publishAutosaveStatus} from 'hooks/autosave_status';
 import React from 'react';
 
 import {makeDraft, makePage, makeSpace} from 'store/test_fixtures';
@@ -117,6 +118,8 @@ describe('PageHeader edit control', () => {
 describe('PageHeader publish controls', () => {
     const DRAFT = makeDraft('runbook', 'eng', 'Runbook');
 
+    afterEach(() => publishAutosaveStatus(null));
+
     // With no published page the draft *is* the page, so committing it creates one.
     it('offers Publish while editing an unpublished page', () => {
         renderHeader({page: undefined, draft: DRAFT, editing: true});
@@ -135,6 +138,27 @@ describe('PageHeader publish controls', () => {
 
     // Nothing to apply, so the control says so rather than failing when pressed.
     it('disables Update when the page has no unpublished edits', () => {
+        renderHeader({editing: true});
+
+        expect(screen.getByRole('button', {name: 'Update'})).toBeDisabled();
+    });
+
+    it('offers Update for edits the autosave has not written yet', () => {
+        publishAutosaveStatus('unsaved');
+        renderHeader({editing: true});
+
+        expect(screen.getByRole('button', {name: 'Update'})).toBeEnabled();
+    });
+
+    it('offers Update while a save is in flight', () => {
+        publishAutosaveStatus('saving');
+        renderHeader({editing: true});
+
+        expect(screen.getByRole('button', {name: 'Update'})).toBeEnabled();
+    });
+
+    it('disables Update once a save leaves nothing pending', () => {
+        publishAutosaveStatus('saved');
         renderHeader({editing: true});
 
         expect(screen.getByRole('button', {name: 'Update'})).toBeDisabled();

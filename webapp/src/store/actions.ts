@@ -2,6 +2,7 @@
 // See LICENSE.txt for license information.
 
 import {docsDataSource} from 'data';
+import {recordOwnPageWrite} from 'hooks/own_page_writes';
 
 import {ClientError} from '@mattermost/client';
 
@@ -183,6 +184,7 @@ export function updatePage(spaceId: string, pageId: string, patch: UpdatePagePat
             throw new Error(`Docs: page ${pageId} is not loaded`);
         }
         const updated = await docsDataSource.updatePage(spaceId, pageId, patch, page.edit_at);
+        recordOwnPageWrite(updated.id, updated.edit_at);
         dispatch({type: PageTypes.RECEIVED_PAGES, pages: [updated]});
         return updated;
     };
@@ -272,6 +274,7 @@ export function discardDraft(spaceId: string, pageId: string): DocsThunkAction<P
 export function publishDraft(spaceId: string, pageId: string, force = false): DocsThunkAction<Promise<Page>> {
     return async (dispatch) => {
         const page = await docsDataSource.publishPageDraft(spaceId, pageId, force);
+        recordOwnPageWrite(page.id, page.edit_at);
         dispatch({type: DraftTypes.PUBLISHED_DRAFT, spaceId, pageId, page});
         return page;
     };

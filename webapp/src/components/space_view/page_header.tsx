@@ -131,7 +131,9 @@ const PageHeader = ({space, page, draft, treeOpen, editing, commentsOpen, onTogg
     // (Publish creates it); with one, it is unpublished edits to it (Update applies
     // them).
     const unpublished = !page && Boolean(draft);
-    const hasUnpublishedEdits = Boolean(page) && Boolean(draft);
+
+    const savePending = autosaveStatus === 'unsaved' || autosaveStatus === 'saving';
+    const hasUnpublishedEdits = Boolean(page) && (Boolean(draft) || savePending);
     const canEnterEdit = Boolean(subject) && !editing;
     const canCommit = unpublished || (editing && hasUnpublishedEdits);
     const commitShortcut = isMac() ? 'Meta+Enter' : 'Control+Enter';
